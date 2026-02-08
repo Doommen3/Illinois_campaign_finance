@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Manual Entry Queue - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Manual Entry Queue</h1>
+<p class="subtitle">Paper-filed reports requiring manual data entry</p>
+
+<div class="filter-controls">
+    <span>Filter:</span>
+    <a href="{{ url_for('manual_entry.queue', status='pending') }}"
+       class="{% if status == 'pending' %}active{% endif %}">
+        Pending ({{ status_counts.get('pending', 0) }})
+    </a> |
+    <a href="{{ url_for('manual_entry.queue', status='in_progress') }}"
+       class="{% if status == 'in_progress' %}active{% endif %}">
+        In Progress ({{ status_counts.get('in_progress', 0) }})
+    </a> |
+    <a href="{{ url_for('manual_entry.queue', status='completed') }}"
+       class="{% if status == 'completed' %}active{% endif %}">
+        Completed ({{ status_counts.get('completed', 0) }})
+    </a>
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Committee</th>
+            <th>Report Type</th>
+            <th>Filed Date</th>
+            <th>Priority</th>
+            <th>Status</th>
+            <th>Action</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in items %}
+        <tr>
+            <td>{{ item.committee_name }}</td>
+            <td>{{ item.report_type if item.report_type else '-' }}</td>
+            <td>{{ item.filed_date if item.filed_date else '-' }}</td>
+            <td>{{ item.priority }}</td>
+            <td><span class="badge badge-{{ item.status }}">{{ item.status }}</span></td>
+            <td>
+                <a href="{{ url_for('manual_entry.entry_form', queue_id=item.id) }}" class="btn btn-small">
+                    {% if item.status == 'completed' %}View{% else %}Enter Data{% endif %}
+                </a>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="6">No items in queue with status "{{ status }}".</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('manual_entry.queue', status=status, page=page-1) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('manual_entry.queue', status=status, page=page+1) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

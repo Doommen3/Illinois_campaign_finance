@@ -1,0 +1,135 @@
+as_of_date,office,district,party,election_stage,candidate_name,write_in,already_listed_general
+2026-02-07,U.S. House,IL-01,Democratic,Primary,Jerico Brown,True,False
+2026-02-07,U.S. House,IL-01,Democratic,Primary,Jonathan Jackson,False,False
+2026-02-07,U.S. House,IL-01,Republican,Primary,Christian Maxwell,False,False
+2026-02-07,U.S. House,IL-01,Republican,Primary,Marcus Lewis,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Adal Regis,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Bryan Slepicka,True,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Donna Miller,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Eric France,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,"Jesse L. Jackson, Jr.",False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Patrick Keating,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Robert Peters,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Sidney Moore,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Toni Brown,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Willie Preston,False,False
+2026-02-07,U.S. House,IL-02,Democratic,Primary,Yumeka Brown,False,False
+2026-02-07,U.S. House,IL-02,Independent,General (already listed),Ashley Banks,False,True
+2026-02-07,U.S. House,IL-02,Republican,Primary,Mike Noack,False,False
+2026-02-07,U.S. House,IL-03,Democratic,Primary,Delia Ramirez,False,False
+2026-02-07,U.S. House,IL-03,Republican,Primary,Angel Oakley,False,False
+2026-02-07,U.S. House,IL-04,Democratic,Primary,Patty Garcia,False,False
+2026-02-07,U.S. House,IL-04,Other,General (already listed),Ed Hershey,False,True
+2026-02-07,U.S. House,IL-04,Republican,Primary,Lupe Castillo,False,False
+2026-02-07,U.S. House,IL-05,Democratic,Primary,Anthony Michael Tamez,False,False
+2026-02-07,U.S. House,IL-05,Democratic,Primary,Ellen Corley,False,False
+2026-02-07,U.S. House,IL-05,Democratic,Primary,Matthew Conroy,False,False
+2026-02-07,U.S. House,IL-05,Democratic,Primary,Mike Quigley,False,False
+2026-02-07,U.S. House,IL-05,Republican,Primary,Barry Wicker,False,False
+2026-02-07,U.S. House,IL-05,Republican,Primary,Kimball Ladien,False,False
+2026-02-07,U.S. House,IL-05,Republican,Primary,Tom Hanson,False,False
+2026-02-07,U.S. House,IL-06,Democratic,Primary,Joey Ruzevich,False,False
+2026-02-07,U.S. House,IL-06,Democratic,Primary,Sean Casten,False,False
+2026-02-07,U.S. House,IL-06,Republican,Primary,Niki Conforti,False,False
+2026-02-07,U.S. House,IL-06,Republican,Primary,Skylar Duensing,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Anabel Mendoza,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Anthony Driver Jr.,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,David Ehrlich,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Felix Tello,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Jason Friedman,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Jazmin Robinson,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Kina Collins,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,La Shawn Ford,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Melissa Conyears-Ervin,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Reed Showalter,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Richard Boykin,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Rory Hoskins,False,False
+2026-02-07,U.S. House,IL-07,Democratic,Primary,Thomas Fisher,False,False
+2026-02-07,U.S. House,IL-07,Independent,General (already listed),Anita Rao,False,True
+2026-02-07,U.S. House,IL-07,Independent,General (already listed),Nathan Billips,False,True
+2026-02-07,U.S. House,IL-07,Republican,Primary,Chad Koppie,False,False
+2026-02-07,U.S. House,IL-07,Republican,Primary,Patricia Easley,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Dan Tully,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Junaid Ahmed,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Kevin Morrison,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Melissa Bean,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Neil Khot,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Ryan Vetticad,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Sanjyot Dunung,False,False
+2026-02-07,U.S. House,IL-08,Democratic,Primary,Yasmeen Bankole,False,False
+2026-02-07,U.S. House,IL-08,Republican,Primary,Herbert Hebein,False,False
+2026-02-07,U.S. House,IL-08,Republican,Primary,Jennifer Davis,False,False
+2026-02-07,U.S. House,IL-08,Republican,Primary,Kevin Ake,False,False
+2026-02-07,U.S. House,IL-08,Republican,Primary,Mark Rice,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Bethany Johnson,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Bushra Amiwala,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Daniel K. Biss,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Hoan Huynh,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Howard Rosenblum,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Jeff Cohen,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Justin Ford,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Kat Abughazaleh,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Laura Fine,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Mark Fredrickson,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Mike Simmons,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Natalie Angelo,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Nick Pyati,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Patricia Brown,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Phil Andrew,False,False
+2026-02-07,U.S. House,IL-09,Democratic,Primary,Sam Polan,False,False
+2026-02-07,U.S. House,IL-09,Independent,General (already listed),Delila Barrera,False,True
+2026-02-07,U.S. House,IL-09,Republican,Primary,John Elleson,False,False
+2026-02-07,U.S. House,IL-09,Republican,Primary,Mark Su,False,False
+2026-02-07,U.S. House,IL-09,Republican,Primary,Paul Friedman,False,False
+2026-02-07,U.S. House,IL-09,Republican,Primary,Rocio Cleveland,False,False
+2026-02-07,U.S. House,IL-10,Democratic,Primary,Brad Schneider,False,False
+2026-02-07,U.S. House,IL-10,Democratic,Primary,Morgan Coghill,False,False
+2026-02-07,U.S. House,IL-10,Republican,Primary,Carl Lambrecht,False,False
+2026-02-07,U.S. House,IL-11,Democratic,Primary,Bill Foster,False,False
+2026-02-07,U.S. House,IL-11,Republican,Primary,Charlie Kim,False,False
+2026-02-07,U.S. House,IL-11,Republican,Primary,Jeffrey Walter,False,False
+2026-02-07,U.S. House,IL-11,Republican,Primary,Mike Pierce,False,False
+2026-02-07,U.S. House,IL-11,Republican,Primary,Tedora Brown,False,False
+2026-02-07,U.S. House,IL-12,Democratic,Primary,Julie Fortier,False,False
+2026-02-07,U.S. House,IL-12,Republican,Primary,Mike Bost,False,False
+2026-02-07,U.S. House,IL-13,Democratic,Primary,Dylan Blaha,False,False
+2026-02-07,U.S. House,IL-13,Democratic,Primary,Nikki Budzinski,False,False
+2026-02-07,U.S. House,IL-13,Republican,Primary,Jeff Wilson,False,False
+2026-02-07,U.S. House,IL-13,Republican,Primary,Joshua Loyd,False,False
+2026-02-07,U.S. House,IL-14,Democratic,Primary,Lauren Underwood,False,False
+2026-02-07,U.S. House,IL-14,Republican,Primary,Gary Vician,False,False
+2026-02-07,U.S. House,IL-14,Republican,Primary,James Marter,False,False
+2026-02-07,U.S. House,IL-14,Republican,Primary,Krystal Dorey,True,False
+2026-02-07,U.S. House,IL-15,Democratic,Primary,Jennifer Todd,False,False
+2026-02-07,U.S. House,IL-15,Democratic,Primary,Kyle Nudo,False,False
+2026-02-07,U.S. House,IL-15,Democratic,Primary,Paul Davis,False,False
+2026-02-07,U.S. House,IL-15,Democratic,Primary,Randy Raley,False,False
+2026-02-07,U.S. House,IL-15,Republican,Primary,Judy Bowlby,False,False
+2026-02-07,U.S. House,IL-15,Republican,Primary,Mary Miller,False,False
+2026-02-07,U.S. House,IL-15,Republican,Primary,Ryan Tebrugge,False,False
+2026-02-07,U.S. House,IL-16,Democratic,Primary,Paul Nolley,False,False
+2026-02-07,U.S. House,IL-16,Republican,Primary,Darin LaHood,False,False
+2026-02-07,U.S. House,IL-17,Democratic,Primary,Eric Sorensen,False,False
+2026-02-07,U.S. House,IL-17,Republican,Primary,Dillan Vancil,False,False
+2026-02-07,U.S. House,IL-17,Republican,Primary,Julie Bickelhaupt,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Adam Delgado,True,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Awisi Bustos,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Bryan Maxwell,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Christopher Swann,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Jonathan Dean,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Juliana Stratton,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Kevin Ryan,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Raja Krishnamoorthi,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Robin Kelly,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Sean Brown,False,False
+2026-02-07,U.S. Senate,IL,Democratic,Primary,Steve Botsford Jr.,False,False
+2026-02-07,U.S. Senate,IL,Independent,General (already listed),Anthony Smith,False,True
+2026-02-07,U.S. Senate,IL,Independent,General (already listed),Austin Mink,False,True
+2026-02-07,U.S. Senate,IL,Independent,General (already listed),Tyrone Muhammad,False,True
+2026-02-07,U.S. Senate,IL,Republican,Primary,Casey Chlebek,False,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,Don Tracy,False,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,Jeannie Evans,False,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,Jimmy Lee Tillman II,False,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,Max Rice,True,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,Pamela Denise Long,False,False
+2026-02-07,U.S. Senate,IL,Republican,Primary,R. Cary Capparelli,False,False

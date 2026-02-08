@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Committees - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Committees</h1>
+<p class="subtitle">{{ total }} total committees</p>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('committees.list_committees', sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc') }}">
+                    Name{% if sort_by == 'name' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc') }}">
+                    Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for committee in committees %}
+        <tr>
+            <td>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id) }}">
+                    {{ committee.name }}
+                </a>
+            </td>
+            <td>{{ format_currency(committee.total_contributions or 0) }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="2">No committees found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('committees.list_committees', page=page-1, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('committees.list_committees', page=page+1, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

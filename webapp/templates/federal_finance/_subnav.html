@@ -1,0 +1,22 @@
+<nav class="federal-subnav" aria-label="Federal finance section navigation">
+    <a
+        class="federal-subnav-link {% if active_page == 'overview' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_overview', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Overview</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'candidates' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_candidates', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Candidates</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'networks' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_networks', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Networks</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'donor_intelligence' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_donor_intelligence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Donor Intelligence</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'matching' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Matching</a>
+</nav>

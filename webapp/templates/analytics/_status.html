@@ -1,0 +1,48 @@
+<p class="subtitle">
+    Donor-flow source: <strong>{{ data_sources.donor_flow_source }}</strong>
+    {% if data_sources.reconciliation_available %}
+    | Reconciliation rows: <strong>{{ data_sources.reconciliation_rows }}</strong>
+    {% endif %}
+</p>
+{% if date_from or date_to %}
+<p class="subtitle">
+    Active date range:
+    <strong>{{ date_from if date_from else 'Any' }}</strong>
+    to
+    <strong>{{ date_to if date_to else 'Any' }}</strong>
+</p>
+{% endif %}
+{% if not full_mode_requested %}
+<p class="subtitle">Quick mode is active. Heavy sections (network, anomaly, concentration, geo) are skipped to keep page load fast.</p>
+{% endif %}
+{% if full_mode_requested %}
+<div class="status-section">
+    <p class="subtitle">
+        Full snapshot status:
+        <strong>{{ snapshot_meta.status if snapshot_meta else 'empty' }}</strong>
+        {% if snapshot_meta and snapshot_meta.completed_at %}
+        | Last computed: <strong>{{ snapshot_meta.completed_at }}</strong>
+        {% endif %}
+        {% if snapshot_meta and snapshot_meta.age_seconds is not none %}
+        | Age: <strong>{{ snapshot_meta.age_seconds|int }}s</strong>
+        {% endif %}
+        | TTL: <strong>{{ snapshot_ttl_seconds }}s</strong>
+    </p>
+    {% if snapshot_meta and snapshot_meta.error_message %}
+    <p class="subtitle">Snapshot error: {{ snapshot_meta.error_message }}</p>
+    {% endif %}
+    {% if snapshot_loading %}
+    <p class="subtitle">Full snapshot is building in the background. Reload this page in a few seconds.</p>
+    {% elif snapshot_refreshed %}
+    <p class="subtitle">Snapshot refresh was queued.</p>
+    {% endif %}
+    <form class="search-form analytics-form analytics-inline-form" method="get" action="{{ url_for(request.endpoint) }}">
+        <input type="hidden" name="load_mode" value="full">
+        {% for key, value in refresh_params.items() %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <input type="hidden" name="refresh_full" value="1">
+        <button type="submit">Refresh Full Snapshot</button>
+    </form>
+</div>
+{% endif %}

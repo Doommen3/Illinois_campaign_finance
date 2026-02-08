@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}{{ donor.name }} - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>{{ donor.name }}</h1>
+
+<div class="donor-summary">
+    <p><strong>Source:</strong> {{ source }}</p>
+    <p><strong>Address:</strong> {{ donor.address if donor.address else 'Not available' }}</p>
+    <p><strong>City:</strong> {{ donor.donor_city if donor.donor_city else 'Not available' }}</p>
+    <p><strong>State:</strong> {{ donor.donor_state if donor.donor_state else 'Not available' }}</p>
+    <p><strong>Occupation:</strong> {{ donor.occupation if donor.occupation else 'Not available' }}</p>
+    <p><strong>Employer:</strong> {{ donor.employer if donor.employer else 'Not available' }}</p>
+    <p><strong>Total Contributed:</strong> {{ format_currency(total_amount) }}</p>
+    <p><strong>Number of Contributions:</strong> {{ contribution_count }}</p>
+    <p><strong>Committees Supported:</strong> {{ committee_count }}</p>
+</div>
+
+<h2>Who They Donated To</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc') }}">
+                    Committee{% if sort_by == 'committee' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='amount', dir='asc' if sort_by != 'amount' or sort_dir == 'desc' else 'desc') }}">
+                    Total Amount{% if sort_by == 'amount' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='contribution_count', dir='asc' if sort_by != 'contribution_count' or sort_dir == 'desc' else 'desc') }}">
+                    Contributions{% if sort_by == 'contribution_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in committee_rows %}
+        <tr>
+            <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+            <td>{{ format_currency(row.total_amount) }}</td>
+            <td>{{ row.contribution_count }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="3">No committee contributions found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, page=page-1, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, page=page+1, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

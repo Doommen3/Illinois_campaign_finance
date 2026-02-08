@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Illinois Campaign Finance Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="{{ url_for('main.index') }}">IL Campaign Finance</a>
+        </div>
+        <ul class="nav-links">
+            <li><a href="{{ url_for('main.index') }}">Dashboard</a></li>
+            <li><a href="{{ url_for('committees.list_committees') }}">Committees</a></li>
+            <li><a href="{{ url_for('donors.list_donors') }}">Donors</a></li>
+            <li><a href="{{ url_for('reports.list_reports') }}">Reports</a></li>
+            <li><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Candidate Finance</a></li>
+            <li><a href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance (FEC)</a></li>
+            <li><a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon') }}">D2 Reconciliation</a></li>
+            <li><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></li>
+            <li><a href="{{ url_for('manual_entry.queue') }}">Manual Entry</a></li>
+            {% if current_manual_user %}
+            <li><a href="{{ url_for('auth.logout') }}">Sign Out ({{ current_manual_user.username }})</a></li>
+            {% else %}
+            <li><a href="{{ url_for('auth.login') }}">Manual Login</a></li>
+            {% endif %}
+        </ul>
+        <div class="nav-search">
+            <form action="{{ url_for('main.search') }}" method="get">
+                <input type="text" name="q" placeholder="Search..." value="{{ request.args.get('q', '') }}">
+                <button type="submit">Search</button>
+            </form>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>Illinois Campaign Finance Tracker - Data from Illinois State Board of Elections</p>
+    </footer>
+</body>
+</html>

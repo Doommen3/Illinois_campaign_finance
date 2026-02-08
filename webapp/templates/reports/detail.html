@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Report Detail - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Report Detail</h1>
+
+<div class="report-summary">
+    <table class="info-table">
+        <tr>
+            <th>Committee:</th>
+            <td>
+                <a href="{{ url_for('committees.committee_detail', committee_id=report.committee_id) }}">
+                    {{ report.committee_name }}
+                </a>
+            </td>
+        </tr>
+        <tr>
+            <th>Report Type:</th>
+            <td>{{ report.report_type if report.report_type else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Reporting Period:</th>
+            <td>{{ report.reporting_period if report.reporting_period else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Filed Date:</th>
+            <td>{{ report.filed_date if report.filed_date else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Pages:</th>
+            <td>{{ report.pages if report.pages else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Status:</th>
+            <td>
+                <span class="badge badge-{{ report.scrape_status }}">{{ report.scrape_status }}</span>
+                {% if report.is_paper_filed %}
+                <span class="badge badge-paper">paper filed</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% if report.clarification %}
+        <tr>
+            <th>Clarification:</th>
+            <td>{{ report.clarification }}</td>
+        </tr>
+        {% endif %}
+        {% if report.scrape_error %}
+        <tr>
+            <th>Error:</th>
+            <td class="error-text">{{ report.scrape_error }}</td>
+        </tr>
+        {% endif %}
+    </table>
+
+    <p class="total-amount"><strong>Total Contributions:</strong> {{ format_currency(total_amount) }}</p>
+</div>
+
+<h2>Contributions ({{ contributions|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id, sort='donor', dir='asc' if sort_by != 'donor' or sort_dir == 'desc' else 'desc') }}">
+                    Donor{% if sort_by == 'donor' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id, sort='amount', dir='asc' if sort_by != 'amount' or sort_dir == 'desc' else 'desc') }}">
+                    Amount{% if sort_by == 'amount' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id, sort='received_by', dir='asc' if sort_by != 'received_by' or sort_dir == 'desc' else 'desc') }}">
+                    Received By{% if sort_by == 'received_by' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id, sort='description', dir='asc' if sort_by != 'description' or sort_dir == 'desc' else 'desc') }}">
+                    Description{% if sort_by == 'description' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for contrib in contributions %}
+        <tr>
+            <td>
+                <a href="{{ url_for('donors.donor_detail', donor_id=contrib.donor_id) }}">
+                    {{ contrib.donor_name if contrib.donor_name else contrib.raw_contributed_by or '-' }}
+                </a>
+                {% if contrib.raw_address %}
+                <br><small>{{ contrib.raw_address|truncate(40) }}</small>
+                {% endif %}
+            </td>
+            <td>{{ format_currency(contrib.amount) }}</td>
+            <td>{{ contrib.received_by if contrib.received_by else '-' }}</td>
+            <td>{{ contrib.description|truncate(50) if contrib.description else '-' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="4">
+                {% if report.is_paper_filed %}
+                This is a paper-filed report. Contributions need to be entered manually.
+                <a href="{{ url_for('manual_entry.queue') }}">Go to Manual Entry</a>
+                {% elif report.scrape_status == 'pending' %}
+                Contributions not yet scraped. Run the detail scraper.
+                {% else %}
+                No contributions found.
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if report.detail_url %}
+<p class="source-link">
+    <a href="{{ report.detail_url }}" target="_blank">View original on Illinois SBE website</a>
+</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}Federal/Local Matching - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Federal/Local Donor Matching</h1>
+<p class="subtitle">Entity-resolution feasibility and confidence for donor overlap across federal and local systems.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_matching') }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="analysis_office">
+        <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
+        <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
+        <option value="S" {% if analysis_office == 'S' %}selected{% endif %}>U.S. Senate</option>
+        <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
+    </select>
+    <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
+    <input type="text" name="local_match_limit" value="{{ local_match_limit }}" placeholder="Local donor limit">
+    <input type="text" name="match_limit" value="{{ match_limit }}" placeholder="Match rows">
+    <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Overlap min edge">
+    <input type="text" name="overlap_edge_limit" value="{{ overlap_edge_limit }}" placeholder="Overlap edge limit">
+    <button type="submit">Update</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_matching') }}">Clear</a>
+</form>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+    <p>Run <code>python run.py sync-fec-il-federal --candidates-csv docs/il_federal_candidates_2026_asof_2026-02-07.csv</code> to build this page's data.</p>
+</div>
+{% else %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Federal Donors Considered</h3>
+        <div class="stat-value">{{ local_matches.federal_donors_considered }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Local Donors Considered</h3>
+        <div class="stat-value">{{ local_matches.local_donors_considered }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Federal Donors Matched</h3>
+        <div class="stat-value">{{ local_matches.federal_donors_matched }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Match Rate</h3>
+        <div class="stat-value">{{ (local_matches.match_rate * 100)|round(2) }}%</div>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Match Method Tiers</h2>
+    <p class="subtitle">
+        {% for tier, count in local_matches.tier_counts.items() %}
+        <strong>{{ tier }}</strong>: {{ count }}{% if not loop.last %} | {% endif %}
+        {% else %}
+        no matches
+        {% endfor %}
+    </p>
+    <p class="subtitle">
+        Overlap network summary: nodes <strong>{{ overlap_summary.node_count }}</strong>,
+        edges <strong>{{ overlap_summary.edge_count }}</strong>,
+        matched donors <strong>{{ overlap_summary.matched_donors }}</strong>,
+        federal candidates <strong>{{ overlap_summary.federal_candidate_count }}</strong>,
+        local committees <strong>{{ overlap_summary.local_committee_count }}</strong>
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Matched Donor Rows</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Federal Donor</th>
+                <th>Federal Total</th>
+                <th>Local Donor</th>
+                <th>Local Total</th>
+                <th>Method</th>
+                <th>Confidence</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in local_matches.matches[:300] %}
+            <tr>
+                <td>
+                    {% if row.federal_donor_entity_key %}
+                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.federal_donor_entity_key, cycle=cycle) }}">{{ row.federal_donor_name }}</a>
+                    {% else %}
+                    {{ row.federal_donor_name }}
+                    {% endif %}
+                </td>
+                <td>{{ format_currency(row.federal_total_amount) }}</td>
+                <td>{{ row.local_donor_name }}</td>
+                <td>{{ format_currency(row.local_total_amount) }}</td>
+                <td>{{ row.match_method }}</td>
+                <td>{{ row.confidence_score }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No federal-local donor matches under current settings.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

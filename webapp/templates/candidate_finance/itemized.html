@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}Itemized Receipts - Illinois Campaign Finance Tracker{% endblock %}
+
+{% macro sort_link(field, label) -%}
+<a href="{{ url_for(
+    'candidate_finance.candidate_committee_itemized',
+    candidate_id=candidate_id,
+    committee_id=committee_id,
+    q=query,
+    d2_part=d2_part,
+    archived=archived,
+    min_amount=min_amount,
+    max_amount=max_amount,
+    sort=field,
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+) }}">
+    {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+</a>
+{%- endmacro %}
+
+{% block content %}
+<h1>Candidate/Committee Itemized Receipts</h1>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>Itemized receipts are not available yet.</p>
+    <p>Run <code>python run.py import-bulk-download --directory Bulk_download</code> to load receipt rows.</p>
+</div>
+{% elif not context %}
+<div class="status-section">
+    <p>No candidate/committee link was found for Candidate ID {{ candidate_id }} and Committee ID {{ committee_id }}.</p>
+    <p><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Back to Candidate Finance</a></p>
+</div>
+{% else %}
+<div class="status-section">
+    <p><strong>Candidate:</strong> {{ context.candidate_full_name }} ({{ context.candidate_id }})</p>
+    <p><strong>Committee:</strong> {{ context.committee_name }} ({{ context.committee_id_sbe }})</p>
+    <p><strong>Rows:</strong> {{ total }}</p>
+    <p><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Back to Candidate Finance</a></p>
+</div>
+
+<form class="search-form" method="get" action="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=candidate_id, committee_id=committee_id) }}">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search donor, vendor, description, or filed doc">
+    <input type="text" name="d2_part" value="{{ d2_part }}" placeholder="D2 part (1, 1A, 5, etc.)">
+    <select name="archived">
+        <option value="all" {% if archived == 'all' %}selected{% endif %}>All rows</option>
+        <option value="no" {% if archived == 'no' %}selected{% endif %}>Non-archived only</option>
+        <option value="yes" {% if archived == 'yes' %}selected{% endif %}>Archived only</option>
+    </select>
+    <input type="text" name="min_amount" value="{{ min_amount }}" placeholder="Min amount">
+    <input type="text" name="max_amount" value="{{ max_amount }}" placeholder="Max amount">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    <button type="submit">Apply</button>
+    <a class="btn btn-small" href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=candidate_id, committee_id=committee_id) }}">Clear</a>
+</form>
+
+<div class="filter-controls">
+    <a href="{{ url_for(
+        'candidate_finance.candidate_committee_itemized',
+        candidate_id=candidate_id,
+        committee_id=committee_id,
+        format='csv',
+        q=query,
+        d2_part=d2_part,
+        archived=archived,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Export CSV</a>
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>{{ sort_link('receipt_record_id', 'Receipt ID') }}</th>
+            <th>{{ sort_link('filed_doc_id', 'Filed Doc ID') }}</th>
+            <th>{{ sort_link('received_date', 'Received Date') }}</th>
+            <th>{{ sort_link('d2_part_code', 'D2 Part') }}</th>
+            <th>{{ sort_link('donor_name', 'Donor') }}</th>
+            <th>{{ sort_link('occupation', 'Occupation') }}</th>
+            <th>{{ sort_link('employer', 'Employer') }}</th>
+            <th>{{ sort_link('amount', 'Amount') }}</th>
+            <th>{{ sort_link('aggregate_amount', 'Aggregate') }}</th>
+            <th>{{ sort_link('loan_amount', 'Loan') }}</th>
+            <th>Description</th>
+            <th>{{ sort_link('vendor_name', 'Vendor') }}</th>
+            <th>{{ sort_link('is_archived', 'Archived') }}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.receipt_record_id if row.receipt_record_id is not none else '-' }}</td>
+            <td>{{ row.filed_doc_id if row.filed_doc_id is not none else '-' }}</td>
+            <td>{{ row.received_date if row.received_date else '-' }}</td>
+            <td>{{ row.d2_part_code if row.d2_part_code else '-' }}</td>
+            <td>
+                {{ row.donor_name if row.donor_name else '-' }}
+                {% if row.donor_address %}
+                <br><small>{{ row.donor_address }}</small>
+                {% endif %}
+            </td>
+            <td>{{ row.occupation if row.occupation else '-' }}</td>
+            <td>{{ row.employer if row.employer else '-' }}</td>
+            <td>{{ format_currency(row.amount) }}</td>
+            <td>{{ format_currency(row.aggregate_amount) }}</td>
+            <td>{{ format_currency(row.loan_amount) }}</td>
+            <td>{{ row.description if row.description else '-' }}</td>
+            <td>
+                {{ row.vendor_name if row.vendor_name else '-' }}
+                {% if row.vendor_address %}
+                <br><small>{{ row.vendor_address }}</small>
+                {% endif %}
+            </td>
+            <td>{{ 'yes' if row.is_archived == 1 else 'no' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="13">No itemized rows found for this filter.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for(
+        'candidate_finance.candidate_committee_itemized',
+        candidate_id=candidate_id,
+        committee_id=committee_id,
+        page=page-1,
+        q=query,
+        d2_part=d2_part,
+        archived=archived,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for(
+        'candidate_finance.candidate_committee_itemized',
+        candidate_id=candidate_id,
+        committee_id=committee_id,
+        page=page+1,
+        q=query,
+        d2_part=d2_part,
+        archived=archived,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endif %}
+{% endblock %}

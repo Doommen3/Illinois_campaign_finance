@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Search - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Search</h1>
+
+<form action="{{ url_for('main.search') }}" method="get" class="search-form">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search committees, donors...">
+    <select name="type">
+        <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
+        <option value="committees" {% if type == 'committees' %}selected{% endif %}>Committees</option>
+        <option value="donors" {% if type == 'donors' %}selected{% endif %}>Donors</option>
+    </select>
+    <button type="submit">Search</button>
+</form>
+
+{% if query %}
+<div class="search-results">
+    {% if type in ('all', 'committees') and committees %}
+    <section>
+        <h2>Committees ({{ committees|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for committee in committees %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('committees.committee_detail', committee_id=committee.id) }}">
+                            {{ committee.name }}
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if type in ('all', 'donors') and donors %}
+    <section>
+        <h2>Donors ({{ donors|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Address</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for donor in donors %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
+                            {{ donor.name }}
+                        </a>
+                    </td>
+                    <td>{{ donor.address|truncate(40) if donor.address else '-' }}</td>
+                    <td>{{ format_currency(donor.total_amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if not committees and not donors %}
+    <p class="no-results">No results found for "{{ query }}"</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,49 @@
+Category,Item,Description,Method/Technique,Estimated Cost,Priority
+Deployment,Web App (Flask),Deploy on Railway or Render - simple Python deploy with auto-TLS and env vars,,~$5-7/mo,High
+Deployment,Database,Turso (libSQL) or LiteFS on Fly.io - SQLite-compatible with no migration needed,,Free-$9/mo,High
+Deployment,Scraper Jobs,Fly.io Machines (on-demand) - Playwright needs browser runtime; spin up/down,,~$0-5/mo,High
+Deployment,Bulk Data Storage,Cloudflare R2 or Backblaze B2 - store 1GB+ receipts files cheaply with no egress fees,,~$0.50/mo,Medium
+Deployment,Scheduled Jobs,GitHub Actions (cron) - triggers scrape and analytics refresh,Cron workflows,Free,High
+Deployment,Domain + CDN,Cloudflare free tier - DNS and caching static assets and DDoS protection,,Free,Medium
+Deployment,Containerize the app,Create Dockerfile with Playwright browser deps for scraper and lighter image for web app,,N/A,High
+Deployment,Split run.py entrypoints,Separate web (Gunicorn + Flask) from worker (scrape commands triggered by cron),,N/A,High
+Deployment,Add Gunicorn,Replace Flask dev server with production WSGI server,,N/A,High
+Deployment,Alternative simple deploy,Single $6/mo DigitalOcean droplet or Fly.io Machine with persistent volume for SQLite,,~$6/mo,Medium
+Differentiation,Network graph analysis,Donor-to-committee edge visualization - Illinois Sunshine has none,,N/A,High
+Differentiation,Anomaly detection,Flag unusual contribution patterns - they do no pattern analysis,,N/A,High
+Differentiation,Donor concentration metrics,How dependent is a candidate on a few large donors,,N/A,High
+Differentiation,D-2 reconciliation,Cross-reference D-2 quarterly totals against itemized receipts to find discrepancies,,N/A,High
+Differentiation,Paper-filed report tracking,Surface filings that dodge electronic reporting via manual entry queue,,N/A,Medium
+Differentiation,Time-series trend analysis,Monthly fundraising velocity and acceleration and seasonal patterns per committee,,N/A,Medium
+Differentiation,Geographic donor mapping,Where is the money coming from - state/city heatmaps,,N/A,Medium
+Differentiation,Committee-to-committee flow tracking,Trace multi-hop money flows through intermediary committees,,N/A,High
+Differentiation,REST API,Public API endpoints - Illinois Sunshine has no public API,,N/A,High
+Differentiation,Bulk data download + re-analysis,Offer cleaned and normalized exports of State Board bulk files,,N/A,Medium
+Differentiation,Open source / self-hostable,Community-driven alternative to closed-source Illinois Sunshine,,N/A,Low
+Differentiation,Positioning Strategy,"Illinois Sunshine = 'What donations were made?' (lookup). Your app = 'What do the donations mean?' (analytics)",,N/A,High
+Analytics - Current Data,Donor network clustering,Reveal coordinated giving groups,Graph community detection (Louvain/Leiden),N/A,High
+Analytics - Current Data,Contribution anomaly scoring,Flag suspicious outlier donations,Z-score / IQR on amount distributions per committee,N/A,High
+Analytics - Current Data,Donor deduplication / entity resolution,Improve existing normalization with ML matching,Fuzzy matching (Levenshtein + TF-IDF on names/addresses),N/A,High
+Analytics - Current Data,Fundraising momentum,Predict which candidates are surging,Rolling averages + rate-of-change on monthly totals,N/A,Medium
+Analytics - Current Data,Donor loyalty analysis,Identify reliable repeat donors,Repeat contribution rate and retention cohorts,N/A,Medium
+Analytics - Current Data,Geographic concentration,Measure geographic diversity of candidate funding,Donor address to zipcode/county aggregation + Gini coefficient,N/A,Medium
+Analytics - Current Data,Dark money tracing,Follow money through intermediary PACs,Committee-to-committee transfer chains and multi-hop path analysis,N/A,High
+Data Science Models,Contribution prediction,Project future fundraising by committee,Time series forecasting (Prophet or ARIMA),N/A,Medium
+Data Science Models,Donor segmentation,Create donor archetypes (small-dollar grassroots vs corporate bundlers),K-means / DBSCAN clustering on amount and frequency and geography,N/A,Medium
+Data Science Models,Anomaly detection (ML),Score each transaction for anomaly likelihood,Isolation Forest / Autoencoders,N/A,High
+Data Science Models,Entity resolution (ML),Unified donor IDs across committees,Dedupe library / Record linkage,N/A,High
+Data Science Models,Election outcome correlation,Win probability based on finance patterns,Logistic regression / Random Forest,N/A,Low
+Data Science Models,NLP on vendor spending,Classify expenditure categories (media and consultants and events),TF-IDF + topic modeling (LDA),N/A,Medium
+Data Science Models,Influence scoring,Rank most influential donors/committees,PageRank / betweenness centrality on donor-committee graph,N/A,High
+Data Science Models,Bundler detection,Flag coordinated giving campaigns,Temporal clustering of same-employer donations,N/A,High
+Data Science Models,Partisan lean prediction,Predict donor partisanship without party labels,Classification on cross-committee giving patterns,N/A,Low
+Quick Wins,Red Flags dashboard,Surface top 25 anomalies and largest single donations and most paper-filed committees,,N/A,High
+Quick Wins,Export network graphs as GraphML,Let journalists load data into Gephi or Neo4j,,N/A,Medium
+Quick Wins,Follow the Money feature,Given a donor show every committee and candidate they connect to - multi-hop,,N/A,High
+Quick Wins,Publish cleaned datasets,Offer normalized CSV/Parquet exports - researchers will link to you,,N/A,Medium
+Quick Wins,Election watchlist,Users pick races and get weekly fundraising summaries with trend arrows,,N/A,Low
+Libraries to Add,networkx,Graph analytics - PageRank and community detection and path finding,,N/A,High
+Libraries to Add,scikit-learn,Clustering and anomaly detection and classification,,N/A,High
+Libraries to Add,prophet or statsmodels,Time series forecasting,,N/A,Medium
+Libraries to Add,dedupe,ML-powered entity resolution,,N/A,High
+Libraries to Add,plotly or altair,Interactive visualizations for the web app,,N/A,Medium

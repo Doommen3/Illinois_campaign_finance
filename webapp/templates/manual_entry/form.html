@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Manual Entry - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Manual Data Entry</h1>
+
+<div class="report-info">
+    <h2>Report Information</h2>
+    <table class="info-table">
+        <tr>
+            <th>Committee:</th>
+            <td>{{ queue_item.committee_name }}</td>
+        </tr>
+        <tr>
+            <th>Report Type:</th>
+            <td>{{ queue_item.report_type if queue_item.report_type else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Reporting Period:</th>
+            <td>{{ queue_item.reporting_period if queue_item.reporting_period else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Filed Date:</th>
+            <td>{{ queue_item.filed_date if queue_item.filed_date else '-' }}</td>
+        </tr>
+        <tr>
+            <th>Status:</th>
+            <td><span class="badge badge-{{ queue_item.status }}">{{ queue_item.status }}</span></td>
+        </tr>
+    </table>
+</div>
+
+{% if queue_item.status != 'completed' %}
+<div class="entry-form">
+    <h2>Add Contribution</h2>
+    <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}">
+        <input type="hidden" name="action" value="add_contribution">
+
+        <div class="form-group">
+            <label for="contributed_by">Contributed By *</label>
+            <input type="text" id="contributed_by" name="contributed_by" required>
+        </div>
+
+        <div class="form-group">
+            <label for="address">Address</label>
+            <input type="text" id="address" name="address">
+        </div>
+
+        <div class="form-group">
+            <label for="amount">Amount *</label>
+            <input type="text" id="amount" name="amount" placeholder="0.00" required>
+        </div>
+
+        <div class="form-group">
+            <label for="received_by">Received By</label>
+            <input type="text" id="received_by" name="received_by">
+        </div>
+
+        <div class="form-group">
+            <label for="description">Description</label>
+            <input type="text" id="description" name="description">
+        </div>
+
+        <button type="submit" class="btn btn-primary">Add Contribution</button>
+    </form>
+</div>
+{% endif %}
+
+<div class="contributions-list">
+    <h2>Entered Contributions ({{ contributions|length }})</h2>
+
+    {% if contributions %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Contributor</th>
+                <th>Address</th>
+                <th>Amount</th>
+                <th>Description</th>
+                {% if queue_item.status != 'completed' %}
+                <th>Action</th>
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for contrib in contributions %}
+            <tr>
+                <td>{{ contrib.donor_name if contrib.donor_name else contrib.raw_contributed_by or '-' }}</td>
+                <td>{{ contrib.raw_address|truncate(30) if contrib.raw_address else '-' }}</td>
+                <td>{{ format_currency(contrib.amount) }}</td>
+                <td>{{ contrib.description|truncate(30) if contrib.description else '-' }}</td>
+                {% if queue_item.status != 'completed' %}
+                <td>
+                    <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}"
+                          style="display: inline;">
+                        <input type="hidden" name="action" value="delete_contribution">
+                        <input type="hidden" name="contribution_id" value="{{ contrib.id }}">
+                        <button type="submit" class="btn btn-small btn-danger"
+                                onclick="return confirm('Delete this contribution?')">Delete</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No contributions entered yet.</p>
+    {% endif %}
+</div>
+
+{% if queue_item.status != 'completed' %}
+<div class="complete-section">
+    <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}">
+        <input type="hidden" name="action" value="mark_complete">
+        <button type="submit" class="btn btn-success"
+                onclick="return confirm('Mark this report as complete? This cannot be undone.')">
+            Mark as Complete
+        </button>
+    </form>
+</div>
+{% endif %}
+
+<p><a href="{{ url_for('manual_entry.queue') }}">&laquo; Back to Queue</a></p>
+{% endblock %}

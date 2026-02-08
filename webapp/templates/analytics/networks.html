@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Networks - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics: Networks</h1>
+<p class="subtitle">Interactive force and chord views for donor, committee, and candidate relationships.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for(request.endpoint) }}">
+    <label>
+        Load Mode
+        <select name="load_mode">
+            <option value="quick" {% if load_mode != 'full' %}selected{% endif %}>Quick mode</option>
+            <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
+        </select>
+    </label>
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+        Min Edge Amount
+        <input type="number" name="min_edge_amount" min="0" step="100" value="{{ min_edge_amount }}">
+    </label>
+    <label>
+        Network Limit
+        <input type="number" name="network_limit" min="50" max="5000" value="{{ network_limit }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+{% include "analytics/_status.html" %}
+
+<div class="status-section">
+    <h2>Network Graph Analytics</h2>
+    <p class="subtitle">Donor edges source: {{ network.summary.donor_committee_source }}</p>
+    <p>
+        Nodes: {{ network.summary.node_count }}
+        | Edges: {{ network.summary.edge_count }}
+        | Donor-&gt;Committee: {{ network.summary.donor_committee_edges }}
+        | Committee-&gt;Candidate: {{ network.summary.committee_candidate_edges }}
+    </p>
+
+    {% if heavy_sections_loaded %}
+    <div class="network-controls">
+        <label for="network-view-mode">View</label>
+        <select id="network-view-mode">
+            <option value="power">Power Players</option>
+            <option value="region">Regional View</option>
+        </select>
+
+        <label for="network-region">Region</label>
+        <select id="network-region">
+            <option value="All">All Regions</option>
+        </select>
+
+        <button id="network-render-btn" type="button">Render</button>
+    </div>
+
+    <div class="network-svg-wrap">
+        <svg id="network-svg" viewBox="0 0 980 520" role="img" aria-label="Campaign finance network graph"></svg>
+    </div>
+    <p id="network-summary" class="subtitle"></p>
+
+    <div class="network-chord-block">
+        <h3>Chord Diagram</h3>
+        <div class="chord-controls">
+            <label for="chord-view-mode">Mode</label>
+            <select id="chord-view-mode">
+                <option value="power">Power Players</option>
+                <option value="regions">Regions</option>
+            </select>
+
+            <label for="chord-top-n">Top entities</label>
+            <select id="chord-top-n">
+                <option value="8">8</option>
+                <option value="12" selected>12</option>
+                <option value="16">16</option>
+                <option value="20">20</option>
+            </select>
+
+            <label for="chord-region-filter">Region filter</label>
+            <select id="chord-region-filter">
+                <option value="All">All Regions</option>
+            </select>
+
+            <button id="chord-render-btn" type="button">Render Chord</button>
+        </div>
+        <div class="network-svg-wrap chord-svg-wrap">
+            <svg id="chord-svg" viewBox="0 0 980 560" role="img" aria-label="Campaign finance chord diagram"></svg>
+        </div>
+        <p id="chord-summary" class="subtitle"></p>
+    </div>
+
+    <script id="analytics-network-data" type="application/json">{{ network|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/analytics_networks.js') }}"></script>
+    {% else %}
+    {% if full_mode_requested %}
+    <p>Full-mode snapshot is not ready yet.</p>
+    {% else %}
+    <p>Skipped in quick mode. Switch to Full mode to compute the network.</p>
+    {% endif %}
+    {% endif %}
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Node</th>
+                <th>Type</th>
+                <th>Region</th>
+                <th>Weighted Degree</th>
+                <th>Degree</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if heavy_sections_loaded %}
+                {% for node in network.centrality[:20] %}
+                <tr>
+                    <td>{{ node.label }}</td>
+                    <td>{{ node.node_type }}</td>
+                    <td>{{ node.region if node.region else '-' }}</td>
+                    <td>{{ format_currency(node.weighted_degree) }}</td>
+                    <td>{{ node.degree }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No network data available.</td></tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="5">Heavy network table is only available in Full mode.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+
+    <p><a href="{{ url_for('api.analytics_network', min_edge_amount=min_edge_amount, limit=network_limit) }}">JSON endpoint</a></p>
+</div>
+{% endblock %}

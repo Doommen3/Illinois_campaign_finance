@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Committees</h3>
+        <p class="stat-value">{{ stats.total_committees }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Reports</h3>
+        <p class="stat-value">{{ stats.total_reports }}</p>
+        <p class="stat-detail">{{ stats.paper_filed_count }} paper-filed</p>
+    </div>
+    <div class="stat-card">
+        <h3>Donors</h3>
+        <p class="stat-value">{{ stats.total_donors }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contributions</h3>
+        <p class="stat-value">{{ stats.total_contributions }}</p>
+        <p class="stat-detail">{{ format_currency(stats.total_amount) }} total</p>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Scrape Status</h2>
+    <div class="status-badges">
+        {% for status, count in stats.report_status.items() %}
+        <span class="badge badge-{{ status }}">{{ status }}: {{ count }}</span>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="two-column">
+    <div class="column">
+        <h2>Recent Reports</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Committee</th>
+                    <th>Type</th>
+                    <th>Filed</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for report in recent_reports %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('reports.report_detail', report_id=report.id) }}">
+                            {{ report.committee_name|truncate(30) }}
+                        </a>
+                    </td>
+                    <td>{{ report.report_type|truncate(20) if report.report_type else '-' }}</td>
+                    <td>{{ report.filed_date if report.filed_date else '-' }}</td>
+                    <td>
+                        <span class="badge badge-{{ report.scrape_status }}">
+                            {{ report.scrape_status }}
+                        </span>
+                        {% if report.is_paper_filed %}
+                        <span class="badge badge-paper">paper</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4">No reports yet. Run the scraper to get data.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p><a href="{{ url_for('reports.list_reports') }}">View all reports</a></p>
+    </div>
+
+    <div class="column">
+        <h2>Top Donors</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Total</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for donor in top_donors %}
+                <tr>
+                    <td>
+                        {% if donor.id %}
+                        <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
+                            {{ donor.name|truncate(25) }}
+                        </a>
+                        {% elif donor.donor_key %}
+                        <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts') }}">
+                            {{ donor.name|truncate(25) }}
+                        </a>
+                        {% else %}
+                        {{ donor.name|truncate(25) }}
+                        {% endif %}
+                    </td>
+                    <td>{{ format_currency(donor.total_amount) }}</td>
+                    <td>{{ donor.contribution_count }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="3">No donor data yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p><a href="{{ url_for('donors.list_donors') }}">View all donors</a></p>
+    </div>
+</div>
+{% endblock %}

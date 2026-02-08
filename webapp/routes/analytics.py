@@ -1,0 +1,413 @@
+"""Analytics dashboard routes."""
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+from flask import Blueprint, current_app, render_template, request
+
+from database.analytics import (
+    build_dashboard_full_snapshot,
+    get_analytics_data_sources,
+    get_dashboard_snapshot,
+    get_nlp_spending_summary,
+    get_reconciliation_outliers,
+    get_time_series,
+    save_dashboard_snapshot,
+)
+from database.connection import get_db
+
+analytics_bp = Blueprint("analytics", __name__)
+
+FULL_SNAPSHOT_TTL_SECONDS = 900
+_snapshot_executor = ThreadPoolExecutor(max_workers=1)
+_snapshot_lock = threading.Lock()
+_running_snapshot_keys: set[str] = set()
+
+
+def _is_true_arg(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _empty_network() -> dict:
+    return {
+        "nodes": [],
+        "edges": [],
+        "centrality": [],
+        "summary": {
+            "node_count": 0,
+            "edge_count": 0,
+            "donor_committee_edges": 0,
+            "committee_candidate_edges": 0,
+            "donor_committee_source": "pending",
+            "region_counts": {},
+        },
+    }
+
+
+def _empty_geo_summary() -> dict:
+    return {"states": [], "cities": []}
+
+
+def _parse_filters() -> dict:
+    load_mode = (request.args.get("load_mode", "quick", type=str) or "quick").strip().lower()
+    if load_mode not in {"quick", "full"}:
+        load_mode = "quick"
+
+    min_edge_amount = max(request.args.get("min_edge_amount", 1000.0, type=float) or 1000.0, 0.0)
+    network_limit = min(max(request.args.get("network_limit", 200, type=int) or 200, 50), 5000)
+    anomaly_limit = min(max(request.args.get("anomaly_limit", 25, type=int) or 25, 1), 500)
+    concentration_limit = min(max(request.args.get("concentration_limit", 25, type=int) or 25, 1), 500)
+    months = min(max(request.args.get("months", 24, type=int) or 24, 1), 120)
+    geo_state_limit = min(max(request.args.get("geo_state_limit", 15, type=int) or 15, 1), 100)
+    geo_city_limit = min(max(request.args.get("geo_city_limit", 25, type=int) or 25, 1), 500)
+    nlp_limit = min(max(request.args.get("nlp_limit", 20, type=int) or 20, 1), 500)
+    recon_limit = min(max(request.args.get("recon_limit", 20, type=int) or 20, 1), 500)
+    recon_min_abs_diff = max(request.args.get("recon_min_abs_diff", 1000.0, type=float) or 1000.0, 0.0)
+
+    return {
+        "load_mode": load_mode,
+        "full_mode_requested": load_mode == "full",
+        "refresh_full": _is_true_arg(request.args.get("refresh_full")),
+        "sync_full": _is_true_arg(request.args.get("sync_full")),
+        "min_edge_amount": min_edge_amount,
+        "network_limit": network_limit,
+        "anomaly_limit": anomaly_limit,
+        "concentration_limit": concentration_limit,
+        "months": months,
+        "geo_state_limit": geo_state_limit,
+        "geo_city_limit": geo_city_limit,
+        "nlp_limit": nlp_limit,
+        "recon_limit": recon_limit,
+        "recon_min_abs_diff": recon_min_abs_diff,
+        "date_from": (request.args.get("date_from", "", type=str) or "").strip(),
+        "date_to": (request.args.get("date_to", "", type=str) or "").strip(),
+    }
+
+
+def _build_snapshot_params(
+    min_edge_amount: float,
+    network_limit: int,
+    anomaly_limit: int,
+    concentration_limit: int,
+    months: int,
+    geo_state_limit: int,
+    geo_city_limit: int,
+    nlp_limit: int,
+    recon_limit: int,
+    recon_min_abs_diff: float,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    return {
+        "min_edge_amount": float(min_edge_amount),
+        "network_limit": int(network_limit),
+        "anomaly_limit": int(anomaly_limit),
+        "concentration_limit": int(concentration_limit),
+        "months": int(months),
+        "geo_state_limit": int(geo_state_limit),
+        "geo_city_limit": int(geo_city_limit),
+        "nlp_limit": int(nlp_limit),
+        "recon_limit": int(recon_limit),
+        "recon_min_abs_diff": float(recon_min_abs_diff),
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+        "snapshot_version": 2,
+    }
+
+
+def _snapshot_params_from_filters(filters: dict) -> dict:
+    return _build_snapshot_params(
+        min_edge_amount=filters["min_edge_amount"],
+        network_limit=filters["network_limit"],
+        anomaly_limit=filters["anomaly_limit"],
+        concentration_limit=filters["concentration_limit"],
+        months=filters["months"],
+        geo_state_limit=filters["geo_state_limit"],
+        geo_city_limit=filters["geo_city_limit"],
+        nlp_limit=filters["nlp_limit"],
+        recon_limit=filters["recon_limit"],
+        recon_min_abs_diff=filters["recon_min_abs_diff"],
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+    )
+
+
+def _run_snapshot_job(database_path: str, params: dict, rebuild_materialized: bool) -> None:
+    conn = get_db(database_path)
+    try:
+        save_dashboard_snapshot(conn, params=params, status="in_progress")
+        payload = build_dashboard_full_snapshot(
+            conn,
+            params=params,
+            rebuild_materialized=rebuild_materialized,
+        )
+        save_dashboard_snapshot(
+            conn,
+            params=params,
+            status="completed",
+            payload=payload,
+            error_message=None,
+        )
+    except Exception as exc:
+        save_dashboard_snapshot(
+            conn,
+            params=params,
+            status="error",
+            payload=None,
+            error_message=str(exc),
+        )
+    finally:
+        conn.close()
+
+
+def _schedule_snapshot_refresh(
+    database_path: str,
+    params: dict,
+    cache_key: str,
+    rebuild_materialized: bool,
+) -> bool:
+    with _snapshot_lock:
+        if cache_key in _running_snapshot_keys:
+            return False
+        _running_snapshot_keys.add(cache_key)
+
+    def _job():
+        try:
+            _run_snapshot_job(database_path, params=params, rebuild_materialized=rebuild_materialized)
+        finally:
+            with _snapshot_lock:
+                _running_snapshot_keys.discard(cache_key)
+
+    _snapshot_executor.submit(_job)
+    return True
+
+
+def _load_snapshot_state(conn, filters: dict) -> dict:
+    state = {
+        "payload": None,
+        "snapshot_meta": None,
+        "snapshot_loading": False,
+        "snapshot_refreshed": False,
+        "heavy_sections_loaded": False,
+        "data_sources": get_analytics_data_sources(conn),
+    }
+    if not filters["full_mode_requested"]:
+        return state
+
+    full_params = _snapshot_params_from_filters(filters)
+    snapshot_meta = get_dashboard_snapshot(conn, params=full_params, ttl_seconds=FULL_SNAPSHOT_TTL_SECONDS)
+    if filters["sync_full"]:
+        save_dashboard_snapshot(conn, params=full_params, status="in_progress")
+        try:
+            payload = build_dashboard_full_snapshot(
+                conn,
+                params=full_params,
+                rebuild_materialized=filters["refresh_full"],
+            )
+            snapshot_meta = save_dashboard_snapshot(
+                conn,
+                params=full_params,
+                status="completed",
+                payload=payload,
+                error_message=None,
+            )
+        except Exception as exc:
+            snapshot_meta = save_dashboard_snapshot(
+                conn,
+                params=full_params,
+                status="error",
+                payload=None,
+                error_message=str(exc),
+            )
+    else:
+        should_refresh = (
+            filters["refresh_full"]
+            or snapshot_meta["is_stale"]
+            or snapshot_meta["status"] in {"empty", "error"}
+        )
+        if should_refresh:
+            scheduled = _schedule_snapshot_refresh(
+                database_path=current_app.config["DATABASE_PATH"],
+                params=full_params,
+                cache_key=snapshot_meta["cache_key"],
+                rebuild_materialized=filters["refresh_full"] or snapshot_meta["status"] == "empty",
+            )
+            state["snapshot_refreshed"] = scheduled
+        snapshot_meta = get_dashboard_snapshot(conn, params=full_params, ttl_seconds=FULL_SNAPSHOT_TTL_SECONDS)
+
+    state["snapshot_meta"] = snapshot_meta
+    payload = snapshot_meta.get("payload")
+    if payload:
+        state["payload"] = payload
+        state["heavy_sections_loaded"] = True
+        state["data_sources"] = payload.get("data_sources", state["data_sources"])
+    else:
+        state["snapshot_loading"] = snapshot_meta.get("status") in {"in_progress", "empty"}
+    return state
+
+
+def _refresh_params(filters: dict) -> dict:
+    keys = [
+        "min_edge_amount",
+        "network_limit",
+        "anomaly_limit",
+        "concentration_limit",
+        "months",
+        "geo_state_limit",
+        "geo_city_limit",
+        "nlp_limit",
+        "recon_limit",
+        "recon_min_abs_diff",
+        "date_from",
+        "date_to",
+    ]
+    return {key: filters[key] for key in keys}
+
+
+def _base_context(active_page: str, filters: dict, snapshot_state: dict) -> dict:
+    return {
+        "active_page": active_page,
+        "snapshot_ttl_seconds": FULL_SNAPSHOT_TTL_SECONDS,
+        "refresh_params": _refresh_params(filters),
+        **filters,
+        **snapshot_state,
+    }
+
+
+@analytics_bp.route("/", endpoint="dashboard")
+@analytics_bp.route("/overview", endpoint="overview")
+def dashboard():
+    """Render the analytics overview page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+
+    network = payload.get("network", _empty_network()) if snapshot_state["heavy_sections_loaded"] else _empty_network()
+    anomalies = payload.get("anomalies", []) if snapshot_state["heavy_sections_loaded"] else []
+    concentration = payload.get("concentration", []) if snapshot_state["heavy_sections_loaded"] else []
+    geo_summary = payload.get("geo_summary", _empty_geo_summary()) if snapshot_state["heavy_sections_loaded"] else _empty_geo_summary()
+
+    if snapshot_state["heavy_sections_loaded"]:
+        time_series = payload.get("time_series", [])
+        nlp_summary = payload.get("nlp_summary", [])
+        reconciliation = payload.get("reconciliation", [])
+    else:
+        time_series = get_time_series(
+            conn,
+            months=filters["months"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
+        reconciliation = get_reconciliation_outliers(
+            conn,
+            limit=filters["recon_limit"],
+            min_abs_diff=filters["recon_min_abs_diff"],
+        )
+
+    latest_time_point = time_series[-1] if time_series else None
+
+    return render_template(
+        "analytics/overview.html",
+        **_base_context("overview", filters, snapshot_state),
+        network=network,
+        anomalies=anomalies,
+        concentration=concentration,
+        geo_summary=geo_summary,
+        time_series=time_series,
+        nlp_summary=nlp_summary,
+        reconciliation=reconciliation,
+        latest_time_point=latest_time_point,
+    )
+
+
+@analytics_bp.route("/networks")
+def networks():
+    """Render network analytics page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+
+    network = payload.get("network", _empty_network()) if snapshot_state["heavy_sections_loaded"] else _empty_network()
+
+    return render_template(
+        "analytics/networks.html",
+        **_base_context("networks", filters, snapshot_state),
+        network=network,
+    )
+
+
+@analytics_bp.route("/risk")
+def risk():
+    """Render anomaly and reconciliation analytics page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+
+    anomalies = payload.get("anomalies", []) if snapshot_state["heavy_sections_loaded"] else []
+    if snapshot_state["heavy_sections_loaded"]:
+        reconciliation = payload.get("reconciliation", [])
+    else:
+        reconciliation = get_reconciliation_outliers(
+            conn,
+            limit=filters["recon_limit"],
+            min_abs_diff=filters["recon_min_abs_diff"],
+        )
+
+    return render_template(
+        "analytics/risk.html",
+        **_base_context("risk", filters, snapshot_state),
+        anomalies=anomalies,
+        reconciliation=reconciliation,
+    )
+
+
+@analytics_bp.route("/donors")
+def donors():
+    """Render donor concentration and NLP analytics page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+
+    concentration = payload.get("concentration", []) if snapshot_state["heavy_sections_loaded"] else []
+    if snapshot_state["heavy_sections_loaded"]:
+        nlp_summary = payload.get("nlp_summary", [])
+    else:
+        nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
+
+    return render_template(
+        "analytics/donors.html",
+        **_base_context("donors", filters, snapshot_state),
+        concentration=concentration,
+        nlp_summary=nlp_summary,
+    )
+
+
+@analytics_bp.route("/geography")
+def geography():
+    """Render geography and trend analytics page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+
+    geo_summary = payload.get("geo_summary", _empty_geo_summary()) if snapshot_state["heavy_sections_loaded"] else _empty_geo_summary()
+    if snapshot_state["heavy_sections_loaded"]:
+        time_series = payload.get("time_series", [])
+    else:
+        time_series = get_time_series(
+            conn,
+            months=filters["months"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+
+    return render_template(
+        "analytics/geography.html",
+        **_base_context("geography", filters, snapshot_state),
+        geo_summary=geo_summary,
+        time_series=time_series,
+    )

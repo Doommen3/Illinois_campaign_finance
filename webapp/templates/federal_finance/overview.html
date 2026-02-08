@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}Federal Finance Overview - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Federal Finance (FEC)</h1>
+<p class="subtitle">High-level summary for Illinois federal candidates, donors, and contribution geography.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_overview') }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="analysis_office">
+        <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
+        <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
+        <option value="S" {% if analysis_office == 'S' %}selected{% endif %}>U.S. Senate</option>
+        <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
+    </select>
+    <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
+    <button type="submit">Apply Filters</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_overview') }}">Clear</a>
+</form>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+    <p>Run <code>python run.py sync-fec-il-federal --candidates-csv docs/il_federal_candidates_2026_asof_2026-02-07.csv</code> to build this page's data.</p>
+</div>
+{% else %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Candidates</h3>
+        <div class="stat-value">{{ overview.candidate_count }}</div>
+        <div class="stat-detail">Seed rows in cycle {{ cycle }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Races</h3>
+        <div class="stat-value">{{ overview.race_count }}</div>
+        <div class="stat-detail">Under current office/district filter</div>
+    </div>
+    <div class="stat-card">
+        <h3>Network Donors</h3>
+        <div class="stat-value">{{ overview.network_donor_count }}</div>
+        <div class="stat-detail">From filtered donor-candidate edges</div>
+    </div>
+    <div class="stat-card">
+        <h3>Network Total</h3>
+        <div class="stat-value">{{ format_currency(overview.network_total_amount) }}</div>
+        <div class="stat-detail">Across graph edges >= $100</div>
+    </div>
+</div>
+
+{% if overview.candidate_count == 0 %}
+<div class="status-section">
+    <p>No synced FEC candidate rows found for cycle {{ cycle }}.</p>
+    <p>Run the sync command and then refresh this page.</p>
+</div>
+{% endif %}
+
+<div class="status-section">
+    <h2>Top Federal Races</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Race</th>
+                <th>Candidates</th>
+                <th>Donors</th>
+                <th>Contributions</th>
+                <th>Total Amount</th>
+                <th>Top Candidate Share</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in race_analytics %}
+            <tr>
+                <td>{{ row.race_label }}</td>
+                <td>{{ row.candidate_count }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No race analytics rows found for this filter.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="two-column">
+    <div class="column">
+        <h2>Top Donors (Network)</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Weighted Degree</th>
+                    <th>Degree</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_donors %}
+                <tr>
+                    <td>
+                        {% if row.entity_key %}
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.entity_key, cycle=cycle) }}">{{ row.label }}</a>
+                        {% else %}
+                        {{ row.label }}
+                        {% endif %}
+                    </td>
+                    <td>{{ format_currency(row.weighted_degree) }}</td>
+                    <td>{{ row.degree }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No donor rows available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="column">
+        <h2>Top Candidate Nodes</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Candidate</th>
+                    <th>Race</th>
+                    <th>Weighted Degree</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_candidates %}
+                <tr>
+                    <td>
+                        {% if row.candidate_id %}
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
+                        {% else %}
+                        {{ row.label }}
+                        {% endif %}
+                    </td>
+                    <td>{{ row.race_label if row.race_label else '-' }}</td>
+                    <td>{{ format_currency(row.weighted_degree) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No candidate rows available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Geographic Snapshot - States</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>State</th>
+                <th>Total Amount</th>
+                <th>Contributions</th>
+                <th>Donors</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in geographic.states %}
+            <tr>
+                <td>{{ row.state }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ row.donor_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No state rows available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Geographic Snapshot - Cities</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>City</th>
+                <th>State</th>
+                <th>Total Amount</th>
+                <th>Contributions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in geographic.cities %}
+            <tr>
+                <td>{{ row.city }}</td>
+                <td>{{ row.state }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No city rows available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Explore More</h2>
+    <ul>
+        <li><a href="{{ url_for('federal_finance.federal_candidates', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open candidate table and drill-down</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_networks', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open network visualizations (Sankey + force)</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_donor_intelligence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open donor segmentation, influence, and follow-the-money</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open federal/local donor matching diagnostics</a></li>
+    </ul>
+</div>
+{% endif %}
+{% endblock %}

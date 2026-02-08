@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Geography - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics: Geography</h1>
+<p class="subtitle">State/city concentration and timeline trends.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for(request.endpoint) }}">
+    <label>
+        Load Mode
+        <select name="load_mode">
+            <option value="quick" {% if load_mode != 'full' %}selected{% endif %}>Quick mode</option>
+            <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
+        </select>
+    </label>
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+        Months
+        <input type="number" name="months" min="1" max="120" value="{{ months }}">
+    </label>
+    <label>
+        State Rows
+        <input type="number" name="geo_state_limit" min="1" max="100" value="{{ geo_state_limit }}">
+    </label>
+    <label>
+        City Rows
+        <input type="number" name="geo_city_limit" min="1" max="500" value="{{ geo_city_limit }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+{% include "analytics/_status.html" %}
+
+<div class="status-section">
+    <h2>Time-Series Intelligence</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Month</th>
+                <th>Total Amount</th>
+                <th>Contribution Count</th>
+                <th>3-Month Moving Avg</th>
+                <th>MoM Change %</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in time_series %}
+            <tr>
+                <td>{{ row.month }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ format_currency(row.moving_avg_3) }}</td>
+                <td>{{ row.mom_change_pct if row.mom_change_pct is not none else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No time-series data available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('api.analytics_time_series', months=months, date_from=date_from, date_to=date_to) }}">JSON endpoint</a></p>
+</div>
+
+<div class="two-column">
+    <div class="column">
+        <h2>Geospatial Summary - States</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>State</th>
+                    <th>Total</th>
+                    <th>Contributions</th>
+                    <th>Donors</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if heavy_sections_loaded %}
+                    {% for row in geo_summary.states %}
+                    <tr>
+                        <td>{{ row.state }}</td>
+                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>{{ row.contribution_count }}</td>
+                        <td>{{ row.donor_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4">No state-level data available.</td></tr>
+                    {% endfor %}
+                {% else %}
+                    {% if full_mode_requested %}
+                    <tr><td colspan="4">Full-mode snapshot is not ready yet.</td></tr>
+                    {% else %}
+                    <tr><td colspan="4">Skipped in quick mode. Switch to Full mode to compute state-level geo summaries.</td></tr>
+                    {% endif %}
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="column">
+        <h2>Geospatial Summary - Cities</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>City</th>
+                    <th>State</th>
+                    <th>Total</th>
+                    <th>Contributions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if heavy_sections_loaded %}
+                    {% for row in geo_summary.cities %}
+                    <tr>
+                        <td>{{ row.city }}</td>
+                        <td>{{ row.state }}</td>
+                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>{{ row.contribution_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4">No city-level data available.</td></tr>
+                    {% endfor %}
+                {% else %}
+                    {% if full_mode_requested %}
+                    <tr><td colspan="4">Full-mode snapshot is not ready yet.</td></tr>
+                    {% else %}
+                    <tr><td colspan="4">Skipped in quick mode. Switch to Full mode to compute city-level geo summaries.</td></tr>
+                    {% endif %}
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+<p><a href="{{ url_for('api.analytics_geo', state_limit=geo_state_limit, city_limit=geo_city_limit) }}">Geo JSON endpoint</a></p>
+{% endblock %}

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Donors - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics: Donors</h1>
+<p class="subtitle">Donor concentration and NLP spending categorization.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for(request.endpoint) }}">
+    <label>
+        Load Mode
+        <select name="load_mode">
+            <option value="quick" {% if load_mode != 'full' %}selected{% endif %}>Quick mode</option>
+            <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
+        </select>
+    </label>
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+        Concentration Rows
+        <input type="number" name="concentration_limit" min="1" max="500" value="{{ concentration_limit }}">
+    </label>
+    <label>
+        NLP Rows
+        <input type="number" name="nlp_limit" min="1" max="500" value="{{ nlp_limit }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+{% include "analytics/_status.html" %}
+
+<div class="status-section">
+    <h2>Donor Concentration Metrics</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee</th>
+                <th>Total</th>
+                <th>Donors</th>
+                <th>Top1 Share</th>
+                <th>Top5 Share</th>
+                <th>Top10 Share</th>
+                <th>HHI</th>
+                <th>Gini</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if heavy_sections_loaded %}
+                {% for row in concentration %}
+                <tr>
+                    <td>{{ row.committee_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.donor_count }}</td>
+                    <td>{{ row.top1_share }}</td>
+                    <td>{{ row.top5_share }}</td>
+                    <td>{{ row.top10_share }}</td>
+                    <td>{{ row.hhi }}</td>
+                    <td>{{ row.gini }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8">No concentration metrics available.</td></tr>
+                {% endfor %}
+            {% else %}
+                {% if full_mode_requested %}
+                <tr><td colspan="8">Full-mode snapshot is not ready yet.</td></tr>
+                {% else %}
+                <tr><td colspan="8">Skipped in quick mode. Switch to Full mode to compute concentration metrics.</td></tr>
+                {% endif %}
+            {% endif %}
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('api.analytics_concentration', limit=concentration_limit) }}">JSON endpoint</a></p>
+</div>
+
+<div class="status-section">
+    <h2>NLP Spending Categories</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Category</th>
+                <th>Total</th>
+                <th>Entries</th>
+                <th>Average</th>
+                <th>Sample</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in nlp_summary %}
+            <tr>
+                <td>{{ row.category }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.entry_count }}</td>
+                <td>{{ format_currency(row.avg_amount) }}</td>
+                <td>{{ row.sample_text|truncate(80) if row.sample_text else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No NLP category data available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('api.analytics_nlp', limit=nlp_limit) }}">JSON endpoint</a></p>
+</div>
+{% endblock %}

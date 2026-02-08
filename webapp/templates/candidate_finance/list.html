@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+
+{% block title %}Candidate Finance - Illinois Campaign Finance Tracker{% endblock %}
+
+{% macro sort_link(field, label) -%}
+<a href="{{ url_for(
+    'candidate_finance.list_candidate_finance',
+    q=query,
+    office=office,
+    candidate_party=candidate_party,
+    committee_party=committee_party,
+    min_receipts=min_receipts,
+    min_expenditures=min_expenditures,
+    sort=field,
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+) }}">
+    {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+</a>
+{%- endmacro %}
+
+{% block content %}
+<h1>Candidate Committee Finance</h1>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>The bulk candidate finance table is not available yet.</p>
+    <p>Run <code>python run.py import-bulk-download --directory Bulk_download</code> to build this page's data.</p>
+</div>
+{% else %}
+<p class="subtitle">{{ total }} total candidate-committee aggregate rows</p>
+
+<form class="search-form" method="get" action="{{ url_for('candidate_finance.list_candidate_finance') }}">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search candidate, committee, or office">
+    <input type="text" name="office" value="{{ office }}" placeholder="Office contains...">
+    <input type="text" name="candidate_party" value="{{ candidate_party }}" placeholder="Candidate party contains...">
+    <input type="text" name="committee_party" value="{{ committee_party }}" placeholder="Committee party contains...">
+    <input type="text" name="min_receipts" value="{{ min_receipts }}" placeholder="Min receipts">
+    <input type="text" name="min_expenditures" value="{{ min_expenditures }}" placeholder="Min expenditures">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    <button type="submit">Apply</button>
+    <a class="btn btn-small" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Clear</a>
+</form>
+
+<div class="filter-controls">
+    <a href="{{ url_for(
+        'candidate_finance.list_candidate_finance',
+        format='csv',
+        q=query,
+        office=office,
+        candidate_party=candidate_party,
+        committee_party=committee_party,
+        min_receipts=min_receipts,
+        min_expenditures=min_expenditures,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Export CSV</a>
+    |
+    <a href="{{ url_for(
+        'candidate_finance.list_candidate_finance',
+        q=query,
+        office=office,
+        candidate_party=candidate_party,
+        committee_party=committee_party,
+        min_receipts=min_receipts,
+        min_expenditures=min_expenditures,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Share This View</a>
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>{{ sort_link('candidate_id', 'Candidate ID') }}</th>
+            <th>{{ sort_link('candidate_full_name', 'Candidate') }}</th>
+            <th>{{ sort_link('office_sought', 'Office') }}</th>
+            <th>{{ sort_link('district_type', 'District Type') }}</th>
+            <th>{{ sort_link('district', 'District') }}</th>
+            <th>{{ sort_link('candidate_party_affiliation', 'Candidate Party') }}</th>
+            <th>{{ sort_link('committee_id_sbe', 'Committee ID') }}</th>
+            <th>{{ sort_link('committee_name', 'Committee') }}</th>
+            <th>{{ sort_link('committee_type', 'Committee Type') }}</th>
+            <th>{{ sort_link('committee_party_affiliation', 'Committee Party') }}</th>
+            <th>{{ sort_link('filing_count', 'Filings') }}</th>
+            <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
+            <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
+            <th>{{ sort_link('max_ending_funds_available', 'Max Ending Funds') }}</th>
+            <th>{{ sort_link('archived_filing_count', 'Archived Filings') }}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.candidate_id if row.candidate_id is not none else '-' }}</td>
+            <td>
+                {% if row.candidate_id is not none and row.committee_id_sbe is not none and row.candidate_full_name %}
+                <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
+                    {{ row.candidate_full_name }}
+                </a>
+                {% else %}
+                {{ row.candidate_full_name if row.candidate_full_name else '-' }}
+                {% endif %}
+            </td>
+            <td>{{ row.office_sought if row.office_sought else '-' }}</td>
+            <td>{{ row.district_type if row.district_type else '-' }}</td>
+            <td>{{ row.district if row.district else '-' }}</td>
+            <td>{{ row.candidate_party_affiliation if row.candidate_party_affiliation else '-' }}</td>
+            <td>{{ row.committee_id_sbe if row.committee_id_sbe is not none else '-' }}</td>
+            <td>
+                {% if row.candidate_id is not none and row.committee_id_sbe is not none and row.committee_name %}
+                <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
+                    {{ row.committee_name }}
+                </a>
+                {% else %}
+                {{ row.committee_name if row.committee_name else '-' }}
+                {% endif %}
+            </td>
+            <td>{{ row.committee_type if row.committee_type else '-' }}</td>
+            <td>{{ row.committee_party_affiliation if row.committee_party_affiliation else '-' }}</td>
+            <td>{{ row.filing_count }}</td>
+            <td>{{ format_currency(row.sum_total_receipts) }}</td>
+            <td>{{ format_currency(row.sum_total_expenditures) }}</td>
+            <td>{{ format_currency(row.max_ending_funds_available) }}</td>
+            <td>{{ row.archived_filing_count }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="15">No rows found for this query.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for(
+        'candidate_finance.list_candidate_finance',
+        page=page-1,
+        q=query,
+        office=office,
+        candidate_party=candidate_party,
+        committee_party=committee_party,
+        min_receipts=min_receipts,
+        min_expenditures=min_expenditures,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for(
+        'candidate_finance.list_candidate_finance',
+        page=page+1,
+        q=query,
+        office=office,
+        candidate_party=candidate_party,
+        committee_party=committee_party,
+        min_receipts=min_receipts,
+        min_expenditures=min_expenditures,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endif %}
+{% endblock %}

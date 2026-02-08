@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Overview - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics Overview</h1>
+<p class="subtitle">High-level trend, donor, reconciliation, and network status for Illinois campaign finance.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for(request.endpoint) }}">
+    <label>
+        Load Mode
+        <select name="load_mode">
+            <option value="quick" {% if load_mode != 'full' %}selected{% endif %}>Quick mode</option>
+            <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
+        </select>
+    </label>
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+        Months
+        <input type="number" name="months" min="1" max="120" value="{{ months }}">
+    </label>
+    <label>
+        NLP Rows
+        <input type="number" name="nlp_limit" min="1" max="500" value="{{ nlp_limit }}">
+    </label>
+    <label>
+        Recon Rows
+        <input type="number" name="recon_limit" min="1" max="500" value="{{ recon_limit }}">
+    </label>
+    <label>
+        Recon Min Abs Diff
+        <input type="number" name="recon_min_abs_diff" min="0" step="100" value="{{ recon_min_abs_diff }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+{% include "analytics/_status.html" %}
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Trend Months</h3>
+        <div class="stat-value">{{ time_series|length }}</div>
+        <p class="stat-detail">
+            {% if latest_time_point %}
+            Latest: {{ latest_time_point.month }}
+            {% else %}
+            No trend rows
+            {% endif %}
+        </p>
+    </div>
+    <div class="stat-card">
+        <h3>NLP Categories</h3>
+        <div class="stat-value">{{ nlp_summary|length }}</div>
+        <p class="stat-detail">Top categories in spending descriptions.</p>
+    </div>
+    <div class="stat-card">
+        <h3>Reconciliation Outliers</h3>
+        <div class="stat-value">{{ reconciliation|length }}</div>
+        <p class="stat-detail">Rows over the active abs-diff threshold.</p>
+    </div>
+    <div class="stat-card">
+        <h3>Network Nodes / Edges</h3>
+        <div class="stat-value">{{ network.summary.node_count }} / {{ network.summary.edge_count }}</div>
+        <p class="stat-detail">
+            {% if heavy_sections_loaded %}
+            Full snapshot loaded.
+            {% else %}
+            Full mode required for graph data.
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Time-Series Preview</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Month</th>
+                <th>Total Amount</th>
+                <th>Contribution Count</th>
+                <th>3-Month Moving Avg</th>
+                <th>MoM Change %</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in time_series[-8:] %}
+            <tr>
+                <td>{{ row.month }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ format_currency(row.moving_avg_3) }}</td>
+                <td>{{ row.mom_change_pct if row.mom_change_pct is not none else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No time-series data available.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p>
+        <a href="{{ url_for('analytics.geography', load_mode=load_mode, date_from=date_from, date_to=date_to, months=months, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit) }}">
+            View full geography and trends
+        </a>
+    </p>
+</div>
+
+<div class="two-column">
+    <div class="column">
+        <h2>NLP Preview</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Total</th>
+                    <th>Entries</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in nlp_summary[:8] %}
+                <tr>
+                    <td>{{ row.category }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.entry_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No NLP category data available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p>
+            <a href="{{ url_for('analytics.donors', load_mode=load_mode, date_from=date_from, date_to=date_to, concentration_limit=concentration_limit, nlp_limit=nlp_limit) }}">
+                View full donor analytics
+            </a>
+        </p>
+    </div>
+
+    <div class="column">
+        <h2>Reconciliation Preview</h2>
+        {% if data_sources.reconciliation_available %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Committee</th>
+                    <th>Abs Diff</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in reconciliation[:8] %}
+                <tr>
+                    <td>{{ row.committee_name if row.committee_name else ('Committee ' ~ row.committee_id_sbe) }}</td>
+                    <td>{{ format_currency(row.abs_diff) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="2">No reconciliation outliers found for current threshold.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>Reconciliation table is not available. Run bulk import to generate it.</p>
+        {% endif %}
+        <p>
+            <a href="{{ url_for('analytics.risk', load_mode=load_mode, date_from=date_from, date_to=date_to, anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff) }}">
+                View full risk analytics
+            </a>
+        </p>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Full-Mode Preview</h2>
+    {% if heavy_sections_loaded %}
+    <p>
+        Network nodes: <strong>{{ network.summary.node_count }}</strong>
+        | Anomaly flags: <strong>{{ anomalies|length }}</strong>
+        | Concentration rows: <strong>{{ concentration|length }}</strong>
+        | State rows: <strong>{{ geo_summary.states|length }}</strong>
+        | City rows: <strong>{{ geo_summary.cities|length }}</strong>
+    </p>
+    <p>
+        <a href="{{ url_for('analytics.networks', load_mode='full', date_from=date_from, date_to=date_to, min_edge_amount=min_edge_amount, network_limit=network_limit) }}">View full network analytics</a>
+        |
+        <a href="{{ url_for('analytics.risk', load_mode='full', date_from=date_from, date_to=date_to, anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff) }}">View full risk analytics</a>
+        |
+        <a href="{{ url_for('analytics.donors', load_mode='full', date_from=date_from, date_to=date_to, concentration_limit=concentration_limit, nlp_limit=nlp_limit) }}">View full donor analytics</a>
+        |
+        <a href="{{ url_for('analytics.geography', load_mode='full', date_from=date_from, date_to=date_to, months=months, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit) }}">View full geography analytics</a>
+    </p>
+    {% else %}
+    <p>Heavy sections are available in Full mode after the snapshot completes.</p>
+    {% endif %}
+</div>
+{% endblock %}

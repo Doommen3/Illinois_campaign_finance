@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Reports</h1>
+<p class="subtitle">{{ total }} total reports</p>
+
+<div class="filter-controls">
+    <span>Filter:</span>
+    <a href="{{ url_for('reports.list_reports', sort=sort_by, dir=sort_dir) }}"
+       class="{% if not paper_filed_filter %}active{% endif %}">All</a> |
+    <a href="{{ url_for('reports.list_reports', paper_filed='false', sort=sort_by, dir=sort_dir) }}"
+       class="{% if paper_filed_filter == 'false' %}active{% endif %}">Electronic Only</a> |
+    <a href="{{ url_for('reports.list_reports', paper_filed='true', sort=sort_by, dir=sort_dir) }}"
+       class="{% if paper_filed_filter == 'true' %}active{% endif %}">Paper Filed</a>
+</div>
+
+<div class="status-badges">
+    {% for status, count in status_counts.items() %}
+    <span class="badge badge-{{ status }}">{{ status }}: {{ count }}</span>
+    {% endfor %}
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc') }}">
+                    Committee{% if sort_by == 'committee' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='report_type', dir='asc' if sort_by != 'report_type' or sort_dir == 'desc' else 'desc') }}">
+                    Type{% if sort_by == 'report_type' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='reporting_period', dir='asc' if sort_by != 'reporting_period' or sort_dir == 'desc' else 'desc') }}">
+                    Period{% if sort_by == 'reporting_period' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='filed_date', dir='asc' if sort_by != 'filed_date' or sort_dir == 'desc' else 'desc') }}">
+                    Filed{% if sort_by == 'filed_date' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='pages', dir='asc' if sort_by != 'pages' or sort_dir == 'desc' else 'desc') }}">
+                    Pages{% if sort_by == 'pages' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='status', dir='asc' if sort_by != 'status' or sort_dir == 'desc' else 'desc') }}">
+                    Status{% if sort_by == 'status' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for report in reports %}
+        <tr>
+            <td>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id) }}">
+                    {{ report.committee_name|truncate(30) if report.committee_name else '-' }}
+                </a>
+            </td>
+            <td>{{ report.report_type|truncate(20) if report.report_type else '-' }}</td>
+            <td>{{ report.reporting_period if report.reporting_period else '-' }}</td>
+            <td>{{ report.filed_date if report.filed_date else '-' }}</td>
+            <td>{{ report.pages if report.pages else '-' }}</td>
+            <td>
+                <span class="badge badge-{{ report.scrape_status }}">{{ report.scrape_status }}</span>
+                {% if report.is_paper_filed %}
+                <span class="badge badge-paper">paper</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="6">No reports found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('reports.list_reports', page=page-1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('reports.list_reports', page=page+1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

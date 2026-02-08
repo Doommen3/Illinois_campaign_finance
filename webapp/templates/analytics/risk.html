@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Risk - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics: Risk</h1>
+<p class="subtitle">Anomaly flags and D2 reconciliation outliers.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for(request.endpoint) }}">
+    <label>
+        Load Mode
+        <select name="load_mode">
+            <option value="quick" {% if load_mode != 'full' %}selected{% endif %}>Quick mode</option>
+            <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
+        </select>
+    </label>
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <label>
+        Anomaly Rows
+        <input type="number" name="anomaly_limit" min="1" max="500" value="{{ anomaly_limit }}">
+    </label>
+    <label>
+        Recon Rows
+        <input type="number" name="recon_limit" min="1" max="500" value="{{ recon_limit }}">
+    </label>
+    <label>
+        Recon Min Abs Diff
+        <input type="number" name="recon_min_abs_diff" min="0" step="100" value="{{ recon_min_abs_diff }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+{% include "analytics/_status.html" %}
+
+<div class="status-section">
+    <h2>Risk and Anomaly Flags</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Committee</th>
+                <th>Donor</th>
+                <th>Date/Month</th>
+                <th>Value</th>
+                <th>Baseline</th>
+                <th>Severity</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if heavy_sections_loaded %}
+                {% for row in anomalies %}
+                <tr>
+                    <td>{{ row.flag_type }}</td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.donor_name if row.donor_name else '-' }}</td>
+                    <td>{{ row.event_date if row.event_date else '-' }}</td>
+                    <td>{{ row.value }}</td>
+                    <td>{{ row.baseline }}</td>
+                    <td>{{ row.severity }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7">No anomaly flags found.</td></tr>
+                {% endfor %}
+            {% else %}
+                {% if full_mode_requested %}
+                <tr><td colspan="7">Full-mode snapshot is not ready yet.</td></tr>
+                {% else %}
+                <tr><td colspan="7">Skipped in quick mode. Switch to Full mode to compute anomaly flags.</td></tr>
+                {% endif %}
+            {% endif %}
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('api.analytics_anomalies', limit=anomaly_limit, date_from=date_from, date_to=date_to) }}">JSON endpoint</a></p>
+</div>
+
+<div class="status-section">
+    <h2>D2 Reconciliation Signals</h2>
+    {% if data_sources.reconciliation_available %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee</th>
+                <th>Filed Doc</th>
+                <th>D2 Total Receipts</th>
+                <th>Itemized Sum</th>
+                <th>Difference</th>
+                <th>Abs Diff</th>
+                <th>Receipt Rows</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in reconciliation %}
+            <tr>
+                <td>{{ row.committee_name if row.committee_name else ('Committee ' ~ row.committee_id_sbe) }}</td>
+                <td>{{ row.filed_doc_id if row.filed_doc_id is not none else '-' }}</td>
+                <td>{{ format_currency(row.d2_total_receipts) }}</td>
+                <td>{{ format_currency(row.receipts_amount_sum) }}</td>
+                <td>{{ format_currency(row.receipts_minus_d2_total) }}</td>
+                <td>{{ format_currency(row.abs_diff) }}</td>
+                <td>{{ row.receipt_row_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No reconciliation outliers found for current threshold.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p><a href="{{ url_for('api.analytics_reconciliation', limit=recon_limit, min_abs_diff=recon_min_abs_diff) }}">JSON endpoint</a></p>
+    {% else %}
+    <p>Reconciliation table is not available. Run bulk import to generate it.</p>
+    {% endif %}
+</div>
+{% endblock %}

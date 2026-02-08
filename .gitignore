@@ -1,0 +1,29 @@
+# macOS / editor noise
+.DS_Store
+
+# Python cache / virtualenv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local secrets/env
+.env
+.env.*
+
+# Large local datasets and generated artifacts
+Bulk_download/
+data/
+output/
+tmp/
+
+# SQLite artifacts (can easily exceed GitHub file limits)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Large analytical exports
+*.parquet
+*.feather

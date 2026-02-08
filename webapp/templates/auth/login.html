@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Manual Entry Login - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Manual Entry Login</h1>
+<p class="subtitle">Sign in to access the manual entry queue.</p>
+
+<div class="entry-form">
+    <form method="post" action="{{ url_for('auth.login') }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+
+        <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autofocus>
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+</div>
+{% endblock %}

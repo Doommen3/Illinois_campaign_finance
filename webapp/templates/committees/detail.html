@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}{{ committee.name }} - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>{{ committee.name }}</h1>
+
+<div class="committee-summary">
+    <p><strong>Total Contributions:</strong> {{ format_currency(total_amount) }}</p>
+</div>
+
+<h2>Reports</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='report_type', report_dir='asc' if report_sort != 'report_type' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                    Type{% if report_sort == 'report_type' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='reporting_period', report_dir='asc' if report_sort != 'reporting_period' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                    Period{% if report_sort == 'reporting_period' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='filed_date', report_dir='asc' if report_sort != 'filed_date' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                    Filed{% if report_sort == 'filed_date' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='pages', report_dir='asc' if report_sort != 'pages' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                    Pages{% if report_sort == 'pages' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='status', report_dir='asc' if report_sort != 'status' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                    Status{% if report_sort == 'status' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for report in reports %}
+        <tr>
+            <td>
+                <a href="{{ url_for('reports.report_detail', report_id=report.id) }}">
+                    {{ report.report_type if report.report_type else 'Report' }}
+                </a>
+            </td>
+            <td>{{ report.reporting_period if report.reporting_period else '-' }}</td>
+            <td>{{ report.filed_date if report.filed_date else '-' }}</td>
+            <td>{{ report.pages if report.pages else '-' }}</td>
+            <td>
+                <span class="badge badge-{{ report.scrape_status }}">{{ report.scrape_status }}</span>
+                {% if report.is_paper_filed %}
+                <span class="badge badge-paper">paper</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="5">No reports found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, page=page-1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, page=page+1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+
+<h2>Recent Contributions</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='donor', contrib_dir='asc' if contrib_sort != 'donor' or contrib_dir == 'desc' else 'desc') }}">
+                    Donor{% if contrib_sort == 'donor' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='amount', contrib_dir='asc' if contrib_sort != 'amount' or contrib_dir == 'desc' else 'desc') }}">
+                    Amount{% if contrib_sort == 'amount' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='filed_date', contrib_dir='asc' if contrib_sort != 'filed_date' or contrib_dir == 'desc' else 'desc') }}">
+                    Date{% if contrib_sort == 'filed_date' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='description', contrib_dir='asc' if contrib_sort != 'description' or contrib_dir == 'desc' else 'desc') }}">
+                    Description{% if contrib_sort == 'description' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for contrib in contributions %}
+        <tr>
+            <td>
+                <a href="{{ url_for('donors.donor_detail', donor_id=contrib.donor_id) }}">
+                    {{ contrib.donor_name|truncate(30) if contrib.donor_name else '-' }}
+                </a>
+            </td>
+            <td>{{ format_currency(contrib.amount) }}</td>
+            <td>{{ contrib.filed_date if contrib.filed_date else '-' }}</td>
+            <td>{{ contrib.description|truncate(40) if contrib.description else '-' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="4">No contributions found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
