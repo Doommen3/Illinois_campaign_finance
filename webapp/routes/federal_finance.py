@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from flask import Blueprint, current_app, render_template, request
 
+from database.models import Donor
 from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
@@ -416,6 +417,134 @@ def federal_matching():
         network_min_edge_amount=min_edge_amount,
         local_matches=local_matches,
         overlap_summary=overlap_summary,
+    )
+
+
+@federal_finance_bp.route('/matches/<federal_donor_entity_key>/<path:local_donor_key>')
+def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key: str):
+    """Show a combined profile view for one matched federal/local donor pair."""
+    conn = current_app.get_database()
+    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    local_source = request.args.get('local_source', 'bulk_receipts', type=str).strip() or 'bulk_receipts'
+    match_method = request.args.get('match_method', '', type=str).strip()
+    confidence_score = request.args.get('confidence', type=float)
+    local_donor_keys_arg = (request.args.get('local_donor_keys', '', type=str) or '').strip()
+
+    federal_page = max(request.args.get('federal_page', 1, type=int), 1)
+    local_page = max(request.args.get('local_page', 1, type=int), 1)
+    federal_per_page = 100
+    local_per_page = 50
+    federal_offset = (federal_page - 1) * federal_per_page
+    local_offset = (local_page - 1) * local_per_page
+
+    federal_detail = None
+    local_donor = None
+    local_committees: list[dict] = []
+    federal_total = 0
+    federal_pages = 0
+    local_committee_count = 0
+    local_pages = 0
+    local_donor_keys: list[str] = []
+
+    seen_local_keys: set[str] = set()
+    for key in [local_donor_key] + [part.strip() for part in local_donor_keys_arg.split(',') if part.strip()]:
+        normalized = key.strip()
+        if not normalized or normalized in seen_local_keys:
+            continue
+        seen_local_keys.add(normalized)
+        local_donor_keys.append(normalized)
+
+    if table_available:
+        federal_detail = get_federal_donor_detail(
+            conn,
+            donor_entity_key=federal_donor_entity_key,
+            cycle=cycle,
+            contribution_limit=federal_per_page,
+            contribution_offset=federal_offset,
+        )
+
+        local_rows = []
+        for key in local_donor_keys:
+            row = Donor.get_summary_by_key(conn, donor_key=key, source=local_source)
+            if row:
+                local_rows.append(row)
+
+        if local_rows:
+            primary = max(local_rows, key=lambda row: float(row.total_amount or 0.0))
+            local_donor = primary
+            local_donor.total_amount = round(sum(float(row.total_amount or 0.0) for row in local_rows), 2)
+            local_donor.contribution_count = sum(int(row.contribution_count or 0) for row in local_rows)
+            local_donor.matched_variant_count = len(local_rows)
+            local_donor.matched_local_keys = [row.donor_key for row in local_rows if row.donor_key]
+
+            placeholders = ",".join(["?"] * len(local_donor_keys))
+            committee_rows = conn.execute(
+                f"""
+                SELECT
+                    committee_id,
+                    committee_name,
+                    COALESCE(SUM(total_amount), 0) AS total_amount,
+                    COALESCE(SUM(contribution_count), 0) AS contribution_count
+                FROM analytics_donor_committee_agg
+                WHERE source = ?
+                  AND donor_key IN ({placeholders})
+                GROUP BY committee_id, committee_name
+                ORDER BY total_amount DESC, committee_name ASC
+                LIMIT ? OFFSET ?
+                """,
+                [local_source, *local_donor_keys, local_per_page, local_offset],
+            ).fetchall()
+            local_committees = [
+                {
+                    'committee_id': row['committee_id'],
+                    'committee_name': row['committee_name'],
+                    'total_amount': float(row['total_amount'] or 0.0),
+                    'contribution_count': int(row['contribution_count'] or 0),
+                }
+                for row in committee_rows
+            ]
+
+            count_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM (
+                    SELECT committee_id
+                    FROM analytics_donor_committee_agg
+                    WHERE source = ?
+                      AND donor_key IN ({placeholders})
+                    GROUP BY committee_id
+                ) x
+                """,
+                [local_source, *local_donor_keys],
+            ).fetchone()
+            local_committee_count = int(count_row['count'] or 0) if count_row else 0
+            local_donor.committee_count = local_committee_count
+            local_pages = (local_committee_count + local_per_page - 1) // local_per_page if local_committee_count else 0
+
+        if federal_detail:
+            federal_total = int(federal_detail.get('total_contributions') or 0)
+            federal_pages = (federal_total + federal_per_page - 1) // federal_per_page if federal_total else 0
+
+    return render_template(
+        'federal_finance/match_profile.html',
+        **_base_context('matching', table_available, cycle, analysis_office, analysis_district),
+        federal_donor_entity_key=federal_donor_entity_key,
+        local_donor_key=local_donor_key,
+        local_donor_keys=local_donor_keys,
+        local_source=local_source,
+        match_method=match_method,
+        confidence_score=confidence_score,
+        federal_detail=federal_detail,
+        local_donor=local_donor,
+        local_committees=local_committees,
+        federal_page=federal_page,
+        federal_total=federal_total,
+        federal_pages=federal_pages,
+        local_page=local_page,
+        local_committee_count=local_committee_count,
+        local_pages=local_pages,
     )
 
 

@@ -424,6 +424,66 @@ class TestWebApp:
                 ),
             ],
         )
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address, donor_city, donor_state,
+                occupation, employer, total_amount, contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'bulk_receipts',
+                'local-key-1',
+                701,
+                'Jane Donor',
+                '123 MAIN ST, CHICAGO, IL 60601',
+                'Chicago',
+                'IL',
+                'Engineer',
+                'ACME',
+                610.0,
+                5,
+                2,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_committee_agg (
+                source, donor_key, donor_name, donor_address, donor_city, donor_state,
+                committee_id, committee_name, total_amount, contribution_count, occupation, employer
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    'bulk_receipts',
+                    'local-key-1',
+                    'Jane Donor',
+                    '123 MAIN ST, CHICAGO, IL 60601',
+                    'Chicago',
+                    'IL',
+                    'L-COM-1',
+                    'Friends of Springfield',
+                    350.0,
+                    3,
+                    'Engineer',
+                    'ACME',
+                ),
+                (
+                    'bulk_receipts',
+                    'local-key-1',
+                    'Jane Donor',
+                    '123 MAIN ST, CHICAGO, IL 60601',
+                    'Chicago',
+                    'IL',
+                    'L-COM-2',
+                    'Citizens for Transit',
+                    260.0,
+                    2,
+                    'Engineer',
+                    'ACME',
+                ),
+            ],
+        )
         conn.commit()
         conn.close()
 
@@ -447,12 +507,25 @@ class TestWebApp:
         assert b'Matched Donor Overlap Network (Local + Federal)' in networks.data
         assert b'id="federal-network-svg"' in networks.data
         assert b'id="federal-graph-mode"' in networks.data
+        assert b'Trend Matrix' in networks.data
+        assert b'Interactive Force' not in networks.data
         assert b'id="federal-highlight-race"' in networks.data
         assert b'id="federal-highlight-party"' in networks.data
+        assert b'Ranked Donor-Candidate Flows' in networks.data
+        assert b'id="federal-flow-table"' in networks.data
+        assert b'id="federal-flow-min"' in networks.data
+        assert b'id="federal-flow-limit"' in networks.data
+        assert b'id="federal-flow-search"' in networks.data
         assert b'id="overlap-network-svg"' in networks.data
         assert b'id="overlap-graph-mode"' in networks.data
+        assert b'Trend Matrix' in networks.data
+        assert b'Interactive Force' not in networks.data
         assert b'id="overlap-highlight-race"' in networks.data
         assert b'id="overlap-highlight-party"' in networks.data
+        assert b'Donor Overlap UpSet' in networks.data
+        assert b'id="overlap-upset-svg"' in networks.data
+        assert b'id="overlap-upset-metric"' in networks.data
+        assert b'id="overlap-upset-limit"' in networks.data
 
         intelligence = client.get('/federal-finance/donor-intelligence?cycle=2026')
         assert intelligence.status_code == 200
@@ -466,6 +539,7 @@ class TestWebApp:
         assert matching.status_code == 200
         assert b'Federal/Local Donor Matching' in matching.data
         assert b'Match Method Tiers' in matching.data
+        assert b'View Combined' in matching.data
 
         detail = client.get('/federal-finance/H2IL01349?cycle=2026')
         assert detail.status_code == 200
@@ -496,6 +570,13 @@ class TestWebApp:
         assert b'Donations by Candidate' in donor_detail.data
         assert b'H2IL01349' in donor_detail.data
         assert b'H2IL09999' in donor_detail.data
+
+        match_profile = client.get(f'/federal-finance/matches/{quote(donor_key)}/local-key-1?cycle=2026&local_source=bulk_receipts')
+        assert match_profile.status_code == 200
+        assert b'Matched Donor Profile (Federal + Local)' in match_profile.data
+        assert b'Federal Contributions' in match_profile.data
+        assert b'Local Donations (Committee Breakdown)' in match_profile.data
+        assert b'Friends of Springfield' in match_profile.data
 
         follow = client.get(f'/federal-finance/donor-intelligence?cycle=2026&follow_donor_key={quote(donor_key)}&follow_min_edge_amount=0')
         assert follow.status_code == 200

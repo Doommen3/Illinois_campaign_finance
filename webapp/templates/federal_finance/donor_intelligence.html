@@ -88,6 +88,8 @@
         <thead>
             <tr>
                 <th>Cluster</th>
+                <th>Anchor Candidate</th>
+                <th>Anchor Donor</th>
                 <th>Donors</th>
                 <th>Candidates</th>
                 <th>Edges</th>
@@ -97,14 +99,33 @@
         <tbody>
             {% for row in donor_clusters.clusters %}
             <tr>
-                <td>{{ row.cluster_id }}</td>
+                <td>
+                    {{ row.cluster_label if row.cluster_label else row.cluster_id }}
+                    {% if row.cluster_id_raw %}
+                    <br><small>{{ row.cluster_id_raw }}</small>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if row.cluster_anchor_candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.cluster_anchor_candidate_id, cycle=cycle) }}">{{ row.cluster_anchor_candidate if row.cluster_anchor_candidate else '-' }}</a>
+                    {% else %}
+                    {{ row.cluster_anchor_candidate if row.cluster_anchor_candidate else '-' }}
+                    {% endif %}
+                </td>
+                <td>
+                    {% if row.cluster_anchor_donor_entity_key %}
+                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.cluster_anchor_donor_entity_key, cycle=cycle) }}">{{ row.cluster_anchor_donor if row.cluster_anchor_donor else '-' }}</a>
+                    {% else %}
+                    {{ row.cluster_anchor_donor if row.cluster_anchor_donor else '-' }}
+                    {% endif %}
+                </td>
                 <td>{{ row.donor_count }}</td>
                 <td>{{ row.candidate_count }}</td>
                 <td>{{ row.edge_count }}</td>
                 <td>{{ format_currency(row.total_weight) }}</td>
             </tr>
             {% else %}
-            <tr><td colspan="5">No donor network clusters found.</td></tr>
+            <tr><td colspan="7">No donor network clusters found.</td></tr>
             {% endfor %}
         </tbody>
     </table>

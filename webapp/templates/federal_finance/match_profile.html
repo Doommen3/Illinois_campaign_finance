@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}Matched Donor Profile - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Matched Donor Profile (Federal + Local)</h1>
+<p class="subtitle">Unified view of one matched donor across federal and local campaign finance systems.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+</div>
+{% else %}
+<div class="status-section">
+    <p>
+        <strong>Match Method:</strong> {{ match_method if match_method else '-' }}
+        {% if confidence_score is not none %}
+        | <strong>Confidence:</strong> {{ confidence_score }}
+        {% endif %}
+    </p>
+    <p>
+        <strong>Federal donor key:</strong> {{ federal_donor_entity_key }}
+        | <strong>Local donor key:</strong> {{ local_donor_key }}
+        {% if local_donor_keys and local_donor_keys|length > 1 %}
+        | <strong>Merged local keys:</strong> {{ local_donor_keys|length }}
+        {% endif %}
+        | <strong>Cycle:</strong> {{ cycle }}
+    </p>
+    <p>
+        <a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Back to Matching</a>
+        {% if federal_detail %}
+        | <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=federal_donor_entity_key, cycle=cycle) }}">Federal-only detail</a>
+        {% endif %}
+        {% if local_donor %}
+        | <a href="{{ url_for('donors.donor_detail_by_key', donor_key=local_donor_key, source=local_source) }}">Local-only detail</a>
+        {% endif %}
+    </p>
+</div>
+
+<div class="two-column">
+    <div class="column">
+        <h2>Federal Summary</h2>
+        {% if federal_detail %}
+        <table class="info-table">
+            <tbody>
+                <tr><th>Name</th><td>{{ federal_detail.summary.donor_name if federal_detail.summary.donor_name else '-' }}</td></tr>
+                <tr><th>Location</th><td>{{ federal_detail.summary.contributor_city if federal_detail.summary.contributor_city else '' }}{% if federal_detail.summary.contributor_city and federal_detail.summary.contributor_state %}, {% endif %}{{ federal_detail.summary.contributor_state if federal_detail.summary.contributor_state else '' }} {{ federal_detail.summary.contributor_zip if federal_detail.summary.contributor_zip else '' }}</td></tr>
+                <tr><th>Employer</th><td>{{ federal_detail.summary.contributor_employer if federal_detail.summary.contributor_employer else '-' }}</td></tr>
+                <tr><th>Occupation</th><td>{{ federal_detail.summary.contributor_occupation if federal_detail.summary.contributor_occupation else '-' }}</td></tr>
+                <tr><th>Total Amount</th><td>{{ format_currency(federal_detail.summary.total_amount) }}</td></tr>
+                <tr><th>Contributions</th><td>{{ federal_detail.summary.contribution_count }}</td></tr>
+                <tr><th>Candidates</th><td>{{ federal_detail.summary.candidate_count }}</td></tr>
+                <tr><th>Committees</th><td>{{ federal_detail.summary.committee_count }}</td></tr>
+                <tr><th>Date Range</th><td>{{ federal_detail.summary.earliest_contribution_date if federal_detail.summary.earliest_contribution_date else '-' }} to {{ federal_detail.summary.latest_contribution_date if federal_detail.summary.latest_contribution_date else '-' }}</td></tr>
+            </tbody>
+        </table>
+        {% else %}
+        <p>No federal donor detail found for this key and cycle.</p>
+        {% endif %}
+    </div>
+
+    <div class="column">
+        <h2>Local Summary</h2>
+        {% if local_donor %}
+        <table class="info-table">
+            <tbody>
+                <tr><th>Name</th><td>{{ local_donor.name if local_donor.name else '-' }}</td></tr>
+                <tr><th>Address</th><td>{{ local_donor.address if local_donor.address else '-' }}</td></tr>
+                <tr><th>City</th><td>{{ local_donor.donor_city if local_donor.donor_city else '-' }}</td></tr>
+                <tr><th>State</th><td>{{ local_donor.donor_state if local_donor.donor_state else '-' }}</td></tr>
+                <tr><th>Employer</th><td>{{ local_donor.employer if local_donor.employer else '-' }}</td></tr>
+                <tr><th>Occupation</th><td>{{ local_donor.occupation if local_donor.occupation else '-' }}</td></tr>
+                <tr><th>Total Amount</th><td>{{ format_currency(local_donor.total_amount) }}</td></tr>
+                <tr><th>Contributions</th><td>{{ local_donor.contribution_count }}</td></tr>
+                <tr><th>Committees</th><td>{{ local_committee_count }}</td></tr>
+                <tr><th>Source</th><td>{{ local_source }}</td></tr>
+                {% if local_donor.matched_variant_count and local_donor.matched_variant_count > 1 %}
+                <tr><th>Merged Variants</th><td>{{ local_donor.matched_variant_count }}</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+        {% if local_donor.matched_local_keys and local_donor.matched_local_keys|length > 1 %}
+        <p class="subtitle">Local keys: {{ local_donor.matched_local_keys|join(', ') }}</p>
+        {% endif %}
+        {% else %}
+        <p>No local donor summary found for this key/source.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Federal Contributions</h2>
+    {% if federal_detail %}
+    <p class="subtitle">Showing {{ federal_detail.contributions|length }} of {{ federal_total }} rows</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Candidate</th>
+                <th>Committee</th>
+                <th>Amount</th>
+                <th>Type</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in federal_detail.contributions %}
+            <tr>
+                <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
+                <td>
+                    {% if row.candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    {% else %}
+                    {{ row.candidate_name }}
+                    {% endif %}
+                </td>
+                <td>{{ row.committee_name if row.committee_name else (row.committee_id if row.committee_id else '-') }}</td>
+                <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
+                <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No federal contribution rows found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if federal_pages > 1 %}
+    <nav class="pagination">
+        {% if federal_page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page-1, local_page=local_page) }}">&laquo; Previous Federal</a>
+        {% endif %}
+
+        <span class="page-info">Federal page {{ federal_page }} of {{ federal_pages }}</span>
+
+        {% if federal_page < federal_pages %}
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page+1, local_page=local_page) }}">Next Federal &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+    {% else %}
+    <p>No federal donor detail found.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Local Donations (Committee Breakdown)</h2>
+    {% if local_donor %}
+    <p class="subtitle">Showing {{ local_committees|length }} of {{ local_committee_count }} committee rows</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee</th>
+                <th>Total Amount</th>
+                <th>Contributions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in local_committees %}
+            <tr>
+                <td>{{ row.committee_name if row.committee_name else (row.committee_id if row.committee_id else '-') }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">No local committee rows found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if local_pages > 1 %}
+    <nav class="pagination">
+        {% if local_page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page-1) }}">&laquo; Previous Local</a>
+        {% endif %}
+
+        <span class="page-info">Local page {{ local_page }} of {{ local_pages }}</span>
+
+        {% if local_page < local_pages %}
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page+1) }}">Next Local &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+    {% else %}
+    <p>No local donor summary found.</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

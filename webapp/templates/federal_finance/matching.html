@@ -79,26 +79,41 @@
                 <th>Local Total</th>
                 <th>Method</th>
                 <th>Confidence</th>
+                <th>Combined</th>
             </tr>
         </thead>
         <tbody>
             {% for row in local_matches.matches[:300] %}
             <tr>
                 <td>
-                    {% if row.federal_donor_entity_key %}
+                    {% if row.federal_donor_entity_key and row.local_donor_key %}
+                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score) }}">{{ row.federal_donor_name }}</a>
+                    {% elif row.federal_donor_entity_key %}
                     <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.federal_donor_entity_key, cycle=cycle) }}">{{ row.federal_donor_name }}</a>
                     {% else %}
                     {{ row.federal_donor_name }}
                     {% endif %}
                 </td>
                 <td>{{ format_currency(row.federal_total_amount) }}</td>
-                <td>{{ row.local_donor_name }}</td>
+                <td>
+                    {{ row.local_donor_name }}
+                    {% if row.matched_local_variants and row.matched_local_variants > 1 %}
+                    <br><small>Merged {{ row.matched_local_variants }} local variants</small>
+                    {% endif %}
+                </td>
                 <td>{{ format_currency(row.local_total_amount) }}</td>
                 <td>{{ row.match_method }}</td>
                 <td>{{ row.confidence_score }}</td>
+                <td>
+                    {% if row.federal_donor_entity_key and row.local_donor_key %}
+                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score) }}">View Combined</a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
-            <tr><td colspan="6">No federal-local donor matches under current settings.</td></tr>
+            <tr><td colspan="7">No federal-local donor matches under current settings.</td></tr>
             {% endfor %}
         </tbody>
     </table>

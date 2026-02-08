@@ -43,7 +43,7 @@
     <div class="search-form graph-controls">
         <label>View
             <select id="federal-graph-mode">
-                <option value="force">Interactive Force</option>
+                <option value="matrix">Trend Matrix</option>
                 <option value="sankey">Sankey</option>
             </select>
         </label>
@@ -96,6 +96,42 @@
             {% endfor %}
         </tbody>
     </table>
+
+    <h3>Ranked Donor-Candidate Flows</h3>
+    <p class="subtitle">High-signal table view of the largest donor-to-candidate flows under active race/party filters.</p>
+    <div class="search-form graph-controls">
+        <label>Min Amount
+            <input id="federal-flow-min" type="number" min="0" step="100" value="0">
+        </label>
+        <label>Rows
+            <select id="federal-flow-limit">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+            </select>
+        </label>
+        <label>Search
+            <input id="federal-flow-search" type="text" placeholder="Donor or candidate">
+        </label>
+    </div>
+    <p id="federal-flow-summary" class="subtitle"></p>
+    <table class="data-table" id="federal-flow-table">
+        <thead>
+            <tr>
+                <th>Donor</th>
+                <th>Candidate</th>
+                <th>Race</th>
+                <th>Party</th>
+                <th>Amount</th>
+                <th>Contributions</th>
+                <th>Date Range</th>
+            </tr>
+        </thead>
+        <tbody id="federal-flow-body">
+            <tr><td colspan="7">Loading flow rows...</td></tr>
+        </tbody>
+    </table>
 </div>
 
 <div class="status-section">
@@ -115,7 +151,7 @@
     <div class="search-form graph-controls">
         <label>View
             <select id="overlap-graph-mode">
-                <option value="force">Interactive Force</option>
+                <option value="matrix">Trend Matrix</option>
                 <option value="sankey">Sankey</option>
             </select>
         </label>
@@ -168,11 +204,43 @@
             {% endfor %}
         </tbody>
     </table>
+
+    <h3>Donor Overlap UpSet</h3>
+    <p class="subtitle">Intersection view of matched donors that give to multiple federal candidates.</p>
+    <div class="search-form graph-controls">
+        <label>Candidate Sets
+            <select id="overlap-upset-sets">
+                <option value="5">5</option>
+                <option value="6" selected>6</option>
+                <option value="8">8</option>
+                <option value="10">10</option>
+            </select>
+        </label>
+        <label>Metric
+            <select id="overlap-upset-metric">
+                <option value="donor_count" selected>Donor Count</option>
+                <option value="total_amount">Total Amount</option>
+            </select>
+        </label>
+        <label>Intersections
+            <select id="overlap-upset-limit">
+                <option value="10">10</option>
+                <option value="15" selected>15</option>
+                <option value="20">20</option>
+                <option value="30">30</option>
+            </select>
+        </label>
+    </div>
+    <div class="network-svg-wrap">
+        <svg id="overlap-upset-svg" viewBox="0 0 1000 560" role="img" aria-label="Matched donor overlap upset chart"></svg>
+    </div>
+    <p id="overlap-upset-summary" class="subtitle"></p>
 </div>
 
 <script>
 (() => {
     const SVG_NS = "http://www.w3.org/2000/svg";
+    const cycle = {{ cycle|tojson }};
     const federalGraph = {{ federal_network|tojson }} || {};
     const overlapGraph = {{ overlap_network|tojson }} || {};
     const PARTY_COLORS = {
@@ -187,6 +255,7 @@
 
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const cleanText = (value, fallback = "") => String(value || "").trim() || fallback;
+    const formatCurrency = (value) => `$${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2})}`;
     const shortLabel = (value, maxLen = 28) => {
         const text = cleanText(value, "Unknown");
         if (text.length <= maxLen) return text;
@@ -426,6 +495,751 @@
             edges: trimmedEdges,
             nodes: [...donors, ...localCommittees, ...federalCandidates].filter((node) => nodeIds.has(node.id)),
         };
+    };
+
+    const withCycleQuery = (path) => {
+        if (cycle === null || cycle === undefined || cleanText(cycle) === "") return path;
+        const separator = path.includes("?") ? "&" : "?";
+        return `${path}${separator}cycle=${encodeURIComponent(String(cycle))}`;
+    };
+
+    const formatDateRange = (startDate, endDate) => {
+        const start = cleanText(startDate);
+        const end = cleanText(endDate);
+        if (!start && !end) return "-";
+        if (start && end && start !== end) return `${start} to ${end}`;
+        return start || end;
+    };
+
+    const renderFederalFlowTable = (graph) => {
+        const body = document.getElementById("federal-flow-body");
+        const summary = document.getElementById("federal-flow-summary");
+        const minInput = document.getElementById("federal-flow-min");
+        const limitInput = document.getElementById("federal-flow-limit");
+        const searchInput = document.getElementById("federal-flow-search");
+        if (!body || !summary) return;
+
+        const minAmount = Math.max(0, Number(minInput?.value || 0) || 0);
+        const rowLimit = clamp(Number(limitInput?.value || 50) || 50, 10, 200);
+        const search = cleanText(searchInput?.value).toLowerCase();
+        const nodeById = mapById(graph.nodes || []);
+        const flowRows = [];
+
+        for (const edge of graph.edges || []) {
+            if (edge.edge_type !== "donor_candidate") continue;
+            const sourceNode = nodeById.get(edge.source);
+            const targetNode = nodeById.get(edge.target);
+            let donorNode = null;
+            let candidateNode = null;
+            if (sourceNode?.node_type === "donor" && targetNode?.node_type === "candidate") {
+                donorNode = sourceNode;
+                candidateNode = targetNode;
+            } else if (sourceNode?.node_type === "candidate" && targetNode?.node_type === "donor") {
+                donorNode = targetNode;
+                candidateNode = sourceNode;
+            } else {
+                continue;
+            }
+
+            const amount = Number(edge.weight || 0);
+            if (amount < minAmount) continue;
+            const donorName = cleanText(edge.donor_label || donorNode.label, "Unknown Donor");
+            const candidateName = cleanText(edge.candidate_label || candidateNode.label, "Unknown Candidate");
+            const race = cleanText(edge.race_label || raceLabel(candidateNode), "-");
+            const party = cleanText(edge.party_display || partyLabel(candidateNode), "Unknown Party");
+            const searchText = `${donorName} ${candidateName} ${race} ${party}`.toLowerCase();
+            if (search && !searchText.includes(search)) continue;
+
+            flowRows.push(
+                {
+                    donor_name: donorName,
+                    donor_entity_key: cleanText(edge.donor_entity_key || donorNode.entity_key),
+                    candidate_name: candidateName,
+                    candidate_id: cleanText(edge.candidate_id || candidateNode.candidate_id),
+                    race_label: race,
+                    party_display: party,
+                    amount,
+                    contribution_count: Number.parseInt(edge.contribution_count || 0, 10),
+                    earliest_contribution_date: edge.earliest_contribution_date,
+                    latest_contribution_date: edge.latest_contribution_date,
+                }
+            );
+        }
+
+        flowRows.sort((a, b) => b.amount - a.amount || b.contribution_count - a.contribution_count || a.donor_name.localeCompare(b.donor_name));
+        const visibleRows = flowRows.slice(0, rowLimit);
+        const totalFilteredAmount = flowRows.reduce((sum, row) => sum + row.amount, 0);
+        const totalVisibleAmount = visibleRows.reduce((sum, row) => sum + row.amount, 0);
+
+        body.innerHTML = "";
+        if (!visibleRows.length) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 7;
+            cell.textContent = "No donor-candidate flows match the current filters.";
+            row.appendChild(cell);
+            body.appendChild(row);
+            summary.textContent = "No ranked flows found for the current race/party and table filters.";
+            return;
+        }
+
+        for (const row of visibleRows) {
+            const tr = document.createElement("tr");
+
+            const donorCell = document.createElement("td");
+            if (row.donor_entity_key) {
+                const donorLink = document.createElement("a");
+                donorLink.href = withCycleQuery(`/federal-finance/donors/${encodeURIComponent(row.donor_entity_key)}`);
+                donorLink.textContent = row.donor_name;
+                donorCell.appendChild(donorLink);
+            } else {
+                donorCell.textContent = row.donor_name;
+            }
+            tr.appendChild(donorCell);
+
+            const candidateCell = document.createElement("td");
+            if (row.candidate_id) {
+                const candidateLink = document.createElement("a");
+                candidateLink.href = withCycleQuery(`/federal-finance/${encodeURIComponent(row.candidate_id)}`);
+                candidateLink.textContent = row.candidate_name;
+                candidateCell.appendChild(candidateLink);
+            } else {
+                candidateCell.textContent = row.candidate_name;
+            }
+            tr.appendChild(candidateCell);
+
+            const raceCell = document.createElement("td");
+            raceCell.textContent = row.race_label;
+            tr.appendChild(raceCell);
+
+            const partyCell = document.createElement("td");
+            partyCell.textContent = row.party_display;
+            tr.appendChild(partyCell);
+
+            const amountCell = document.createElement("td");
+            amountCell.textContent = formatCurrency(row.amount);
+            tr.appendChild(amountCell);
+
+            const countCell = document.createElement("td");
+            countCell.textContent = Number(row.contribution_count || 0).toLocaleString();
+            tr.appendChild(countCell);
+
+            const dateCell = document.createElement("td");
+            dateCell.textContent = formatDateRange(row.earliest_contribution_date, row.latest_contribution_date);
+            tr.appendChild(dateCell);
+
+            body.appendChild(tr);
+        }
+
+        summary.textContent = `Showing ${visibleRows.length.toLocaleString()} of ${flowRows.length.toLocaleString()} flows | Display total ${formatCurrency(totalVisibleAmount)} | Filtered total ${formatCurrency(totalFilteredAmount)}`;
+    };
+
+    const drawOverlapUpSet = (svg, graph, options = {}) => {
+        clearSvg(svg);
+        const {width, height} = viewBoxSize(svg);
+        const metric = options.metric === "total_amount" ? "total_amount" : "donor_count";
+        const maxSets = clamp(Number(options.maxSets || 6) || 6, 2, 10);
+        const maxIntersections = clamp(Number(options.maxIntersections || 15) || 15, 5, 30);
+        const nodes = graph.nodes || [];
+        const edges = graph.edges || [];
+        const nodeById = mapById(nodes);
+
+        const donorToCandidateAmount = new Map();
+        const candidateStats = new Map();
+        const candidateDonorUniverse = new Set();
+
+        for (const edge of edges) {
+            if (edge.edge_type !== "donor_federal_candidate") continue;
+            const sourceNode = nodeById.get(edge.source);
+            const targetNode = nodeById.get(edge.target);
+            let donorNode = null;
+            let candidateNode = null;
+            if (sourceNode?.node_type === "matched_donor" && targetNode?.node_type === "federal_candidate") {
+                donorNode = sourceNode;
+                candidateNode = targetNode;
+            } else if (sourceNode?.node_type === "federal_candidate" && targetNode?.node_type === "matched_donor") {
+                donorNode = targetNode;
+                candidateNode = sourceNode;
+            } else {
+                continue;
+            }
+
+            const donorId = donorNode.id;
+            const candidateId = candidateNode.id;
+            const amount = Number(edge.weight || 0);
+            if (!donorToCandidateAmount.has(donorId)) donorToCandidateAmount.set(donorId, new Map());
+            const donorMap = donorToCandidateAmount.get(donorId);
+            donorMap.set(candidateId, (donorMap.get(candidateId) || 0) + amount);
+
+            if (!candidateStats.has(candidateId)) {
+                candidateStats.set(
+                    candidateId,
+                    {
+                        id: candidateId,
+                        label: cleanText(candidateNode.label, "Unknown Candidate"),
+                        race_label: raceLabel(candidateNode),
+                        party_display: partyLabel(candidateNode),
+                        color: candidateColor(candidateNode),
+                        donor_ids: new Set(),
+                        total_amount: 0,
+                    }
+                );
+            }
+            const stat = candidateStats.get(candidateId);
+            stat.donor_ids.add(donorId);
+            stat.total_amount += amount;
+            candidateDonorUniverse.add(donorId);
+        }
+
+        const candidateRows = Array.from(candidateStats.values()).map((row) => (
+            {
+                ...row,
+                donor_count: row.donor_ids.size,
+            }
+        ));
+        candidateRows.sort((a, b) => {
+            if (metric === "total_amount") {
+                return b.total_amount - a.total_amount || b.donor_count - a.donor_count || a.label.localeCompare(b.label);
+            }
+            return b.donor_count - a.donor_count || b.total_amount - a.total_amount || a.label.localeCompare(b.label);
+        });
+        const selectedCandidates = candidateRows.slice(0, maxSets);
+        if (selectedCandidates.length < 2) {
+            drawEmpty(svg, "Need at least two federal candidates to build donor overlap intersections.");
+            return {
+                selected_candidate_count: selectedCandidates.length,
+                intersection_count: 0,
+                rendered_intersections: 0,
+                unique_matched_donors: candidateDonorUniverse.size,
+                metric,
+            };
+        }
+
+        const selectedIds = new Set(selectedCandidates.map((row) => row.id));
+        const selectedIndex = new Map(selectedCandidates.map((row, idx) => [row.id, idx]));
+        const intersections = new Map();
+
+        for (const [donorId, candidateMap] of donorToCandidateAmount.entries()) {
+            const members = Array.from(candidateMap.keys())
+                .filter((candidateId) => selectedIds.has(candidateId))
+                .sort((a, b) => (selectedIndex.get(a) || 0) - (selectedIndex.get(b) || 0));
+            if (members.length < 2) continue;
+            const key = members.join("||");
+            if (!intersections.has(key)) {
+                intersections.set(
+                    key,
+                    {
+                        key,
+                        members,
+                        donor_count: 0,
+                        total_amount: 0,
+                    }
+                );
+            }
+            const bucket = intersections.get(key);
+            bucket.donor_count += 1;
+            bucket.total_amount += members.reduce((sum, candidateId) => sum + Number(candidateMap.get(candidateId) || 0), 0);
+        }
+
+        const intersectionRows = Array.from(intersections.values());
+        intersectionRows.sort((a, b) => {
+            if (metric === "total_amount") {
+                return b.total_amount - a.total_amount || b.donor_count - a.donor_count || b.members.length - a.members.length;
+            }
+            return b.donor_count - a.donor_count || b.total_amount - a.total_amount || b.members.length - a.members.length;
+        });
+        const visibleIntersections = intersectionRows.slice(0, maxIntersections);
+        if (!visibleIntersections.length) {
+            drawEmpty(svg, "No multi-candidate donor overlap intersections for the selected filters.");
+            return {
+                selected_candidate_count: selectedCandidates.length,
+                intersection_count: 0,
+                rendered_intersections: 0,
+                unique_matched_donors: candidateDonorUniverse.size,
+                metric,
+            };
+        }
+
+        const metricMax = Math.max(
+            ...visibleIntersections.map((row) => (metric === "total_amount" ? row.total_amount : row.donor_count)),
+            1
+        );
+        const margin = {top: 22, right: 22, bottom: 18, left: 320};
+        const barTop = margin.top + 26;
+        const barBottom = Math.min(height - 180, 250);
+        const matrixTop = barBottom + 46;
+        const matrixBottom = height - margin.bottom;
+        const rowCount = selectedCandidates.length;
+        const colCount = visibleIntersections.length;
+        const colSpace = Math.max(14, width - margin.left - margin.right);
+        const colWidth = clamp(Math.floor(colSpace / colCount), 22, 58);
+        const renderedWidth = colWidth * colCount;
+        const startX = margin.left + Math.max(0, Math.floor((colSpace - renderedWidth) / 2));
+        const rowSpace = Math.max(40, matrixBottom - matrixTop);
+        const rowStep = rowCount > 1 ? rowSpace / (rowCount - 1) : rowSpace;
+
+        svg.appendChild(
+            createSvgEl("rect", {
+                x: 16,
+                y: 16,
+                width: width - 32,
+                height: height - 32,
+                rx: 10,
+                fill: "#f8fafc",
+                stroke: "#cbd5e1",
+                "stroke-width": 1,
+            })
+        );
+        drawText(svg, 24, 34, "Top donor intersections across selected federal candidates", {
+            anchor: "start",
+            size: "11px",
+            color: "#0f172a",
+            weight: "600",
+        });
+
+        svg.appendChild(
+            createSvgEl("line", {
+                x1: startX - 4,
+                y1: barBottom + 1,
+                x2: startX + renderedWidth + 4,
+                y2: barBottom + 1,
+                stroke: "#cbd5e1",
+                "stroke-width": 1,
+            })
+        );
+
+        const rowY = selectedCandidates.map((_, idx) => (rowCount === 1 ? matrixTop + (rowSpace / 2) : matrixTop + (idx * rowStep)));
+        for (let idx = 0; idx < selectedCandidates.length; idx += 1) {
+            const candidate = selectedCandidates[idx];
+            const y = rowY[idx];
+            drawText(svg, margin.left - 12, y + 3, shortLabel(candidate.label, 34), {
+                anchor: "end",
+                size: "9px",
+                color: "#334155",
+            });
+            const swatch = createSvgEl("line", {
+                x1: margin.left - 302,
+                y1: y,
+                x2: margin.left - 286,
+                y2: y,
+                stroke: candidate.color,
+                "stroke-width": 3,
+                "stroke-linecap": "round",
+            });
+            svg.appendChild(swatch);
+        }
+
+        for (let colIdx = 0; colIdx < visibleIntersections.length; colIdx += 1) {
+            const row = visibleIntersections[colIdx];
+            const value = metric === "total_amount" ? row.total_amount : row.donor_count;
+            const ratio = value / metricMax;
+            const cx = startX + (colIdx * colWidth) + (colWidth / 2);
+            const barHeight = Math.max(3, (barBottom - barTop) * ratio);
+            const bar = createSvgEl("rect", {
+                x: cx - Math.max(5, (colWidth * 0.3)),
+                y: barBottom - barHeight,
+                width: Math.max(10, colWidth * 0.6),
+                height: barHeight,
+                rx: 2,
+                fill: metric === "total_amount" ? "#1d4ed8" : "#0f766e",
+                "fill-opacity": 0.82,
+            });
+            const barTitle = createSvgEl("title");
+            barTitle.textContent = `${row.members.length} candidates | ${row.donor_count.toLocaleString()} donors | ${formatCurrency(row.total_amount)}`;
+            bar.appendChild(barTitle);
+            svg.appendChild(bar);
+            drawText(
+                svg,
+                cx,
+                barBottom - barHeight - 4,
+                metric === "total_amount" ? `$${Math.round(row.total_amount).toLocaleString()}` : row.donor_count.toLocaleString(),
+                {size: "8px", color: "#334155"}
+            );
+
+            const activeRows = row.members
+                .map((candidateId) => selectedIndex.get(candidateId))
+                .filter((index) => index !== undefined)
+                .sort((a, b) => a - b);
+            if (activeRows.length >= 2) {
+                svg.appendChild(
+                    createSvgEl("line", {
+                        x1: cx,
+                        y1: rowY[activeRows[0]],
+                        x2: cx,
+                        y2: rowY[activeRows[activeRows.length - 1]],
+                        stroke: "#475569",
+                        "stroke-width": 1.4,
+                    })
+                );
+            }
+
+            for (let rowIdx = 0; rowIdx < selectedCandidates.length; rowIdx += 1) {
+                const active = activeRows.includes(rowIdx);
+                const dot = createSvgEl("circle", {
+                    cx,
+                    cy: rowY[rowIdx],
+                    r: active ? 4.3 : 3.0,
+                    fill: active ? selectedCandidates[rowIdx].color : "#cbd5e1",
+                    stroke: active ? "#1e293b" : "#94a3b8",
+                    "stroke-width": active ? 0.9 : 0.4,
+                });
+                svg.appendChild(dot);
+            }
+        }
+
+        return {
+            selected_candidate_count: selectedCandidates.length,
+            intersection_count: intersectionRows.length,
+            rendered_intersections: visibleIntersections.length,
+            unique_matched_donors: candidateDonorUniverse.size,
+            metric,
+        };
+    };
+
+    const drawFederalMatrix = (svg, graph) => {
+        clearSvg(svg);
+        const {width, height} = viewBoxSize(svg);
+        const nodes = graph.nodes || [];
+        const edges = graph.edges || [];
+        if (!nodes.length || !edges.length) {
+            drawEmpty(svg, "No federal donor-candidate flows for trend matrix.");
+            return;
+        }
+
+        const nodeById = mapById(nodes);
+        const donorTotals = new Map();
+        const candidateTotals = new Map();
+        const cellValues = new Map();
+
+        for (const edge of edges) {
+            const source = nodeById.get(edge.source);
+            const target = nodeById.get(edge.target);
+            if (!source || !target) continue;
+            let donorId = "";
+            let candidateId = "";
+            if (source.node_type === "donor" && target.node_type === "candidate") {
+                donorId = source.id;
+                candidateId = target.id;
+            } else if (source.node_type === "candidate" && target.node_type === "donor") {
+                donorId = target.id;
+                candidateId = source.id;
+            } else {
+                continue;
+            }
+            const amount = Number(edge.weight || 0);
+            donorTotals.set(donorId, (donorTotals.get(donorId) || 0) + amount);
+            candidateTotals.set(candidateId, (candidateTotals.get(candidateId) || 0) + amount);
+            const key = `${donorId}|${candidateId}`;
+            cellValues.set(key, (cellValues.get(key) || 0) + amount);
+        }
+
+        const donors = nodes
+            .filter((node) => node.node_type === "donor" && donorTotals.has(node.id))
+            .sort((a, b) => (donorTotals.get(b.id) || 0) - (donorTotals.get(a.id) || 0))
+            .slice(0, 22);
+        const candidates = nodes
+            .filter((node) => node.node_type === "candidate" && candidateTotals.has(node.id))
+            .sort((a, b) => (candidateTotals.get(b.id) || 0) - (candidateTotals.get(a.id) || 0))
+            .slice(0, 14);
+
+        if (!donors.length || !candidates.length) {
+            drawEmpty(svg, "Not enough donor/candidate nodes for trend matrix.");
+            return;
+        }
+
+        const margin = {top: 140, right: 26, bottom: 36, left: 250};
+        const gridWidth = Math.max(120, width - margin.left - margin.right);
+        const gridHeight = Math.max(120, height - margin.top - margin.bottom);
+        const cellWidth = gridWidth / candidates.length;
+        const cellHeight = gridHeight / donors.length;
+        const maxValue = Math.max(...Array.from(cellValues.values()), 1);
+
+        svg.appendChild(createSvgEl("rect", {
+            x: 16,
+            y: 16,
+            width: width - 32,
+            height: height - 32,
+            rx: 10,
+            fill: "#f8fafc",
+            stroke: "#cbd5e1",
+            "stroke-width": 1,
+        }));
+
+        drawText(svg, 24, 34, "Rows: top donors | Columns: top candidates", {
+            anchor: "start",
+            size: "11px",
+            color: "#0f172a",
+            weight: "600",
+        });
+
+        for (let rowIdx = 0; rowIdx < donors.length; rowIdx += 1) {
+            const donor = donors[rowIdx];
+            const y = margin.top + (rowIdx * cellHeight);
+            drawText(svg, margin.left - 8, y + (cellHeight / 2) + 3, shortLabel(donor.label, 30), {
+                anchor: "end",
+                size: "9px",
+                color: "#334155",
+            });
+            drawText(svg, margin.left - 220, y + (cellHeight / 2) + 3, `$${Math.round(donorTotals.get(donor.id) || 0).toLocaleString()}`, {
+                anchor: "start",
+                size: "8px",
+                color: "#64748b",
+            });
+        }
+
+        for (let colIdx = 0; colIdx < candidates.length; colIdx += 1) {
+            const candidate = candidates[colIdx];
+            const x = margin.left + (colIdx * cellWidth) + (cellWidth / 2);
+            const colorBar = createSvgEl("line", {
+                x1: x - (cellWidth * 0.4),
+                y1: margin.top - 18,
+                x2: x + (cellWidth * 0.4),
+                y2: margin.top - 18,
+                stroke: candidateColor(candidate),
+                "stroke-width": 3,
+                "stroke-linecap": "round",
+            });
+            svg.appendChild(colorBar);
+
+            const label = createSvgEl("text", {
+                x,
+                y: margin.top - 22,
+                fill: "#334155",
+                "font-size": "8px",
+                "text-anchor": "start",
+                transform: `rotate(-40 ${x} ${margin.top - 22})`,
+            });
+            label.textContent = shortLabel(candidate.label, 24);
+            svg.appendChild(label);
+        }
+
+        for (let rowIdx = 0; rowIdx < donors.length; rowIdx += 1) {
+            const donor = donors[rowIdx];
+            for (let colIdx = 0; colIdx < candidates.length; colIdx += 1) {
+                const candidate = candidates[colIdx];
+                const key = `${donor.id}|${candidate.id}`;
+                const value = Number(cellValues.get(key) || 0);
+                const ratio = value > 0 ? value / maxValue : 0;
+                const x = margin.left + (colIdx * cellWidth);
+                const y = margin.top + (rowIdx * cellHeight);
+                const fill = ratio > 0 ? candidateColor(candidate) : "#e2e8f0";
+                const rect = createSvgEl("rect", {
+                    x,
+                    y,
+                    width: Math.max(1, cellWidth - 1),
+                    height: Math.max(1, cellHeight - 1),
+                    fill,
+                    "fill-opacity": ratio > 0 ? (0.14 + ratio * 0.78).toFixed(3) : "1",
+                    stroke: "#ffffff",
+                    "stroke-width": 0.8,
+                });
+                const title = createSvgEl("title");
+                title.textContent = `${cleanText(donor.label)} -> ${cleanText(candidate.label)} | $${value.toLocaleString()}`;
+                rect.appendChild(title);
+                svg.appendChild(rect);
+            }
+        }
+
+        const legendX = margin.left;
+        const legendY = height - 18;
+        for (let i = 0; i <= 8; i += 1) {
+            const t = i / 8;
+            const rect = createSvgEl("rect", {
+                x: legendX + (i * 18),
+                y: legendY,
+                width: 18,
+                height: 8,
+                fill: "#2563eb",
+                "fill-opacity": (0.14 + t * 0.78).toFixed(3),
+            });
+            svg.appendChild(rect);
+        }
+        drawText(svg, legendX - 4, legendY + 7, "Lower", {anchor: "end", size: "8px", color: "#64748b"});
+        drawText(svg, legendX + (8 * 18) + 24, legendY + 7, "Higher", {anchor: "start", size: "8px", color: "#64748b"});
+    };
+
+    const drawOverlapMatrix = (svg, graph) => {
+        clearSvg(svg);
+        const {width, height} = viewBoxSize(svg);
+        const nodes = graph.nodes || [];
+        const edges = graph.edges || [];
+        if (!nodes.length || !edges.length) {
+            drawEmpty(svg, "No local/federal overlap flows for trend matrix.");
+            return;
+        }
+
+        const nodeById = mapById(nodes);
+        const donorTotals = new Map();
+        const targetTotals = new Map();
+        const cellValues = new Map();
+        const targetType = new Map();
+
+        for (const edge of edges) {
+            const source = nodeById.get(edge.source);
+            const target = nodeById.get(edge.target);
+            if (!source || !target) continue;
+
+            let donorNode = null;
+            let targetNode = null;
+            if (source.node_type === "matched_donor") {
+                donorNode = source;
+                targetNode = target;
+            } else if (target.node_type === "matched_donor") {
+                donorNode = target;
+                targetNode = source;
+            } else {
+                continue;
+            }
+            if (!targetNode || !["federal_candidate", "local_committee"].includes(targetNode.node_type)) {
+                continue;
+            }
+
+            const amount = Number(edge.weight || 0);
+            donorTotals.set(donorNode.id, (donorTotals.get(donorNode.id) || 0) + amount);
+            targetTotals.set(targetNode.id, (targetTotals.get(targetNode.id) || 0) + amount);
+            targetType.set(targetNode.id, targetNode.node_type);
+            const key = `${donorNode.id}|${targetNode.id}`;
+            cellValues.set(key, (cellValues.get(key) || 0) + amount);
+        }
+
+        const donors = nodes
+            .filter((node) => node.node_type === "matched_donor" && donorTotals.has(node.id))
+            .sort((a, b) => (donorTotals.get(b.id) || 0) - (donorTotals.get(a.id) || 0))
+            .slice(0, 22);
+        const localTargets = nodes
+            .filter((node) => node.node_type === "local_committee" && targetTotals.has(node.id))
+            .sort((a, b) => (targetTotals.get(b.id) || 0) - (targetTotals.get(a.id) || 0))
+            .slice(0, 10);
+        const federalTargets = nodes
+            .filter((node) => node.node_type === "federal_candidate" && targetTotals.has(node.id))
+            .sort((a, b) => (targetTotals.get(b.id) || 0) - (targetTotals.get(a.id) || 0))
+            .slice(0, 10);
+        const targets = [...localTargets, ...federalTargets];
+
+        if (!donors.length || !targets.length) {
+            drawEmpty(svg, "Not enough matched donor/target nodes for overlap matrix.");
+            return;
+        }
+
+        const margin = {top: 148, right: 22, bottom: 36, left: 250};
+        const gridWidth = Math.max(120, width - margin.left - margin.right);
+        const gridHeight = Math.max(120, height - margin.top - margin.bottom);
+        const cellWidth = gridWidth / targets.length;
+        const cellHeight = gridHeight / donors.length;
+        const maxValue = Math.max(...Array.from(cellValues.values()), 1);
+
+        svg.appendChild(createSvgEl("rect", {
+            x: 16,
+            y: 16,
+            width: width - 32,
+            height: height - 32,
+            rx: 10,
+            fill: "#f8fafc",
+            stroke: "#cbd5e1",
+            "stroke-width": 1,
+        }));
+
+        drawText(svg, 24, 34, "Rows: matched donors | Columns: local committees + federal candidates", {
+            anchor: "start",
+            size: "11px",
+            color: "#0f172a",
+            weight: "600",
+        });
+
+        for (let rowIdx = 0; rowIdx < donors.length; rowIdx += 1) {
+            const donor = donors[rowIdx];
+            const y = margin.top + (rowIdx * cellHeight);
+            drawText(svg, margin.left - 8, y + (cellHeight / 2) + 3, shortLabel(donor.label, 30), {
+                anchor: "end",
+                size: "9px",
+                color: "#334155",
+            });
+            drawText(svg, margin.left - 220, y + (cellHeight / 2) + 3, `$${Math.round(donorTotals.get(donor.id) || 0).toLocaleString()}`, {
+                anchor: "start",
+                size: "8px",
+                color: "#64748b",
+            });
+        }
+
+        const localBoundary = localTargets.length;
+        if (localBoundary > 0 && localBoundary < targets.length) {
+            const boundaryX = margin.left + (localBoundary * cellWidth);
+            svg.appendChild(createSvgEl("line", {
+                x1: boundaryX,
+                y1: margin.top - 24,
+                x2: boundaryX,
+                y2: margin.top + gridHeight,
+                stroke: "#94a3b8",
+                "stroke-width": 1,
+                "stroke-dasharray": "3 3",
+            }));
+            drawText(svg, margin.left + (localBoundary * cellWidth * 0.5), margin.top - 30, "Local Committees", {
+                size: "10px",
+                color: "#0f766e",
+                weight: "600",
+            });
+            drawText(svg, boundaryX + ((targets.length - localBoundary) * cellWidth * 0.5), margin.top - 30, "Federal Candidates", {
+                size: "10px",
+                color: "#1d4ed8",
+                weight: "600",
+            });
+        }
+
+        for (let colIdx = 0; colIdx < targets.length; colIdx += 1) {
+            const target = targets[colIdx];
+            const x = margin.left + (colIdx * cellWidth) + (cellWidth / 2);
+            const type = targetType.get(target.id) || target.node_type;
+            const barColor = type === "local_committee" ? "#0f766e" : candidateColor(target);
+            const colorBar = createSvgEl("line", {
+                x1: x - (cellWidth * 0.4),
+                y1: margin.top - 18,
+                x2: x + (cellWidth * 0.4),
+                y2: margin.top - 18,
+                stroke: barColor,
+                "stroke-width": 3,
+                "stroke-linecap": "round",
+            });
+            svg.appendChild(colorBar);
+
+            const label = createSvgEl("text", {
+                x,
+                y: margin.top - 22,
+                fill: "#334155",
+                "font-size": "8px",
+                "text-anchor": "start",
+                transform: `rotate(-40 ${x} ${margin.top - 22})`,
+            });
+            label.textContent = shortLabel(target.label, 22);
+            svg.appendChild(label);
+        }
+
+        for (let rowIdx = 0; rowIdx < donors.length; rowIdx += 1) {
+            const donor = donors[rowIdx];
+            for (let colIdx = 0; colIdx < targets.length; colIdx += 1) {
+                const target = targets[colIdx];
+                const key = `${donor.id}|${target.id}`;
+                const value = Number(cellValues.get(key) || 0);
+                const ratio = value > 0 ? value / maxValue : 0;
+                const type = targetType.get(target.id) || target.node_type;
+                const fill = ratio > 0 ? (type === "local_committee" ? "#0f766e" : candidateColor(target)) : "#e2e8f0";
+                const x = margin.left + (colIdx * cellWidth);
+                const y = margin.top + (rowIdx * cellHeight);
+                const rect = createSvgEl("rect", {
+                    x,
+                    y,
+                    width: Math.max(1, cellWidth - 1),
+                    height: Math.max(1, cellHeight - 1),
+                    fill,
+                    "fill-opacity": ratio > 0 ? (0.14 + ratio * 0.78).toFixed(3) : "1",
+                    stroke: "#ffffff",
+                    "stroke-width": 0.8,
+                });
+                const title = createSvgEl("title");
+                title.textContent = `${cleanText(donor.label)} -> ${cleanText(target.label)} | $${value.toLocaleString()}`;
+                rect.appendChild(title);
+                svg.appendChild(rect);
+            }
+        }
     };
 
     const drawFederalSankey = (svg, graph) => {
@@ -969,48 +1783,79 @@
     const federalMode = document.getElementById("federal-graph-mode");
     const federalRace = document.getElementById("federal-highlight-race");
     const federalParty = document.getElementById("federal-highlight-party");
+    const federalFlowMin = document.getElementById("federal-flow-min");
+    const federalFlowLimit = document.getElementById("federal-flow-limit");
+    const federalFlowSearch = document.getElementById("federal-flow-search");
     if (federalSvg && federalMode && federalRace && federalParty) {
         const candidateNodes = (federalGraph.nodes || []).filter((node) => node.node_type === "candidate");
         setSelectOptions("federal-highlight-race", candidateNodes.map((node) => raceLabel(node)), "All races");
         setSelectOptions("federal-highlight-party", candidateNodes.map((node) => partyLabel(node)), "All parties");
-        const renderFederalGraph = () => {
+        const renderFederalOutputs = () => {
             const filtered = filterFederalGraph(federalGraph, federalRace.value, federalParty.value);
-            if (federalMode.value === "sankey") {
+            if (federalMode.value === "matrix") {
+                const trimmed = trimFederalGraph(filtered, 60, 24, 1200);
+                drawFederalMatrix(federalSvg, trimmed);
+            } else {
                 const trimmed = trimFederalGraph(filtered, 30, 18, 600);
                 drawFederalSankey(federalSvg, trimmed);
-            } else {
-                const trimmed = trimFederalGraph(filtered, 70, 34, 1200);
-                drawForceGraph(federalSvg, trimmed, {kind: "federal"});
             }
+            renderFederalFlowTable(filtered);
         };
-        federalMode.addEventListener("change", renderFederalGraph);
-        federalRace.addEventListener("change", renderFederalGraph);
-        federalParty.addEventListener("change", renderFederalGraph);
-        renderFederalGraph();
+        federalMode.addEventListener("change", renderFederalOutputs);
+        federalRace.addEventListener("change", renderFederalOutputs);
+        federalParty.addEventListener("change", renderFederalOutputs);
+        federalFlowMin?.addEventListener("input", renderFederalOutputs);
+        federalFlowLimit?.addEventListener("change", renderFederalOutputs);
+        federalFlowSearch?.addEventListener("input", renderFederalOutputs);
+        renderFederalOutputs();
     }
 
     const overlapSvg = document.getElementById("overlap-network-svg");
     const overlapMode = document.getElementById("overlap-graph-mode");
     const overlapRace = document.getElementById("overlap-highlight-race");
     const overlapParty = document.getElementById("overlap-highlight-party");
+    const overlapUpSetSvg = document.getElementById("overlap-upset-svg");
+    const overlapUpSetSummary = document.getElementById("overlap-upset-summary");
+    const overlapUpSetSets = document.getElementById("overlap-upset-sets");
+    const overlapUpSetMetric = document.getElementById("overlap-upset-metric");
+    const overlapUpSetLimit = document.getElementById("overlap-upset-limit");
     if (overlapSvg && overlapMode && overlapRace && overlapParty) {
         const overlapCandidates = (overlapGraph.nodes || []).filter((node) => node.node_type === "federal_candidate");
         setSelectOptions("overlap-highlight-race", overlapCandidates.map((node) => raceLabel(node)), "All races");
         setSelectOptions("overlap-highlight-party", overlapCandidates.map((node) => partyLabel(node)), "All parties");
-        const renderOverlapGraph = () => {
+        const renderOverlapOutputs = () => {
             const filtered = filterOverlapGraph(overlapGraph, overlapRace.value, overlapParty.value);
-            if (overlapMode.value === "sankey") {
+            if (overlapMode.value === "matrix") {
+                const trimmed = trimOverlapGraph(filtered, 56, 20, 20, 1400);
+                drawOverlapMatrix(overlapSvg, trimmed);
+            } else {
                 const trimmed = trimOverlapGraph(filtered, 28, 20, 20, 700);
                 drawOverlapSankey(overlapSvg, trimmed);
-            } else {
-                const trimmed = trimOverlapGraph(filtered, 48, 26, 26, 1200);
-                drawForceGraph(overlapSvg, trimmed, {kind: "overlap"});
+            }
+
+            if (overlapUpSetSvg) {
+                const upsetMetrics = drawOverlapUpSet(
+                    overlapUpSetSvg,
+                    filtered,
+                    {
+                        maxSets: Number(overlapUpSetSets?.value || 6),
+                        metric: overlapUpSetMetric?.value || "donor_count",
+                        maxIntersections: Number(overlapUpSetLimit?.value || 15),
+                    }
+                );
+                if (overlapUpSetSummary && upsetMetrics) {
+                    const metricLabel = upsetMetrics.metric === "total_amount" ? "total amount" : "donor count";
+                    overlapUpSetSummary.textContent = `Selected candidates: ${Number(upsetMetrics.selected_candidate_count || 0).toLocaleString()} | Intersections: ${Number(upsetMetrics.rendered_intersections || 0).toLocaleString()} of ${Number(upsetMetrics.intersection_count || 0).toLocaleString()} | Matched donors in view: ${Number(upsetMetrics.unique_matched_donors || 0).toLocaleString()} | Ranked by ${metricLabel}`;
+                }
             }
         };
-        overlapMode.addEventListener("change", renderOverlapGraph);
-        overlapRace.addEventListener("change", renderOverlapGraph);
-        overlapParty.addEventListener("change", renderOverlapGraph);
-        renderOverlapGraph();
+        overlapMode.addEventListener("change", renderOverlapOutputs);
+        overlapRace.addEventListener("change", renderOverlapOutputs);
+        overlapParty.addEventListener("change", renderOverlapOutputs);
+        overlapUpSetSets?.addEventListener("change", renderOverlapOutputs);
+        overlapUpSetMetric?.addEventListener("change", renderOverlapOutputs);
+        overlapUpSetLimit?.addEventListener("change", renderOverlapOutputs);
+        renderOverlapOutputs();
     }
 })();
 </script>

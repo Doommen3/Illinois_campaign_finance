@@ -3063,6 +3063,34 @@ def get_federal_donor_network_clusters(
         )
 
     cluster_rows.sort(key=lambda row: (row["total_weight"], row["edge_count"]), reverse=True)
+    for idx, row in enumerate(cluster_rows, start=1):
+        anchor_candidate = row["top_candidates"][0] if row.get("top_candidates") else {}
+        anchor_donor = row["top_donors"][0] if row.get("top_donors") else {}
+        anchor_candidate_name = _clean_text(anchor_candidate.get("candidate_name"))
+        anchor_donor_name = _clean_text(anchor_donor.get("donor_name"))
+        office_display = _clean_text(anchor_candidate.get("office_display"))
+        district_display = _clean_text(anchor_candidate.get("district_display"))
+        race_display = ""
+        if office_display or district_display:
+            race_display = f"{office_display or 'Office?'}-{district_display or '?'}"
+
+        if anchor_candidate_name:
+            if race_display:
+                cluster_label = f"Cluster {idx}: {anchor_candidate_name} ({race_display})"
+            else:
+                cluster_label = f"Cluster {idx}: {anchor_candidate_name}"
+        elif anchor_donor_name:
+            cluster_label = f"Cluster {idx}: {anchor_donor_name}"
+        else:
+            cluster_label = f"Cluster {idx}"
+
+        row["cluster_rank"] = idx
+        row["cluster_label"] = cluster_label
+        row["cluster_id_raw"] = row.get("cluster_id")
+        row["cluster_anchor_candidate"] = anchor_candidate_name or None
+        row["cluster_anchor_candidate_id"] = _clean_text(anchor_candidate.get("candidate_id")) or None
+        row["cluster_anchor_donor"] = anchor_donor_name or None
+        row["cluster_anchor_donor_entity_key"] = _clean_text(anchor_donor.get("donor_entity_key")) or None
 
     return {
         "cycle": cycle,
@@ -3613,7 +3641,7 @@ def get_federal_local_donor_matches(
         if local_zip:
             local_by_name_zip[(local_name, local_zip)].append(processed)
 
-    matches: list[dict[str, Any]] = []
+    raw_matches: list[dict[str, Any]] = []
     for federal in federal_rows:
         fed_name = _normalize_name(federal["federal_donor_name"])
         fed_state = _clean_text(federal["federal_donor_state"]).upper()
@@ -3639,7 +3667,7 @@ def get_federal_local_donor_matches(
         method, score, matched_rows = candidates[0]
         matched_rows = sorted(matched_rows, key=lambda row: row["local_total_amount"], reverse=True)
         for local in matched_rows[:3]:
-            matches.append(
+            raw_matches.append(
                 {
                     "federal_donor_entity_key": federal["federal_donor_entity_key"],
                     "federal_donor_name": federal["federal_donor_name"],
@@ -3660,6 +3688,59 @@ def get_federal_local_donor_matches(
                 }
             )
 
+    # Merge obvious local-identity variants so the matching table is readable.
+    # Identity key is built from normalized local name/state/zip and match method.
+    merged_matches: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for row in raw_matches:
+        merge_key = (
+            _clean_text(row.get("federal_donor_entity_key")),
+            _normalize_name(row.get("local_donor_name")),
+            _clean_text(row.get("local_donor_state")).upper(),
+            _normalize_zip5(row.get("local_donor_zip")),
+            _clean_text(row.get("match_method")).lower(),
+        )
+        local_key = _clean_text(row.get("local_donor_key"))
+        if merge_key not in merged_matches:
+            merged = dict(row)
+            merged["local_donor_keys"] = [local_key] if local_key else []
+            merged["matched_local_variants"] = 1
+            merged["_best_local_amount"] = float(row.get("local_total_amount") or 0.0)
+            merged_matches[merge_key] = merged
+            continue
+
+        merged = merged_matches[merge_key]
+        merged["local_total_amount"] = round(
+            float(merged.get("local_total_amount") or 0.0) + float(row.get("local_total_amount") or 0.0),
+            2,
+        )
+        merged["local_contribution_count"] = int(merged.get("local_contribution_count") or 0) + int(
+            row.get("local_contribution_count") or 0
+        )
+        merged["local_committee_count"] = int(merged.get("local_committee_count") or 0) + int(
+            row.get("local_committee_count") or 0
+        )
+        merged["confidence_score"] = max(
+            float(merged.get("confidence_score") or 0.0),
+            float(row.get("confidence_score") or 0.0),
+        )
+        merged["matched_local_variants"] = int(merged.get("matched_local_variants") or 0) + 1
+        if local_key and local_key not in merged["local_donor_keys"]:
+            merged["local_donor_keys"].append(local_key)
+
+        current_amount = float(row.get("local_total_amount") or 0.0)
+        if current_amount > float(merged.get("_best_local_amount") or 0.0):
+            merged["_best_local_amount"] = current_amount
+            merged["local_donor_key"] = row.get("local_donor_key")
+            merged["local_donor_name"] = row.get("local_donor_name")
+            merged["local_donor_state"] = row.get("local_donor_state")
+            merged["local_donor_zip"] = row.get("local_donor_zip")
+            merged["local_donor_city"] = row.get("local_donor_city")
+
+    matches = list(merged_matches.values())
+    for row in matches:
+        row.pop("_best_local_amount", None)
+        row["local_donor_keys"] = sorted([key for key in row.get("local_donor_keys", []) if key])
+
     matches.sort(key=lambda row: (row["confidence_score"], row["federal_total_amount"], row["local_total_amount"]), reverse=True)
     matches = matches[: max(100, min(20000, int(match_limit)))]
 
@@ -3668,7 +3749,14 @@ def get_federal_local_donor_matches(
         tier_counts[row["match_method"]] += 1
 
     federal_donor_matched = len({row["federal_donor_entity_key"] for row in matches})
-    local_donor_matched = len({row["local_donor_key"] for row in matches})
+    local_donor_key_set: set[str] = set()
+    for row in matches:
+        keys = row.get("local_donor_keys") or []
+        if keys:
+            local_donor_key_set.update(_clean_text(key) for key in keys if _clean_text(key))
+        elif _clean_text(row.get("local_donor_key")):
+            local_donor_key_set.add(_clean_text(row.get("local_donor_key")))
+    local_donor_matched = len(local_donor_key_set)
 
     return {
         "cycle": cycle,
@@ -3680,6 +3768,8 @@ def get_federal_local_donor_matches(
         "local_donors_matched": local_donor_matched,
         "match_rate": round(_safe_div(federal_donor_matched, len(federal_rows)), 4) if federal_rows else 0.0,
         "tier_counts": dict(sorted(tier_counts.items(), key=lambda item: item[0])),
+        "raw_match_row_count": len(raw_matches),
+        "merged_match_row_count": len(matches),
         "matches": matches,
     }
 
@@ -3724,11 +3814,42 @@ def get_federal_local_overlap_network(
     match_by_federal: dict[str, dict[str, Any]] = {}
     local_keys: set[str] = set()
     for row in matches:
-        fed_key = row["federal_donor_entity_key"]
-        local_key = row["local_donor_key"]
+        fed_key = _clean_text(row.get("federal_donor_entity_key"))
+        if not fed_key:
+            continue
+        row_local_keys = row.get("local_donor_keys") or []
+        cleaned_local_keys = [_clean_text(key) for key in row_local_keys if _clean_text(key)]
+        if not cleaned_local_keys:
+            fallback_local_key = _clean_text(row.get("local_donor_key"))
+            if fallback_local_key:
+                cleaned_local_keys = [fallback_local_key]
+
         if fed_key not in match_by_federal:
-            match_by_federal[fed_key] = row
-        local_keys.add(local_key)
+            merged = dict(row)
+            merged["_all_local_keys"] = set(cleaned_local_keys)
+            match_by_federal[fed_key] = merged
+        else:
+            existing = match_by_federal[fed_key]
+            existing["_all_local_keys"].update(cleaned_local_keys)
+            existing["local_total_amount"] = round(
+                float(existing.get("local_total_amount") or 0.0) + float(row.get("local_total_amount") or 0.0),
+                2,
+            )
+            existing["local_contribution_count"] = int(existing.get("local_contribution_count") or 0) + int(
+                row.get("local_contribution_count") or 0
+            )
+            existing["local_committee_count"] = int(existing.get("local_committee_count") or 0) + int(
+                row.get("local_committee_count") or 0
+            )
+            existing["matched_local_variants"] = int(existing.get("matched_local_variants") or 1) + int(
+                row.get("matched_local_variants") or 1
+            )
+            existing["confidence_score"] = max(
+                float(existing.get("confidence_score") or 0.0),
+                float(row.get("confidence_score") or 0.0),
+            )
+
+        local_keys.update(cleaned_local_keys)
 
     rows, candidate_meta, office_filter, district_filter = _filtered_edge_rows(
         conn,
@@ -3769,6 +3890,8 @@ def get_federal_local_overlap_network(
                 "label": match["federal_donor_name"],
                 "federal_donor_entity_key": fed_key,
                 "local_donor_key": match["local_donor_key"],
+                "local_donor_keys": sorted(match.get("_all_local_keys", [])),
+                "matched_local_variants": int(match.get("matched_local_variants") or 1),
                 "match_method": match["match_method"],
                 "confidence_score": match["confidence_score"],
             },
@@ -3844,9 +3967,27 @@ def get_federal_local_overlap_network(
         local_by_key[_clean_text(row.get("donor_key"))].append(row)
 
     for fed_key, match in match_by_federal.items():
-        local_key = _clean_text(match["local_donor_key"])
         donor_node = f"match_donor:{fed_key}"
-        for row in local_by_key.get(local_key, []):
+        committee_rollup: dict[str, dict[str, Any]] = {}
+        all_local_keys = sorted(match.get("_all_local_keys", []))
+        for local_key in all_local_keys:
+            for row in local_by_key.get(local_key, []):
+                committee_id = _clean_text(row.get("committee_id"))
+                if not committee_id:
+                    continue
+                committee = committee_rollup.setdefault(
+                    committee_id,
+                    {
+                        "committee_id": committee_id,
+                        "committee_name": _clean_text(row.get("committee_name")) or committee_id,
+                        "total_amount": 0.0,
+                        "contribution_count": 0,
+                    },
+                )
+                committee["total_amount"] += float(row.get("total_amount") or 0.0)
+                committee["contribution_count"] += int(row.get("contribution_count") or 0)
+
+        for row in committee_rollup.values():
             amount = float(row.get("total_amount") or 0.0)
             if amount < min_amount:
                 continue
