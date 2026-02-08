@@ -44,8 +44,8 @@
     <input type="text" name="q" value="{{ query }}" placeholder="Search donor, vendor, description, or filed doc">
     <input type="text" name="d2_part" value="{{ d2_part }}" placeholder="D2 part (1, 1A, 5, etc.)">
     <select name="archived">
-        <option value="all" {% if archived == 'all' %}selected{% endif %}>All rows</option>
         <option value="no" {% if archived == 'no' %}selected{% endif %}>Non-archived only</option>
+        <option value="all" {% if archived == 'all' %}selected{% endif %}>All rows</option>
         <option value="yes" {% if archived == 'yes' %}selected{% endif %}>Archived only</option>
     </select>
     <input type="text" name="min_amount" value="{{ min_amount }}" placeholder="Min amount">

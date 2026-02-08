@@ -3,77 +3,95 @@
 {% block title %}Dashboard - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
-<h1>Dashboard</h1>
+<h1>Dashboard Overview</h1>
+<p class="subtitle">Track Illinois local and federal campaign finance from bulk files and FEC syncs.</p>
+
+<div class="status-section">
+    <h2>Start Here</h2>
+    <p>Use these core views to explore current data and donor networks.</p>
+    <p>
+        <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Local Candidate Finance</a>
+        <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance</a>
+        <a class="btn btn-primary" href="{{ url_for('analytics.dashboard') }}">Analytics</a>
+        <a class="btn btn-primary" href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a>
+    </p>
+</div>
 
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Committees</h3>
-        <p class="stat-value">{{ stats.total_committees }}</p>
+        <h3>Local Candidate Rows</h3>
+        <p class="stat-value">{{ stats.local_candidate_rows }}</p>
     </div>
     <div class="stat-card">
-        <h3>Reports</h3>
-        <p class="stat-value">{{ stats.total_reports }}</p>
-        <p class="stat-detail">{{ stats.paper_filed_count }} paper-filed</p>
+        <h3>Local Candidates</h3>
+        <p class="stat-value">{{ stats.local_candidates }}</p>
     </div>
     <div class="stat-card">
-        <h3>Donors</h3>
-        <p class="stat-value">{{ stats.total_donors }}</p>
+        <h3>Local Committees</h3>
+        <p class="stat-value">{{ stats.local_committees }}</p>
     </div>
     <div class="stat-card">
-        <h3>Contributions</h3>
-        <p class="stat-value">{{ stats.total_contributions }}</p>
-        <p class="stat-detail">{{ format_currency(stats.total_amount) }} total</p>
+        <h3>Local Receipts</h3>
+        <p class="stat-value">{{ format_currency(stats.local_total_receipts) }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Federal Candidates</h3>
+        <p class="stat-value">{{ stats.federal_candidates }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Federal Contributions</h3>
+        <p class="stat-value">{{ stats.federal_contributions }}</p>
+        <p class="stat-detail">{{ format_currency(stats.federal_total_amount) }} total</p>
+    </div>
+    <div class="stat-card">
+        <h3>Matched Donor Pairs</h3>
+        <p class="stat-value">{{ stats.federal_matched_donors }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Archived Local Filings</h3>
+        <p class="stat-value">{{ stats.local_archived_filings }}</p>
     </div>
 </div>
 
 <div class="status-section">
-    <h2>Scrape Status</h2>
-    <div class="status-badges">
-        {% for status, count in stats.report_status.items() %}
-        <span class="badge badge-{{ status }}">{{ status }}: {{ count }}</span>
-        {% endfor %}
-    </div>
+    <h2>Data Freshness</h2>
+    <p><strong>Latest local receipt date:</strong> {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}</p>
+    <p><strong>Latest federal receipt date:</strong> {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}</p>
 </div>
 
 <div class="two-column">
     <div class="column">
-        <h2>Recent Reports</h2>
+        <h2>Launch Paths</h2>
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Committee</th>
-                    <th>Type</th>
-                    <th>Filed</th>
-                    <th>Status</th>
+                    <th>Page</th>
+                    <th>Purpose</th>
                 </tr>
             </thead>
             <tbody>
-                {% for report in recent_reports %}
                 <tr>
-                    <td>
-                        <a href="{{ url_for('reports.report_detail', report_id=report.id) }}">
-                            {{ report.committee_name|truncate(30) }}
-                        </a>
-                    </td>
-                    <td>{{ report.report_type|truncate(20) if report.report_type else '-' }}</td>
-                    <td>{{ report.filed_date if report.filed_date else '-' }}</td>
-                    <td>
-                        <span class="badge badge-{{ report.scrape_status }}">
-                            {{ report.scrape_status }}
-                        </span>
-                        {% if report.is_paper_filed %}
-                        <span class="badge badge-paper">paper</span>
-                        {% endif %}
-                    </td>
+                    <td><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Candidate Finance</a></td>
+                    <td>Local candidate/committee totals with itemized drilldown and year/cycle filters.</td>
                 </tr>
-                {% else %}
                 <tr>
-                    <td colspan="4">No reports yet. Run the scraper to get data.</td>
+                    <td><a href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance</a></td>
+                    <td>Illinois federal candidates, donors, committees, and race-level metrics.</td>
                 </tr>
-                {% endfor %}
+                <tr>
+                    <td><a href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a></td>
+                    <td>Donor-candidate trend views and overlap analysis for matched donors.</td>
+                </tr>
+                <tr>
+                    <td><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></td>
+                    <td>Network, concentration, risk, and geography intelligence across local finance data.</td>
+                </tr>
+                <tr>
+                    <td><a href="{{ url_for('donors.list_donors') }}">Donors Directory</a></td>
+                    <td>Cross-committee donor summaries and donor-to-committee breakdowns.</td>
+                </tr>
             </tbody>
         </table>
-        <p><a href="{{ url_for('reports.list_reports') }}">View all reports</a></p>
     </div>
 
     <div class="column">
@@ -92,14 +110,14 @@
                     <td>
                         {% if donor.id %}
                         <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
-                            {{ donor.name|truncate(25) }}
+                            {{ donor.name|truncate(28) }}
                         </a>
                         {% elif donor.donor_key %}
                         <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts') }}">
-                            {{ donor.name|truncate(25) }}
+                            {{ donor.name|truncate(28) }}
                         </a>
                         {% else %}
-                        {{ donor.name|truncate(25) }}
+                        {{ donor.name|truncate(28) }}
                         {% endif %}
                     </td>
                     <td>{{ format_currency(donor.total_amount) }}</td>
@@ -114,5 +132,18 @@
         </table>
         <p><a href="{{ url_for('donors.list_donors') }}">View all donors</a></p>
     </div>
+</div>
+
+<div class="status-section">
+    <h2>Legacy Pages</h2>
+    <p>Scrape-era committee and report pages are still available for QA and backfill checks.</p>
+    <p>
+        <a href="{{ url_for('main.legacy') }}">Open Legacy Tools</a>
+    </p>
+    <p class="stat-detail">
+        Committees: {{ stats.legacy_committees }} |
+        Reports: {{ stats.legacy_reports }} |
+        Donors: {{ stats.legacy_donors }}
+    </p>
 </div>
 {% endblock %}

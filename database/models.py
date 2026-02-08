@@ -1214,11 +1214,15 @@ class CandidateCommitteeFinanceAgg:
     committee_name: Optional[str] = None
     committee_type: Optional[str] = None
     committee_party_affiliation: Optional[str] = None
+    period_year: Optional[int] = None
+    election_cycle: Optional[int] = None
     filing_count: int = 0
     sum_total_receipts: float = 0.0
     sum_total_expenditures: float = 0.0
     max_ending_funds_available: float = 0.0
     archived_filing_count: int = 0
+    period_start_date: Optional[str] = None
+    period_end_date: Optional[str] = None
 
     TABLE_NAME = "bulk_candidate_committee_finance_agg"
 
@@ -1236,12 +1240,22 @@ class CandidateCommitteeFinanceAgg:
         return cls._table_exists(conn)
 
     @classmethod
+    def _column_names(cls, conn: sqlite3.Connection) -> set[str]:
+        if not cls._table_exists(conn):
+            return set()
+        rows = conn.execute(f"PRAGMA table_info({cls.TABLE_NAME})").fetchall()
+        return {row["name"] for row in rows if row and row["name"]}
+
+    @classmethod
     def _build_filter_sql(
         cls,
+        available_columns: set[str],
         search: Optional[str] = None,
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        year: Optional[int] = None,
+        cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
     ) -> tuple[str, List[object]]:
@@ -1277,6 +1291,14 @@ class CandidateCommitteeFinanceAgg:
             clauses.append("COALESCE(committee_party_affiliation, '') LIKE ?")
             params.append(f"%{committee_party_term}%")
 
+        if year is not None and "period_year" in available_columns:
+            clauses.append("period_year = ?")
+            params.append(int(year))
+
+        if cycle is not None and "election_cycle" in available_columns:
+            clauses.append("election_cycle = ?")
+            params.append(int(cycle))
+
         if min_receipts is not None:
             clauses.append("COALESCE(sum_total_receipts, 0) >= ?")
             params.append(float(min_receipts))
@@ -1297,6 +1319,8 @@ class CandidateCommitteeFinanceAgg:
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        year: Optional[int] = None,
+        cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
     ) -> int:
@@ -1304,11 +1328,15 @@ class CandidateCommitteeFinanceAgg:
         if not cls._table_exists(conn):
             return 0
 
+        available_columns = cls._column_names(conn)
         where_sql, params = cls._build_filter_sql(
+            available_columns=available_columns,
             search=search,
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            year=year,
+            cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
@@ -1329,6 +1357,8 @@ class CandidateCommitteeFinanceAgg:
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        year: Optional[int] = None,
+        cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
     ) -> List["CandidateCommitteeFinanceAgg"]:
@@ -1336,6 +1366,7 @@ class CandidateCommitteeFinanceAgg:
         if not cls._table_exists(conn):
             return []
 
+        available_columns = cls._column_names(conn)
         sort_map = {
             "candidate_id": "candidate_id",
             "candidate_full_name": "candidate_full_name",
@@ -1347,6 +1378,8 @@ class CandidateCommitteeFinanceAgg:
             "committee_name": "committee_name",
             "committee_type": "committee_type",
             "committee_party_affiliation": "committee_party_affiliation",
+            "period_year": "period_year" if "period_year" in available_columns else "candidate_id",
+            "election_cycle": "election_cycle" if "election_cycle" in available_columns else "candidate_id",
             "filing_count": "filing_count",
             "sum_total_receipts": "sum_total_receipts",
             "sum_total_expenditures": "sum_total_expenditures",
@@ -1368,18 +1401,25 @@ class CandidateCommitteeFinanceAgg:
                 committee_name,
                 committee_type,
                 committee_party_affiliation,
+                {"period_year" if "period_year" in available_columns else "NULL AS period_year"},
+                {"election_cycle" if "election_cycle" in available_columns else "NULL AS election_cycle"},
                 filing_count,
                 sum_total_receipts,
                 sum_total_expenditures,
                 max_ending_funds_available,
-                archived_filing_count
+                archived_filing_count,
+                {"period_start_date" if "period_start_date" in available_columns else "NULL AS period_start_date"},
+                {"period_end_date" if "period_end_date" in available_columns else "NULL AS period_end_date"}
             FROM {cls.TABLE_NAME}
         """
         where_sql, params = cls._build_filter_sql(
+            available_columns=available_columns,
             search=search,
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            year=year,
+            cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
@@ -1403,14 +1443,52 @@ class CandidateCommitteeFinanceAgg:
                     committee_name=row["committee_name"],
                     committee_type=row["committee_type"],
                     committee_party_affiliation=row["committee_party_affiliation"],
+                    period_year=row["period_year"],
+                    election_cycle=row["election_cycle"],
                     filing_count=row["filing_count"] or 0,
                     sum_total_receipts=row["sum_total_receipts"] or 0.0,
                     sum_total_expenditures=row["sum_total_expenditures"] or 0.0,
                     max_ending_funds_available=row["max_ending_funds_available"] or 0.0,
                     archived_filing_count=row["archived_filing_count"] or 0,
+                    period_start_date=row["period_start_date"],
+                    period_end_date=row["period_end_date"],
                 )
             )
         return results
+
+    @classmethod
+    def list_period_values(cls, conn: sqlite3.Connection) -> dict[str, List[int]]:
+        """Return available period years and election cycles for filters."""
+        if not cls._table_exists(conn):
+            return {"years": [], "cycles": []}
+
+        columns = cls._column_names(conn)
+        years: List[int] = []
+        cycles: List[int] = []
+
+        if "period_year" in columns:
+            year_rows = conn.execute(
+                f"""
+                SELECT DISTINCT period_year
+                FROM {cls.TABLE_NAME}
+                WHERE period_year IS NOT NULL
+                ORDER BY period_year DESC
+                """
+            ).fetchall()
+            years = [int(row["period_year"]) for row in year_rows if row["period_year"] is not None]
+
+        if "election_cycle" in columns:
+            cycle_rows = conn.execute(
+                f"""
+                SELECT DISTINCT election_cycle
+                FROM {cls.TABLE_NAME}
+                WHERE election_cycle IS NOT NULL
+                ORDER BY election_cycle DESC
+                """
+            ).fetchall()
+            cycles = [int(row["election_cycle"]) for row in cycle_rows if row["election_cycle"] is not None]
+
+        return {"years": years, "cycles": cycles}
 
 
 @dataclass
@@ -1501,7 +1579,7 @@ class CandidateCommitteeItemizedReceipt:
         d2_part: Optional[str] = None,
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
-        archived: str = "all",
+        archived: str = "no",
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
@@ -1536,7 +1614,7 @@ class CandidateCommitteeItemizedReceipt:
             clauses.append("COALESCE(r.amount, 0) <= ?")
             params.append(float(max_amount))
 
-        archived_term = (archived or "all").strip().lower()
+        archived_term = (archived or "no").strip().lower()
         if archived_term == "yes":
             clauses.append("COALESCE(r.is_archived, 0) = 1")
         elif archived_term == "no":
@@ -1556,7 +1634,7 @@ class CandidateCommitteeItemizedReceipt:
         d2_part: Optional[str] = None,
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
-        archived: str = "all",
+        archived: str = "no",
     ) -> int:
         if not cls.is_available(conn):
             return 0
@@ -1599,7 +1677,7 @@ class CandidateCommitteeItemizedReceipt:
         d2_part: Optional[str] = None,
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
-        archived: str = "all",
+        archived: str = "no",
     ) -> List["CandidateCommitteeItemizedReceipt"]:
         if not cls.is_available(conn):
             return []

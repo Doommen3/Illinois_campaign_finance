@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Legacy Tools - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Legacy Tools</h1>
+<p class="subtitle">Historical scrape-era pages retained for QA, validation, and manual workflows.</p>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Committees</h3>
+        <p class="stat-value">{{ legacy_counts.committees }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Reports</h3>
+        <p class="stat-value">{{ legacy_counts.reports }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Donors</h3>
+        <p class="stat-value">{{ legacy_counts.donors }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contributions</h3>
+        <p class="stat-value">{{ legacy_counts.contributions }}</p>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Pages</h2>
+    <p><a href="{{ url_for('committees.list_committees') }}">Committees</a></p>
+    <p><a href="{{ url_for('reports.list_reports') }}">Reports</a></p>
+    <p><a href="{{ url_for('manual_entry.queue') }}">Manual Entry Queue</a></p>
+</div>
+{% endblock %}

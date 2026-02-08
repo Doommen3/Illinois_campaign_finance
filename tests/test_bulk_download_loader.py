@@ -158,6 +158,20 @@ def test_import_bulk_download_with_candidate_links_creates_candidate_tables(tmp_
     assert agg_row['sum_total_receipts'] == 30.0
     assert agg_row['sum_total_expenditures'] == 12.0
 
+    archived_only_row = conn.execute(
+        """
+        SELECT filing_count, sum_total_receipts, sum_total_expenditures, archived_filing_count, period_year, election_cycle
+        FROM bulk_candidate_committee_finance_agg
+        WHERE candidate_id = 202 AND committee_id_sbe = 102
+        """
+    ).fetchone()
+    assert archived_only_row['filing_count'] == 0
+    assert archived_only_row['sum_total_receipts'] == 0.0
+    assert archived_only_row['sum_total_expenditures'] == 0.0
+    assert archived_only_row['archived_filing_count'] == 1
+    assert archived_only_row['period_year'] is None
+    assert archived_only_row['election_cycle'] is None
+
     conn.close()
 
 
@@ -246,9 +260,20 @@ def test_import_bulk_download_with_receipts_creates_receipts_tables(tmp_path: Pa
     assert recon['receipts_amount_sum'] == 150.0
     assert recon['receipts_minus_d2_total'] == 0.0
 
+    recon_archived = conn.execute(
+        """
+        SELECT receipt_row_count, receipts_amount_sum, receipts_minus_d2_total
+        FROM bulk_d2_receipts_recon
+        WHERE committee_id_sbe = 102 AND filed_doc_id = 5002
+        """
+    ).fetchone()
+    assert recon_archived['receipt_row_count'] == 0
+    assert recon_archived['receipts_amount_sum'] == 0.0
+    assert recon_archived['receipts_minus_d2_total'] == -75.0
+
     candidate_receipts = conn.execute(
         """
-        SELECT receipt_count, sum_receipt_amount, sum_amount_part_1_contributions, sum_amount_part_5_expenditures
+        SELECT receipt_count, sum_receipt_amount, sum_amount_part_1_contributions, sum_amount_part_5_expenditures, archived_receipt_count
         FROM bulk_candidate_committee_receipts_agg
         WHERE candidate_id = 201 AND committee_id_sbe = 101
         """
@@ -257,5 +282,17 @@ def test_import_bulk_download_with_receipts_creates_receipts_tables(tmp_path: Pa
     assert candidate_receipts['sum_receipt_amount'] == 150.0
     assert candidate_receipts['sum_amount_part_1_contributions'] == 100.0
     assert candidate_receipts['sum_amount_part_5_expenditures'] == 50.0
+    assert candidate_receipts['archived_receipt_count'] == 0
+
+    candidate_receipts_archived = conn.execute(
+        """
+        SELECT receipt_count, sum_receipt_amount, archived_receipt_count
+        FROM bulk_candidate_committee_receipts_agg
+        WHERE candidate_id = 202 AND committee_id_sbe = 102
+        """
+    ).fetchone()
+    assert candidate_receipts_archived['receipt_count'] == 0
+    assert candidate_receipts_archived['sum_receipt_amount'] == 0.0
+    assert candidate_receipts_archived['archived_receipt_count'] == 1
 
     conn.close()

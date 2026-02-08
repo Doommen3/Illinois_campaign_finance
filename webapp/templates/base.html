@@ -12,14 +12,13 @@
             <a href="{{ url_for('main.index') }}">IL Campaign Finance</a>
         </div>
         <ul class="nav-links">
-            <li><a href="{{ url_for('main.index') }}">Dashboard</a></li>
-            <li><a href="{{ url_for('committees.list_committees') }}">Committees</a></li>
-            <li><a href="{{ url_for('donors.list_donors') }}">Donors</a></li>
-            <li><a href="{{ url_for('reports.list_reports') }}">Reports</a></li>
+            <li><a href="{{ url_for('main.index') }}">Overview</a></li>
             <li><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Candidate Finance</a></li>
             <li><a href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance (FEC)</a></li>
-            <li><a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon') }}">D2 Reconciliation</a></li>
             <li><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></li>
+            <li><a href="{{ url_for('donors.list_donors') }}">Donors</a></li>
+            <li><a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon') }}">D2 Reconciliation</a></li>
+            <li><a href="{{ url_for('main.legacy') }}">Legacy Tools</a></li>
             <li><a href="{{ url_for('manual_entry.queue') }}">Manual Entry</a></li>
             {% if current_manual_user %}
             <li><a href="{{ url_for('auth.logout') }}">Sign Out ({{ current_manual_user.username }})</a></li>

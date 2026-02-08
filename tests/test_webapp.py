@@ -103,11 +103,15 @@ class TestWebApp:
                 committee_name TEXT,
                 committee_type TEXT,
                 committee_party_affiliation TEXT,
+                period_year INTEGER,
+                election_cycle INTEGER,
                 filing_count INTEGER,
                 sum_total_receipts REAL,
                 sum_total_expenditures REAL,
                 max_ending_funds_available REAL,
-                archived_filing_count INTEGER
+                archived_filing_count INTEGER,
+                period_start_date TEXT,
+                period_end_date TEXT
             )
             """
         )
@@ -116,15 +120,15 @@ class TestWebApp:
             INSERT INTO bulk_candidate_committee_finance_agg (
                 candidate_id, candidate_full_name, office_sought, district_type, district,
                 candidate_party_affiliation, committee_id_sbe, committee_name, committee_type,
-                committee_party_affiliation, filing_count, sum_total_receipts,
-                sum_total_expenditures, max_ending_funds_available, archived_filing_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                committee_party_affiliation, period_year, election_cycle, filing_count, sum_total_receipts,
+                sum_total_expenditures, max_ending_funds_available, archived_filing_count, period_start_date, period_end_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (201, "Jordan Smith", "Governor", "Statewide", "At-Large", "Democratic",
-                 101, "Committee A", "Political Action", "Democratic", 1, 3000.0, 1200.0, 500.0, 0),
+                 101, "Committee A", "Political Action", "Democratic", 2025, 2026, 1, 3000.0, 1200.0, 500.0, 0, "2025-01-01", "2025-01-31"),
                 (202, "Casey Jones", "Mayor", "Municipal", "7", "Independent",
-                 102, "Committee B", "Political Party", "Republican", 2, 5000.0, 900.0, 700.0, 1),
+                 102, "Committee B", "Political Party", "Republican", 2026, 2026, 2, 5000.0, 900.0, 700.0, 1, "2026-01-01", "2026-02-28"),
             ]
         )
         conn.commit()
@@ -146,11 +150,22 @@ class TestWebApp:
         assert b'Jordan Smith' in filtered_by_party.data
         assert b'Casey Jones' not in filtered_by_party.data
 
+        filtered_by_year = client.get('/candidate-finance/?year=2025')
+        assert filtered_by_year.status_code == 200
+        assert b'Jordan Smith' in filtered_by_year.data
+        assert b'Casey Jones' not in filtered_by_year.data
+
+        filtered_by_cycle = client.get('/candidate-finance/?cycle=2026')
+        assert filtered_by_cycle.status_code == 200
+        assert b'Jordan Smith' in filtered_by_cycle.data
+        assert b'Casey Jones' in filtered_by_cycle.data
+
         exported = client.get('/candidate-finance/?format=csv&committee_party=Republican')
         assert exported.status_code == 200
         assert exported.mimetype == 'text/csv'
         assert 'attachment; filename=candidate_committee_finance.csv' in exported.headers.get('Content-Disposition', '')
         assert b'candidate_id,candidate_full_name,office_sought' in exported.data
+        assert b'period_year,election_cycle' in exported.data
         assert b'Casey Jones' in exported.data
         assert b'Jordan Smith' not in exported.data
 
@@ -676,7 +691,12 @@ class TestWebApp:
         response = client.get('/candidate-finance/201/101/itemized?sort=amount&dir=desc')
         assert response.status_code == 200
         assert b'Candidate/Committee Itemized Receipts' in response.data
-        assert response.data.find(b'Donor Archived') < response.data.find(b'Elizabeth Bishop')
+        assert b'Donor Archived' not in response.data
+        assert b'Elizabeth Bishop' in response.data
+
+        response_with_archived = client.get('/candidate-finance/201/101/itemized?sort=amount&dir=desc&archived=all')
+        assert response_with_archived.status_code == 200
+        assert response_with_archived.data.find(b'Donor Archived') < response_with_archived.data.find(b'Elizabeth Bishop')
 
         filtered = client.get('/candidate-finance/201/101/itemized?d2_part=1&min_amount=90&archived=no')
         assert filtered.status_code == 200

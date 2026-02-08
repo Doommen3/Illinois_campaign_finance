@@ -333,7 +333,10 @@ def categorize_spending_text(text: str | None) -> str:
     return "uncategorized"
 
 
-_BULK_DONOR_PART_FILTER_SQL = "(COALESCE(r.d2_part_code, '') LIKE '1%' OR COALESCE(r.d2_part_code, '') LIKE '5%')"
+_BULK_DONOR_PART_FILTER_SQL = (
+    "COALESCE(r.is_archived, 0) = 0 AND "
+    "(COALESCE(r.d2_part_code, '') LIKE '1%' OR COALESCE(r.d2_part_code, '') LIKE '5%')"
+)
 
 
 def _has_bulk_receipts_donor_data(conn: sqlite3.Connection) -> bool:

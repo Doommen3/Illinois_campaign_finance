@@ -19,6 +19,16 @@ def _parse_float(value: str) -> float | None:
         return None
 
 
+def _parse_int(value: str) -> int | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 @candidate_finance_bp.route('/')
 def list_candidate_finance():
     """List candidate-committee aggregate finance rows from bulk imports."""
@@ -34,19 +44,25 @@ def list_candidate_finance():
     office = request.args.get('office', '').strip()
     candidate_party = request.args.get('candidate_party', '').strip()
     committee_party = request.args.get('committee_party', '').strip()
+    year_raw = request.args.get('year', '').strip()
+    cycle_raw = request.args.get('cycle', '').strip()
     min_receipts_raw = request.args.get('min_receipts', '').strip()
     min_expenditures_raw = request.args.get('min_expenditures', '').strip()
 
+    year = _parse_int(year_raw)
+    cycle = _parse_int(cycle_raw)
     min_receipts = _parse_float(min_receipts_raw)
     min_expenditures = _parse_float(min_expenditures_raw)
     output_format = request.args.get('format', 'html').strip().lower()
 
     table_available = CandidateCommitteeFinanceAgg.is_available(conn)
+    period_values = {"years": [], "cycles": []}
 
     rows = []
     total = 0
     total_pages = 0
     if table_available:
+        period_values = CandidateCommitteeFinanceAgg.list_period_values(conn)
         rows = CandidateCommitteeFinanceAgg.get_all(
             conn,
             limit=per_page,
@@ -57,6 +73,8 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            year=year,
+            cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
@@ -66,6 +84,8 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            year=year,
+            cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
@@ -85,6 +105,8 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            year=year,
+            cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
@@ -101,11 +123,15 @@ def list_candidate_finance():
             'committee_name',
             'committee_type',
             'committee_party_affiliation',
+            'period_year',
+            'election_cycle',
             'filing_count',
             'sum_total_receipts',
             'sum_total_expenditures',
             'max_ending_funds_available',
             'archived_filing_count',
+            'period_start_date',
+            'period_end_date',
         ])
         for row in csv_rows:
             writer.writerow([
@@ -119,11 +145,15 @@ def list_candidate_finance():
                 row.committee_name,
                 row.committee_type,
                 row.committee_party_affiliation,
+                row.period_year,
+                row.election_cycle,
                 row.filing_count,
                 row.sum_total_receipts,
                 row.sum_total_expenditures,
                 row.max_ending_funds_available,
                 row.archived_filing_count,
+                row.period_start_date,
+                row.period_end_date,
             ])
 
         response = Response(output.getvalue(), mimetype='text/csv')
@@ -142,6 +172,10 @@ def list_candidate_finance():
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        year=year_raw,
+        cycle=cycle_raw,
+        available_years=period_values["years"],
+        available_cycles=period_values["cycles"],
         min_receipts=min_receipts_raw,
         min_expenditures=min_expenditures_raw,
         table_available=table_available,
@@ -161,7 +195,7 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
     sort_dir = request.args.get('dir', 'desc')
     query = request.args.get('q', '').strip()
     d2_part = request.args.get('d2_part', '').strip()
-    archived = request.args.get('archived', 'all').strip().lower()
+    archived = request.args.get('archived', 'no').strip().lower()
     min_amount_raw = request.args.get('min_amount', '').strip()
     max_amount_raw = request.args.get('max_amount', '').strip()
     output_format = request.args.get('format', 'html').strip().lower()

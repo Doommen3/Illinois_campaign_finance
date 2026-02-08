@@ -640,6 +640,18 @@ def build_candidate_committee_joins(conn: sqlite3.Connection) -> dict:
         CREATE INDEX idx_bulk_cand_d2_committee_id ON bulk_candidate_committee_d2_totals(committee_id_sbe);
 
         CREATE TABLE bulk_candidate_committee_finance_agg AS
+        WITH filing_periods AS (
+            SELECT
+                committee_id_sbe,
+                filed_doc_id,
+                CAST(STRFTIME('%Y', MAX(received_date)) AS INTEGER) AS period_year,
+                MIN(received_date) AS period_start_date,
+                MAX(received_date) AS period_end_date
+            FROM bulk_receipts_clean
+            WHERE received_date IS NOT NULL
+              AND LENGTH(received_date) >= 4
+            GROUP BY committee_id_sbe, filed_doc_id
+        )
         SELECT
             cc.candidate_id,
             cc.candidate_full_name,
@@ -651,14 +663,34 @@ def build_candidate_committee_joins(conn: sqlite3.Connection) -> dict:
             cc.committee_name,
             cc.committee_type,
             cc.committee_party_affiliation,
-            COUNT(DISTINCT d2.filed_doc_id) AS filing_count,
-            COALESCE(SUM(d2.total_receipts), 0) AS sum_total_receipts,
-            COALESCE(SUM(d2.total_expenditures), 0) AS sum_total_expenditures,
-            COALESCE(MAX(d2.ending_funds_available), 0) AS max_ending_funds_available,
-            COALESCE(SUM(CASE WHEN d2.is_archived = 1 THEN 1 ELSE 0 END), 0) AS archived_filing_count
+            fp.period_year,
+            CASE
+                WHEN fp.period_year IS NULL THEN NULL
+                WHEN fp.period_year % 2 = 0 THEN fp.period_year
+                ELSE fp.period_year + 1
+            END AS election_cycle,
+            COUNT(DISTINCT CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN d2.filed_doc_id END) AS filing_count,
+            COALESCE(
+                SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN COALESCE(d2.total_receipts, 0) ELSE 0 END),
+                0
+            ) AS sum_total_receipts,
+            COALESCE(
+                SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END),
+                0
+            ) AS sum_total_expenditures,
+            COALESCE(
+                MAX(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN d2.ending_funds_available END),
+                0
+            ) AS max_ending_funds_available,
+            COALESCE(SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived_filing_count,
+            MIN(fp.period_start_date) AS period_start_date,
+            MAX(fp.period_end_date) AS period_end_date
         FROM bulk_committee_candidate_links cc
         LEFT JOIN bulk_d2_totals_clean d2
           ON d2.committee_id_sbe = cc.committee_id_sbe
+        LEFT JOIN filing_periods fp
+          ON fp.committee_id_sbe = d2.committee_id_sbe
+         AND fp.filed_doc_id = d2.filed_doc_id
         GROUP BY
             cc.candidate_id,
             cc.candidate_full_name,
@@ -669,10 +701,18 @@ def build_candidate_committee_joins(conn: sqlite3.Connection) -> dict:
             cc.committee_id_sbe,
             cc.committee_name,
             cc.committee_type,
-            cc.committee_party_affiliation;
+            cc.committee_party_affiliation,
+            fp.period_year,
+            CASE
+                WHEN fp.period_year IS NULL THEN NULL
+                WHEN fp.period_year % 2 = 0 THEN fp.period_year
+                ELSE fp.period_year + 1
+            END;
 
         CREATE INDEX idx_bulk_cand_agg_candidate_id ON bulk_candidate_committee_finance_agg(candidate_id);
         CREATE INDEX idx_bulk_cand_agg_committee_id ON bulk_candidate_committee_finance_agg(committee_id_sbe);
+        CREATE INDEX idx_bulk_cand_agg_period_year ON bulk_candidate_committee_finance_agg(period_year);
+        CREATE INDEX idx_bulk_cand_agg_election_cycle ON bulk_candidate_committee_finance_agg(election_cycle);
         """
     )
     conn.commit()
@@ -753,6 +793,7 @@ def build_receipts_joins(conn: sqlite3.Connection) -> dict:
                 MIN(received_date) AS first_receipt_date,
                 MAX(received_date) AS last_receipt_date
             FROM bulk_receipts_clean
+            WHERE COALESCE(is_archived, 0) = 0
             GROUP BY committee_id_sbe, filed_doc_id
         )
         SELECT
@@ -791,19 +832,20 @@ def build_receipts_joins(conn: sqlite3.Connection) -> dict:
             cc.committee_name,
             cc.committee_type,
             cc.committee_party_affiliation,
-            COUNT(r.receipt_record_id) AS receipt_count,
-            COUNT(DISTINCT r.filed_doc_id) AS filing_count_with_receipts,
-            COALESCE(SUM(r.amount), 0) AS sum_receipt_amount,
-            COALESCE(SUM(r.aggregate_amount), 0) AS sum_aggregate_amount,
-            COALESCE(SUM(r.loan_amount), 0) AS sum_loan_amount,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '1%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_1_contributions,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '2%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_2_transfers_in,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '3%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_3_loans_received,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '4%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_4_other_receipts,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '5%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_5_expenditures,
-            COALESCE(SUM(CASE WHEN r.d2_part_code LIKE '8%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_8_debts,
-            MIN(r.received_date) AS first_receipt_date,
-            MAX(r.received_date) AS last_receipt_date
+            COUNT(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.receipt_record_id END) AS receipt_count,
+            COUNT(DISTINCT CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.filed_doc_id END) AS filing_count_with_receipts,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.amount, 0) ELSE 0 END), 0) AS sum_receipt_amount,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.aggregate_amount, 0) ELSE 0 END), 0) AS sum_aggregate_amount,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.loan_amount, 0) ELSE 0 END), 0) AS sum_loan_amount,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '1%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_1_contributions,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '2%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_2_transfers_in,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '3%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_3_loans_received,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '4%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_4_other_receipts,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '5%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_5_expenditures,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '8%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_8_debts,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived_receipt_count,
+            MIN(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.received_date END) AS first_receipt_date,
+            MAX(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.received_date END) AS last_receipt_date
         FROM bulk_committee_candidate_links cc
         LEFT JOIN bulk_receipts_clean r
           ON r.committee_id_sbe = cc.committee_id_sbe

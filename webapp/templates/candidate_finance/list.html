@@ -9,6 +9,8 @@
     office=office,
     candidate_party=candidate_party,
     committee_party=committee_party,
+    year=year,
+    cycle=cycle,
     min_receipts=min_receipts,
     min_expenditures=min_expenditures,
     sort=field,
@@ -34,6 +36,18 @@
     <input type="text" name="office" value="{{ office }}" placeholder="Office contains...">
     <input type="text" name="candidate_party" value="{{ candidate_party }}" placeholder="Candidate party contains...">
     <input type="text" name="committee_party" value="{{ committee_party }}" placeholder="Committee party contains...">
+    <select name="year">
+        <option value="">All years</option>
+        {% for option in available_years %}
+        <option value="{{ option }}" {% if year|int == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+    </select>
+    <select name="cycle">
+        <option value="">All cycles</option>
+        {% for option in available_cycles %}
+        <option value="{{ option }}" {% if cycle|int == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+    </select>
     <input type="text" name="min_receipts" value="{{ min_receipts }}" placeholder="Min receipts">
     <input type="text" name="min_expenditures" value="{{ min_expenditures }}" placeholder="Min expenditures">
     <input type="hidden" name="sort" value="{{ sort_by }}">
@@ -50,6 +64,8 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        year=year,
+        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
@@ -62,6 +78,8 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        year=year,
+        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
@@ -82,6 +100,8 @@
             <th>{{ sort_link('committee_name', 'Committee') }}</th>
             <th>{{ sort_link('committee_type', 'Committee Type') }}</th>
             <th>{{ sort_link('committee_party_affiliation', 'Committee Party') }}</th>
+            <th>{{ sort_link('period_year', 'Year') }}</th>
+            <th>{{ sort_link('election_cycle', 'Cycle') }}</th>
             <th>{{ sort_link('filing_count', 'Filings') }}</th>
             <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
             <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
@@ -118,6 +138,8 @@
             </td>
             <td>{{ row.committee_type if row.committee_type else '-' }}</td>
             <td>{{ row.committee_party_affiliation if row.committee_party_affiliation else '-' }}</td>
+            <td>{{ row.period_year if row.period_year is not none else '-' }}</td>
+            <td>{{ row.election_cycle if row.election_cycle is not none else '-' }}</td>
             <td>{{ row.filing_count }}</td>
             <td>{{ format_currency(row.sum_total_receipts) }}</td>
             <td>{{ format_currency(row.sum_total_expenditures) }}</td>
@@ -126,7 +148,7 @@
         </tr>
         {% else %}
         <tr>
-            <td colspan="15">No rows found for this query.</td>
+            <td colspan="17">No rows found for this query.</td>
         </tr>
         {% endfor %}
     </tbody>
@@ -142,6 +164,8 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        year=year,
+        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
@@ -159,6 +183,8 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        year=year,
+        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
