@@ -359,6 +359,122 @@ def test_materialized_refresh_and_snapshot_cache(analytics_conn):
     assert "network" in cached["payload"]
 
 
+def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
+    db_path = str(tmp_path / "analytics_bulk_filter.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    try:
+        conn.execute("DROP TABLE IF EXISTS bulk_committees_clean")
+        conn.execute("DROP TABLE IF EXISTS bulk_d2_totals_clean")
+        conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
+
+        conn.execute(
+            """
+            CREATE TABLE bulk_committees_clean (
+                committee_id_sbe INTEGER PRIMARY KEY,
+                committee_name TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bulk_d2_totals_clean (
+                d2_totals_record_id INTEGER PRIMARY KEY,
+                committee_id_sbe INTEGER,
+                filed_doc_id INTEGER,
+                is_archived INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bulk_receipts_clean (
+                receipt_record_id INTEGER,
+                committee_id_sbe INTEGER,
+                filed_doc_id INTEGER,
+                last_or_business_name TEXT,
+                first_name TEXT,
+                received_date TEXT,
+                amount REAL,
+                occupation TEXT,
+                employer TEXT,
+                address_line_1 TEXT,
+                address_line_2 TEXT,
+                city TEXT,
+                state TEXT,
+                postal_code TEXT,
+                d2_part_code TEXT,
+                is_archived INTEGER
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            INSERT INTO bulk_committees_clean (committee_id_sbe, committee_name)
+            VALUES (10, 'Committee Ten')
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_d2_totals_clean (d2_totals_record_id, committee_id_sbe, filed_doc_id, is_archived)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (1, 10, 100, 0),
+                (2, 10, 101, 1),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_receipts_clean (
+                receipt_record_id, committee_id_sbe, filed_doc_id, last_or_business_name, first_name,
+                received_date, amount, occupation, employer, address_line_1, address_line_2,
+                city, state, postal_code, d2_part_code, is_archived
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, 10, 100, "Included", "Alice", "2026-01-10 00:00:00", 100.0, None, None, "1 Main", "", "Chicago", "IL", "60601", "1A", 0),
+                (2, 10, 100, "Archived", "Amy", "2026-01-10 00:00:00", 900.0, None, None, "2 Main", "", "Chicago", "IL", "60601", "1A", 1),
+                (3, 10, 100, "PartFive", "Pat", "2026-01-10 00:00:00", 800.0, None, None, "3 Main", "", "Chicago", "IL", "60601", "5A", 0),
+                (4, 10, 999, "MissingD2", "Mia", "2026-01-10 00:00:00", 700.0, None, None, "4 Main", "", "Chicago", "IL", "60601", "1A", 0),
+                (5, 10, 101, "ArchivedD2", "Dina", "2026-01-10 00:00:00", 600.0, None, None, "5 Main", "", "Chicago", "IL", "60601", "1A", 0),
+            ],
+        )
+        conn.commit()
+
+        stats = refresh_analytics_materialized(conn)
+        assert stats["source"] == "bulk_receipts"
+        assert stats["materialization_version"] >= 2
+        assert stats["donor_summary_rows"] == 1
+
+        donor_rows = conn.execute(
+            """
+            SELECT donor_name, total_amount, contribution_count
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+            ORDER BY donor_name
+            """
+        ).fetchall()
+        assert len(donor_rows) == 1
+        assert donor_rows[0]["donor_name"] == "Alice Included"
+        assert donor_rows[0]["total_amount"] == 100.0
+        assert donor_rows[0]["contribution_count"] == 1
+
+        meta_row = conn.execute(
+            """
+            SELECT materialization_version, materialization_notes
+            FROM analytics_materialized_meta
+            WHERE source = 'bulk_receipts'
+            """
+        ).fetchone()
+        assert meta_row is not None
+        assert int(meta_row["materialization_version"]) >= 2
+        assert "active_non_archived_d2_part1" in (meta_row["materialization_notes"] or "")
+    finally:
+        conn.close()
+
+
 def test_analytics_dashboard_route_loads(analytics_client):
     response = analytics_client.get("/analytics/")
     assert response.status_code == 200

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
-from typing import Optional, List
+from typing import Optional, List, ClassVar
 import sqlite3
 
 from .identifiers import make_source_identifier, normalize_source_url
@@ -506,6 +506,7 @@ class Donor:
     donor_city: Optional[str] = None
     donor_state: Optional[str] = None
     source: Optional[str] = None
+    BULK_RECEIPTS_MATERIALIZATION_VERSION: ClassVar[int] = 2
 
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
@@ -516,10 +517,61 @@ class Donor:
         return row is not None
 
     @classmethod
+    def _column_exists(cls, conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+        if not cls._table_exists(conn, table_name):
+            return False
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(row["name"] == column_name for row in rows)
+
+    @classmethod
+    def _bulk_materialization_is_current(cls, conn: sqlite3.Connection) -> bool:
+        if not cls._table_exists(conn, "analytics_materialized_meta"):
+            return False
+        if not cls._column_exists(conn, "analytics_materialized_meta", "materialization_version"):
+            return False
+        row = conn.execute(
+            """
+            SELECT materialization_version
+            FROM analytics_materialized_meta
+            WHERE source = 'bulk_receipts'
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return False
+        try:
+            return int(row["materialization_version"] or 0) >= cls.BULK_RECEIPTS_MATERIALIZATION_VERSION
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _refresh_bulk_materialization_if_stale(cls, conn: sqlite3.Connection) -> None:
+        if not cls._table_exists(conn, "analytics_donor_summary"):
+            return
+        has_bulk_rows = conn.execute(
+            """
+            SELECT 1
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+            LIMIT 1
+            """
+        ).fetchone()
+        if not has_bulk_rows or cls._bulk_materialization_is_current(conn):
+            return
+        try:
+            from database.analytics import refresh_analytics_materialized
+
+            refresh_analytics_materialized(conn)
+        except Exception:
+            # Keep donor pages readable even if a rebuild cannot happen right now.
+            return
+
+    @classmethod
     def get_directory_source(cls, conn: sqlite3.Connection) -> Optional[str]:
         """Return donor directory source when materialized summary is available."""
         if not cls._table_exists(conn, "analytics_donor_summary"):
             return None
+        cls._refresh_bulk_materialization_if_stale(conn)
         bulk_row = conn.execute(
             """
             SELECT 1
@@ -528,7 +580,7 @@ class Donor:
             LIMIT 1
             """
         ).fetchone()
-        if bulk_row:
+        if bulk_row and cls._bulk_materialization_is_current(conn):
             return "bulk_receipts"
 
         contrib_row = conn.execute(

@@ -271,6 +271,8 @@ CREATE TABLE IF NOT EXISTS analytics_materialized_meta (
     monthly_row_count INTEGER NOT NULL DEFAULT 0,
     large_row_count INTEGER NOT NULL DEFAULT 0,
     large_threshold REAL NOT NULL DEFAULT 0,
+    materialization_version INTEGER NOT NULL DEFAULT 1,
+    materialization_notes TEXT,
     refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

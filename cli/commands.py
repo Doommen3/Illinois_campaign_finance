@@ -81,7 +81,9 @@ def create_user_command(username, password, inactive):
 @cli.command('import-bulk-download')
 @click.option('--directory', default='Bulk_download', show_default=True,
               help='Directory containing bulk TXT download files')
-def import_bulk_download_command(directory):
+@click.option('--refresh-analytics/--skip-refresh-analytics', default=True, show_default=True,
+              help='Rebuild materialized analytics after import')
+def import_bulk_download_command(directory, refresh_analytics):
     """Import and normalize bulk committees/D2/candidate/link/receipts files into joined tables."""
     conn = get_db(config.DATABASE_PATH)
     try:
@@ -89,6 +91,11 @@ def import_bulk_download_command(directory):
         click.echo('Bulk download import completed:')
         for key, value in results.items():
             click.echo(f'  {key}: {value}')
+        if refresh_analytics:
+            click.echo('Refreshing materialized analytics tables...')
+            analytics_stats = refresh_analytics_materialized(conn)
+            for key, value in analytics_stats.items():
+                click.echo(f'  analytics_{key}: {value}')
     except Exception as e:
         click.echo(f'Error importing bulk download files: {e}', err=True)
         sys.exit(1)

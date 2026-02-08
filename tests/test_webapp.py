@@ -832,6 +832,23 @@ class TestWebApp:
                 2,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO analytics_materialized_meta (
+                source, donor_row_count, monthly_row_count, large_row_count, large_threshold,
+                materialization_version, materialization_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                donor_row_count = excluded.donor_row_count,
+                monthly_row_count = excluded.monthly_row_count,
+                large_row_count = excluded.large_row_count,
+                large_threshold = excluded.large_threshold,
+                materialization_version = excluded.materialization_version,
+                materialization_notes = excluded.materialization_notes,
+                refreshed_at = CURRENT_TIMESTAMP
+            """,
+            ("bulk_receipts", 1, 0, 0, 5000.0, 2, "test-fixture"),
+        )
         conn.commit()
         conn.close()
 
@@ -872,6 +889,23 @@ class TestWebApp:
                 2,
                 1,
             ),
+        )
+        conn.execute(
+            """
+            INSERT INTO analytics_materialized_meta (
+                source, donor_row_count, monthly_row_count, large_row_count, large_threshold,
+                materialization_version, materialization_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                donor_row_count = excluded.donor_row_count,
+                monthly_row_count = excluded.monthly_row_count,
+                large_row_count = excluded.large_row_count,
+                large_threshold = excluded.large_threshold,
+                materialization_version = excluded.materialization_version,
+                materialization_notes = excluded.materialization_notes,
+                refreshed_at = CURRENT_TIMESTAMP
+            """,
+            ("bulk_receipts", 1, 0, 0, 5000.0, 2, "test-fixture"),
         )
         conn.commit()
         conn.close()

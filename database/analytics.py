@@ -333,14 +333,30 @@ def categorize_spending_text(text: str | None) -> str:
     return "uncategorized"
 
 
-_BULK_DONOR_PART_FILTER_SQL = (
+BULK_RECEIPTS_MATERIALIZATION_VERSION = 2
+CONTRIBUTIONS_MATERIALIZATION_VERSION = 1
+
+_BULK_DONOR_RECEIPT_FILTER_SQL = (
     "COALESCE(r.is_archived, 0) = 0 AND "
-    "(COALESCE(r.d2_part_code, '') LIKE '1%' OR COALESCE(r.d2_part_code, '') LIKE '5%')"
+    "COALESCE(r.d2_part_code, '') LIKE '1%' AND "
+    "EXISTS ("
+    "SELECT 1 "
+    "FROM bulk_d2_totals_clean d2 "
+    "WHERE d2.filed_doc_id = r.filed_doc_id "
+    "  AND COALESCE(d2.is_archived, 0) = 0"
+    ")"
 )
+
+_MATERIALIZED_SOURCE_TABLES = {
+    "analytics_donor_committee_agg",
+    "analytics_committee_monthly_totals",
+    "analytics_large_contributions",
+    "analytics_donor_summary",
+}
 
 
 def _has_bulk_receipts_donor_data(conn: sqlite3.Connection) -> bool:
-    required = ["bulk_receipts_clean", "bulk_committees_clean"]
+    required = ["bulk_receipts_clean", "bulk_committees_clean", "bulk_d2_totals_clean"]
     if not all(_table_exists(conn, table_name) for table_name in required):
         return False
     row = conn.execute(
@@ -348,7 +364,7 @@ def _has_bulk_receipts_donor_data(conn: sqlite3.Connection) -> bool:
         SELECT 1
         FROM bulk_receipts_clean r
         WHERE COALESCE(r.amount, 0) > 0
-          AND {_BULK_DONOR_PART_FILTER_SQL}
+          AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
         LIMIT 1
         """
     ).fetchone()
@@ -391,8 +407,47 @@ def _stable_entity_key(*values: str | None) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def _materialization_version_for_source(source: str) -> int:
+    if source == "bulk_receipts":
+        return BULK_RECEIPTS_MATERIALIZATION_VERSION
+    return CONTRIBUTIONS_MATERIALIZATION_VERSION
+
+
+def _materialized_source_is_current(conn: sqlite3.Connection, source: str) -> bool:
+    if not _table_exists(conn, "analytics_materialized_meta"):
+        return False
+    # Legacy DBs without version tracking are treated as stale for bulk rows.
+    if not _column_exists(conn, "analytics_materialized_meta", "materialization_version"):
+        return source != "bulk_receipts"
+    row = conn.execute(
+        """
+        SELECT materialization_version
+        FROM analytics_materialized_meta
+        WHERE source = ?
+        LIMIT 1
+        """,
+        (source,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        version = int(row["materialization_version"] or 0)
+    except (TypeError, ValueError):
+        return False
+    return version >= _materialization_version_for_source(source)
+
+
 def _rows_for_source_exist(conn: sqlite3.Connection, table_name: str, source: str) -> bool:
     if not _table_exists(conn, table_name):
+        return False
+    if table_name in _MATERIALIZED_SOURCE_TABLES and not _materialized_source_is_current(conn, source):
         return False
     row = conn.execute(
         f"SELECT 1 FROM {table_name} WHERE source = ? LIMIT 1",
@@ -469,7 +524,7 @@ def _get_donor_committee_rows(
             FROM bulk_receipts_clean r
             LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
             WHERE COALESCE(r.amount, 0) > 0
-              AND {_BULK_DONOR_PART_FILTER_SQL}
+              AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
             GROUP BY
                 r.first_name,
                 r.last_or_business_name,
@@ -900,7 +955,7 @@ def get_anomaly_flags(
                     COUNT(*) OVER () AS cnt
                 FROM bulk_receipts_clean r
                 WHERE COALESCE(r.amount, 0) > 0
-                  AND {_BULK_DONOR_PART_FILTER_SQL}
+                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
             )
             SELECT amount
             FROM ordered
@@ -929,7 +984,7 @@ def get_anomaly_flags(
             FROM bulk_receipts_clean r
             LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
             WHERE COALESCE(r.amount, 0) >= ?
-              AND {_BULK_DONOR_PART_FILTER_SQL}
+              AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
             ORDER BY r.amount DESC
             LIMIT ?
             """,
@@ -961,7 +1016,7 @@ def get_anomaly_flags(
             FROM bulk_receipts_clean r
             LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
             WHERE COALESCE(r.amount, 0) > 0
-              AND {_BULK_DONOR_PART_FILTER_SQL}
+              AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
               AND r.received_date IS NOT NULL
               AND LENGTH(r.received_date) >= 7
             GROUP BY committee_name, month_key
@@ -1129,7 +1184,7 @@ def get_time_series(
                 COUNT(*) AS contribution_count
             FROM bulk_receipts_clean r
             WHERE COALESCE(r.amount, 0) > 0
-              AND {_BULK_DONOR_PART_FILTER_SQL}
+              AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
               AND r.received_date IS NOT NULL
               AND LENGTH(r.received_date) >= 7
             GROUP BY month_key
@@ -1402,7 +1457,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         FROM bulk_receipts_clean r
         LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
         WHERE COALESCE(r.amount, 0) > 0
-          AND {_BULK_DONOR_PART_FILTER_SQL}
+          AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
         GROUP BY
             LOWER(TRIM(
                 COALESCE(r.first_name, '') || '|' || COALESCE(r.last_or_business_name, '') || '|' ||
@@ -1474,7 +1529,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         FROM bulk_receipts_clean r
         LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
         WHERE COALESCE(r.amount, 0) > 0
-          AND {_BULK_DONOR_PART_FILTER_SQL}
+          AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
           AND r.received_date IS NOT NULL
           AND LENGTH(r.received_date) >= 7
         GROUP BY
@@ -1501,7 +1556,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
                 COUNT(*) OVER () AS cnt
             FROM bulk_receipts_clean r
             WHERE COALESCE(r.amount, 0) > 0
-              AND {_BULK_DONOR_PART_FILTER_SQL}
+              AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
         )
         SELECT amount
         FROM ordered
@@ -1535,7 +1590,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         FROM bulk_receipts_clean r
         LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
         WHERE COALESCE(r.amount, 0) >= ?
-          AND {_BULK_DONOR_PART_FILTER_SQL}
+          AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
         """,
         (float(large_threshold), float(large_threshold)),
     )
@@ -1552,16 +1607,27 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
     conn.execute(
         """
         INSERT INTO analytics_materialized_meta (
-            source, donor_row_count, monthly_row_count, large_row_count, large_threshold, refreshed_at
-        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            source, donor_row_count, monthly_row_count, large_row_count,
+            large_threshold, materialization_version, materialization_notes, refreshed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(source) DO UPDATE SET
             donor_row_count = excluded.donor_row_count,
             monthly_row_count = excluded.monthly_row_count,
             large_row_count = excluded.large_row_count,
             large_threshold = excluded.large_threshold,
+            materialization_version = excluded.materialization_version,
+            materialization_notes = excluded.materialization_notes,
             refreshed_at = CURRENT_TIMESTAMP
         """,
-        ("bulk_receipts", donor_inserted, monthly_inserted, large_inserted, float(large_threshold)),
+        (
+            "bulk_receipts",
+            donor_inserted,
+            monthly_inserted,
+            large_inserted,
+            float(large_threshold),
+            BULK_RECEIPTS_MATERIALIZATION_VERSION,
+            "active_non_archived_d2_part1_with_active_d2_filing",
+        ),
     )
 
     return {
@@ -1571,6 +1637,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         "monthly_rows": monthly_inserted,
         "large_rows": large_inserted,
         "large_threshold": round(float(large_threshold), 2),
+        "materialization_version": BULK_RECEIPTS_MATERIALIZATION_VERSION,
     }
 
 
@@ -1754,16 +1821,27 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
     conn.execute(
         """
         INSERT INTO analytics_materialized_meta (
-            source, donor_row_count, monthly_row_count, large_row_count, large_threshold, refreshed_at
-        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            source, donor_row_count, monthly_row_count, large_row_count,
+            large_threshold, materialization_version, materialization_notes, refreshed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(source) DO UPDATE SET
             donor_row_count = excluded.donor_row_count,
             monthly_row_count = excluded.monthly_row_count,
             large_row_count = excluded.large_row_count,
             large_threshold = excluded.large_threshold,
+            materialization_version = excluded.materialization_version,
+            materialization_notes = excluded.materialization_notes,
             refreshed_at = CURRENT_TIMESTAMP
         """,
-        ("contributions", donor_inserted, monthly_inserted, large_inserted, float(large_threshold)),
+        (
+            "contributions",
+            donor_inserted,
+            monthly_inserted,
+            large_inserted,
+            float(large_threshold),
+            CONTRIBUTIONS_MATERIALIZATION_VERSION,
+            "legacy_contributions_table",
+        ),
     )
 
     return {
@@ -1773,6 +1851,7 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
         "monthly_rows": monthly_inserted,
         "large_rows": large_inserted,
         "large_threshold": round(float(large_threshold), 2),
+        "materialization_version": CONTRIBUTIONS_MATERIALIZATION_VERSION,
     }
 
 
