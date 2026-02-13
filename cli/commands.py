@@ -154,7 +154,7 @@ def create_user_command(username, password, inactive):
 @click.option('--refresh-analytics/--skip-refresh-analytics', default=True, show_default=True,
               help='Rebuild materialized analytics after import')
 def import_bulk_download_command(directory, refresh_analytics):
-    """Import and normalize bulk committees/D2/candidate/link/receipts files into joined tables."""
+    """Import and normalize bulk committees/D2/candidate/link/receipts/expenditures files into joined tables."""
     conn = get_db(config.DATABASE_PATH)
     try:
         results = import_bulk_download(conn, Path(directory))

@@ -4,7 +4,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ## Data Sources
 
-- **Illinois State Board of Elections (ISBE)** — Committee filings, D-2 reports, itemized receipts, candidate/committee metadata via bulk TXT exports and web scraping
+- **Illinois State Board of Elections (ISBE)** — Committee filings, D-2 reports, itemized receipts, itemized expenditures, candidate/committee metadata via bulk TXT exports and web scraping
 - **Federal Elections Commission (FEC)** — Illinois federal candidates, Schedule A contributions, and committee linkages via the FEC API
 
 ## Features
@@ -12,7 +12,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 ### Data Pipeline
 - Async Playwright-based web scraping with ASP.NET postback/ViewState handling
 - Resumable scrape state management with configurable rate limiting and exponential backoff
-- Bulk CSV/TXT ingestion (990MB+ receipt files) with chunked loading
+- Bulk CSV/TXT ingestion (990MB+ receipt files and large expenditure files) with chunked loading
 - Duplicate detection via source identifiers and amendment-safe aggregation
 - Raw extraction staging for full audit trails
 
@@ -28,6 +28,8 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
+- Candidate/committee itemized inflow (receipts) and outflow (expenditures) drilldowns with CSV export
+- D2-vs-itemized reconciliation pages for both receipts and expenditures
 - Expanded global search across committees, donors, candidates, reports, filed-doc IDs, and donor keys
 - Candidate/committee side-by-side compare mode with trend overlays and donor overlap summaries
 - Row-level provenance panels on key tables (source table, sync timing, normalization notes, backlinks)
@@ -300,6 +302,36 @@ systemctl restart ilcf-web.service
 /srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
 ```
 
+### Uploading New ISBE `expenditures_*.txt` and Updating Production
+
+Use this flow when you receive a new ISBE expenditures bulk file.
+
+```bash
+# Local machine: upload file to production app bulk folder
+scp -i ~/.ssh/hetzner_ed25519 \
+  /Users/devin/Illinois_campaign_finance/Bulk_download/expenditures_XXXXXXXXXXXX.txt \
+  root@178.156.162.56:/srv/illinois_campaign_finance/app/Bulk_download/
+
+# Server: optional DB backup before import
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+sqlite3 /srv/illinois_campaign_finance/shared/data/campaign_finance.db \
+  \".backup '/srv/illinois_campaign_finance/shared/data/campaign_finance_$(date +%F_%H%M%S).bak'\"
+
+# Server: run bulk import (loads latest committees/d2/candidates/links/receipts/expenditures files)
+cd /srv/illinois_campaign_finance/app
+set -a; source /srv/illinois_campaign_finance/shared/.env; set +a
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py import-bulk-download --directory Bulk_download
+
+# Rebuild analytics snapshot + restart web service
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
+systemctl restart ilcf-web.service
+```
+
+Notes:
+- The import now includes `bulk_expenditures_clean`, `bulk_expenditures_rejects`, and derived reconciliation/aggregate tables.
+- Malformed expenditure rows are quarantined in `bulk_expenditures_rejects` (they do not block the whole import).
+- Prefer running import directly against production DB rather than replacing DB files across environments.
+
 ### Key Web Routes
 
 | Route | Description |
@@ -309,6 +341,10 @@ systemctl restart ilcf-web.service
 | `/compare` | Candidate-vs-candidate or committee-vs-committee trend and overlap comparison |
 | `/candidates` | Unified candidates page — state (ISBE) and federal (FEC) |
 | `/candidate-finance` | State candidate finance detail (ISBE data) |
+| `/candidate-finance/<candidate_id>/<committee_id>/itemized` | Candidate/committee itemized receipts (money in) |
+| `/candidate-finance/<candidate_id>/<committee_id>/itemized-expenditures` | Candidate/committee itemized expenditures (money out) |
+| `/d2-reconciliation` | D2-vs-itemized receipts reconciliation |
+| `/d2-expenditures-reconciliation` | D2-vs-itemized expenditures reconciliation |
 | `/federal-finance` | Federal candidate finance detail (FEC data, includes Schedule A/B/E drilldowns) |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
@@ -321,6 +357,10 @@ CSV exports:
 - Candidate detail Schedule E: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_e`
 - Live feed Schedule B: `/live-feed?format=csv&table=schedule_b`
 - Live feed Schedule E: `/live-feed?format=csv&table=schedule_e`
+- Candidate/committee itemized receipts: `/candidate-finance/<candidate_id>/<committee_id>/itemized?format=csv`
+- Candidate/committee itemized expenditures: `/candidate-finance/<candidate_id>/<committee_id>/itemized-expenditures?format=csv`
+- D2 receipts reconciliation: `/d2-reconciliation/?format=csv`
+- D2 expenditures reconciliation: `/d2-expenditures-reconciliation/?format=csv`
 
 ### Mobile Smoke Check
 

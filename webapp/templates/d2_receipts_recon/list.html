@@ -55,46 +55,50 @@
         sort=sort_by,
         dir=sort_dir
     ) }}">Share This View</a>
+    |
+    <a href="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">View Expenditures Reconciliation</a>
 </div>
 
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>{{ sort_link('committee_id_sbe', 'Committee ID') }}</th>
-            <th>{{ sort_link('committee_name', 'Committee') }}</th>
-            <th>{{ sort_link('filed_doc_id', 'Filed Doc ID') }}</th>
-            <th>{{ sort_link('d2_total_receipts', 'D2 Total Receipts') }}</th>
-            <th>{{ sort_link('receipts_amount_sum', 'Itemized Sum') }}</th>
-            <th>{{ sort_link('receipts_minus_d2_total', 'Difference') }}</th>
-            <th>{{ sort_link('abs_diff', 'Abs Diff') }}</th>
-            <th>{{ sort_link('receipt_row_count', 'Receipt Rows') }}</th>
-            <th>{{ sort_link('first_receipt_date', 'First Receipt') }}</th>
-            <th>{{ sort_link('last_receipt_date', 'Last Receipt') }}</th>
-            <th>{{ sort_link('is_archived', 'Archived') }}</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>{{ row.committee_id_sbe if row.committee_id_sbe is not none else '-' }}</td>
-            <td>{{ row.committee_name if row.committee_name else '-' }}</td>
-            <td>{{ row.filed_doc_id if row.filed_doc_id is not none else '-' }}</td>
-            <td>{{ format_currency(row.d2_total_receipts) }}</td>
-            <td>{{ format_currency(row.receipts_amount_sum) }}</td>
-            <td>{{ format_currency(row.receipts_minus_d2_total) }}</td>
-            <td>{{ format_currency(row.receipts_minus_d2_total|abs) }}</td>
-            <td>{{ row.receipt_row_count }}</td>
-            <td>{{ row.first_receipt_date if row.first_receipt_date else '-' }}</td>
-            <td>{{ row.last_receipt_date if row.last_receipt_date else '-' }}</td>
-            <td>{{ 'yes' if row.is_archived == 1 else 'no' }}</td>
-        </tr>
-        {% else %}
-        <tr>
-            <td colspan="11">No reconciliation rows found for this query.</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>{{ sort_link('committee_id_sbe', 'Committee ID') }}</th>
+                <th>{{ sort_link('committee_name', 'Committee') }}</th>
+                <th>{{ sort_link('filed_doc_id', 'Filed Doc ID') }}</th>
+                <th>{{ sort_link('d2_total_receipts', 'D2 Total Receipts') }}</th>
+                <th>{{ sort_link('receipts_amount_sum', 'Itemized Sum') }}</th>
+                <th>{{ sort_link('receipts_minus_d2_total', 'Difference') }}</th>
+                <th>{{ sort_link('abs_diff', 'Abs Diff') }}</th>
+                <th>{{ sort_link('receipt_row_count', 'Receipt Rows') }}</th>
+                <th>{{ sort_link('first_receipt_date', 'First Receipt') }}</th>
+                <th>{{ sort_link('last_receipt_date', 'Last Receipt') }}</th>
+                <th>{{ sort_link('is_archived', 'Archived') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row.committee_id_sbe if row.committee_id_sbe is not none else '-' }}</td>
+                <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                <td>{{ row.filed_doc_id if row.filed_doc_id is not none else '-' }}</td>
+                <td>{{ format_currency(row.d2_total_receipts) }}</td>
+                <td>{{ format_currency(row.receipts_amount_sum) }}</td>
+                <td>{{ format_currency(row.receipts_minus_d2_total) }}</td>
+                <td>{{ format_currency(row.receipts_minus_d2_total|abs) }}</td>
+                <td>{{ row.receipt_row_count }}</td>
+                <td>{{ row.first_receipt_date if row.first_receipt_date else '-' }}</td>
+                <td>{{ row.last_receipt_date if row.last_receipt_date else '-' }}</td>
+                <td>{{ 'yes' if row.is_archived == 1 else 'no' }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="11">No reconciliation rows found for this query.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
 {% if total_pages > 1 %}
 <nav class="pagination">

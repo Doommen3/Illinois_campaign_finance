@@ -5,7 +5,11 @@ from io import StringIO
 
 from flask import Blueprint, Response, render_template, request, current_app
 
-from database.models import CandidateCommitteeFinanceAgg, CandidateCommitteeItemizedReceipt
+from database.models import (
+    CandidateCommitteeFinanceAgg,
+    CandidateCommitteeItemizedExpenditure,
+    CandidateCommitteeItemizedReceipt,
+)
 
 candidate_finance_bp = Blueprint('candidate_finance', __name__)
 
@@ -343,6 +347,162 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
         query=query,
         d2_part=d2_part,
         archived=archived,
+        min_amount=min_amount_raw,
+        max_amount=max_amount_raw,
+    )
+
+
+@candidate_finance_bp.route('/<int:candidate_id>/<int:committee_id>/itemized-expenditures')
+def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: int):
+    """Show itemized expenditure rows for one candidate/committee pair."""
+    conn = current_app.get_database()
+
+    page = max(request.args.get('page', 1, type=int), 1)
+    per_page = 100
+    offset = (page - 1) * per_page
+
+    sort_by = request.args.get('sort', 'expended_date')
+    sort_dir = request.args.get('dir', 'desc')
+    query = request.args.get('q', '').strip()
+    d2_part = request.args.get('d2_part', '').strip()
+    archived = request.args.get('archived', 'no').strip().lower()
+    anomalies_only = request.args.get('anomalies_only', 'no').strip().lower()
+    min_amount_raw = request.args.get('min_amount', '').strip()
+    max_amount_raw = request.args.get('max_amount', '').strip()
+    output_format = request.args.get('format', 'html').strip().lower()
+
+    min_amount = _parse_float(min_amount_raw)
+    max_amount = _parse_float(max_amount_raw)
+
+    table_available = CandidateCommitteeItemizedExpenditure.is_available(conn)
+    context = None
+    rows = []
+    total = 0
+    total_pages = 0
+
+    if table_available:
+        context = CandidateCommitteeItemizedExpenditure.get_context(conn, candidate_id, committee_id)
+        if context:
+            rows = CandidateCommitteeItemizedExpenditure.get_all(
+                conn,
+                candidate_id=candidate_id,
+                committee_id=committee_id,
+                limit=per_page,
+                offset=offset,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                search=query,
+                d2_part=d2_part,
+                min_amount=min_amount,
+                max_amount=max_amount,
+                archived=archived,
+                anomalies_only=anomalies_only,
+            )
+            total = CandidateCommitteeItemizedExpenditure.count(
+                conn,
+                candidate_id=candidate_id,
+                committee_id=committee_id,
+                search=query,
+                d2_part=d2_part,
+                min_amount=min_amount,
+                max_amount=max_amount,
+                archived=archived,
+                anomalies_only=anomalies_only,
+            )
+            total_pages = (total + per_page - 1) // per_page
+
+    if output_format == 'csv':
+        if not table_available or not context:
+            return Response("candidate committee itemized expenditures table unavailable\n", mimetype='text/plain', status=404)
+
+        csv_rows = CandidateCommitteeItemizedExpenditure.get_all(
+            conn,
+            candidate_id=candidate_id,
+            committee_id=committee_id,
+            limit=500000,
+            offset=0,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            search=query,
+            d2_part=d2_part,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            archived=archived,
+            anomalies_only=anomalies_only,
+        )
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'expenditure_record_id',
+            'committee_id_sbe',
+            'candidate_id',
+            'candidate_full_name',
+            'committee_name',
+            'filed_doc_id',
+            'expended_date',
+            'd2_part_code',
+            'payee_name',
+            'payee_address',
+            'amount',
+            'aggregate_amount',
+            'purpose',
+            'candidate_name',
+            'office',
+            'is_supporting',
+            'is_opposing',
+            'is_archived',
+            'is_amount_anomalous',
+            'anomaly_reason',
+            'country',
+            'redaction_requested',
+        ])
+        for row in csv_rows:
+            writer.writerow([
+                row.expenditure_record_id,
+                row.committee_id_sbe,
+                context['candidate_id'],
+                context['candidate_full_name'],
+                context['committee_name'],
+                row.filed_doc_id,
+                row.expended_date,
+                row.d2_part_code,
+                row.payee_name,
+                row.payee_address,
+                row.amount,
+                row.aggregate_amount,
+                row.purpose,
+                row.candidate_name,
+                row.office,
+                row.is_supporting,
+                row.is_opposing,
+                row.is_archived,
+                row.is_amount_anomalous,
+                row.anomaly_reason,
+                row.country,
+                row.redaction_requested,
+            ])
+        response = Response(output.getvalue(), mimetype='text/csv')
+        response.headers['Content-Disposition'] = (
+            f"attachment; filename=candidate_{candidate_id}_committee_{committee_id}_itemized_expenditures.csv"
+        )
+        return response
+
+    return render_template(
+        'candidate_finance/itemized_expenditures.html',
+        candidate_id=candidate_id,
+        committee_id=committee_id,
+        table_available=table_available,
+        context=context,
+        rows=rows,
+        total=total,
+        page=page,
+        total_pages=total_pages,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        query=query,
+        d2_part=d2_part,
+        archived=archived,
+        anomalies_only=anomalies_only,
         min_amount=min_amount_raw,
         max_amount=max_amount_raw,
     )

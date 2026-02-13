@@ -6,6 +6,7 @@
 - `/Users/devin/Illinois_campaign_finance/Bulk_download/candidates_639060037834639303.txt`
 - `/Users/devin/Illinois_campaign_finance/Bulk_download/cmtecandidatelinks_639060047756941723.txt`
 - `/Users/devin/Illinois_campaign_finance/Bulk_download/receipts_639060048226403871.txt`
+- `/Users/devin/Illinois_campaign_finance/Bulk_download/expenditures_639065716188368118.txt`
 - Dictionary reference: `/Users/devin/Illinois_campaign_finance/Bulk_download/campaigndisclosuredatadictionary_639060037025890016.txt`
 
 ## Join strategy
@@ -28,6 +29,15 @@
 - Candidate + committee + receipts aggregate:
   - `cmtecandidatelinks.CommitteeID` = `receipts.CommitteeID`
   - Purpose: connect candidate-linked committees to receipt-level contribution/expenditure totals.
+- Committee expenditures join:
+  - `expenditures.CommitteeID` = `committees.ID`
+  - Purpose: attach committee metadata to each itemized expenditure row.
+- D2-to-expenditures reconciliation:
+  - `expenditures.CommitteeID` + `expenditures.FiledDocID` = `d2totals.CommitteeID` + `d2totals.FiledDocID`
+  - Purpose: compare D2 itemized expenditure buckets (parts 6/7/8/9) against itemized expenditure sums by filing.
+- Candidate + committee + expenditures aggregate:
+  - `cmtecandidatelinks.CommitteeID` = `expenditures.CommitteeID`
+  - Purpose: connect candidate-linked committees to outflow totals and anomaly counts.
 - Validation metric included:
   - `cmtecandidatelinks.ID` vs `candidates.ID` overlap is tracked as a diagnostic only.
   - It is not used as the primary relational join.
@@ -45,6 +55,11 @@
 - `bulk_committee_receipts` (committee + receipt rows)
 - `bulk_d2_receipts_recon` (D2 totals compared to receipt sums by filing)
 - `bulk_candidate_committee_receipts_agg` (candidate + committee receipt rollups)
+- `bulk_expenditures_clean`
+- `bulk_expenditures_rejects` (quarantine for malformed/invalid rows)
+- `bulk_committee_expenditures` (committee + expenditure rows)
+- `bulk_d2_expenditures_recon` (D2 itemized outflow buckets compared to expenditure sums)
+- `bulk_candidate_committee_expenditures_agg` (candidate + committee expenditure rollups)
 
 ## Committees column rename map
 | Raw column | Renamed column |
@@ -170,6 +185,37 @@
 | `Country` | `country` |
 | `RedactionRequested` | `redaction_requested` |
 
+## Expenditures column rename map
+| Raw column | Renamed column |
+|---|---|
+| `ID` | `expenditure_record_id` |
+| `CommitteeID` | `committee_id_sbe` |
+| `FiledDocID` | `filed_doc_id` |
+| `ETransID` | `electronic_transaction_id` |
+| `LastOnlyName` | `payee_last_or_business_name` |
+| `FirstName` | `payee_first_name` |
+| `ExpendedDate` | `expended_date` |
+| `Amount` | `amount` |
+| `AggregateAmount` | `aggregate_amount` |
+| `Address1` | `address_line_1` |
+| `Address2` | `address_line_2` |
+| `City` | `city` |
+| `State` | `state` |
+| `Zip` | `postal_code` |
+| `D2Part` | `d2_part_code` (strict allowlist: `6*`,`7*`,`8*`,`9*`) |
+| `Purpose` | `purpose` |
+| `CandidateName` | `candidate_name` |
+| `Office` | `office` |
+| `Supporting` | `is_supporting` |
+| `Opposing` | `is_opposing` |
+| `Archived` | `is_archived` |
+| `Country` | `country` |
+| `RedactionRequested` | `redaction_requested` |
+
+Additional quality flags:
+- `is_amount_anomalous` and `anomaly_reason` are derived during import.
+- Invalid/malformed rows are written to `bulk_expenditures_rejects` with `reject_reason` + raw row payload.
+
 ## Query example
 ```sql
 SELECT committee_name, party_affiliation, filed_doc_id, total_receipts, total_expenditures, ending_funds_available
@@ -200,5 +246,18 @@ SELECT committee_name, filed_doc_id, d2_total_receipts, receipts_amount_sum, rec
 FROM bulk_d2_receipts_recon
 WHERE ABS(receipts_minus_d2_total) > 0.01
 ORDER BY ABS(receipts_minus_d2_total) DESC
+LIMIT 100;
+```
+
+```sql
+SELECT
+  committee_name,
+  filed_doc_id,
+  d2_itemized_expenditures_total,
+  expenditures_amount_sum,
+  expenditures_minus_d2_itemized_total
+FROM bulk_d2_expenditures_recon
+WHERE ABS(expenditures_minus_d2_itemized_total) > 0.01
+ORDER BY ABS(expenditures_minus_d2_itemized_total) DESC
 LIMIT 100;
 ```

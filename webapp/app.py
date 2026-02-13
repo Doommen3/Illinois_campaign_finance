@@ -352,6 +352,7 @@ def create_app(config=None):
     from webapp.routes.candidate_finance import candidate_finance_bp
     from webapp.routes.federal_finance import federal_finance_bp
     from webapp.routes.d2_receipts_recon import d2_receipts_recon_bp
+    from webapp.routes.d2_expenditures_recon import d2_expenditures_recon_bp
     from webapp.routes.analytics import analytics_bp
     from webapp.routes.manual_entry import manual_entry_bp
     from webapp.routes.admin import admin_bp
@@ -365,6 +366,7 @@ def create_app(config=None):
     app.register_blueprint(candidate_finance_bp, url_prefix='/candidate-finance')
     app.register_blueprint(federal_finance_bp, url_prefix='/federal-finance')
     app.register_blueprint(d2_receipts_recon_bp, url_prefix='/d2-reconciliation')
+    app.register_blueprint(d2_expenditures_recon_bp, url_prefix='/d2-expenditures-reconciliation')
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
     app.register_blueprint(manual_entry_bp, url_prefix='/manual-entry')
     app.register_blueprint(admin_bp, url_prefix='/admin')

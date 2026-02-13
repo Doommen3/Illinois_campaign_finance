@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}D2 Expenditures Reconciliation - Illinois Campaign Finance Tracker{% endblock %}
+
+{% macro sort_link(field, label) -%}
+<a href="{{ url_for(
+    'd2_expenditures_recon.list_d2_expenditures_recon',
+    q=query,
+    min_abs_diff=min_abs_diff,
+    min_expenditure_rows=min_expenditure_rows,
+    anomalies_only=anomalies_only,
+    sort=field,
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+) }}">
+    {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+</a>
+{%- endmacro %}
+
+{% block content %}
+<h1>D2 Expenditures Reconciliation</h1>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>The D2 expenditures reconciliation table is not available yet.</p>
+    <p>Run <code>python run.py import-bulk-download --directory Bulk_download</code> with an <code>expenditures_*.txt</code> file to build this page's data.</p>
+</div>
+{% else %}
+<p class="subtitle">{{ total }} filing rows</p>
+
+<form class="search-form" method="get" action="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search committee, committee ID, or filed doc ID">
+    <input type="text" name="min_abs_diff" value="{{ min_abs_diff }}" placeholder="Min absolute difference">
+    <input type="text" name="min_expenditure_rows" value="{{ min_expenditure_rows }}" placeholder="Min expenditure rows">
+    <select name="anomalies_only">
+        <option value="no" {% if anomalies_only != 'yes' %}selected{% endif %}>All rows</option>
+        <option value="yes" {% if anomalies_only == 'yes' %}selected{% endif %}>Rows with anomalies</option>
+    </select>
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    <button type="submit">Apply</button>
+    <a class="btn btn-small" href="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">Clear</a>
+</form>
+
+<div class="filter-controls">
+    <a href="{{ url_for(
+        'd2_expenditures_recon.list_d2_expenditures_recon',
+        format='csv',
+        q=query,
+        min_abs_diff=min_abs_diff,
+        min_expenditure_rows=min_expenditure_rows,
+        anomalies_only=anomalies_only,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Export CSV</a>
+    |
+    <a href="{{ url_for(
+        'd2_expenditures_recon.list_d2_expenditures_recon',
+        q=query,
+        min_abs_diff=min_abs_diff,
+        min_expenditure_rows=min_expenditure_rows,
+        anomalies_only=anomalies_only,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Share This View</a>
+</div>
+
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>{{ sort_link('committee_id_sbe', 'Committee ID') }}</th>
+                <th>{{ sort_link('committee_name', 'Committee') }}</th>
+                <th>{{ sort_link('filed_doc_id', 'Filed Doc ID') }}</th>
+                <th>{{ sort_link('d2_itemized_expenditures_total', 'D2 Itemized Total') }}</th>
+                <th>{{ sort_link('expenditures_amount_sum', 'Itemized Sum') }}</th>
+                <th>{{ sort_link('expenditures_minus_d2_itemized_total', 'Difference') }}</th>
+                <th>{{ sort_link('abs_diff', 'Abs Diff') }}</th>
+                <th>{{ sort_link('sum_part_6_transfers_out', 'Part 6 Sum') }}</th>
+                <th>{{ sort_link('sum_part_7_loans_made', 'Part 7 Sum') }}</th>
+                <th>{{ sort_link('sum_part_8_expenditures', 'Part 8 Sum') }}</th>
+                <th>{{ sort_link('sum_part_9_independent_expenditures', 'Part 9 Sum') }}</th>
+                <th>{{ sort_link('expenditure_row_count', 'Rows') }}</th>
+                <th>{{ sort_link('anomaly_row_count', 'Anomaly Rows') }}</th>
+                <th>{{ sort_link('first_expenditure_date', 'First Date') }}</th>
+                <th>{{ sort_link('last_expenditure_date', 'Last Date') }}</th>
+                <th>{{ sort_link('is_archived', 'Archived') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row.committee_id_sbe if row.committee_id_sbe is not none else '-' }}</td>
+                <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                <td>{{ row.filed_doc_id if row.filed_doc_id is not none else '-' }}</td>
+                <td>{{ format_currency(row.d2_itemized_expenditures_total) }}</td>
+                <td>{{ format_currency(row.expenditures_amount_sum) }}</td>
+                <td>{{ format_currency(row.expenditures_minus_d2_itemized_total) }}</td>
+                <td>{{ format_currency(row.expenditures_minus_d2_itemized_total|abs) }}</td>
+                <td>{{ format_currency(row.sum_part_6_transfers_out) }}</td>
+                <td>{{ format_currency(row.sum_part_7_loans_made) }}</td>
+                <td>{{ format_currency(row.sum_part_8_expenditures) }}</td>
+                <td>{{ format_currency(row.sum_part_9_independent_expenditures) }}</td>
+                <td>{{ row.expenditure_row_count }}</td>
+                <td>{{ row.anomaly_row_count }}</td>
+                <td>{{ row.first_expenditure_date if row.first_expenditure_date else '-' }}</td>
+                <td>{{ row.last_expenditure_date if row.last_expenditure_date else '-' }}</td>
+                <td>{{ 'yes' if row.is_archived == 1 else 'no' }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="16">No reconciliation rows found for this query.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for(
+        'd2_expenditures_recon.list_d2_expenditures_recon',
+        page=page-1,
+        q=query,
+        min_abs_diff=min_abs_diff,
+        min_expenditure_rows=min_expenditure_rows,
+        anomalies_only=anomalies_only,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for(
+        'd2_expenditures_recon.list_d2_expenditures_recon',
+        page=page+1,
+        q=query,
+        min_abs_diff=min_abs_diff,
+        min_expenditure_rows=min_expenditure_rows,
+        anomalies_only=anomalies_only,
+        sort=sort_by,
+        dir=sort_dir
+    ) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endif %}
+{% endblock %}

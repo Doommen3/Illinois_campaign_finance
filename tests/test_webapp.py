@@ -1009,6 +1009,115 @@ class TestWebApp:
         assert missing_link.status_code == 200
         assert b'No candidate/committee link was found' in missing_link.data
 
+    def test_candidate_committee_itemized_expenditures_page_loads_with_bulk_tables(self, app, client):
+        """Test candidate/committee expenditure drill-down page renders itemized lines and supports filters/CSV."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS bulk_candidates_clean")
+        conn.execute("DROP TABLE IF EXISTS bulk_committees_clean")
+        conn.execute("DROP TABLE IF EXISTS bulk_committee_candidate_links")
+        conn.execute("DROP TABLE IF EXISTS bulk_expenditures_clean")
+
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidates_clean (
+                candidate_id INTEGER,
+                candidate_full_name TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bulk_committees_clean (
+                committee_id_sbe INTEGER,
+                committee_name TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bulk_committee_candidate_links (
+                candidate_id INTEGER,
+                committee_id_sbe INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bulk_expenditures_clean (
+                expenditure_record_id INTEGER,
+                committee_id_sbe INTEGER,
+                filed_doc_id INTEGER,
+                expended_date TEXT,
+                d2_part_code TEXT,
+                payee_last_or_business_name TEXT,
+                payee_first_name TEXT,
+                address_line_1 TEXT,
+                address_line_2 TEXT,
+                city TEXT,
+                state TEXT,
+                postal_code TEXT,
+                amount REAL,
+                aggregate_amount REAL,
+                purpose TEXT,
+                candidate_name TEXT,
+                office TEXT,
+                is_supporting INTEGER,
+                is_opposing INTEGER,
+                is_archived INTEGER,
+                country TEXT,
+                redaction_requested INTEGER,
+                is_amount_anomalous INTEGER,
+                anomaly_reason TEXT
+            )
+            """
+        )
+
+        conn.execute("INSERT INTO bulk_candidates_clean (candidate_id, candidate_full_name) VALUES (201, 'Jordan Smith')")
+        conn.execute("INSERT INTO bulk_committees_clean (committee_id_sbe, committee_name) VALUES (101, 'Committee A')")
+        conn.execute("INSERT INTO bulk_committee_candidate_links (candidate_id, committee_id_sbe) VALUES (201, 101)")
+        conn.executemany(
+            """
+            INSERT INTO bulk_expenditures_clean (
+                expenditure_record_id, committee_id_sbe, filed_doc_id, expended_date, d2_part_code,
+                payee_last_or_business_name, payee_first_name,
+                address_line_1, address_line_2, city, state, postal_code,
+                amount, aggregate_amount, purpose, candidate_name, office,
+                is_supporting, is_opposing, is_archived, country, redaction_requested,
+                is_amount_anomalous, anomaly_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (7001, 101, 5001, "2025-01-10", "8B", "Media", "Vendor", "1 Main", "", "Chicago", "IL", "60601", 20000.0, 0.0, "Media buy", "", "", 0, 0, 0, "US", 0, 0, None),
+                (7002, 101, 5001, "2025-01-11", "6A", "Transfer", "Target", "2 Main", "", "Chicago", "IL", "60601", 1500.0, 0.0, "Transfer out", "", "", 0, 0, 0, "US", 0, 1, "abs(amount)>=10000000"),
+                (7003, 101, 5002, "2025-01-12", "8A", "Archived", "Vendor", "3 Main", "", "Chicago", "IL", "60601", 250.0, 0.0, "Old row", "", "", 0, 0, 1, "US", 0, 0, None),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/candidate-finance/201/101/itemized-expenditures?sort=amount&dir=desc')
+        assert response.status_code == 200
+        assert b'Candidate/Committee Itemized Expenditures' in response.data
+        assert b'Vendor Archived' not in response.data
+        assert b'Vendor Media' in response.data
+
+        filtered = client.get('/candidate-finance/201/101/itemized-expenditures?d2_part=6&anomalies_only=yes')
+        assert filtered.status_code == 200
+        assert b'Target Transfer' in filtered.data
+        assert b'Vendor Media' not in filtered.data
+
+        exported = client.get('/candidate-finance/201/101/itemized-expenditures?format=csv&archived=no')
+        assert exported.status_code == 200
+        assert exported.mimetype == 'text/csv'
+        assert 'candidate_201_committee_101_itemized_expenditures.csv' in exported.headers.get('Content-Disposition', '')
+        assert b'expenditure_record_id,committee_id_sbe,candidate_id' in exported.data
+        assert b'Vendor Media' in exported.data
+        assert b'Vendor Archived' not in exported.data
+
+        missing_link = client.get('/candidate-finance/999/101/itemized-expenditures')
+        assert missing_link.status_code == 200
+        assert b'No candidate/committee link was found' in missing_link.data
+
     def test_d2_reconciliation_page_loads_without_bulk_table(self, client):
         """Test D2 reconciliation page renders guidance when table is missing."""
         response = client.get('/d2-reconciliation/')
@@ -1069,6 +1178,94 @@ class TestWebApp:
         assert exported.status_code == 200
         assert exported.mimetype == 'text/csv'
         assert 'attachment; filename=d2_receipts_reconciliation.csv' in exported.headers.get('Content-Disposition', '')
+        assert b'd2_totals_record_id,committee_id_sbe,committee_name' in exported.data
+        assert b'Committee A' in exported.data
+        assert b'Committee B' not in exported.data
+
+    def test_d2_expenditures_reconciliation_page_loads_without_bulk_table(self, client):
+        """Test D2 expenditures reconciliation page renders guidance when table is missing."""
+        response = client.get('/d2-expenditures-reconciliation/')
+        assert response.status_code == 200
+        assert b'd2 expenditures reconciliation table is not available yet' in response.data.lower()
+
+    def test_d2_expenditures_reconciliation_page_loads_with_bulk_table(self, app, client):
+        """Test D2 expenditures reconciliation page renders imported data and supports query params."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS bulk_d2_expenditures_recon")
+        conn.execute(
+            """
+            CREATE TABLE bulk_d2_expenditures_recon (
+                d2_totals_record_id INTEGER,
+                committee_id_sbe INTEGER,
+                committee_name TEXT,
+                filed_doc_id INTEGER,
+                d2_transfers_out_itemized REAL,
+                d2_loans_made_itemized REAL,
+                d2_expenditures_itemized REAL,
+                d2_independent_expenditures_itemized REAL,
+                d2_itemized_expenditures_total REAL,
+                d2_total_expenditures REAL,
+                ending_funds_available REAL,
+                is_archived INTEGER,
+                expenditure_row_count INTEGER,
+                expenditures_amount_sum REAL,
+                sum_part_6_transfers_out REAL,
+                sum_part_7_loans_made REAL,
+                sum_part_8_expenditures REAL,
+                sum_part_9_independent_expenditures REAL,
+                anomaly_row_count INTEGER,
+                first_expenditure_date TEXT,
+                last_expenditure_date TEXT,
+                expenditures_minus_d2_itemized_total REAL,
+                part_6_minus_d2_transfers_out_itemized REAL,
+                part_7_minus_d2_loans_made_itemized REAL,
+                part_8_minus_d2_expenditures_itemized REAL,
+                part_9_minus_d2_independent_expenditures_itemized REAL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_d2_expenditures_recon (
+                d2_totals_record_id, committee_id_sbe, committee_name, filed_doc_id,
+                d2_transfers_out_itemized, d2_loans_made_itemized, d2_expenditures_itemized,
+                d2_independent_expenditures_itemized, d2_itemized_expenditures_total,
+                d2_total_expenditures, ending_funds_available, is_archived,
+                expenditure_row_count, expenditures_amount_sum,
+                sum_part_6_transfers_out, sum_part_7_loans_made, sum_part_8_expenditures, sum_part_9_independent_expenditures,
+                anomaly_row_count, first_expenditure_date, last_expenditure_date,
+                expenditures_minus_d2_itemized_total,
+                part_6_minus_d2_transfers_out_itemized, part_7_minus_d2_loans_made_itemized,
+                part_8_minus_d2_expenditures_itemized, part_9_minus_d2_independent_expenditures_itemized
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, 101, "Committee A", 5001, 100.0, 0.0, 900.0, 0.0, 1000.0, 1200.0, 400.0, 0, 12, 980.0, 90.0, 0.0, 890.0, 0.0, 0, "2025-01-01", "2025-01-31", -20.0, -10.0, 0.0, -10.0, 0.0),
+                (2, 102, "Committee B", 5002, 50.0, 0.0, 250.0, 0.0, 300.0, 500.0, 100.0, 0, 9, 460.0, 70.0, 0.0, 390.0, 0.0, 2, "2025-02-01", "2025-02-28", 160.0, 20.0, 0.0, 140.0, 0.0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/d2-expenditures-reconciliation/?sort=abs_diff&dir=desc')
+        assert response.status_code == 200
+        assert b'D2 Expenditures Reconciliation' in response.data
+        assert response.data.find(b'Committee B') < response.data.find(b'Committee A')
+
+        filtered = client.get('/d2-expenditures-reconciliation/?q=Committee%20A&min_abs_diff=10')
+        assert filtered.status_code == 200
+        assert b'Committee A' in filtered.data
+        assert b'Committee B' not in filtered.data
+
+        anomalies = client.get('/d2-expenditures-reconciliation/?anomalies_only=yes')
+        assert anomalies.status_code == 200
+        assert b'Committee B' in anomalies.data
+        assert b'Committee A' not in anomalies.data
+
+        exported = client.get('/d2-expenditures-reconciliation/?format=csv&min_expenditure_rows=10')
+        assert exported.status_code == 200
+        assert exported.mimetype == 'text/csv'
+        assert 'attachment; filename=d2_expenditures_reconciliation.csv' in exported.headers.get('Content-Disposition', '')
         assert b'd2_totals_record_id,committee_id_sbe,committee_name' in exported.data
         assert b'Committee A' in exported.data
         assert b'Committee B' not in exported.data

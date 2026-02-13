@@ -2898,6 +2898,319 @@ class CandidateCommitteeItemizedReceipt:
 
 
 @dataclass
+class CandidateCommitteeItemizedExpenditure:
+    """Itemized expenditure row for a candidate/committee pair."""
+
+    expenditure_record_id: Optional[int] = None
+    committee_id_sbe: Optional[int] = None
+    filed_doc_id: Optional[int] = None
+    expended_date: Optional[str] = None
+    d2_part_code: Optional[str] = None
+    payee_name: Optional[str] = None
+    payee_address: Optional[str] = None
+    amount: float = 0.0
+    aggregate_amount: float = 0.0
+    purpose: Optional[str] = None
+    candidate_name: Optional[str] = None
+    office: Optional[str] = None
+    is_supporting: Optional[int] = None
+    is_opposing: Optional[int] = None
+    is_archived: Optional[int] = None
+    country: Optional[str] = None
+    redaction_requested: Optional[int] = None
+    is_amount_anomalous: Optional[int] = None
+    anomaly_reason: Optional[str] = None
+
+    EXPENDITURES_TABLE = "bulk_expenditures_clean"
+    LINKS_TABLE = "bulk_committee_candidate_links"
+
+    @classmethod
+    def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    @classmethod
+    def is_available(cls, conn: sqlite3.Connection) -> bool:
+        required_tables = [
+            cls.EXPENDITURES_TABLE,
+            cls.LINKS_TABLE,
+            "bulk_candidates_clean",
+            "bulk_committees_clean",
+        ]
+        return all(cls._table_exists(conn, table_name) for table_name in required_tables)
+
+    @classmethod
+    def get_context(
+        cls,
+        conn: sqlite3.Connection,
+        candidate_id: int,
+        committee_id: int,
+    ) -> Optional[dict]:
+        if not cls.is_available(conn):
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                l.candidate_id,
+                l.committee_id_sbe,
+                cand.candidate_full_name,
+                c.committee_name
+            FROM bulk_committee_candidate_links l
+            LEFT JOIN bulk_candidates_clean cand
+              ON cand.candidate_id = l.candidate_id
+            LEFT JOIN bulk_committees_clean c
+              ON c.committee_id_sbe = l.committee_id_sbe
+            WHERE l.candidate_id = ?
+              AND l.committee_id_sbe = ?
+            LIMIT 1
+            """,
+            (candidate_id, committee_id),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "candidate_id": row["candidate_id"],
+            "committee_id_sbe": row["committee_id_sbe"],
+            "candidate_full_name": row["candidate_full_name"] or f"Candidate {candidate_id}",
+            "committee_name": row["committee_name"] or f"Committee {committee_id}",
+        }
+
+    @classmethod
+    def _build_filter_sql(
+        cls,
+        search: Optional[str] = None,
+        d2_part: Optional[str] = None,
+        min_amount: Optional[float] = None,
+        max_amount: Optional[float] = None,
+        archived: str = "no",
+        anomalies_only: str = "no",
+    ) -> tuple[str, List[object]]:
+        clauses: List[str] = []
+        params: List[object] = []
+
+        search_term = (search or "").strip()
+        if search_term:
+            like_term = f"%{search_term}%"
+            clauses.append(
+                """
+                (
+                    COALESCE(e.payee_last_or_business_name, '') LIKE ?
+                    OR COALESCE(e.payee_first_name, '') LIKE ?
+                    OR COALESCE(e.purpose, '') LIKE ?
+                    OR COALESCE(e.candidate_name, '') LIKE ?
+                    OR COALESCE(e.office, '') LIKE ?
+                    OR CAST(COALESCE(e.filed_doc_id, '') AS TEXT) LIKE ?
+                )
+                """
+            )
+            params.extend([like_term, like_term, like_term, like_term, like_term, like_term])
+
+        d2_part_term = (d2_part or "").strip()
+        if d2_part_term:
+            clauses.append("COALESCE(e.d2_part_code, '') LIKE ?")
+            params.append(f"{d2_part_term}%")
+
+        if min_amount is not None:
+            clauses.append("COALESCE(e.amount, 0) >= ?")
+            params.append(float(min_amount))
+
+        if max_amount is not None:
+            clauses.append("COALESCE(e.amount, 0) <= ?")
+            params.append(float(max_amount))
+
+        archived_term = (archived or "no").strip().lower()
+        if archived_term == "yes":
+            clauses.append("COALESCE(e.is_archived, 0) = 1")
+        elif archived_term == "no":
+            clauses.append("COALESCE(e.is_archived, 0) = 0")
+
+        anomalies_term = (anomalies_only or "no").strip().lower()
+        if anomalies_term in {"yes", "true", "1"}:
+            clauses.append("COALESCE(e.is_amount_anomalous, 0) = 1")
+
+        if not clauses:
+            return "", params
+        return f" AND {' AND '.join(clauses)}", params
+
+    @classmethod
+    def count(
+        cls,
+        conn: sqlite3.Connection,
+        candidate_id: int,
+        committee_id: int,
+        search: Optional[str] = None,
+        d2_part: Optional[str] = None,
+        min_amount: Optional[float] = None,
+        max_amount: Optional[float] = None,
+        archived: str = "no",
+        anomalies_only: str = "no",
+    ) -> int:
+        if not cls.is_available(conn):
+            return 0
+
+        filter_sql, filter_params = cls._build_filter_sql(
+            search=search,
+            d2_part=d2_part,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            archived=archived,
+            anomalies_only=anomalies_only,
+        )
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM {cls.EXPENDITURES_TABLE} e
+            WHERE e.committee_id_sbe = ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM {cls.LINKS_TABLE} l
+                  WHERE l.candidate_id = ?
+                    AND l.committee_id_sbe = e.committee_id_sbe
+              )
+              {filter_sql}
+            """,
+            [committee_id, candidate_id, *filter_params],
+        ).fetchone()
+        return row["count"] if row else 0
+
+    @classmethod
+    def get_all(
+        cls,
+        conn: sqlite3.Connection,
+        candidate_id: int,
+        committee_id: int,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "expended_date",
+        sort_dir: str = "desc",
+        search: Optional[str] = None,
+        d2_part: Optional[str] = None,
+        min_amount: Optional[float] = None,
+        max_amount: Optional[float] = None,
+        archived: str = "no",
+        anomalies_only: str = "no",
+    ) -> List["CandidateCommitteeItemizedExpenditure"]:
+        if not cls.is_available(conn):
+            return []
+
+        sort_map = {
+            "expenditure_record_id": "e.expenditure_record_id",
+            "filed_doc_id": "e.filed_doc_id",
+            "expended_date": "e.expended_date",
+            "d2_part_code": "e.d2_part_code",
+            "payee_name": "COALESCE(e.payee_last_or_business_name, '') || ' ' || COALESCE(e.payee_first_name, '')",
+            "amount": "e.amount",
+            "aggregate_amount": "e.aggregate_amount",
+            "purpose": "e.purpose",
+            "candidate_name": "e.candidate_name",
+            "office": "e.office",
+            "is_supporting": "e.is_supporting",
+            "is_opposing": "e.is_opposing",
+            "is_archived": "e.is_archived",
+            "is_amount_anomalous": "e.is_amount_anomalous",
+        }
+        order_by = sort_map.get(sort_by, "e.expended_date")
+        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+        filter_sql, filter_params = cls._build_filter_sql(
+            search=search,
+            d2_part=d2_part,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            archived=archived,
+            anomalies_only=anomalies_only,
+        )
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                e.expenditure_record_id,
+                e.committee_id_sbe,
+                e.filed_doc_id,
+                e.expended_date,
+                e.d2_part_code,
+                e.payee_last_or_business_name,
+                e.payee_first_name,
+                e.address_line_1,
+                e.address_line_2,
+                e.city,
+                e.state,
+                e.postal_code,
+                e.amount,
+                e.aggregate_amount,
+                e.purpose,
+                e.candidate_name,
+                e.office,
+                e.is_supporting,
+                e.is_opposing,
+                e.is_archived,
+                e.country,
+                e.redaction_requested,
+                e.is_amount_anomalous,
+                e.anomaly_reason
+            FROM {cls.EXPENDITURES_TABLE} e
+            WHERE e.committee_id_sbe = ?
+              AND EXISTS (
+                  SELECT 1
+                  FROM {cls.LINKS_TABLE} l
+                  WHERE l.candidate_id = ?
+                    AND l.committee_id_sbe = e.committee_id_sbe
+              )
+              {filter_sql}
+            ORDER BY {order_by} {direction}, e.expenditure_record_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [committee_id, candidate_id, *filter_params, limit, offset],
+        ).fetchall()
+
+        results: List[CandidateCommitteeItemizedExpenditure] = []
+        for row in rows:
+            payee_name = " ".join(
+                part for part in [row["payee_first_name"], row["payee_last_or_business_name"]] if part
+            ).strip() or None
+            payee_address = ", ".join(
+                part
+                for part in [
+                    row["address_line_1"],
+                    row["address_line_2"],
+                    row["city"],
+                    row["state"],
+                    row["postal_code"],
+                ]
+                if part
+            ).strip() or None
+
+            results.append(
+                cls(
+                    expenditure_record_id=row["expenditure_record_id"],
+                    committee_id_sbe=row["committee_id_sbe"],
+                    filed_doc_id=row["filed_doc_id"],
+                    expended_date=row["expended_date"],
+                    d2_part_code=row["d2_part_code"],
+                    payee_name=payee_name,
+                    payee_address=payee_address,
+                    amount=row["amount"] or 0.0,
+                    aggregate_amount=row["aggregate_amount"] or 0.0,
+                    purpose=row["purpose"],
+                    candidate_name=row["candidate_name"],
+                    office=row["office"],
+                    is_supporting=row["is_supporting"],
+                    is_opposing=row["is_opposing"],
+                    is_archived=row["is_archived"],
+                    country=row["country"],
+                    redaction_requested=row["redaction_requested"],
+                    is_amount_anomalous=row["is_amount_anomalous"],
+                    anomaly_reason=row["anomaly_reason"],
+                )
+            )
+        return results
+
+
+@dataclass
 class D2ReceiptsRecon:
     """D2 filing totals reconciled against itemized receipts sums."""
 
@@ -3063,6 +3376,228 @@ class D2ReceiptsRecon:
                 first_receipt_date=row["first_receipt_date"],
                 last_receipt_date=row["last_receipt_date"],
                 receipts_minus_d2_total=row["receipts_minus_d2_total"] or 0.0,
+            )
+            for row in rows
+        ]
+
+
+@dataclass
+class D2ExpendituresRecon:
+    """D2 filing totals reconciled against itemized expenditure sums."""
+
+    d2_totals_record_id: Optional[int] = None
+    committee_id_sbe: Optional[int] = None
+    committee_name: Optional[str] = None
+    filed_doc_id: Optional[int] = None
+    d2_transfers_out_itemized: float = 0.0
+    d2_loans_made_itemized: float = 0.0
+    d2_expenditures_itemized: float = 0.0
+    d2_independent_expenditures_itemized: float = 0.0
+    d2_itemized_expenditures_total: float = 0.0
+    d2_total_expenditures: float = 0.0
+    ending_funds_available: float = 0.0
+    is_archived: Optional[int] = None
+    expenditure_row_count: int = 0
+    expenditures_amount_sum: float = 0.0
+    sum_part_6_transfers_out: float = 0.0
+    sum_part_7_loans_made: float = 0.0
+    sum_part_8_expenditures: float = 0.0
+    sum_part_9_independent_expenditures: float = 0.0
+    anomaly_row_count: int = 0
+    first_expenditure_date: Optional[str] = None
+    last_expenditure_date: Optional[str] = None
+    expenditures_minus_d2_itemized_total: float = 0.0
+    part_6_minus_d2_transfers_out_itemized: float = 0.0
+    part_7_minus_d2_loans_made_itemized: float = 0.0
+    part_8_minus_d2_expenditures_itemized: float = 0.0
+    part_9_minus_d2_independent_expenditures_itemized: float = 0.0
+
+    TABLE_NAME = "bulk_d2_expenditures_recon"
+
+    @classmethod
+    def _table_exists(cls, conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (cls.TABLE_NAME,),
+        ).fetchone()
+        return row is not None
+
+    @classmethod
+    def is_available(cls, conn: sqlite3.Connection) -> bool:
+        return cls._table_exists(conn)
+
+    @classmethod
+    def _build_filter_sql(
+        cls,
+        search: Optional[str] = None,
+        min_abs_diff: Optional[float] = None,
+        min_expenditure_rows: Optional[int] = None,
+        anomalies_only: str = "no",
+    ) -> tuple[str, List[object]]:
+        clauses: List[str] = []
+        params: List[object] = []
+
+        search_term = (search or "").strip()
+        if search_term:
+            clauses.append(
+                """
+                (
+                    COALESCE(committee_name, '') LIKE ?
+                    OR CAST(COALESCE(committee_id_sbe, '') AS TEXT) LIKE ?
+                    OR CAST(COALESCE(filed_doc_id, '') AS TEXT) LIKE ?
+                )
+                """
+            )
+            like_term = f"%{search_term}%"
+            params.extend([like_term, like_term, like_term])
+
+        if min_abs_diff is not None:
+            clauses.append("ABS(COALESCE(expenditures_minus_d2_itemized_total, 0)) >= ?")
+            params.append(float(min_abs_diff))
+
+        if min_expenditure_rows is not None:
+            clauses.append("COALESCE(expenditure_row_count, 0) >= ?")
+            params.append(int(min_expenditure_rows))
+
+        anomalies_term = (anomalies_only or "no").strip().lower()
+        if anomalies_term in {"yes", "true", "1"}:
+            clauses.append("COALESCE(anomaly_row_count, 0) > 0")
+
+        if not clauses:
+            return "", params
+        return f" WHERE {' AND '.join(clauses)}", params
+
+    @classmethod
+    def count(
+        cls,
+        conn: sqlite3.Connection,
+        search: Optional[str] = None,
+        min_abs_diff: Optional[float] = None,
+        min_expenditure_rows: Optional[int] = None,
+        anomalies_only: str = "no",
+    ) -> int:
+        if not cls._table_exists(conn):
+            return 0
+
+        where_sql, params = cls._build_filter_sql(
+            search=search,
+            min_abs_diff=min_abs_diff,
+            min_expenditure_rows=min_expenditure_rows,
+            anomalies_only=anomalies_only,
+        )
+        row = conn.execute(
+            f"SELECT COUNT(*) AS count FROM {cls.TABLE_NAME}{where_sql}",
+            params,
+        ).fetchone()
+        return row["count"] if row else 0
+
+    @classmethod
+    def get_all(
+        cls,
+        conn: sqlite3.Connection,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "abs_diff",
+        sort_dir: str = "desc",
+        search: Optional[str] = None,
+        min_abs_diff: Optional[float] = None,
+        min_expenditure_rows: Optional[int] = None,
+        anomalies_only: str = "no",
+    ) -> List["D2ExpendituresRecon"]:
+        if not cls._table_exists(conn):
+            return []
+
+        sort_map = {
+            "d2_totals_record_id": "d2_totals_record_id",
+            "committee_id_sbe": "committee_id_sbe",
+            "committee_name": "committee_name",
+            "filed_doc_id": "filed_doc_id",
+            "d2_itemized_expenditures_total": "d2_itemized_expenditures_total",
+            "d2_total_expenditures": "d2_total_expenditures",
+            "expenditure_row_count": "expenditure_row_count",
+            "expenditures_amount_sum": "expenditures_amount_sum",
+            "sum_part_6_transfers_out": "sum_part_6_transfers_out",
+            "sum_part_7_loans_made": "sum_part_7_loans_made",
+            "sum_part_8_expenditures": "sum_part_8_expenditures",
+            "sum_part_9_independent_expenditures": "sum_part_9_independent_expenditures",
+            "anomaly_row_count": "anomaly_row_count",
+            "first_expenditure_date": "first_expenditure_date",
+            "last_expenditure_date": "last_expenditure_date",
+            "expenditures_minus_d2_itemized_total": "expenditures_minus_d2_itemized_total",
+            "abs_diff": "ABS(COALESCE(expenditures_minus_d2_itemized_total, 0))",
+        }
+        order_by = sort_map.get(sort_by, "ABS(COALESCE(expenditures_minus_d2_itemized_total, 0))")
+        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+        query = f"""
+            SELECT
+                d2_totals_record_id,
+                committee_id_sbe,
+                committee_name,
+                filed_doc_id,
+                d2_transfers_out_itemized,
+                d2_loans_made_itemized,
+                d2_expenditures_itemized,
+                d2_independent_expenditures_itemized,
+                d2_itemized_expenditures_total,
+                d2_total_expenditures,
+                ending_funds_available,
+                is_archived,
+                expenditure_row_count,
+                expenditures_amount_sum,
+                sum_part_6_transfers_out,
+                sum_part_7_loans_made,
+                sum_part_8_expenditures,
+                sum_part_9_independent_expenditures,
+                anomaly_row_count,
+                first_expenditure_date,
+                last_expenditure_date,
+                expenditures_minus_d2_itemized_total,
+                part_6_minus_d2_transfers_out_itemized,
+                part_7_minus_d2_loans_made_itemized,
+                part_8_minus_d2_expenditures_itemized,
+                part_9_minus_d2_independent_expenditures_itemized
+            FROM {cls.TABLE_NAME}
+        """
+        where_sql, params = cls._build_filter_sql(
+            search=search,
+            min_abs_diff=min_abs_diff,
+            min_expenditure_rows=min_expenditure_rows,
+            anomalies_only=anomalies_only,
+        )
+        query += where_sql
+        query += f" ORDER BY {order_by} {direction}, committee_id_sbe ASC, filed_doc_id ASC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = conn.execute(query, params).fetchall()
+        return [
+            cls(
+                d2_totals_record_id=row["d2_totals_record_id"],
+                committee_id_sbe=row["committee_id_sbe"],
+                committee_name=row["committee_name"],
+                filed_doc_id=row["filed_doc_id"],
+                d2_transfers_out_itemized=row["d2_transfers_out_itemized"] or 0.0,
+                d2_loans_made_itemized=row["d2_loans_made_itemized"] or 0.0,
+                d2_expenditures_itemized=row["d2_expenditures_itemized"] or 0.0,
+                d2_independent_expenditures_itemized=row["d2_independent_expenditures_itemized"] or 0.0,
+                d2_itemized_expenditures_total=row["d2_itemized_expenditures_total"] or 0.0,
+                d2_total_expenditures=row["d2_total_expenditures"] or 0.0,
+                ending_funds_available=row["ending_funds_available"] or 0.0,
+                is_archived=row["is_archived"],
+                expenditure_row_count=row["expenditure_row_count"] or 0,
+                expenditures_amount_sum=row["expenditures_amount_sum"] or 0.0,
+                sum_part_6_transfers_out=row["sum_part_6_transfers_out"] or 0.0,
+                sum_part_7_loans_made=row["sum_part_7_loans_made"] or 0.0,
+                sum_part_8_expenditures=row["sum_part_8_expenditures"] or 0.0,
+                sum_part_9_independent_expenditures=row["sum_part_9_independent_expenditures"] or 0.0,
+                anomaly_row_count=row["anomaly_row_count"] or 0,
+                first_expenditure_date=row["first_expenditure_date"],
+                last_expenditure_date=row["last_expenditure_date"],
+                expenditures_minus_d2_itemized_total=row["expenditures_minus_d2_itemized_total"] or 0.0,
+                part_6_minus_d2_transfers_out_itemized=row["part_6_minus_d2_transfers_out_itemized"] or 0.0,
+                part_7_minus_d2_loans_made_itemized=row["part_7_minus_d2_loans_made_itemized"] or 0.0,
+                part_8_minus_d2_expenditures_itemized=row["part_8_minus_d2_expenditures_itemized"] or 0.0,
+                part_9_minus_d2_independent_expenditures_itemized=row["part_9_minus_d2_independent_expenditures_itemized"] or 0.0,
             )
             for row in rows
         ]

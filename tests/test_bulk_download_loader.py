@@ -296,3 +296,113 @@ def test_import_bulk_download_with_receipts_creates_receipts_tables(tmp_path: Pa
     assert candidate_receipts_archived['archived_receipt_count'] == 1
 
     conn.close()
+
+
+def test_import_bulk_download_with_expenditures_creates_expenditure_tables_and_rejects(tmp_path: Path):
+    bulk_dir = tmp_path / 'Bulk_download'
+    bulk_dir.mkdir(parents=True)
+
+    committees = bulk_dir / 'committees_1.txt'
+    committees.write_text(
+        'ID\tTypeOfCommittee\tStateCommittee\tStateID\tLocalCommittee\tLocalID\tReferName\tName\tAddress1\tAddress2\tAddress3\tCity\tState\tZip\tStatus\tStatusDate\tCreationDate\tCreationAmount\tDispFundsReturn\tDispFundsPolComm\tDispFundsCharity\tDispFunds95\tDispFundsDescrip\tCanSuppOpp\tPolicySuppOpp\tPartyAffiliation\tPurpose\n'
+        '101\tPolitical Action\tFalse\t0\tFalse\t0\tA1\tCommittee A\t123 Main\t\t\tChicago\tIL\t60601\tA\t2024-01-01 00:00:00\t2020-01-01 00:00:00\t1000\tTrue\tFalse\tFalse\tFalse\t\tS\t\tDemocratic\tPurpose A\n',
+        encoding='utf-8'
+    )
+
+    d2 = bulk_dir / 'd2totals_1.txt'
+    d2.write_text(
+        'ID\tCommitteeID\tFiledDocID\tBegFundsAvail\tIndivContribI\tIndivContribNI\tXferInI\tXferInNI\tLoanRcvI\tLoanRcvNI\tOtherRctI\tOtherRctNI\tTotalReceipts\tInKindI\tInKindNI\tTotalInKind\tXferOutI\tXferOutNI\tLoanMadeI\tLoanMadeNI\tExpendI\tExpendNI\tIndependentExpI\tIndependentExpNI\tTotalExpend\tDebtsI\tDebtsNI\tTotalDebts\tTotalInvest\tEndFundsAvail\tArchived\n'
+        '1\t101\t5001\t100\t25\t5\t0\t0\t0\t0\t0\t0\t30\t0\t0\t0\t15\t0\t0\t0\t20000000\t2\t0\t0\t20000017\t0\t0\t0\t0\t118\tFalse\n',
+        encoding='utf-8'
+    )
+
+    candidates = bulk_dir / 'candidates_1.txt'
+    candidates.write_text(
+        'ID\tLastName\tFirstName\tAddress1\tAddress2\tCity\tState\tZip\tOffice\tDistrictType\tDistrict\tResidenceCounty\tPartyAffiliation\tRedactionRequested\n'
+        '201\tSmith\tJordan\t1 Pine\t\tChicago\tIL\t60610\tGovernor\tStatewide\tAt-Large\tCook\tDemocratic\tFalse\n',
+        encoding='utf-8'
+    )
+
+    links = bulk_dir / 'cmtecandidatelinks_1.txt'
+    links.write_text(
+        'ID\tCommitteeID\tCandidateID\n'
+        '9001\t101\t201\n',
+        encoding='utf-8'
+    )
+
+    expenditures = bulk_dir / 'expenditures_1.txt'
+    expenditures.write_text(
+        'ID\tCommitteeID\tFiledDocID\tETransID\tLastOnlyName\tFirstName\tExpendedDate\tAmount\tAggregateAmount\tAddress1\tAddress2\tCity\tState\tZip\tD2Part\tPurpose\tCandidateName\tOffice\tSupporting\tOpposing\tArchived\tCountry\tRedactionRequested\n'
+        '7001\t101\t5001\t\tVendor\tOne\t2025-01-10 00:00:00\t20000000\t0\t10 Main\t\tChicago\tIL\t60601\t8B\tMedia buy\t\t\tFalse\tFalse\tFalse\tUS\tFalse\n'
+        '7002\t101\t5001\t\tTransfer\tOut\t2025-01-11 00:00:00\t15\t0\t11 Main\t\tChicago\tIL\t60601\t6A\tTransfer out\t\t\tFalse\tFalse\tFalse\tUS\tFalse\n'
+        '7003\t101\t5001\t\tBad\tPart\t2025-01-12 00:00:00\t50\t0\t12 Main\t\tChicago\tIL\t60601\t5A\tShould reject\t\t\tFalse\tFalse\tFalse\tUS\tFalse\n'
+        '7004\t101\t5001\t\tBad\tBool\t2025-01-13 00:00:00\t75\t0\t13 Main\t\tChicago\tIL\t60601\t8A\tShould reject bool\t\t\tMaybe\tFalse\tFalse\tUS\tFalse\n',
+        encoding='utf-8'
+    )
+
+    db_path = str(tmp_path / 'test_bulk_expenditures.db')
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = import_bulk_download(conn, bulk_dir)
+    assert stats['committees_loaded'] == 1
+    assert stats['d2_totals_loaded'] == 1
+    assert stats['candidates_loaded'] == 1
+    assert stats['cmte_candidate_links_loaded'] == 1
+    assert stats['expenditures_loaded'] == 2
+    assert stats['expenditures_rejected'] == 2
+    assert stats['committee_expenditures_rows'] == 2
+    assert stats['d2_expenditures_recon_rows'] == 1
+    assert stats['candidate_committee_expenditures_agg_rows'] == 1
+    assert stats['expenditures_rejects_rows'] == 2
+    assert stats['expenditure_amount_anomaly_rows_total'] == 1
+    assert stats['unmatched_expenditures_committee_ids'] == 0
+    assert stats['unmatched_expenditures_d2_filed_docs'] == 0
+
+    recon = conn.execute(
+        """
+        SELECT
+            d2_itemized_expenditures_total,
+            expenditures_amount_sum,
+            expenditures_minus_d2_itemized_total,
+            sum_part_6_transfers_out,
+            sum_part_8_expenditures,
+            anomaly_row_count
+        FROM bulk_d2_expenditures_recon
+        WHERE committee_id_sbe = 101 AND filed_doc_id = 5001
+        """
+    ).fetchone()
+    assert recon['d2_itemized_expenditures_total'] == 20000015.0
+    assert recon['expenditures_amount_sum'] == 20000015.0
+    assert recon['expenditures_minus_d2_itemized_total'] == 0.0
+    assert recon['sum_part_6_transfers_out'] == 15.0
+    assert recon['sum_part_8_expenditures'] == 20000000.0
+    assert recon['anomaly_row_count'] == 1
+
+    reject_reason = conn.execute(
+        "SELECT reject_reason FROM bulk_expenditures_rejects ORDER BY source_row_number ASC LIMIT 1"
+    ).fetchone()
+    assert reject_reason['reject_reason'] in {
+        'invalid_d2_part_allowlist_6_7_8_9',
+        'invalid_supporting_boolean',
+    }
+
+    agg = conn.execute(
+        """
+        SELECT
+            expenditure_count,
+            sum_expenditure_amount,
+            sum_amount_part_6_transfers_out,
+            sum_amount_part_8_expenditures,
+            anomaly_expenditure_count
+        FROM bulk_candidate_committee_expenditures_agg
+        WHERE candidate_id = 201 AND committee_id_sbe = 101
+        """
+    ).fetchone()
+    assert agg['expenditure_count'] == 2
+    assert agg['sum_expenditure_amount'] == 20000015.0
+    assert agg['sum_amount_part_6_transfers_out'] == 15.0
+    assert agg['sum_amount_part_8_expenditures'] == 20000000.0
+    assert agg['anomaly_expenditure_count'] == 1
+
+    conn.close()

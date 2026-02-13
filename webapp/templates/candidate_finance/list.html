@@ -90,28 +90,29 @@
     ) }}">Share This View</a>
 </div>
 
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>{{ sort_link('candidate_full_name', 'Candidate') }}</th>
-            <th>{{ sort_link('office_sought', 'Office') }}</th>
-            <th>{{ sort_link('district_type', 'District Type') }}</th>
-            <th>{{ sort_link('district', 'District') }}</th>
-            <th>{{ sort_link('candidate_party_affiliation', 'Candidate Party') }}</th>
-            <th>{{ sort_link('committee_name', 'Committee') }}</th>
-            <th>{{ sort_link('committee_type', 'Committee Type') }}</th>
-            <th>{{ sort_link('period_year', 'Year') }}</th>
-            <th>{{ sort_link('election_cycle', 'Cycle') }}</th>
-            <th>{{ sort_link('filing_count', 'Filings') }}</th>
-            <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
-            <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
-            <th>{{ sort_link('max_ending_funds_available', 'Max Ending Funds') }}</th>
-            <th>Provenance</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>{{ sort_link('candidate_full_name', 'Candidate') }}</th>
+                <th>{{ sort_link('office_sought', 'Office') }}</th>
+                <th>{{ sort_link('district_type', 'District Type') }}</th>
+                <th>{{ sort_link('district', 'District') }}</th>
+                <th>{{ sort_link('candidate_party_affiliation', 'Candidate Party') }}</th>
+                <th>{{ sort_link('committee_name', 'Committee') }}</th>
+                <th>{{ sort_link('committee_type', 'Committee Type') }}</th>
+                <th>{{ sort_link('period_year', 'Year') }}</th>
+                <th>{{ sort_link('election_cycle', 'Cycle') }}</th>
+                <th>{{ sort_link('filing_count', 'Filings') }}</th>
+                <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
+                <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
+                <th>{{ sort_link('max_ending_funds_available', 'Max Ending Funds') }}</th>
+                <th>Provenance</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
             <td>
                 {% if row.candidate_id is not none and row.committee_id_sbe is not none and row.candidate_full_name %}
                 <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
@@ -147,7 +148,9 @@
                     <p><strong>Source table:</strong> bulk_candidate_committee_finance_agg</p>
                     <p><strong>Source filing link:</strong>
                         {% if row.candidate_id is not none and row.committee_id_sbe is not none %}
-                        <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">Itemized drilldown</a>
+                        <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">Itemized receipts</a>
+                        |
+                        <a href="{{ url_for('candidate_finance.candidate_committee_itemized_expenditures', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">Itemized expenditures</a>
                         {% else %}
                         not available
                         {% endif %}
@@ -157,14 +160,15 @@
                     <p><strong>Normalization notes:</strong> Candidate/committee mapping is grouped by candidate_id + committee_id_sbe.</p>
                 </details>
             </td>
-        </tr>
-        {% else %}
-        <tr>
-            <td colspan="14">No rows found for this query.</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="14">No rows found for this query.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
 {% if total_pages > 1 %}
 <nav class="pagination">
