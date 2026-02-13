@@ -7,6 +7,7 @@ from database.cross_matching import (
     _jaccard,
     match_lobbying_to_donors,
     match_lobbying_to_527,
+    match_527_expenditures_to_committees,
     match_527_to_committees,
     run_all_cross_matching,
 )
@@ -99,6 +100,18 @@ def _insert_committee(conn, committee_id_sbe, committee_name):
     conn.commit()
 
 
+def _insert_527_expenditure(conn, ein, org_name, recipient_name, state="IL"):
+    conn.execute(
+        """
+        INSERT INTO irs527_expenditures (
+            form_id, ein, org_name, recipient_name, state
+        ) VALUES (1, ?, ?, ?, ?)
+        """,
+        (ein, org_name, recipient_name, state),
+    )
+    conn.commit()
+
+
 def test_match_lobbying_to_donors_finds_match(tmp_path: Path):
     conn = _setup_db(tmp_path)
     _insert_lobbying_client(conn, 1, "Northwestern University")
@@ -146,6 +159,25 @@ def test_match_527_to_committees(tmp_path: Path):
 
     stats = match_527_to_committees(conn, threshold=0.80)
     assert stats["matches"] >= 1
+
+    conn.close()
+
+
+def test_match_527_expenditures_to_committees(tmp_path: Path):
+    conn = _setup_db(tmp_path)
+    _insert_committee(conn, 101, "Citizens for Springfield")
+    _insert_527_expenditure(conn, "123456789", "Citizens Org", "Citizens for Springfield", state="IL")
+
+    stats = match_527_expenditures_to_committees(conn, threshold=0.80)
+    assert stats["matches"] >= 1
+
+    match = conn.execute(
+        "SELECT * FROM irs527_expenditure_recipient_matches WHERE ein = ?",
+        ("123456789",),
+    ).fetchone()
+    assert match is not None
+    assert match["matched_type"] == "committee"
+    assert match["score"] >= 0.80
 
     conn.close()
 

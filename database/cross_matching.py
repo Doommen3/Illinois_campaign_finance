@@ -503,7 +503,10 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
         if tokens:
             left_items.append(((exp["ein"], exp["org_name"], exp["recipient_name"]), tokens))
 
-    right_items = [(target_meta, target_tokens) for target_meta, target_tokens in all_targets]
+    right_items = [
+        ((matched_type, matched_id, matched_name), target_tokens)
+        for matched_type, matched_id, matched_name, target_tokens in all_targets
+    ]
     pair_matches, stats = _sparse_jaccard_matches(
         left_items,
         right_items,
