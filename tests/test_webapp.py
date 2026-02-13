@@ -65,6 +65,31 @@ class TestWebApp:
         assert response.status_code == 200
         assert b'Dashboard' in response.data
 
+    def test_index_reads_persisted_matched_donor_pairs(self, app, client):
+        """Dashboard should show persisted federal/local donor pair count."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        rows = [
+            (f"fed-{idx}", f"local-{idx}", "name_state_zip")
+            for idx in range(17)
+        ]
+        conn.executemany(
+            """
+            INSERT INTO fec_local_donor_matches (
+                federal_donor_entity_key,
+                local_donor_key,
+                match_method
+            ) VALUES (?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/')
+        assert response.status_code == 200
+        assert b'Matched Donor Pairs' in response.data
+        assert b'>17<' in response.data
+
     def test_committees_page_loads(self, client):
         """Test that the committees page loads."""
         response = client.get('/committees/')

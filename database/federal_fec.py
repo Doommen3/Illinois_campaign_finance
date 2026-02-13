@@ -1328,6 +1328,7 @@ def sync_il_federal_fec(
     refresh_cache: bool = False,
     skip_donations: bool = False,
     max_committees: int | None = None,
+    refresh_local_matches: bool = True,
     client: FecApiClient | None = None,
 ) -> dict:
     """Sync IL federal candidate IDs and donation rows from FEC APIs.
@@ -1356,6 +1357,8 @@ def sync_il_federal_fec(
             "api_calls_made": 0,
             "candidate_universe_pages": 0,
             "call_budget_reached": False,
+            "federal_local_pairs_written": 0,
+            "federal_local_matches_written": 0,
         }
 
     effective_cycle = cycle or int(seed_rows[0]["cycle"])
@@ -1619,6 +1622,13 @@ def sync_il_federal_fec(
             if call_budget_reached:
                 break
 
+    local_match_stats: dict[str, Any] = {
+        "rows_written": 0,
+        "materialized_matches": 0,
+    }
+    if refresh_local_matches:
+        local_match_stats = refresh_fec_local_donor_matches(conn, cycle=effective_cycle)
+
     return {
         "seed_rows_loaded": len(seed_rows),
         "candidate_universe_rows": len(candidate_universe_rows),
@@ -1631,6 +1641,8 @@ def sync_il_federal_fec(
         "contributions_upserted": contributions_upserted,
         "api_calls_made": api_calls_made,
         "call_budget_reached": call_budget_reached,
+        "federal_local_pairs_written": int(local_match_stats.get("rows_written") or 0),
+        "federal_local_matches_written": int(local_match_stats.get("materialized_matches") or 0),
     }
 
 
@@ -2600,6 +2612,39 @@ def _chunked(values: list[str], size: int = 900) -> list[list[str]]:
     if size <= 0:
         size = 900
     return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _ensure_fec_local_donor_matches_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
+            federal_donor_entity_key TEXT NOT NULL,
+            local_donor_key TEXT NOT NULL,
+            primary_local_donor_key TEXT,
+            federal_donor_name TEXT,
+            local_donor_name TEXT,
+            federal_donor_state TEXT,
+            local_donor_state TEXT,
+            federal_donor_zip TEXT,
+            local_donor_zip TEXT,
+            federal_total_amount REAL NOT NULL DEFAULT 0,
+            local_total_amount REAL NOT NULL DEFAULT 0,
+            federal_contribution_count INTEGER NOT NULL DEFAULT 0,
+            local_contribution_count INTEGER NOT NULL DEFAULT 0,
+            local_committee_count INTEGER NOT NULL DEFAULT 0,
+            match_method TEXT NOT NULL,
+            confidence_score REAL NOT NULL DEFAULT 0,
+            local_donor_keys_json TEXT,
+            refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (federal_donor_entity_key, local_donor_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_fec_local_matches_local_key
+            ON fec_local_donor_matches(local_donor_key);
+        CREATE INDEX IF NOT EXISTS idx_fec_local_matches_confidence
+            ON fec_local_donor_matches(confidence_score DESC, match_method);
+        """
+    )
 
 
 def _candidate_filter_metadata(
@@ -3771,6 +3816,136 @@ def get_federal_local_donor_matches(
         "raw_match_row_count": len(raw_matches),
         "merged_match_row_count": len(matches),
         "matches": matches,
+    }
+
+
+def refresh_fec_local_donor_matches(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    office_code: str | None = None,
+    district_code: str | None = None,
+    federal_donor_limit: int = 5000,
+    local_donor_limit: int = 100000,
+    match_limit: int = 5000,
+) -> dict:
+    """Persist federal/local donor matches for dashboard metrics and quick lookups."""
+    _ensure_fec_local_donor_matches_table(conn)
+
+    if not _table_exists(conn, "fec_schedule_a_contributions"):
+        conn.execute("DELETE FROM fec_local_donor_matches")
+        conn.commit()
+        return {
+            "rows_written": 0,
+            "materialized_pairs": 0,
+            "materialized_matches": 0,
+            "skipped_reason": "missing_fec_schedule_a_contributions",
+        }
+
+    if not _table_exists(conn, "analytics_donor_summary"):
+        conn.execute("DELETE FROM fec_local_donor_matches")
+        conn.commit()
+        return {
+            "rows_written": 0,
+            "materialized_pairs": 0,
+            "materialized_matches": 0,
+            "skipped_reason": "missing_analytics_donor_summary",
+        }
+
+    payload = get_federal_local_donor_matches(
+        conn,
+        cycle=cycle,
+        office_code=office_code,
+        district_code=district_code,
+        federal_donor_limit=federal_donor_limit,
+        local_donor_limit=local_donor_limit,
+        match_limit=match_limit,
+    )
+
+    rows_to_write: list[tuple[Any, ...]] = []
+    for row in payload.get("matches", []):
+        local_keys = row.get("local_donor_keys") or []
+        cleaned_keys = sorted(
+            {
+                _clean_text(key)
+                for key in local_keys
+                if _clean_text(key)
+            }
+        )
+        fallback_key = _clean_text(row.get("local_donor_key"))
+        if fallback_key and fallback_key not in cleaned_keys:
+            cleaned_keys.append(fallback_key)
+        if not cleaned_keys:
+            continue
+
+        local_keys_json = json.dumps(cleaned_keys, ensure_ascii=True)
+        primary_local_key = fallback_key or cleaned_keys[0]
+        for local_key in cleaned_keys:
+            rows_to_write.append(
+                (
+                    _clean_text(row.get("federal_donor_entity_key")),
+                    local_key,
+                    primary_local_key,
+                    _clean_text(row.get("federal_donor_name")) or None,
+                    _clean_text(row.get("local_donor_name")) or None,
+                    _clean_text(row.get("federal_donor_state")).upper() or None,
+                    _clean_text(row.get("local_donor_state")).upper() or None,
+                    _normalize_zip5(row.get("federal_donor_zip")) or None,
+                    _normalize_zip5(row.get("local_donor_zip")) or None,
+                    float(row.get("federal_total_amount") or 0.0),
+                    float(row.get("local_total_amount") or 0.0),
+                    int(row.get("federal_contribution_count") or 0),
+                    int(row.get("local_contribution_count") or 0),
+                    int(row.get("local_committee_count") or 0),
+                    _clean_text(row.get("match_method")).lower() or "unknown",
+                    float(row.get("confidence_score") or 0.0),
+                    local_keys_json,
+                )
+            )
+
+    conn.execute("DELETE FROM fec_local_donor_matches")
+    if rows_to_write:
+        conn.executemany(
+            """
+            INSERT INTO fec_local_donor_matches (
+                federal_donor_entity_key,
+                local_donor_key,
+                primary_local_donor_key,
+                federal_donor_name,
+                local_donor_name,
+                federal_donor_state,
+                local_donor_state,
+                federal_donor_zip,
+                local_donor_zip,
+                federal_total_amount,
+                local_total_amount,
+                federal_contribution_count,
+                local_contribution_count,
+                local_committee_count,
+                match_method,
+                confidence_score,
+                local_donor_keys_json,
+                refreshed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            rows_to_write,
+        )
+    conn.commit()
+
+    return {
+        "rows_written": len(rows_to_write),
+        "materialized_pairs": len(rows_to_write),
+        "materialized_matches": len(payload.get("matches", [])),
+        "cycle": payload.get("cycle"),
+        "office_filter": payload.get("office_filter"),
+        "district_filter": payload.get("district_filter"),
+        "federal_donors_considered": payload.get("federal_donors_considered", 0),
+        "local_donors_considered": payload.get("local_donors_considered", 0),
+        "federal_donors_matched": payload.get("federal_donors_matched", 0),
+        "local_donors_matched": payload.get("local_donors_matched", 0),
+        "match_rate": payload.get("match_rate", 0.0),
+        "tier_counts": payload.get("tier_counts", {}),
+        "raw_match_row_count": payload.get("raw_match_row_count", 0),
+        "merged_match_row_count": payload.get("merged_match_row_count", 0),
     }
 
 

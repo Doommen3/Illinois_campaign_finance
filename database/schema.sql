@@ -487,3 +487,30 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_committee ON fec_schedule_a_contribu
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_date ON fec_schedule_a_contributions(contribution_receipt_date);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_key ON fec_schedule_a_contributions(donor_key);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_entity_key ON fec_schedule_a_contributions(donor_entity_key);
+
+CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
+    federal_donor_entity_key TEXT NOT NULL,
+    local_donor_key TEXT NOT NULL,
+    primary_local_donor_key TEXT,
+    federal_donor_name TEXT,
+    local_donor_name TEXT,
+    federal_donor_state TEXT,
+    local_donor_state TEXT,
+    federal_donor_zip TEXT,
+    local_donor_zip TEXT,
+    federal_total_amount REAL NOT NULL DEFAULT 0,
+    local_total_amount REAL NOT NULL DEFAULT 0,
+    federal_contribution_count INTEGER NOT NULL DEFAULT 0,
+    local_contribution_count INTEGER NOT NULL DEFAULT 0,
+    local_committee_count INTEGER NOT NULL DEFAULT 0,
+    match_method TEXT NOT NULL,
+    confidence_score REAL NOT NULL DEFAULT 0,
+    local_donor_keys_json TEXT,
+    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (federal_donor_entity_key, local_donor_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_local_matches_local_key
+    ON fec_local_donor_matches(local_donor_key);
+CREATE INDEX IF NOT EXISTS idx_fec_local_matches_confidence
+    ON fec_local_donor_matches(confidence_score DESC, match_method);

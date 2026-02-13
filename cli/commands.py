@@ -21,7 +21,11 @@ from database.analytics import (
     refresh_analytics_materialized,
     save_dashboard_snapshot,
 )
-from database.federal_fec import rebuild_fec_donor_identities, sync_il_federal_fec
+from database.federal_fec import (
+    rebuild_fec_donor_identities,
+    refresh_fec_local_donor_matches,
+    sync_il_federal_fec,
+)
 from database.local_donor_entities import rebuild_local_donor_entities
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
@@ -914,6 +918,8 @@ def rebuild_local_donor_entities_command(
 )
 @click.option('--include-all-committees', is_flag=True, help='Include non-principal committees for each candidate')
 @click.option('--skip-donations', is_flag=True, help='Only resolve candidates/committees; skip Schedule A pulls')
+@click.option('--refresh-local-matches/--skip-local-matches', default=True, show_default=True,
+              help='Rebuild persisted federal/local donor match pairs after sync')
 @click.option('--refresh-cache', is_flag=True, help='Ignore cached raw endpoint payloads and re-request from API')
 @click.option('--max-committees', type=int, default=None, help='Optional committee cap for partial sync/debug runs')
 def sync_fec_il_federal_command(
@@ -926,6 +932,7 @@ def sync_fec_il_federal_command(
     max_pages_per_committee,
     include_all_committees,
     skip_donations,
+    refresh_local_matches,
     refresh_cache,
     max_committees,
 ):
@@ -956,12 +963,53 @@ def sync_fec_il_federal_command(
             refresh_cache=bool(refresh_cache),
             skip_donations=bool(skip_donations),
             max_committees=max_committees,
+            refresh_local_matches=bool(refresh_local_matches),
         )
         click.echo('FEC sync completed:')
         for key in sorted(stats.keys()):
             click.echo(f'  {key}: {stats[key]}')
     except Exception as exc:
         click.echo(f'Error syncing FEC federal data: {exc}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('refresh-fec-local-donor-matches')
+@click.option('--cycle', type=int, default=None, help='Optional cycle filter (e.g., 2026)')
+@click.option('--office-code', default=None, help='Optional office filter (e.g., H, S, P)')
+@click.option('--district-code', default=None, help='Optional district filter (e.g., 07)')
+@click.option('--federal-donor-limit', type=int, default=5000, show_default=True,
+              help='Max federal donor entities to scan')
+@click.option('--local-donor-limit', type=int, default=100000, show_default=True,
+              help='Max local donor rows to scan')
+@click.option('--match-limit', type=int, default=5000, show_default=True,
+              help='Max merged matches to materialize before expanding local keys')
+def refresh_fec_local_donor_matches_command(
+    cycle,
+    office_code,
+    district_code,
+    federal_donor_limit,
+    local_donor_limit,
+    match_limit,
+):
+    """Materialize federal/local donor match pairs for dashboard and quick lookups."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Refreshing persisted federal/local donor matches...')
+        stats = refresh_fec_local_donor_matches(
+            conn,
+            cycle=cycle,
+            office_code=(office_code or "").strip() or None,
+            district_code=(district_code or "").strip() or None,
+            federal_donor_limit=max(100, int(federal_donor_limit)),
+            local_donor_limit=max(1000, int(local_donor_limit)),
+            match_limit=max(100, int(match_limit)),
+        )
+        for key in sorted(stats.keys()):
+            click.echo(f'  {key}: {stats[key]}')
+    except Exception as exc:
+        click.echo(f'Error refreshing federal/local donor matches: {exc}', err=True)
         sys.exit(1)
     finally:
         conn.close()

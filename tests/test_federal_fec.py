@@ -17,6 +17,7 @@ from database.federal_fec import (
     get_federal_network_graph,
     get_federal_race_analytics,
     list_federal_candidates,
+    refresh_fec_local_donor_matches,
     sync_il_federal_fec,
 )
 
@@ -870,6 +871,21 @@ def test_federal_advanced_analytics(tmp_path: Path):
         row["federal_donor_entity_key"] == "jane_il_60601" and row["local_donor_key"] == "local-jane"
         for row in matches["matches"]
     )
+
+    persisted = refresh_fec_local_donor_matches(
+        conn,
+        cycle=2026,
+        federal_donor_limit=1000,
+        local_donor_limit=10000,
+        match_limit=500,
+    )
+    assert persisted["rows_written"] >= 2
+    assert persisted["federal_donors_matched"] >= 2
+    assert persisted["local_donors_matched"] >= 2
+    persisted_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM fec_local_donor_matches"
+    ).fetchone()["count"]
+    assert persisted_count == persisted["rows_written"]
 
     overlap = get_federal_local_overlap_network(
         conn,
