@@ -774,6 +774,7 @@ class Donor:
                 # Keep entity mode fast by sorting on base entity columns only.
                 # Per-row enrichments (anchor + counts) are computed only for the
                 # selected page instead of the full entity population.
+                sort_by_contribution_count = sort_by == "contribution_count"
                 sort_map = {
                     "source": "e.source",
                     "name": "e.canonical_name",
@@ -789,9 +790,38 @@ class Donor:
                 order_by = sort_map.get(sort_by, "e.total_amount")
                 final_order_by = final_sort_map.get(sort_by, "se.total_amount")
                 direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+                if sort_by_contribution_count:
+                    order_by = "sort_contribution_count"
+                    final_order_by = "COALESCE(se.sort_contribution_count, 0)"
+
+                cte_prefix = ""
+                selected_entities_join = ""
+                selected_entities_extra = ", 0 AS sort_contribution_count"
+                query_params: tuple = (source, limit, offset)
+                if sort_by_contribution_count:
+                    cte_prefix = """
+                    entity_contribution_totals AS (
+                        SELECT
+                            m.source,
+                            m.entity_id,
+                            COALESCE(SUM(m.contribution_count), 0) AS contribution_count
+                        FROM donor_entity_local_member m
+                        WHERE m.source = ?
+                        GROUP BY m.source, m.entity_id
+                    ),
+                    """
+                    selected_entities_join = """
+                        LEFT JOIN entity_contribution_totals ect
+                          ON ect.source = e.source
+                         AND ect.entity_id = e.entity_id
+                    """
+                    selected_entities_extra = ", COALESCE(ect.contribution_count, 0) AS sort_contribution_count"
+                    query_params = (source, source, limit, offset)
                 rows = conn.execute(
                     f"""
-                    WITH selected_entities AS (
+                    WITH
+                    {cte_prefix}
+                    selected_entities AS (
                         SELECT
                             e.entity_id,
                             e.source,
@@ -800,7 +830,9 @@ class Donor:
                             e.total_amount,
                             e.merge_action,
                             e.confidence_score
+                            {selected_entities_extra}
                         FROM donor_entity_local e
+                        {selected_entities_join}
                         WHERE e.source = ?
                         ORDER BY {order_by} {direction}, e.canonical_name ASC
                         LIMIT ? OFFSET ?
@@ -855,7 +887,8 @@ class Donor:
                         COALESCE(ct.committee_count, 0) AS committee_count,
                         COALESCE(anchor.donor_key, '') AS anchor_donor_key,
                         se.merge_action AS merge_action,
-                        se.confidence_score AS confidence_score
+                        se.confidence_score AS confidence_score,
+                        COALESCE(se.sort_contribution_count, 0) AS sort_contribution_count
                     FROM selected_entities se
                     LEFT JOIN selected_members anchor
                         ON anchor.entity_id = se.entity_id
@@ -867,7 +900,7 @@ class Donor:
                     LEFT JOIN committee_totals ct ON ct.entity_id = se.entity_id
                     ORDER BY {final_order_by} {direction}, donor_name ASC
                     """,
-                    (source, limit, offset),
+                    query_params,
                 ).fetchall()
                 donors = []
                 for row in rows:

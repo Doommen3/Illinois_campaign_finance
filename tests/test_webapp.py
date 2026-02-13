@@ -1294,6 +1294,119 @@ class TestWebApp:
         assert response.data.count(b'Kenneth Griffin') >= 1
         assert b'/donors/entity/entity' in response.data
 
+    def test_donors_page_entity_sorts_by_contribution_count_desc(self, app, client):
+        """Entity-backed donor list should support sorting by contribution_count descending."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DELETE FROM donor_entity_local_member")
+        conn.execute("DELETE FROM donor_entity_local")
+        conn.execute("DELETE FROM analytics_donor_committee_agg")
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:sort:key_low", None,
+                    "Low Contrib High Amount", "1 Main St, Chicago, IL, 60601",
+                    "Chicago", "IL", "Business Owner", "Example One", 250000.0, 46, 9,
+                ),
+                (
+                    "bulk_receipts", "entity:sort:key_high", None,
+                    "High Contrib Lower Amount", "2 Main St, Chicago, IL, 60602",
+                    "Chicago", "IL", "Executive", "Example Two", 10000.0, 220, 19,
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local (
+                entity_id, source, canonical_name, display_name, member_count, total_amount,
+                confidence_score, peak_confidence_score, confidence_tier, merge_action, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "entity:sort:low",
+                    "bulk_receipts",
+                    "low contrib high amount",
+                    "Low Contrib High Amount",
+                    1,
+                    250000.0,
+                    0.99,
+                    0.99,
+                    "high",
+                    "singleton",
+                    "test:v1",
+                ),
+                (
+                    "entity:sort:high",
+                    "bulk_receipts",
+                    "high contrib lower amount",
+                    "High Contrib Lower Amount",
+                    1,
+                    10000.0,
+                    0.99,
+                    0.99,
+                    "high",
+                    "singleton",
+                    "test:v1",
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local_member (
+                source, donor_key, entity_id, canonical_name, donor_name, donor_city, donor_state, donor_zip5,
+                confidence_score, confidence_tier, merge_action, total_amount, contribution_count, committee_count,
+                review_status, reasons_json, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:sort:key_low", "entity:sort:low",
+                    "low contrib high amount", "Low Contrib High Amount", "CHICAGO", "IL", "60601",
+                    0.99, "high", "singleton", 250000.0, 46, 9, "not_needed", "{}", "test:v1",
+                ),
+                (
+                    "bulk_receipts", "entity:sort:key_high", "entity:sort:high",
+                    "high contrib lower amount", "High Contrib Lower Amount", "CHICAGO", "IL", "60602",
+                    0.99, "high", "singleton", 10000.0, 220, 19, "not_needed", "{}", "test:v1",
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO analytics_materialized_meta (
+                source, donor_row_count, monthly_row_count, large_row_count, large_threshold,
+                materialization_version, materialization_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                donor_row_count = excluded.donor_row_count,
+                monthly_row_count = excluded.monthly_row_count,
+                large_row_count = excluded.large_row_count,
+                large_threshold = excluded.large_threshold,
+                materialization_version = excluded.materialization_version,
+                materialization_notes = excluded.materialization_notes,
+                refreshed_at = CURRENT_TIMESTAMP
+            """,
+            ("bulk_receipts", 2, 0, 0, 5000.0, 2, "test-fixture"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/donors/?sort=contribution_count&dir=desc')
+        assert response.status_code == 200
+        high_pos = response.data.find(b'High Contrib Lower Amount')
+        low_pos = response.data.find(b'Low Contrib High Amount')
+        assert high_pos != -1
+        assert low_pos != -1
+        assert high_pos < low_pos
+
     def test_bulk_donor_detail_by_entity_loads_and_aggregates(self, app, client):
         """Test donor detail route by entity aggregates committee totals across member donor keys."""
         conn = get_db(app.config['DATABASE_PATH'])
