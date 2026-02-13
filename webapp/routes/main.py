@@ -1,6 +1,8 @@
 """Main routes for dashboard, search, and compare views."""
 from collections import defaultdict
 from datetime import datetime
+import sqlite3
+import time
 
 from flask import Blueprint, render_template, request, current_app
 
@@ -18,6 +20,42 @@ SEARCH_TYPES = {
     "donor_keys",
 }
 COMPARE_MODES = {"candidate", "committee"}
+
+
+def _sanitize_search_query(raw_query: str, max_length: int) -> tuple[str, bool]:
+    text = " ".join((raw_query or "").strip().split())
+    sanitized = text.replace("%", " ").replace("_", " ")
+    sanitized = " ".join(sanitized.split())
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length].strip()
+    return sanitized, sanitized != text
+
+
+def _run_query_with_timeout(conn, query_fn, timeout_ms: int) -> tuple[object, float, bool]:
+    """Execute sqlite work with a progress-handler timeout guardrail."""
+    start = time.perf_counter()
+    if timeout_ms <= 0:
+        return query_fn(), (time.perf_counter() - start) * 1000.0, False
+
+    deadline = start + (float(timeout_ms) / 1000.0)
+
+    def _progress_handler():
+        return 1 if time.perf_counter() >= deadline else 0
+
+    conn.set_progress_handler(_progress_handler, 2000)
+    timed_out = False
+    try:
+        result = query_fn()
+    except sqlite3.OperationalError as exc:
+        if "interrupted" in str(exc).lower():
+            result = []
+            timed_out = True
+        else:
+            raise
+    finally:
+        conn.set_progress_handler(None, 0)
+
+    return result, (time.perf_counter() - start) * 1000.0, timed_out
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -1052,10 +1090,30 @@ def legacy():
 def search():
     """Global search."""
     conn = current_app.get_database()
-    query = request.args.get('q', '').strip()
+    raw_query = request.args.get('q', '')
+    max_query_len = max(8, int(current_app.config.get('SEARCH_MAX_QUERY_LENGTH', 64)))
+    min_query_len = max(1, int(current_app.config.get('SEARCH_MIN_QUERY_LENGTH', 2)))
+    query_timeout_ms = max(50, int(current_app.config.get('SEARCH_QUERY_TIMEOUT_MS', 700)))
+    slow_query_ms = max(50, int(current_app.config.get('SEARCH_SLOW_QUERY_MS', 400)))
+
+    query, query_was_normalized = _sanitize_search_query(raw_query, max_query_len)
     search_type = request.args.get('type', 'all').strip()
     if search_type not in SEARCH_TYPES:
         search_type = "all"
+
+    is_short_query = bool(query) and len(query) < min_query_len and not query.isdigit()
+
+    search_meta = {
+        'query_was_normalized': query_was_normalized,
+        'min_query_length': min_query_len,
+        'max_query_length': max_query_len,
+        'query_too_short': is_short_query,
+        'timed_out_sections': [],
+        'errored_sections': [],
+        'slow_sections': [],
+        'duration_ms': 0.0,
+        'timeout_ms': query_timeout_ms,
+    }
 
     results = {
         'committees': [],
@@ -1065,28 +1123,104 @@ def search():
         'filed_docs': [],
         'donor_keys': [],
         'query': query,
-        'type': search_type
+        'type': search_type,
+        'search_meta': search_meta,
     }
 
-    if query:
+    search_start = time.perf_counter()
+
+    if query and not is_short_query:
+        short_mode = len(query) < 4
+        committee_limit = 30 if short_mode else 50
+        donor_limit = 30 if short_mode else 50
+        candidate_local_limit = 20 if short_mode else 30
+        candidate_federal_limit = 15 if short_mode else 20
+        report_limit = 20 if short_mode else 30
+        filed_doc_limit = 20 if short_mode else 30
+        donor_key_limit = 20 if short_mode else 30
+
+        def _run_section(section_name: str, callback):
+            try:
+                payload, elapsed_ms, timed_out = _run_query_with_timeout(
+                    conn,
+                    callback,
+                    timeout_ms=query_timeout_ms,
+                )
+            except Exception:
+                current_app.logger.exception("Search section failed: %s", section_name)
+                search_meta['errored_sections'].append(section_name)
+                return []
+
+            if timed_out:
+                search_meta['timed_out_sections'].append(section_name)
+                current_app.logger.warning(
+                    "Search section timed out (%s) q=%r timeout_ms=%s",
+                    section_name,
+                    query,
+                    query_timeout_ms,
+                )
+                return []
+
+            if elapsed_ms >= float(slow_query_ms):
+                search_meta['slow_sections'].append(section_name)
+                current_app.logger.warning(
+                    "Slow search section (%s) q=%r elapsed_ms=%.2f",
+                    section_name,
+                    query,
+                    elapsed_ms,
+                )
+            return payload
+
         if search_type in ('all', 'committees'):
-            results['committees'] = Committee.search(conn, query, limit=50)
+            results['committees'] = _run_section(
+                'committees',
+                lambda: Committee.search(conn, query, limit=committee_limit),
+            )
 
         if search_type in ('all', 'donors'):
-            results['donors'] = Donor.search(conn, query, limit=50)
+            results['donors'] = _run_section(
+                'donors',
+                lambda: Donor.search(conn, query, limit=donor_limit),
+            )
 
         if search_type in ('all', 'candidates'):
-            results['candidates'] = _search_local_candidates(conn, query, limit=30)
-            results['candidates'].extend(_search_federal_candidates(conn, query, limit=20))
+            local_candidates = _run_section(
+                'candidates_local',
+                lambda: _search_local_candidates(conn, query, limit=candidate_local_limit),
+            )
+            federal_candidates = _run_section(
+                'candidates_federal',
+                lambda: _search_federal_candidates(conn, query, limit=candidate_federal_limit),
+            )
+            results['candidates'] = (local_candidates or []) + (federal_candidates or [])
 
         if search_type in ('all', 'reports'):
-            results['reports'] = _search_reports(conn, query, limit=30)
+            results['reports'] = _run_section(
+                'reports',
+                lambda: _search_reports(conn, query, limit=report_limit),
+            )
 
         if search_type in ('all', 'filed_docs'):
-            results['filed_docs'] = _search_filed_docs(conn, query, limit=30)
+            results['filed_docs'] = _run_section(
+                'filed_docs',
+                lambda: _search_filed_docs(conn, query, limit=filed_doc_limit),
+            )
 
         if search_type in ('all', 'donor_keys'):
-            results['donor_keys'] = _search_donor_keys(conn, query, limit=30)
+            results['donor_keys'] = _run_section(
+                'donor_keys',
+                lambda: _search_donor_keys(conn, query, limit=donor_key_limit),
+            )
+
+    search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)
+    if search_meta['duration_ms'] >= float(slow_query_ms) and query and not is_short_query:
+        current_app.logger.warning(
+            "Slow search request q=%r type=%s duration_ms=%.2f timeouts=%s",
+            query,
+            search_type,
+            search_meta['duration_ms'],
+            ",".join(search_meta['timed_out_sections']) if search_meta['timed_out_sections'] else "none",
+        )
 
     return render_template('search.html', **results)
 

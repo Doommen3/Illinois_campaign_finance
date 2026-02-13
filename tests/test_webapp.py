@@ -127,6 +127,13 @@ class TestWebApp:
         response = client.get('/reports/')
         assert response.status_code == 200
 
+    def test_search_short_non_numeric_query_is_guarded(self, client):
+        """Global search should guard very short non-numeric wildcard queries."""
+        response = client.get('/search?q=a&type=all')
+        assert response.status_code == 200
+        assert b'Enter at least 2 characters' in response.data
+        assert b'Search runtime' in response.data
+
     def test_candidate_finance_page_loads_without_bulk_table(self, client):
         """Test candidate finance page renders guidance when bulk table is missing."""
         response = client.get('/candidate-finance/')
@@ -555,6 +562,19 @@ class TestWebApp:
         assert b'Top Federal Races' in overview.data
         assert b'Explore More' in overview.data
         assert b'$425.00' in overview.data
+        conn = get_db(app.config['DATABASE_PATH'])
+        snapshot_row = conn.execute(
+            """
+            SELECT cache_key, status
+            FROM analytics_snapshots
+            WHERE snapshot_type = 'federal_overview'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+        assert snapshot_row is not None
+        assert snapshot_row['status'] == 'completed'
 
         candidates = client.get('/federal-finance/candidates?cycle=2026')
         assert candidates.status_code == 200

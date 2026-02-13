@@ -177,6 +177,15 @@ Environment variables (set in `.env` or export directly):
 | `API_KEYS` | *(empty)* | Comma-separated API keys for `/api/*` |
 | `API_REQUIRE_KEY` | `false` unless `API_KEYS` set | Require API key auth on `/api/*` |
 | `API_RATE_LIMIT_PER_MINUTE` | `120` | Per-key/per-IP API request budget per minute |
+| `SEARCH_MIN_QUERY_LENGTH` | `2` | Minimum search length for non-numeric queries |
+| `SEARCH_MAX_QUERY_LENGTH` | `64` | Max search input length before truncation |
+| `SEARCH_QUERY_TIMEOUT_MS` | `700` | Per-section SQLite timeout guardrail on `/search` |
+| `SEARCH_SLOW_QUERY_MS` | `400` | Threshold for slow-search warning logs |
+| `FEDERAL_VIEW_CACHE_ENABLED` | `true` | Enable snapshot caching for heavy federal views |
+| `FEDERAL_OVERVIEW_CACHE_TTL_SECONDS` | `900` | Cache TTL for federal overview computations |
+| `FEDERAL_NETWORKS_CACHE_TTL_SECONDS` | `600` | Cache TTL for federal network/overlap graphs |
+| `FEDERAL_DONOR_INTEL_CACHE_TTL_SECONDS` | `600` | Cache TTL for donor segmentation/influence |
+| `FEDERAL_MATCHING_CACHE_TTL_SECONDS` | `600` | Cache TTL for matching diagnostics |
 | `LOCAL_DATA_STALE_DAYS` | `45` | Freshness warning threshold for local data |
 | `FEDERAL_DATA_STALE_DAYS` | `14` | Freshness warning threshold for federal data |
 | `RATE_LIMIT_RPM` | `30` | Scraper requests per minute |

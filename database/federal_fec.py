@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -40,6 +41,123 @@ def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) 
         return False
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return any(row["name"] == column_name for row in rows)
+
+
+def _federal_view_cache_key(snapshot_type: str, params: dict) -> str:
+    normalized = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+    return f"{snapshot_type}:{digest}"
+
+
+def get_federal_view_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_type: str,
+    params: dict,
+    ttl_seconds: int = 600,
+) -> dict:
+    """Fetch cached payload metadata for heavy federal views."""
+    cache_key = _federal_view_cache_key(snapshot_type, params)
+    if not _table_exists(conn, "analytics_snapshots"):
+        return {
+            "cache_key": cache_key,
+            "status": "empty",
+            "payload": None,
+            "error_message": None,
+            "completed_at": None,
+            "updated_at": None,
+            "age_seconds": None,
+            "is_stale": True,
+            "is_fresh": False,
+        }
+
+    row = conn.execute(
+        """
+        SELECT cache_key, status, payload_json, error_message, completed_at, updated_at
+        FROM analytics_snapshots
+        WHERE cache_key = ? AND snapshot_type = ?
+        LIMIT 1
+        """,
+        (cache_key, snapshot_type),
+    ).fetchone()
+    if not row:
+        return {
+            "cache_key": cache_key,
+            "status": "empty",
+            "payload": None,
+            "error_message": None,
+            "completed_at": None,
+            "updated_at": None,
+            "age_seconds": None,
+            "is_stale": True,
+            "is_fresh": False,
+        }
+
+    payload = json.loads(row["payload_json"]) if row["payload_json"] else None
+    completed_at = row["completed_at"]
+    age_seconds = None
+    is_fresh = False
+    if completed_at:
+        try:
+            completed_dt = datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
+            is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
+        except ValueError:
+            age_seconds = None
+
+    return {
+        "cache_key": row["cache_key"],
+        "status": row["status"],
+        "payload": payload,
+        "error_message": row["error_message"],
+        "completed_at": row["completed_at"],
+        "updated_at": row["updated_at"],
+        "age_seconds": age_seconds,
+        "is_stale": not is_fresh,
+        "is_fresh": is_fresh,
+    }
+
+
+def save_federal_view_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_type: str,
+    params: dict,
+    status: str,
+    payload: Optional[dict] = None,
+    error_message: Optional[str] = None,
+) -> dict:
+    """Persist cached payload metadata for heavy federal views."""
+    cache_key = _federal_view_cache_key(snapshot_type, params)
+    payload_json = json.dumps(payload) if payload is not None else None
+    params_json = json.dumps(params, sort_keys=True)
+    conn.execute(
+        """
+        INSERT INTO analytics_snapshots (
+            cache_key, snapshot_type, params_json, payload_json, status, error_message,
+            created_at, updated_at, completed_at
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+            CASE WHEN ? = 'completed' THEN CURRENT_TIMESTAMP ELSE NULL END
+        )
+        ON CONFLICT(cache_key) DO UPDATE SET
+            snapshot_type = excluded.snapshot_type,
+            params_json = excluded.params_json,
+            payload_json = CASE
+                WHEN excluded.payload_json IS NOT NULL THEN excluded.payload_json
+                ELSE analytics_snapshots.payload_json
+            END,
+            status = excluded.status,
+            error_message = excluded.error_message,
+            updated_at = CURRENT_TIMESTAMP,
+            completed_at = CASE
+                WHEN excluded.status = 'completed' THEN CURRENT_TIMESTAMP
+                ELSE analytics_snapshots.completed_at
+            END
+        """,
+        (cache_key, snapshot_type, params_json, payload_json, status, error_message, status),
+    )
+    conn.commit()
+    return get_federal_view_snapshot(conn, snapshot_type=snapshot_type, params=params, ttl_seconds=1)
 
 
 def _clean_text(value: str | None) -> str:

@@ -21,6 +21,32 @@
 </form>
 
 {% if query %}
+{% if search_meta.query_too_short %}
+<div class="flash flash-error">
+    Enter at least {{ search_meta.min_query_length }} characters (or a numeric ID) to run search.
+</div>
+{% endif %}
+{% if search_meta.query_was_normalized %}
+<div class="flash flash-success">
+    Search input was normalized to keep results stable and performant.
+</div>
+{% endif %}
+{% if search_meta.timed_out_sections %}
+<div class="flash flash-error">
+    Some sections timed out and were skipped: {{ search_meta.timed_out_sections|join(', ') }}.
+</div>
+{% endif %}
+{% if search_meta.errored_sections %}
+<div class="flash flash-error">
+    Some sections failed and were skipped: {{ search_meta.errored_sections|join(', ') }}.
+</div>
+{% endif %}
+<p class="stat-detail">
+    Search runtime: {{ search_meta.duration_ms }} ms.
+    {% if search_meta.slow_sections %}
+    Slow sections: {{ search_meta.slow_sections|join(', ') }}.
+    {% endif %}
+</p>
 <div class="search-results">
     {% if type in ('all', 'committees') and committees %}
     <section>

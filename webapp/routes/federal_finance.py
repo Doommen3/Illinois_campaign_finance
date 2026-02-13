@@ -18,7 +18,9 @@ from database.federal_fec import (
     get_federal_local_overlap_network,
     get_federal_network_graph,
     get_federal_race_analytics,
+    get_federal_view_snapshot,
     list_federal_candidates,
+    save_federal_view_snapshot,
 )
 
 federal_finance_bp = Blueprint('federal_finance', __name__)
@@ -46,6 +48,18 @@ def _base_context(active_page: str, table_available: bool, cycle: int, analysis_
     }
 
 
+def _federal_cache_enabled() -> bool:
+    return bool(current_app.config.get('FEDERAL_VIEW_CACHE_ENABLED', True))
+
+
+def _federal_cache_ttl(config_key: str, default_seconds: int) -> int:
+    return max(30, int(current_app.config.get(config_key, default_seconds)))
+
+
+def _federal_cache_refresh_requested() -> bool:
+    return request.args.get('refresh_cache', 0, type=int) == 1
+
+
 @federal_finance_bp.route('/', endpoint='list_federal_finance')
 @federal_finance_bp.route('/overview', endpoint='federal_overview')
 def federal_overview():
@@ -66,41 +80,81 @@ def federal_overview():
     top_donors: list[dict] = []
     top_candidates: list[dict] = []
 
+    cache_status = None
     if table_available:
-        overview['candidate_count'] = count_federal_candidates(conn, cycle=cycle)
-        race_analytics = get_federal_race_analytics(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            limit=12,
-        )
-        overview['race_count'] = len(race_analytics)
+        payload = None
+        cache_params = {
+            'cycle': cycle,
+            'analysis_office': analysis_office or '',
+            'analysis_district': analysis_district or '',
+            'version': 1,
+        }
+        if _federal_cache_enabled() and not _federal_cache_refresh_requested():
+            cache_status = get_federal_view_snapshot(
+                conn,
+                snapshot_type='federal_overview',
+                params=cache_params,
+                ttl_seconds=_federal_cache_ttl('FEDERAL_OVERVIEW_CACHE_TTL_SECONDS', 900),
+            )
+            if cache_status.get('is_fresh') and cache_status.get('payload'):
+                payload = cache_status.get('payload')
 
-        geographic = get_federal_geographic_concentration(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            limit_states=10,
-            limit_cities=12,
-            limit_races=10,
-        )
+        if payload is None:
+            overview['candidate_count'] = count_federal_candidates(conn, cycle=cycle)
+            race_analytics = get_federal_race_analytics(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                limit=12,
+            )
+            overview['race_count'] = len(race_analytics)
 
-        network_snapshot = get_federal_network_graph(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=100.0,
-            limit=500,
-        )
-        overview['network_total_amount'] = network_snapshot['summary'].get('total_amount', 0.0)
-        overview['network_donor_count'] = network_snapshot['summary'].get('donor_count', 0)
-        overview['network_candidate_count'] = network_snapshot['summary'].get('candidate_count', 0)
+            geographic = get_federal_geographic_concentration(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                limit_states=10,
+                limit_cities=12,
+                limit_races=10,
+            )
 
-        top_donors = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'donor'][:10]
-        top_candidates = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'candidate'][:10]
+            network_snapshot = get_federal_network_graph(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=100.0,
+                limit=500,
+            )
+            overview['network_total_amount'] = network_snapshot['summary'].get('total_amount', 0.0)
+            overview['network_donor_count'] = network_snapshot['summary'].get('donor_count', 0)
+            overview['network_candidate_count'] = network_snapshot['summary'].get('candidate_count', 0)
+            top_donors = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'donor'][:10]
+            top_candidates = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'candidate'][:10]
+
+            payload = {
+                'overview': overview,
+                'race_analytics': race_analytics,
+                'geographic': geographic,
+                'top_donors': top_donors,
+                'top_candidates': top_candidates,
+            }
+            if _federal_cache_enabled():
+                cache_status = save_federal_view_snapshot(
+                    conn,
+                    snapshot_type='federal_overview',
+                    params=cache_params,
+                    status='completed',
+                    payload=payload,
+                )
+        else:
+            overview = payload.get('overview', overview)
+            race_analytics = payload.get('race_analytics', race_analytics)
+            geographic = payload.get('geographic', geographic)
+            top_donors = payload.get('top_donors', top_donors)
+            top_candidates = payload.get('top_candidates', top_candidates)
 
     return render_template(
         'federal_finance/overview.html',
@@ -110,6 +164,7 @@ def federal_overview():
         geographic=geographic,
         top_donors=top_donors,
         top_candidates=top_candidates,
+        cache_status=cache_status,
     )
 
 
@@ -224,25 +279,63 @@ def federal_networks():
         },
     }
 
+    cache_status = None
     if table_available:
-        federal_network = get_federal_network_graph(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=network_min_edge_amount,
-            limit=network_limit,
-        )
-        overlap_network = get_federal_local_overlap_network(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=network_min_edge_amount,
-            edge_limit=overlap_edge_limit,
-            federal_donor_limit=max(2000, network_limit),
-            local_donor_limit=local_match_limit,
-        )
+        payload = None
+        cache_params = {
+            'cycle': cycle,
+            'analysis_office': analysis_office or '',
+            'analysis_district': analysis_district or '',
+            'network_min_edge_amount': round(network_min_edge_amount, 2),
+            'network_limit': network_limit,
+            'overlap_edge_limit': overlap_edge_limit,
+            'local_match_limit': local_match_limit,
+            'version': 1,
+        }
+        if _federal_cache_enabled() and not _federal_cache_refresh_requested():
+            cache_status = get_federal_view_snapshot(
+                conn,
+                snapshot_type='federal_networks',
+                params=cache_params,
+                ttl_seconds=_federal_cache_ttl('FEDERAL_NETWORKS_CACHE_TTL_SECONDS', 600),
+            )
+            if cache_status.get('is_fresh') and cache_status.get('payload'):
+                payload = cache_status.get('payload')
+
+        if payload is None:
+            federal_network = get_federal_network_graph(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=network_min_edge_amount,
+                limit=network_limit,
+            )
+            overlap_network = get_federal_local_overlap_network(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=network_min_edge_amount,
+                edge_limit=overlap_edge_limit,
+                federal_donor_limit=max(2000, network_limit),
+                local_donor_limit=local_match_limit,
+            )
+            payload = {
+                'federal_network': federal_network,
+                'overlap_network': overlap_network,
+            }
+            if _federal_cache_enabled():
+                cache_status = save_federal_view_snapshot(
+                    conn,
+                    snapshot_type='federal_networks',
+                    params=cache_params,
+                    status='completed',
+                    payload=payload,
+                )
+        else:
+            federal_network = payload.get('federal_network', federal_network)
+            overlap_network = payload.get('overlap_network', overlap_network)
 
     return render_template(
         'federal_finance/networks.html',
@@ -253,6 +346,7 @@ def federal_networks():
         local_match_limit=local_match_limit,
         federal_network=federal_network,
         overlap_network=overlap_network,
+        cache_status=cache_status,
     )
 
 
@@ -298,34 +392,79 @@ def federal_donor_intelligence():
         'connected_donors': [],
     }
 
+    cache_status = None
     if table_available:
-        donor_segmentation = get_federal_donor_segmentation(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            method=segmentation_method,
-            donor_limit=segmentation_donor_limit,
-            kmeans_k=segmentation_k,
-            dbscan_eps=segmentation_dbscan_eps,
-            dbscan_min_samples=segmentation_dbscan_min_samples,
-        )
-        donor_clusters = get_federal_donor_network_clusters(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=min_edge_amount,
-            limit=cluster_limit,
-        )
-        influence = get_federal_influence_scores(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=min_edge_amount,
-            limit=cluster_limit,
-        )
+        payload = None
+        cache_allowed = _federal_cache_enabled() and not follow_donor_key
+        cache_params = {
+            'cycle': cycle,
+            'analysis_office': analysis_office or '',
+            'analysis_district': analysis_district or '',
+            'segmentation_method': segmentation_method,
+            'segmentation_donor_limit': segmentation_donor_limit,
+            'segmentation_k': segmentation_k,
+            'segmentation_dbscan_eps': round(segmentation_dbscan_eps, 4),
+            'segmentation_dbscan_min_samples': segmentation_dbscan_min_samples,
+            'cluster_limit': cluster_limit,
+            'network_min_edge_amount': round(min_edge_amount, 2),
+            'version': 1,
+        }
+        if cache_allowed and not _federal_cache_refresh_requested():
+            cache_status = get_federal_view_snapshot(
+                conn,
+                snapshot_type='federal_donor_intelligence',
+                params=cache_params,
+                ttl_seconds=_federal_cache_ttl('FEDERAL_DONOR_INTEL_CACHE_TTL_SECONDS', 600),
+            )
+            if cache_status.get('is_fresh') and cache_status.get('payload'):
+                payload = cache_status.get('payload')
+
+        if payload is None:
+            donor_segmentation = get_federal_donor_segmentation(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                method=segmentation_method,
+                donor_limit=segmentation_donor_limit,
+                kmeans_k=segmentation_k,
+                dbscan_eps=segmentation_dbscan_eps,
+                dbscan_min_samples=segmentation_dbscan_min_samples,
+            )
+            donor_clusters = get_federal_donor_network_clusters(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=min_edge_amount,
+                limit=cluster_limit,
+            )
+            influence = get_federal_influence_scores(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=min_edge_amount,
+                limit=cluster_limit,
+            )
+            if cache_allowed:
+                payload = {
+                    'donor_segmentation': donor_segmentation,
+                    'donor_clusters': donor_clusters,
+                    'influence': influence,
+                }
+                cache_status = save_federal_view_snapshot(
+                    conn,
+                    snapshot_type='federal_donor_intelligence',
+                    params=cache_params,
+                    status='completed',
+                    payload=payload,
+                )
+        else:
+            donor_segmentation = payload.get('donor_segmentation', donor_segmentation)
+            donor_clusters = payload.get('donor_clusters', donor_clusters)
+            influence = payload.get('influence', influence)
+
         if follow_donor_key:
             follow_money = get_federal_follow_the_money(
                 conn,
@@ -354,6 +493,7 @@ def federal_donor_intelligence():
         donor_clusters=donor_clusters,
         influence=influence,
         follow_money=follow_money,
+        cache_status=cache_status,
     )
 
 
@@ -386,27 +526,64 @@ def federal_matching():
         'local_committee_count': 0,
     }
 
+    cache_status = None
     if table_available:
-        local_matches = get_federal_local_donor_matches(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            federal_donor_limit=5000,
-            local_donor_limit=local_match_limit,
-            match_limit=match_limit,
-        )
-        overlap_network = get_federal_local_overlap_network(
-            conn,
-            cycle=cycle,
-            office_code=analysis_office or None,
-            district_code=analysis_district or None,
-            min_edge_amount=min_edge_amount,
-            edge_limit=overlap_edge_limit,
-            federal_donor_limit=5000,
-            local_donor_limit=local_match_limit,
-        )
-        overlap_summary = overlap_network.get('summary', overlap_summary)
+        payload = None
+        cache_params = {
+            'cycle': cycle,
+            'analysis_office': analysis_office or '',
+            'analysis_district': analysis_district or '',
+            'local_match_limit': local_match_limit,
+            'match_limit': match_limit,
+            'overlap_edge_limit': overlap_edge_limit,
+            'network_min_edge_amount': round(min_edge_amount, 2),
+            'version': 1,
+        }
+        if _federal_cache_enabled() and not _federal_cache_refresh_requested():
+            cache_status = get_federal_view_snapshot(
+                conn,
+                snapshot_type='federal_matching',
+                params=cache_params,
+                ttl_seconds=_federal_cache_ttl('FEDERAL_MATCHING_CACHE_TTL_SECONDS', 600),
+            )
+            if cache_status.get('is_fresh') and cache_status.get('payload'):
+                payload = cache_status.get('payload')
+
+        if payload is None:
+            local_matches = get_federal_local_donor_matches(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                federal_donor_limit=5000,
+                local_donor_limit=local_match_limit,
+                match_limit=match_limit,
+            )
+            overlap_network = get_federal_local_overlap_network(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=min_edge_amount,
+                edge_limit=overlap_edge_limit,
+                federal_donor_limit=5000,
+                local_donor_limit=local_match_limit,
+            )
+            overlap_summary = overlap_network.get('summary', overlap_summary)
+            if _federal_cache_enabled():
+                cache_status = save_federal_view_snapshot(
+                    conn,
+                    snapshot_type='federal_matching',
+                    params=cache_params,
+                    status='completed',
+                    payload={
+                        'local_matches': local_matches,
+                        'overlap_summary': overlap_summary,
+                    },
+                )
+        else:
+            local_matches = payload.get('local_matches', local_matches)
+            overlap_summary = payload.get('overlap_summary', overlap_summary)
 
     return render_template(
         'federal_finance/matching.html',
@@ -417,6 +594,7 @@ def federal_matching():
         network_min_edge_amount=min_edge_amount,
         local_matches=local_matches,
         overlap_summary=overlap_summary,
+        cache_status=cache_status,
     )
 
 
