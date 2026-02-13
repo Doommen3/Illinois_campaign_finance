@@ -47,3 +47,21 @@
 - `/api/analytics/time-series`
 - `/api/analytics/geo`
 - `/api/analytics/nlp`
+
+## UX + Explainability Enhancements
+
+- [x] Expanded global search beyond committees/donors:
+  - [x] Candidates (state + federal)
+  - [x] Reports
+  - [x] Filed doc IDs
+  - [x] Donor keys
+- [x] Added compare mode at `/compare`:
+  - [x] Candidate vs candidate
+  - [x] Committee vs committee
+  - [x] Donor overlap summaries and monthly trend overlay
+- [x] Added row-level provenance panels in key table views.
+- [x] Added anomaly explainability fields (threshold, baseline, percentile, rule context).
+- [x] Added visual summary charts in analytics pages:
+  - [x] Overview trend + MoM visual
+  - [x] Geography state/city visual summaries
+  - [x] Risk histogram + severity profile

@@ -19,6 +19,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 ### Analytics
 - **Network Analysis** — Weighted donor-committee-candidate graphs with degree centrality and Louvain community detection
 - **Anomaly Detection** — Large contribution flags, monthly spike detection, high donor concentration risk (HHI-based)
+- **Risk Explainability** — Per-flag explainability payloads (rule, baseline, threshold, percentile context)
 - **Concentration Metrics** — Herfindahl-Hirschman Index (HHI), Gini coefficient, top-N donor share
 - **Time-Series Intelligence** — Monthly aggregation, 3-month moving averages, month-over-month change
 - **Geographic Analysis** — State and city-level donor aggregation from parsed addresses
@@ -27,7 +28,10 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
-- Interactive dashboards for donor networks, anomaly flags, geographic distribution, and candidate finance rollups
+- Expanded global search across committees, donors, candidates, reports, filed-doc IDs, and donor keys
+- Candidate/committee side-by-side compare mode with trend overlays and donor overlap summaries
+- Row-level provenance panels on key tables (source table, sync timing, normalization notes, backlinks)
+- Interactive dashboards with visual summaries for trends, geography, and risk/anomaly distributions
 - Federal-state cross-reference views and donor overlap analysis
 - Session authentication for manual data entry
 
@@ -126,7 +130,7 @@ Visit `http://localhost:5000` to access the dashboard.
 │   └── federal_fec.py      FEC API integration and candidate matching
 ├── webapp/                 Flask web application
 │   ├── routes/             12 route modules (dashboard, analytics, API, etc.)
-│   └── templates/          35 Jinja2 templates
+│   └── templates/          36 Jinja2 templates
 ├── scripts/                Automation scripts
 │   └── sync-fec.sh         Weekly FEC data sync wrapper
 ├── tests/                  pytest suite (11 test modules)
@@ -231,6 +235,9 @@ git pull origin main
 
 # Restart the web application
 systemctl restart ilcf-web
+
+# Rebuild analytics materialized views + snapshot cache (recommended after UI/analytics changes)
+/srv/illinois_campaign_finance/shared/venv/bin/python run.py refresh-analytics --with-snapshot
 ```
 
 ### Key Web Routes
@@ -238,10 +245,13 @@ systemctl restart ilcf-web
 | Route | Description |
 |-------|-------------|
 | `/` | Dashboard overview with stats, freshness, launch paths |
+| `/search` | Global search across entities (committees, donors, candidates, reports, filed docs, donor keys) |
+| `/compare` | Candidate-vs-candidate or committee-vs-committee trend and overlap comparison |
 | `/candidates` | Unified candidates page — state (ISBE) and federal (FEC) |
 | `/candidate-finance` | State candidate finance detail (ISBE data) |
 | `/federal-finance` | Federal candidate finance detail (FEC data) |
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
+| `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
 
 ### Mobile Smoke Check

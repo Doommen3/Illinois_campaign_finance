@@ -37,6 +37,13 @@
 - [ ] Add saved filter presets and shareable URLs for common analyses.
 - [ ] Add scraper job history UI with retries and per-job logs.
 - [ ] Add data freshness badges (last scrape timestamp by dataset).
-- [ ] Add report/source backlinks on every row for traceability.
+- [x] Add report/source backlinks or provenance panels on key rows for traceability.
 - [ ] Add duplicate-review UI to inspect/merge suspect entities.
 - [ ] Add CSV export for every table with current filters/sorts.
+
+## Completed in latest web UX update
+- [x] Expand global search to include candidates, reports, filed docs, and donor keys.
+- [x] Add compare view for candidate-vs-candidate and committee-vs-committee analysis.
+- [x] Add anomaly explainability details (rule, threshold, percentile, baseline context).
+- [x] Add visual summary charts for overview trends, geography, and risk pages.
+- [x] Reorganize top navigation IA into Explore / Analytics / Data Ops / Admin.
