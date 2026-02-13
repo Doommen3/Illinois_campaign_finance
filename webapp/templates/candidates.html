@@ -30,10 +30,12 @@
             </div>
         </div>
 
-        <p class="stat-detail">
-            <strong>Latest receipt date:</strong>
-            {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}
-        </p>
+        <div class="candidate-source-meta">
+            <p class="stat-detail">
+                <strong>Latest receipt date:</strong>
+                {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}
+            </p>
+        </div>
 
         <p class="candidate-source-action">
             <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Explore State Candidates</a>
@@ -60,14 +62,16 @@
             </div>
         </div>
 
-        <p class="stat-detail">
-            <strong>Latest receipt date:</strong>
-            {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}
-        </p>
-        <p class="stat-detail">
-            <strong>Last sync update:</strong>
-            {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}
-        </p>
+        <div class="candidate-source-meta">
+            <p class="stat-detail">
+                <strong>Latest receipt date:</strong>
+                {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}
+            </p>
+            <p class="stat-detail">
+                <strong>Last sync update:</strong>
+                {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}
+            </p>
+        </div>
 
         <p class="candidate-source-action">
             <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance') }}">Explore Federal Candidates</a>

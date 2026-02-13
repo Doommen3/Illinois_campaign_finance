@@ -145,7 +145,7 @@ h2 {
 /* Stats grid */
 .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
     gap: 1rem;
     margin-bottom: 1.5rem;
 }
@@ -166,13 +166,13 @@ h2 {
 }
 
 .stat-value {
-    font-size: clamp(1.1rem, 2.6vw, 1.75rem);
+    font-size: clamp(1rem, 2vw, 1.45rem);
     font-weight: bold;
     color: #1a365d;
     line-height: 1.2;
     min-width: 0;
     overflow-wrap: anywhere;
-    word-break: break-word;
+    word-break: break-all;
 }
 
 .stat-detail {
@@ -569,11 +569,16 @@ h2 {
 .candidate-source-column {
     display: flex;
     flex-direction: column;
+    height: 100%;
+}
+
+.candidate-source-meta {
+    min-height: 3.6rem;
 }
 
 .candidate-source-action {
     margin-top: auto;
-    padding-top: 1rem;
+    padding-top: 0.75rem;
 }
 
 /* Forms */
