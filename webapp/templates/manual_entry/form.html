@@ -35,6 +35,7 @@
 <div class="entry-form">
     <h2>Add Contribution</h2>
     <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="action" value="add_contribution">
 
         <div class="form-group">
@@ -94,6 +95,7 @@
                 <td>
                     <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}"
                           style="display: inline;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="action" value="delete_contribution">
                         <input type="hidden" name="contribution_id" value="{{ contrib.id }}">
                         <button type="submit" class="btn btn-small btn-danger"
@@ -113,6 +115,7 @@
 {% if queue_item.status != 'completed' %}
 <div class="complete-section">
     <form method="post" action="{{ url_for('manual_entry.entry_form', queue_id=queue_item.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="action" value="mark_complete">
         <button type="submit" class="btn btn-success"
                 onclick="return confirm('Mark this report as complete? This cannot be undone.')">

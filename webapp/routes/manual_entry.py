@@ -141,9 +141,19 @@ def entry_form(queue_id):
         elif action == 'delete_contribution':
             contribution_id = request.form.get('contribution_id')
             if contribution_id:
-                conn.execute("DELETE FROM contributions WHERE id = ?", (contribution_id,))
+                cursor = conn.execute(
+                    """
+                    DELETE FROM contributions
+                    WHERE id = ?
+                      AND report_id = ?
+                    """,
+                    (contribution_id, queue_item['report_id']),
+                )
                 conn.commit()
-                flash('Contribution deleted.', 'success')
+                if cursor.rowcount > 0:
+                    flash('Contribution deleted.', 'success')
+                else:
+                    flash('Contribution could not be deleted for this report.', 'error')
 
             return redirect(url_for('manual_entry.entry_form', queue_id=queue_id))
 

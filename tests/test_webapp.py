@@ -2,6 +2,7 @@
 import pytest
 import sys
 import os
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -54,6 +55,27 @@ def app(tmp_path: Path):
 def client(app):
     """Create a test client."""
     return app.test_client()
+
+
+def _extract_csrf_token(html: bytes) -> str:
+    match = re.search(rb'name="csrf_token"\s+value="([^"]+)"', html)
+    assert match is not None
+    return match.group(1).decode("utf-8")
+
+
+def _login_manual_user(client, *, next_url="/manual-entry/"):
+    login_page = client.get(f"/auth/login?next={quote(next_url, safe='/')}")
+    csrf_token = _extract_csrf_token(login_page.data)
+    return client.post(
+        "/auth/login",
+        data={
+            "username": "manual_admin",
+            "password": "secret123",
+            "next": next_url,
+            "csrf_token": csrf_token,
+        },
+        follow_redirects=False,
+    )
 
 
 class TestWebApp:
@@ -1628,17 +1650,112 @@ class TestWebApp:
 
     def test_manual_entry_login_and_access(self, client):
         """Test logging in allows manual entry access."""
-        login = client.post('/auth/login', data={
-            'username': 'manual_admin',
-            'password': 'secret123',
-            'next': '/manual-entry/'
-        }, follow_redirects=False)
+        login = _login_manual_user(client, next_url="/manual-entry/")
         assert login.status_code == 302
         assert '/manual-entry/' in login.headers.get('Location', '')
 
         response = client.get('/manual-entry/')
         assert response.status_code == 200
         assert b'Manual Entry Queue' in response.data
+
+    def test_login_rejects_missing_csrf_token(self, client):
+        """Login POST should fail without a CSRF token."""
+        response = client.post(
+            '/auth/login',
+            data={
+                'username': 'manual_admin',
+                'password': 'secret123',
+                'next': '/manual-entry/',
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 400
+
+    def test_manual_entry_delete_is_scoped_to_report(self, app, client):
+        """Delete action must only remove contributions for the current queue report."""
+        login = _login_manual_user(client, next_url="/manual-entry/")
+        assert login.status_code == 302
+
+        conn = get_db(app.config['DATABASE_PATH'])
+
+        committee = Committee.get_or_create(conn, "Scoped Delete Committee")
+        report = Report(
+            committee_id=committee.id,
+            report_type="A-1 ($1000+ Year Round)",
+            reporting_period="Q2 2026",
+            filed_date="03/15/2026",
+            pages=2,
+            detail_url="https://example.com/scoped-delete-report",
+            scrape_status="pending",
+        ).save(conn)
+        conn.execute(
+            """
+            INSERT INTO manual_entry_queue (report_id, status)
+            VALUES (?, 'pending')
+            """,
+            (report.id,),
+        )
+        queue_id = conn.execute(
+            "SELECT id FROM manual_entry_queue WHERE report_id = ?",
+            (report.id,),
+        ).fetchone()["id"]
+
+        donor = Donor.get_or_create(conn, "Scoped Donor", "1 Scoped St", "scoped donor", "1 scoped st")
+        target_contribution = Contribution(
+            report_id=report.id,
+            donor_id=donor.id,
+            amount=55.0,
+            raw_contributed_by="Scoped Donor",
+            raw_address="1 Scoped St",
+        ).save(conn)
+        other_report_contribution = Contribution(
+            report_id=1,
+            donor_id=donor.id,
+            amount=65.0,
+            raw_contributed_by="Scoped Donor",
+            raw_address="1 Scoped St",
+        ).save(conn)
+        conn.close()
+
+        page = client.get(f"/manual-entry/{queue_id}")
+        assert page.status_code == 200
+        csrf_token = _extract_csrf_token(page.data)
+
+        invalid_delete = client.post(
+            f"/manual-entry/{queue_id}",
+            data={
+                "action": "delete_contribution",
+                "contribution_id": str(other_report_contribution.id),
+                "csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        assert invalid_delete.status_code == 302
+
+        conn = get_db(app.config['DATABASE_PATH'])
+        still_exists = conn.execute(
+            "SELECT id FROM contributions WHERE id = ?",
+            (other_report_contribution.id,),
+        ).fetchone()
+        assert still_exists is not None
+
+        valid_delete = client.post(
+            f"/manual-entry/{queue_id}",
+            data={
+                "action": "delete_contribution",
+                "contribution_id": str(target_contribution.id),
+                "csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        assert valid_delete.status_code == 302
+
+        deleted = conn.execute(
+            "SELECT id FROM contributions WHERE id = ?",
+            (target_contribution.id,),
+        ).fetchone()
+        assert deleted is None
+        conn.close()
 
     def test_admin_donor_merges_requires_login(self, client):
         """Admin donor merge review routes should require login."""
@@ -1694,11 +1811,7 @@ class TestWebApp:
         conn.commit()
         conn.close()
 
-        login = client.post('/auth/login', data={
-            'username': 'manual_admin',
-            'password': 'secret123',
-            'next': '/admin/donor-merges'
-        }, follow_redirects=False)
+        login = _login_manual_user(client, next_url="/admin/donor-merges")
         assert login.status_code == 302
 
         response = client.get('/admin/donor-merges?source=bulk_receipts&status=pending')
@@ -1756,20 +1869,21 @@ class TestWebApp:
         conn.commit()
         conn.close()
 
-        login = client.post('/auth/login', data={
-            'username': 'manual_admin',
-            'password': 'secret123',
-            'next': '/admin/donor-merges'
-        }, follow_redirects=False)
+        login = _login_manual_user(client, next_url="/admin/donor-merges")
         assert login.status_code == 302
 
         entity_id_url = quote("entity:admin:decision", safe="")
+        detail_page = client.get(f"/admin/donor-merges/{entity_id_url}?source=bulk_receipts")
+        assert detail_page.status_code == 200
+        csrf_token = _extract_csrf_token(detail_page.data)
+
         first_update = client.post(
             f'/admin/donor-merges/{entity_id_url}/decision',
             data={
                 'source': 'bulk_receipts',
                 'decision': 'approved',
                 'donor_key': 'entity:admin:decision:key1',
+                'csrf_token': csrf_token,
             },
             follow_redirects=False,
         )
@@ -1799,6 +1913,7 @@ class TestWebApp:
             data={
                 'source': 'bulk_receipts',
                 'decision': 'rejected',
+                'csrf_token': csrf_token,
             },
             follow_redirects=False,
         )
@@ -1825,6 +1940,61 @@ class TestWebApp:
         assert 'committees' in data
         assert 'reports' in data
         assert 'donors' in data
+
+    def test_api_key_required_when_configured(self, app):
+        """API endpoints should require a valid key when key auth is enabled."""
+        secured_app = create_app({
+            'TESTING': True,
+            'DATABASE_PATH': app.config['DATABASE_PATH'],
+            'API_KEYS': ['test-api-key'],
+            'API_REQUIRE_KEY': True,
+        })
+        secured_client = secured_app.test_client()
+
+        missing_key = secured_client.get('/api/stats')
+        assert missing_key.status_code == 401
+
+        wrong_key = secured_client.get('/api/stats', headers={'X-API-Key': 'wrong'})
+        assert wrong_key.status_code == 401
+
+        ok = secured_client.get('/api/stats', headers={'X-API-Key': 'test-api-key'})
+        assert ok.status_code == 200
+
+    def test_api_rate_limit_enforced(self, app):
+        """API limiter should return 429 after the configured request budget."""
+        limited_app = create_app({
+            'TESTING': True,
+            'DATABASE_PATH': app.config['DATABASE_PATH'],
+            'API_KEYS': ['rate-limit-key'],
+            'API_REQUIRE_KEY': True,
+            'API_RATE_LIMIT_PER_MINUTE': 1,
+        })
+        limited_client = limited_app.test_client()
+        headers = {'X-API-Key': 'rate-limit-key'}
+
+        first = limited_client.get('/api/stats', headers=headers)
+        assert first.status_code == 200
+
+        second = limited_client.get('/api/stats', headers=headers)
+        assert second.status_code == 429
+        assert second.get_json()['error'] == 'rate_limit_exceeded'
+
+    def test_custom_404_template(self, client):
+        """Unknown routes should render the custom 404 page."""
+        response = client.get('/this-route-does-not-exist')
+        assert response.status_code == 404
+        assert b'Page Not Found' in response.data
+        assert b'Try one of these pages' in response.data
+
+    def test_production_secret_key_policy(self, app):
+        """Production-like configs should reject insecure default secret keys."""
+        with pytest.raises(RuntimeError):
+            create_app({
+                'DATABASE_PATH': app.config['DATABASE_PATH'],
+                'APP_ENV': 'production',
+                'SECRET_KEY': 'dev-secret-key-change-in-production',
+                'TESTING': False,
+            })
 
     def test_multiple_requests_thread_safe(self, client):
         """Test that multiple requests don't cause threading issues."""

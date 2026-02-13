@@ -171,8 +171,14 @@ Environment variables (set in `.env` or export directly):
 |---|---|---|
 | `DATABASE_PATH` | `data/campaign_finance.db` | SQLite database path |
 | `FEC_API_KEY` | *(empty)* | FEC API key for federal data sync |
+| `APP_ENV` | `development` | Runtime environment (`development`, `staging`, `production`) |
 | `FLASK_SECRET_KEY` | `dev-secret-key...` | Flask session secret |
 | `FLASK_DEBUG` | `false` | Enable Flask debug mode |
+| `API_KEYS` | *(empty)* | Comma-separated API keys for `/api/*` |
+| `API_REQUIRE_KEY` | `false` unless `API_KEYS` set | Require API key auth on `/api/*` |
+| `API_RATE_LIMIT_PER_MINUTE` | `120` | Per-key/per-IP API request budget per minute |
+| `LOCAL_DATA_STALE_DAYS` | `45` | Freshness warning threshold for local data |
+| `FEDERAL_DATA_STALE_DAYS` | `14` | Freshness warning threshold for federal data |
 | `RATE_LIMIT_RPM` | `30` | Scraper requests per minute |
 
 ## Server Deployment

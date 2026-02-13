@@ -2,7 +2,7 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, current_app, session
 
 from database.models import AppUser
-from webapp.auth import SESSION_USER_ID_KEY, get_current_user
+from webapp.auth import SESSION_USER_ID_KEY, get_current_user, rotate_csrf_token
 
 
 auth_bp = Blueprint('auth', __name__)
@@ -33,6 +33,7 @@ def login():
             return render_template('auth/login.html', next_url=next_url)
 
         session[SESSION_USER_ID_KEY] = user.id
+        rotate_csrf_token()
         flash('Signed in.', 'success')
         return redirect(next_url)
 

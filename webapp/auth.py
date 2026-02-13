@@ -1,6 +1,8 @@
 """Authentication helpers for protected web routes."""
 from __future__ import annotations
 
+import hmac
+import secrets
 from functools import wraps
 from typing import Callable
 
@@ -10,6 +12,7 @@ from database.models import AppUser
 
 
 SESSION_USER_ID_KEY = "manual_entry_user_id"
+SESSION_CSRF_TOKEN_KEY = "csrf_token"
 
 
 def get_current_user() -> AppUser | None:
@@ -31,6 +34,33 @@ def get_current_user() -> AppUser | None:
 
     g._current_manual_user = user
     return user
+
+
+def get_csrf_token() -> str:
+    """Get or create a per-session CSRF token."""
+    token = session.get(SESSION_CSRF_TOKEN_KEY)
+    if token:
+        return token
+
+    token = secrets.token_urlsafe(32)
+    session[SESSION_CSRF_TOKEN_KEY] = token
+    return token
+
+
+def rotate_csrf_token() -> str:
+    """Rotate the CSRF token (e.g., after login)."""
+    token = secrets.token_urlsafe(32)
+    session[SESSION_CSRF_TOKEN_KEY] = token
+    return token
+
+
+def validate_csrf_token(value: str | None) -> bool:
+    """Validate a submitted CSRF token."""
+    expected = (session.get(SESSION_CSRF_TOKEN_KEY) or "").strip()
+    candidate = (value or "").strip()
+    if not expected or not candidate:
+        return False
+    return hmac.compare_digest(expected, candidate)
 
 
 def login_required(view: Callable):

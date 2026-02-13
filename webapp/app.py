@@ -1,31 +1,259 @@
 """Flask application factory for Illinois Campaign Finance tracker."""
-import os
+from __future__ import annotations
 
-from flask import Flask, g
+from collections import deque
+from datetime import date, datetime, timezone
+import hmac
+import threading
+import time
 
-from database.connection import get_db, close_db
-from webapp.auth import get_current_user
+from flask import Flask, abort, g, jsonify, render_template, request
+
+import config as app_config
+from database.connection import close_db, get_db
+from webapp.auth import get_csrf_token, get_current_user, validate_csrf_token
+
+DEFAULT_INSECURE_SECRET = "dev-secret-key-change-in-production"
+DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def _scalar(conn, sql: str, params=(), default=None):
+    row = conn.execute(sql, params).fetchone()
+    if not row:
+        return default
+    keys = row.keys() if hasattr(row, "keys") else []
+    if not keys:
+        return default
+    value = row[keys[0]]
+    return default if value is None else value
+
+
+def _parse_date(value: str | None) -> date | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _age_days(value: str | None) -> int | None:
+    parsed = _parse_date(value)
+    if not parsed:
+        return None
+    return (datetime.now(timezone.utc).date() - parsed).days
+
+
+def _normalize_api_keys(value) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
+
+
+def _is_production_like_environment(app: Flask) -> bool:
+    env = (app.config.get("APP_ENV") or "").strip().lower()
+    return env in {"production", "prod", "staging"}
+
+
+def _enforce_secret_key_policy(app: Flask) -> None:
+    if app.config.get("TESTING"):
+        return
+    if not _is_production_like_environment(app):
+        return
+
+    secret_key = (app.config.get("SECRET_KEY") or "").strip()
+    if secret_key == DEFAULT_INSECURE_SECRET or len(secret_key) < 32:
+        raise RuntimeError(
+            "Refusing to start with an insecure SECRET_KEY in production/staging. "
+            "Set FLASK_SECRET_KEY to a strong value (32+ chars)."
+        )
+
+
+class InMemoryWindowRateLimiter:
+    """Simple in-memory fixed-window limiter for API requests."""
+
+    def __init__(self, *, per_minute: int):
+        self.per_minute = max(1, int(per_minute))
+        self.window_seconds = 60.0
+        self._buckets: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> tuple[bool, int | None]:
+        now = time.monotonic()
+        threshold = now - self.window_seconds
+
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = deque()
+                self._buckets[key] = bucket
+
+            while bucket and bucket[0] <= threshold:
+                bucket.popleft()
+
+            if len(bucket) >= self.per_minute:
+                retry_after = max(1, int(self.window_seconds - (now - bucket[0])))
+                return False, retry_after
+
+            bucket.append(now)
+            return True, None
+
+
+def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days: int) -> dict:
+    local_receipt_date = None
+    if _table_exists(conn, "bulk_receipts_clean"):
+        if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
+            local_receipt_date = _scalar(
+                conn,
+                """
+                SELECT MAX(received_date) AS max_date
+                FROM bulk_receipts_clean
+                WHERE COALESCE(is_archived, 0) = 0
+                """,
+            )
+        else:
+            local_receipt_date = _scalar(
+                conn,
+                "SELECT MAX(received_date) AS max_date FROM bulk_receipts_clean",
+            )
+
+    federal_receipt_date = None
+    federal_sync_updated_at = None
+    if _table_exists(conn, "fec_schedule_a_contributions"):
+        federal_receipt_date = _scalar(
+            conn,
+            "SELECT MAX(contribution_receipt_date) AS max_date FROM fec_schedule_a_contributions",
+        )
+        federal_sync_updated_at = _scalar(
+            conn,
+            "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_a_contributions",
+        )
+
+    local_age_days = _age_days(local_receipt_date)
+    federal_age_days = _age_days(federal_receipt_date)
+
+    local_is_stale = local_age_days is not None and local_age_days > max(0, int(local_stale_days))
+    federal_is_stale = federal_age_days is not None and federal_age_days > max(0, int(federal_stale_days))
+
+    has_any_data = bool(local_receipt_date or federal_receipt_date or federal_sync_updated_at)
+    return {
+        "local_receipt_date": local_receipt_date,
+        "federal_receipt_date": federal_receipt_date,
+        "federal_sync_updated_at": federal_sync_updated_at,
+        "local_age_days": local_age_days,
+        "federal_age_days": federal_age_days,
+        "local_is_stale": local_is_stale,
+        "federal_is_stale": federal_is_stale,
+        "is_any_stale": local_is_stale or federal_is_stale,
+        "has_any_data": has_any_data,
+    }
 
 
 def create_app(config=None):
-    """Create and configure the Flask application.
-
-    Args:
-        config: Optional configuration dictionary
-
-    Returns:
-        Configured Flask application
-    """
+    """Create and configure the Flask application."""
     app = Flask(__name__)
 
-    # Default configuration
-    app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
-    app.config['DATABASE_PATH'] = None  # Use default from connection.py
-    app.config['PUBLIC_CONTACT_EMAIL'] = os.environ.get('PUBLIC_CONTACT_EMAIL', '').strip()
+    app.config.update(
+        {
+            "SECRET_KEY": app_config.FLASK_SECRET_KEY,
+            "DATABASE_PATH": app_config.DATABASE_PATH,
+            "PUBLIC_CONTACT_EMAIL": app_config.PUBLIC_CONTACT_EMAIL,
+            "APP_ENV": app_config.APP_ENV,
+            "API_KEYS": list(app_config.API_KEYS),
+            "API_REQUIRE_KEY": _as_bool(app_config.API_REQUIRE_KEY),
+            "API_RATE_LIMIT_PER_MINUTE": int(app_config.API_RATE_LIMIT_PER_MINUTE),
+            "LOCAL_DATA_STALE_DAYS": int(app_config.LOCAL_DATA_STALE_DAYS),
+            "FEDERAL_DATA_STALE_DAYS": int(app_config.FEDERAL_DATA_STALE_DAYS),
+        }
+    )
 
-    # Apply custom config if provided
     if config:
         app.config.update(config)
+
+    app.config["API_KEYS"] = _normalize_api_keys(app.config.get("API_KEYS"))
+    app.config["API_REQUIRE_KEY"] = _as_bool(app.config.get("API_REQUIRE_KEY"))
+    if app.config["API_KEYS"] and not app.config.get("API_REQUIRE_KEY"):
+        app.config["API_REQUIRE_KEY"] = True
+
+    _enforce_secret_key_policy(app)
+
+    api_limiter = InMemoryWindowRateLimiter(
+        per_minute=app.config.get("API_RATE_LIMIT_PER_MINUTE", DEFAULT_API_RATE_LIMIT_PER_MINUTE)
+    )
+    app.extensions["api_rate_limiter"] = api_limiter
+
+    @app.before_request
+    def enforce_api_auth_and_rate_limit():
+        if request.blueprint != "api":
+            return None
+
+        configured_keys = app.config.get("API_KEYS") or []
+        require_key = _as_bool(app.config.get("API_REQUIRE_KEY"))
+        api_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+
+        if require_key:
+            if not api_key:
+                return jsonify({"error": "api_key_required"}), 401
+            if not configured_keys or not any(
+                hmac.compare_digest(api_key, configured_key) for configured_key in configured_keys
+            ):
+                return jsonify({"error": "invalid_api_key"}), 401
+
+        identity = f"key:{api_key}" if api_key else f"ip:{request.remote_addr or 'unknown'}"
+        allowed, retry_after = app.extensions["api_rate_limiter"].allow(identity)
+        if not allowed:
+            response = jsonify(
+                {
+                    "error": "rate_limit_exceeded",
+                    "limit_per_minute": app.config.get(
+                        "API_RATE_LIMIT_PER_MINUTE", DEFAULT_API_RATE_LIMIT_PER_MINUTE
+                    ),
+                }
+            )
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after or 1)
+            return response
+        return None
+
+    @app.before_request
+    def enforce_csrf():
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+        if request.blueprint == "api" or request.endpoint == "static":
+            return None
+        token = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
+        if validate_csrf_token(token):
+            return None
+        abort(400, description="Invalid CSRF token.")
 
     # Register teardown - close connection at end of each request
     @app.teardown_appcontext
@@ -69,6 +297,14 @@ def create_app(config=None):
     app.register_blueprint(admin_bp, url_prefix='/admin')
     app.register_blueprint(api_bp, url_prefix='/api')
 
+    @app.errorhandler(404)
+    def not_found(error):
+        return render_template("errors/404.html"), 404
+
+    @app.errorhandler(500)
+    def internal_error(error):
+        return render_template("errors/500.html"), 500
+
     # Context processors
     @app.context_processor
     def inject_helpers():
@@ -77,10 +313,23 @@ def create_app(config=None):
                 return '$0.00'
             return '${:,.2f}'.format(value)
 
+        data_status = None
+        try:
+            conn = get_database()
+            data_status = _build_global_data_status(
+                conn,
+                local_stale_days=app.config.get("LOCAL_DATA_STALE_DAYS", 45),
+                federal_stale_days=app.config.get("FEDERAL_DATA_STALE_DAYS", 14),
+            )
+        except Exception:
+            data_status = None
+
         return dict(
             format_currency=format_currency,
             current_manual_user=get_current_user(),
             public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
+            csrf_token=get_csrf_token,
+            global_data_status=data_status,
         )
 
     return app

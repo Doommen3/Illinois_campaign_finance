@@ -418,6 +418,19 @@ h2 {
     margin-top: 0;
 }
 
+.data-freshness-strip {
+    border-left: 4px solid #0f766e;
+}
+
+.data-freshness-strip p {
+    margin: 0.2rem 0;
+}
+
+.data-freshness-strip-stale {
+    border-left-color: #b45309;
+    background: #fff7ed;
+}
+
 .federal-subnav {
     display: flex;
     flex-wrap: wrap;

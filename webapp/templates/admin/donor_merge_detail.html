@@ -22,16 +22,19 @@
 <div class="entry-form">
     <h2>Set Entity Decision</h2>
     <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="source" value="{{ source }}">
         <input type="hidden" name="decision" value="approved">
         <button type="submit" class="btn btn-success">Approve All Members</button>
     </form>
     <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="source" value="{{ source }}">
         <input type="hidden" name="decision" value="pending">
         <button type="submit" class="btn btn-primary">Reset All to Pending</button>
     </form>
     <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="source" value="{{ source }}">
         <input type="hidden" name="decision" value="rejected">
         <button type="submit" class="btn btn-danger" onclick="return confirm('Reject all members in this merge entity?');">Reject All Members</button>
@@ -86,18 +89,21 @@
             </td>
             <td>
                 <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="source" value="{{ source }}">
                     <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
                     <input type="hidden" name="decision" value="approved">
                     <button type="submit" class="btn btn-small btn-success">Approve</button>
                 </form>
                 <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="source" value="{{ source }}">
                     <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
                     <input type="hidden" name="decision" value="pending">
                     <button type="submit" class="btn btn-small btn-primary">Pending</button>
                 </form>
                 <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="source" value="{{ source }}">
                     <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
                     <input type="hidden" name="decision" value="rejected">

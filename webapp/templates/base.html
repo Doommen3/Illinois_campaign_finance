@@ -78,6 +78,33 @@
             {% endif %}
         {% endwith %}
 
+        {% if global_data_status and global_data_status.has_any_data %}
+        <section class="status-section data-freshness-strip {% if global_data_status.is_any_stale %}data-freshness-strip-stale{% endif %}">
+            <h2>Data Status</h2>
+            <p>
+                <strong>Local receipts:</strong>
+                {{ global_data_status.local_receipt_date if global_data_status.local_receipt_date else 'Not loaded' }}
+                {% if global_data_status.local_age_days is not none %}
+                ({{ global_data_status.local_age_days }} days old)
+                {% endif %}
+            </p>
+            <p>
+                <strong>Federal receipts:</strong>
+                {{ global_data_status.federal_receipt_date if global_data_status.federal_receipt_date else 'Not loaded' }}
+                {% if global_data_status.federal_age_days is not none %}
+                ({{ global_data_status.federal_age_days }} days old)
+                {% endif %}
+            </p>
+            <p>
+                <strong>Federal sync updated:</strong>
+                {{ global_data_status.federal_sync_updated_at if global_data_status.federal_sync_updated_at else 'Not loaded' }}
+            </p>
+            {% if global_data_status.is_any_stale %}
+            <p class="stat-detail">At least one source appears stale for its expected cadence.</p>
+            {% endif %}
+        </section>
+        {% endif %}
+
         {% block content %}{% endblock %}
     </main>
 

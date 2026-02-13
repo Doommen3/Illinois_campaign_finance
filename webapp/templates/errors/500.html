@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Server Error - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Something Went Wrong</h1>
+<p class="subtitle">The server hit an unexpected error while loading this page.</p>
+
+<div class="status-section">
+    <h2>Next steps</h2>
+    <p>Try refreshing in a few seconds.</p>
+    <p>If this keeps happening, return to the <a href="{{ url_for('main.index') }}">Dashboard</a> and try a different route.</p>
+    <p>You can also contact the maintainer using the contact details in the footer.</p>
+</div>
+{% endblock %}
