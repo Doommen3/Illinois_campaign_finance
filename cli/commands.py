@@ -30,6 +30,17 @@ from database.federal_fec import (
     sync_il_federal_fec,
 )
 from database.local_donor_entities import rebuild_local_donor_entities
+from database.lobbying_loader import load_lobbying_csv
+from database.irs527_loader import load_irs527_full_file
+from database.cross_matching import (
+    match_lobbying_to_donors,
+    match_lobbying_to_expenditure_payees,
+    match_527_to_committees,
+    match_527_expenditures_to_committees,
+    match_527_directors_to_donors,
+    match_lobbying_to_527,
+    run_all_cross_matching,
+)
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
 from scraper.committee_scraper import CommitteeReportScraper, D2DetailScraper, CommitteeUrlSeeder
@@ -1240,6 +1251,88 @@ def rebuild_fec_donor_identities_command(cycle, only_missing, batch_size):
             click.echo(f'  {key}: {stats[key]}')
     except Exception as exc:
         click.echo(f'Error rebuilding FEC donor identities: {exc}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('import-lobbying')
+@click.option('--file', 'file_path', required=True,
+              help='Path to IL SOS lobbying CSV file')
+def import_lobbying_command(file_path):
+    """Import IL Secretary of State lobbying entity/client data from CSV."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo(f'Importing lobbying data from {file_path}...')
+        stats = load_lobbying_csv(conn, Path(file_path))
+        click.echo('Lobbying import completed:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error importing lobbying data: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('import-irs527')
+@click.option('--file', 'file_path', required=True,
+              help='Path to IRS 527 FullDataFile.txt')
+@click.option('--illinois-only/--all-states', default=True, show_default=True,
+              help='Only load orgs with IL addresses or IL expenditures')
+def import_irs527_command(file_path, illinois_only):
+    """Import IRS 527 political organization filings from pipe-delimited file."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo(f'Importing IRS 527 data from {file_path}...')
+        if illinois_only:
+            click.echo('  Filtering to Illinois-related records only.')
+        stats = load_irs527_full_file(conn, Path(file_path), illinois_only=illinois_only)
+        click.echo('IRS 527 import completed:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error importing IRS 527 data: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('run-cross-matching')
+@click.option('--threshold', default=0.80, type=float, show_default=True,
+              help='Minimum Jaccard similarity score for matches')
+@click.option('--only', 'only_match', default='all', show_default=True,
+              type=click.Choice([
+                  'all', 'lobbying-donors', 'lobbying-expenditures',
+                  '527-committees', '527-expenditures', '527-directors', 'lobbying-527',
+              ]),
+              help='Run only a specific matching function')
+def run_cross_matching_command(threshold, only_match):
+    """Run cross-matching between lobbying, IRS 527, and campaign finance data."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo(f'Running cross-matching (threshold={threshold}, only={only_match})...')
+
+        match_funcs = {
+            'lobbying-donors': ('lobbying_donors', match_lobbying_to_donors),
+            'lobbying-expenditures': ('lobbying_expenditures', match_lobbying_to_expenditure_payees),
+            '527-committees': ('527_committees', match_527_to_committees),
+            '527-expenditures': ('527_expenditures', match_527_expenditures_to_committees),
+            '527-directors': ('527_directors', match_527_directors_to_donors),
+            'lobbying-527': ('lobbying_527', match_lobbying_to_527),
+        }
+
+        if only_match == 'all':
+            results = run_all_cross_matching(conn, threshold=threshold)
+        else:
+            label, func = match_funcs[only_match]
+            results = {label: func(conn, threshold=threshold)}
+
+        click.echo('Cross-matching completed:')
+        for key, value in results.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error during cross-matching: {e}', err=True)
         sys.exit(1)
     finally:
         conn.close()

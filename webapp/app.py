@@ -357,6 +357,8 @@ def create_app(config=None):
     from webapp.routes.manual_entry import manual_entry_bp
     from webapp.routes.admin import admin_bp
     from webapp.routes.api import api_bp
+    from webapp.routes.lobbying import lobbying_bp
+    from webapp.routes.irs527 import irs527_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -371,6 +373,8 @@ def create_app(config=None):
     app.register_blueprint(manual_entry_bp, url_prefix='/manual-entry')
     app.register_blueprint(admin_bp, url_prefix='/admin')
     app.register_blueprint(api_bp, url_prefix='/api')
+    app.register_blueprint(lobbying_bp, url_prefix='/lobbying')
+    app.register_blueprint(irs527_bp, url_prefix='/527')
 
     @app.errorhandler(404)
     def not_found(error):

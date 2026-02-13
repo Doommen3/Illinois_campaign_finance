@@ -5,7 +5,9 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 ## Data Sources
 
 - **Illinois State Board of Elections (ISBE)** — Committee filings, D-2 reports, itemized receipts, itemized expenditures, candidate/committee metadata via bulk TXT exports and web scraping
-- **Federal Elections Commission (FEC)** — Illinois federal candidates, Schedule A contributions, and committee linkages via the FEC API
+- **Federal Elections Commission (FEC)** — Illinois federal candidates, Schedule A contributions, Schedule B disbursements, Schedule E independent expenditures via the FEC API
+- **IL Secretary of State Lobbying** — Active lobbying entities and their clients (625 entities, 3,748 clients, 14K entity-client pairs)
+- **IRS 527 Political Organizations** — Organization registrations, periodic reports, directors, related organizations, expenditures, and election authority filings from IRS Form 8871/8872
 
 ## Features
 
@@ -25,6 +27,8 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Geographic Analysis** — State and city-level donor aggregation from parsed addresses
 - **NLP Categorization** — Keyword-based expenditure classification
 - **Entity Resolution** — Jaccard similarity candidate matching across state/federal records
+- **Cross-Matching Engine** — Lobbying-to-donor, lobbying-to-expenditure, 527-to-committee, 527-expenditure-to-committee, 527-director-to-donor, and lobbying-to-527 matching
+- **Dark Money Tracker** — 527 organization expenditures matched to IL committees and candidates
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
@@ -35,6 +39,9 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Row-level provenance panels on key tables (source table, sync timing, normalization notes, backlinks)
 - Interactive dashboards with visual summaries for trends, geography, and risk/anomaly distributions
 - Federal-state cross-reference views and donor overlap analysis
+- IL lobbying entity/client browser with cross-matched campaign finance connections
+- IRS 527 organization browser with financial summaries, directors, and IL expenditures
+- Dark money tracker showing 527 expenditures flowing to IL committees and candidates
 - Session authentication for manual data entry
 
 ## Tech Stack
@@ -77,6 +84,15 @@ python run.py refresh-analytics
 # Sync federal (FEC) data for Illinois candidates
 python run.py sync-fec-il-federal
 python run.py rebuild-fec-donor-identities
+
+# Import IL SOS lobbying data
+python run.py import-lobbying --file Bulk_download/ILSOS_Lobbying_activeandclients/Active_Lobbying_Entities_and_Their_Clients_20260213.csv
+
+# Import IRS 527 political org filings (IL-filtered by default)
+python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
+
+# Run cross-matching across all data sources
+python run.py run-cross-matching --only all
 ```
 
 ### Run Scrapers (Optional)
@@ -132,19 +148,22 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── rate_limiter        Configurable rate limiting with backoff
 │   └── state_manager       Resumable scrape progress tracking
 ├── database/               Data layer
-│   ├── schema.sql          38-table schema definition
+│   ├── schema.sql          53-table schema definition
 │   ├── models.py           Dataclass-based ORM models
 │   ├── analytics.py        Network, anomaly, concentration, time-series, geo, NLP
 │   ├── bulk_download_loader Bulk TXT import and normalization
-│   └── federal_fec.py      FEC API integration and candidate matching
+│   ├── federal_fec.py      FEC API integration and candidate matching
+│   ├── lobbying_loader.py  IL SOS lobbying entity/client CSV loader
+│   ├── irs527_loader.py    IRS 527 FullDataFile pipe-delimited loader
+│   └── cross_matching.py   Cross-matching engine (lobbying, 527, campaign finance)
 ├── webapp/                 Flask web application
-│   ├── routes/             12 route modules (dashboard, analytics, API, etc.)
-│   └── templates/          36 Jinja2 templates
+│   ├── routes/             15 route modules (dashboard, analytics, API, lobbying, 527, etc.)
+│   └── templates/          42 Jinja2 templates
 ├── scripts/                Automation scripts
 │   ├── sync-fec.sh         Weekly FEC data sync wrapper
 │   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
-├── tests/                  pytest suite (11 test modules)
+├── tests/                  pytest suite (16 test modules)
 ├── docs/                   Data update guide, roadmaps, checklists
 │   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
@@ -172,7 +191,11 @@ pytest -q -m integration
 | Itemized receipts | 6.4M+ |
 | Federal candidates (IL) | 134 |
 | Federal contributions | 20,261 |
-| Database size | 5.5 GB |
+| IL lobbying entities | 625 |
+| IL lobbying clients | 3,748 |
+| IL lobbying entity-client pairs | 14,000+ |
+| IRS 527 organizations | 17.5M lines (IL-filtered subset) |
+| Database size | 5.5 GB+ |
 
 ## Configuration
 
@@ -351,6 +374,12 @@ Notes:
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
+| `/lobbying/` | IL lobbying entities list with client counts |
+| `/lobbying/<entity_id>` | Lobbying entity detail with clients and matched payees |
+| `/lobbying/client/<client_id>` | Lobbying client detail with entities, donor matches, 527 connections |
+| `/527/` | IRS 527 organization list (IL-filtered) with financial totals |
+| `/527/<ein>` | 527 org detail — directors, related orgs, expenditures, committee matches |
+| `/527/dark-money` | Dark money tracker — 527 expenditures matched to IL committees/candidates |
 
 CSV exports:
 - Candidate detail Schedule B: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_b`

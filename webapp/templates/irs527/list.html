@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}527 Organizations - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>IRS 527 Political Organizations</h1>
+<p class="subtitle">{{ total }} organizations with Illinois connections</p>
+
+<form action="{{ url_for('irs527.list_orgs') }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search organizations..." value="{{ query }}">
+    <button type="submit">Search</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>EIN</th>
+            <th>Organization Name</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Total Contributions</th>
+            <th>Total Expenditures</th>
+            <th>Committee Match</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for org in orgs %}
+        <tr>
+            <td>{{ org.ein }}</td>
+            <td>
+                <a href="{{ url_for('irs527.org_detail', ein=org.ein) }}">
+                    {{ org.org_name or 'Unknown' }}
+                </a>
+            </td>
+            <td>{{ org.city or '-' }}</td>
+            <td>{{ org.state or '-' }}</td>
+            <td>{{ format_currency(org.total_contributions) }}</td>
+            <td>{{ format_currency(org.total_expenditures) }}</td>
+            <td>{{ 'Yes' if org.has_committee_match else '-' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="7">No 527 organizations found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('irs527.list_orgs', page=page-1, q=query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('irs527.list_orgs', page=page+1, q=query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

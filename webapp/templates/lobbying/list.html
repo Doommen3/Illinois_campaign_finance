@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Lobbying Entities - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>IL Lobbying Entities</h1>
+<p class="subtitle">{{ total }} lobbying entities registered with IL Secretary of State</p>
+
+<form action="{{ url_for('lobbying.list_entities') }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search entities..." value="{{ query }}">
+    <button type="submit">Search</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Entity ID</th>
+            <th>Entity Name</th>
+            <th>Reg Year</th>
+            <th>Clients</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entity in entities %}
+        <tr>
+            <td>{{ entity.entity_id }}</td>
+            <td>
+                <a href="{{ url_for('lobbying.entity_detail', entity_id=entity.entity_id) }}">
+                    {{ entity.entity_name }}
+                </a>
+            </td>
+            <td>{{ entity.reg_year or '-' }}</td>
+            <td>{{ entity.client_count }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="4">No lobbying entities found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('lobbying.list_entities', page=page-1, q=query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('lobbying.list_entities', page=page+1, q=query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

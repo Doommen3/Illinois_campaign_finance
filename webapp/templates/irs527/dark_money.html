@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Dark Money Tracker - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Dark Money Tracker</h1>
+<p class="subtitle">527 organization expenditures matched to IL committees and candidates ({{ total }} matches)</p>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>527 Organization</th>
+            <th>EIN</th>
+            <th>Recipient</th>
+            <th>Matched To</th>
+            <th>Match Type</th>
+            <th>
+                <a href="{{ url_for('irs527.dark_money', sort='score', dir='asc' if sort == 'score' and sort_dir == 'desc' else 'desc') }}">
+                    Score{% if sort == 'score' %} {{ '&uarr;' if sort_dir == 'asc' else '&darr;' }}{% endif %}
+                </a>
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in matches %}
+        <tr>
+            <td>
+                <a href="{{ url_for('irs527.org_detail', ein=m.ein) }}">
+                    {{ m.org_name or 'Unknown' }}
+                </a>
+            </td>
+            <td>{{ m.ein }}</td>
+            <td>{{ m.recipient_name }}</td>
+            <td>{{ m.matched_name }}</td>
+            <td>{{ m.matched_type }}</td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="6">No dark money matches found. Run cross-matching first.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('irs527.dark_money', page=page-1, sort=sort, dir=sort_dir) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('irs527.dark_money', page=page+1, sort=sort, dir=sort_dir) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}{{ org.org_name }} - 527 Organization{% endblock %}
+
+{% block content %}
+<h1>{{ org.org_name or 'Unknown Organization' }}</h1>
+<p class="subtitle">EIN: {{ org.ein }}</p>
+
+<section class="status-section">
+    <h2>Organization Details</h2>
+    <p><strong>Address:</strong> {{ org.address_1 or '' }} {{ org.address_2 or '' }}, {{ org.city or '' }}, {{ org.state or '' }} {{ org.zip or '' }}</p>
+    {% if org.email %}<p><strong>Email:</strong> {{ org.email }}</p>{% endif %}
+    {% if org.purpose %}<p><strong>Purpose:</strong> {{ org.purpose }}</p>{% endif %}
+    {% if org.formation_date %}<p><strong>Formation Date:</strong> {{ org.formation_date }}</p>{% endif %}
+    {% if org.custodian_name %}<p><strong>Custodian:</strong> {{ org.custodian_name }}</p>{% endif %}
+    {% if org.contact_name %}<p><strong>Contact:</strong> {{ org.contact_name }}</p>{% endif %}
+</section>
+
+{% if financial %}
+<section class="status-section">
+    <h2>Financial Summary</h2>
+    <p><strong>Reports Filed:</strong> {{ financial.report_count }}</p>
+    <p><strong>Total Contributions:</strong> {{ format_currency(financial.total_contributions) }}</p>
+    <p><strong>Total Expenditures:</strong> {{ format_currency(financial.total_expenditures) }}</p>
+    <p><strong>Period:</strong> {{ financial.earliest_period or 'N/A' }} to {{ financial.latest_period or 'N/A' }}</p>
+</section>
+{% endif %}
+
+{% if committee_matches %}
+<h2>Matched IL Committees</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Committee Name</th>
+            <th>Committee SBE ID</th>
+            <th>Score</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in committee_matches %}
+        <tr>
+            <td>{{ m.committee_name }}</td>
+            <td>{{ m.committee_id_sbe }}</td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if directors %}
+<h2>Directors / Officers ({{ directors|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Title</th>
+            <th>City</th>
+            <th>State</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in directors %}
+        <tr>
+            <td>{{ d.person_name }}</td>
+            <td>{{ d.title or '-' }}</td>
+            <td>{{ d.city or '-' }}</td>
+            <td>{{ d.state or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if related_orgs %}
+<h2>Related Organizations ({{ related_orgs|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Organization</th>
+            <th>Relationship</th>
+            <th>City</th>
+            <th>State</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in related_orgs %}
+        <tr>
+            <td>{{ r.related_org_name }}</td>
+            <td>{{ r.relationship_type or '-' }}</td>
+            <td>{{ r.city or '-' }}</td>
+            <td>{{ r.state or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if expenditures %}
+<h2>Expenditures (Top {{ expenditures|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Recipient</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Amount</th>
+            <th>Date</th>
+            <th>Purpose</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in expenditures %}
+        <tr>
+            <td>{{ e.recipient_name or '-' }}</td>
+            <td>{{ e.city or '-' }}</td>
+            <td>{{ e.state or '-' }}</td>
+            <td>{{ format_currency(e.amount) }}</td>
+            <td>{{ e.date or '-' }}</td>
+            <td>{{ e.purpose or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

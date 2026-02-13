@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}{{ client.client_name }} - Lobbying Client{% endblock %}
+
+{% block content %}
+<h1>{{ client.client_name }}</h1>
+<p class="subtitle">Lobbying Client ID: {{ client.client_id }}</p>
+
+<h2>Represented By ({{ entities|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Entity Name</th>
+            <th>Reg Year</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in entities %}
+        <tr>
+            <td>
+                <a href="{{ url_for('lobbying.entity_detail', entity_id=e.entity_id) }}">
+                    {{ e.entity_name }}
+                </a>
+            </td>
+            <td>{{ e.reg_year or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="2">No entities found.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if donor_matches %}
+<h2>Matched Campaign Donors</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Donor Name</th>
+            <th>Score</th>
+            <th>Method</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in donor_matches %}
+        <tr>
+            <td>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts') }}">
+                    {{ m.donor_name }}
+                </a>
+            </td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+            <td>{{ m.method or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if expenditure_matches %}
+<h2>Matched Expenditure Payees</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Payee Name</th>
+            <th>Committee SBE ID</th>
+            <th>Score</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in expenditure_matches %}
+        <tr>
+            <td>{{ m.payee_name }}</td>
+            <td>{{ m.committee_id_sbe or '-' }}</td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if org_527_matches %}
+<h2>527 Organization Connections</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>527 Org Name</th>
+            <th>EIN</th>
+            <th>Score</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in org_527_matches %}
+        <tr>
+            <td>
+                <a href="{{ url_for('irs527.org_detail', ein=m.ein) }}">
+                    {{ m.org_name }}
+                </a>
+            </td>
+            <td>{{ m.ein }}</td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

@@ -1378,6 +1378,22 @@ def index():
     stats['legacy_committees'] = Committee.count(conn)
     stats['legacy_donors'] = Donor.count(conn)
 
+    # Lobbying counts
+    if _table_exists(conn, "lobbying_entities"):
+        stats['lobbying_entities'] = int(_scalar(conn, "SELECT COUNT(*) FROM lobbying_entities", default=0))
+    else:
+        stats['lobbying_entities'] = 0
+    if _table_exists(conn, "lobbying_clients"):
+        stats['lobbying_clients'] = int(_scalar(conn, "SELECT COUNT(*) FROM lobbying_clients", default=0))
+    else:
+        stats['lobbying_clients'] = 0
+
+    # IRS 527 counts
+    if _table_exists(conn, "irs527_organizations"):
+        stats['irs527_orgs'] = int(_scalar(conn, "SELECT COUNT(DISTINCT ein) FROM irs527_organizations", default=0))
+    else:
+        stats['irs527_orgs'] = 0
+
     top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
     return render_template('index.html',

@@ -685,3 +685,287 @@ CREATE INDEX IF NOT EXISTS idx_fec_local_matches_local_key
     ON fec_local_donor_matches(local_donor_key);
 CREATE INDEX IF NOT EXISTS idx_fec_local_matches_confidence
     ON fec_local_donor_matches(confidence_score DESC, match_method);
+
+-- IL Secretary of State Lobbying Data
+CREATE TABLE IF NOT EXISTS lobbying_entities (
+    entity_id INTEGER PRIMARY KEY,
+    entity_name TEXT NOT NULL,
+    reg_year INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_entities_name ON lobbying_entities(entity_name);
+
+CREATE TABLE IF NOT EXISTS lobbying_clients (
+    client_id INTEGER PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_clients_name ON lobbying_clients(client_name);
+
+CREATE TABLE IF NOT EXISTS lobbying_entity_clients (
+    entity_id INTEGER NOT NULL,
+    client_id INTEGER NOT NULL,
+    reg_year INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (entity_id, client_id, reg_year),
+    FOREIGN KEY (entity_id) REFERENCES lobbying_entities(entity_id),
+    FOREIGN KEY (client_id) REFERENCES lobbying_clients(client_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_entity_clients_client
+    ON lobbying_entity_clients(client_id);
+
+-- IRS 527 Political Organization Filings
+CREATE TABLE IF NOT EXISTS irs527_organizations (
+    ein TEXT NOT NULL,
+    form_id INTEGER NOT NULL,
+    form_id_seq INTEGER NOT NULL DEFAULT 0,
+    org_name TEXT,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    zip_ext TEXT,
+    email TEXT,
+    formation_date TEXT,
+    custodian_name TEXT,
+    custodian_address_1 TEXT,
+    custodian_address_2 TEXT,
+    custodian_city TEXT,
+    custodian_state TEXT,
+    custodian_zip TEXT,
+    custodian_zip_ext TEXT,
+    contact_name TEXT,
+    contact_address_1 TEXT,
+    contact_address_2 TEXT,
+    contact_city TEXT,
+    contact_state TEXT,
+    contact_zip TEXT,
+    contact_zip_ext TEXT,
+    business_address_1 TEXT,
+    business_address_2 TEXT,
+    business_city TEXT,
+    business_state TEXT,
+    business_zip TEXT,
+    business_zip_ext TEXT,
+    purpose TEXT,
+    material_change_date TEXT,
+    insert_datetime TEXT,
+    related_entity_bypass INTEGER,
+    eain_bypass INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ein, form_id_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_orgs_name ON irs527_organizations(org_name);
+CREATE INDEX IF NOT EXISTS idx_irs527_orgs_state ON irs527_organizations(state);
+CREATE INDEX IF NOT EXISTS idx_irs527_orgs_form_id ON irs527_organizations(form_id);
+
+CREATE TABLE IF NOT EXISTS irs527_reports (
+    form_id INTEGER NOT NULL,
+    ein TEXT NOT NULL,
+    period_start TEXT,
+    period_end TEXT,
+    org_name TEXT,
+    org_ein TEXT,
+    org_address_1 TEXT,
+    org_address_2 TEXT,
+    org_city TEXT,
+    org_state TEXT,
+    org_zip TEXT,
+    org_zip_ext TEXT,
+    email TEXT,
+    formation_date TEXT,
+    custodian_name TEXT,
+    custodian_address_1 TEXT,
+    custodian_address_2 TEXT,
+    custodian_city TEXT,
+    custodian_state TEXT,
+    custodian_zip TEXT,
+    custodian_zip_ext TEXT,
+    contact_name TEXT,
+    contact_address_1 TEXT,
+    contact_address_2 TEXT,
+    contact_city TEXT,
+    contact_state TEXT,
+    contact_zip TEXT,
+    contact_zip_ext TEXT,
+    business_address_1 TEXT,
+    business_address_2 TEXT,
+    business_city TEXT,
+    business_state TEXT,
+    business_zip TEXT,
+    business_zip_ext TEXT,
+    qtr_indicator INTEGER,
+    monthly_amount_1 REAL,
+    monthly_amount_2 REAL,
+    monthly_amount_3 REAL,
+    total_contributions REAL DEFAULT 0,
+    total_expenditures REAL DEFAULT 0,
+    insert_datetime TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (form_id, ein)
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_reports_ein ON irs527_reports(ein);
+CREATE INDEX IF NOT EXISTS idx_irs527_reports_period ON irs527_reports(period_start, period_end);
+
+CREATE TABLE IF NOT EXISTS irs527_directors (
+    rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    ein TEXT NOT NULL,
+    org_name TEXT,
+    person_name TEXT,
+    title TEXT,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    zip_ext TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_directors_ein ON irs527_directors(ein);
+CREATE INDEX IF NOT EXISTS idx_irs527_directors_name ON irs527_directors(person_name);
+
+CREATE TABLE IF NOT EXISTS irs527_related_orgs (
+    rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    ein TEXT NOT NULL,
+    org_name TEXT,
+    related_org_name TEXT,
+    relationship_type TEXT,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    zip_ext TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_related_orgs_ein ON irs527_related_orgs(ein);
+
+CREATE TABLE IF NOT EXISTS irs527_expenditures (
+    rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    ein TEXT NOT NULL,
+    org_name TEXT,
+    recipient_name TEXT,
+    recipient_address TEXT,
+    recipient_address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    zip_ext TEXT,
+    recipient_employer TEXT,
+    amount REAL,
+    recipient_occupation TEXT,
+    date TEXT,
+    purpose TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_ein ON irs527_expenditures(ein);
+CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_state ON irs527_expenditures(state);
+CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_recipient ON irs527_expenditures(recipient_name);
+CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_amount ON irs527_expenditures(amount DESC);
+
+CREATE TABLE IF NOT EXISTS irs527_election_authority (
+    rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id INTEGER NOT NULL,
+    election_authority_id TEXT,
+    state TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_election_authority_form ON irs527_election_authority(form_id);
+
+-- Cross-matching result tables
+CREATE TABLE IF NOT EXISTS lobbying_donor_matches (
+    client_id INTEGER NOT NULL,
+    donor_key TEXT NOT NULL,
+    client_name TEXT,
+    donor_name TEXT,
+    score REAL NOT NULL,
+    method TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (client_id, donor_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_score
+    ON lobbying_donor_matches(score DESC);
+
+CREATE TABLE IF NOT EXISTS lobbying_expenditure_matches (
+    match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    source_name TEXT,
+    payee_name TEXT,
+    committee_id_sbe INTEGER,
+    score REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_expenditure_matches_score
+    ON lobbying_expenditure_matches(score DESC);
+
+CREATE TABLE IF NOT EXISTS irs527_committee_matches (
+    ein TEXT NOT NULL,
+    org_name TEXT,
+    committee_id_sbe INTEGER NOT NULL,
+    committee_name TEXT,
+    score REAL NOT NULL,
+    method TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (ein, committee_id_sbe)
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_committee_matches_score
+    ON irs527_committee_matches(score DESC);
+
+CREATE TABLE IF NOT EXISTS irs527_expenditure_recipient_matches (
+    match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ein TEXT,
+    org_name TEXT,
+    recipient_name TEXT,
+    matched_type TEXT,
+    matched_id TEXT,
+    matched_name TEXT,
+    score REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_exp_recipient_matches_score
+    ON irs527_expenditure_recipient_matches(score DESC);
+
+CREATE TABLE IF NOT EXISTS irs527_director_donor_matches (
+    match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ein TEXT,
+    org_name TEXT,
+    director_name TEXT,
+    donor_key TEXT,
+    donor_name TEXT,
+    score REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_director_donor_matches_score
+    ON irs527_director_donor_matches(score DESC);
+
+CREATE TABLE IF NOT EXISTS lobbying_527_matches (
+    client_id INTEGER NOT NULL,
+    client_name TEXT,
+    ein TEXT NOT NULL,
+    org_name TEXT,
+    score REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (client_id, ein)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_527_matches_score
+    ON lobbying_527_matches(score DESC);
