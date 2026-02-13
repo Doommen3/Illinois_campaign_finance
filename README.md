@@ -149,7 +149,13 @@ Visit `http://localhost:5000` to access the dashboard.
 ## Testing
 
 ```bash
-pytest
+pytest -q -m "not integration"
+```
+
+Run live scraper integration checks separately:
+
+```bash
+pytest -q -m integration
 ```
 
 ## Current Data Scale
@@ -369,7 +375,38 @@ $PYTHON run.py backfill-fec-schedule-a \
   --refresh-cache
 ```
 
-Wrapper script (recommended for automation):
+### Hourly Schedule B Catch-Up (committee disbursements)
+
+Use this to fill missing federal committee spending rows (Schedule B) with resumable pagination.
+
+One-off run:
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-b \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-committee 25 \
+  --refresh-cache
+```
+
+Principal-only run (optional):
+
+```bash
+$PYTHON run.py backfill-fec-schedule-b --cycle 2026 --principal-only --max-calls 1000 --refresh-cache
+```
+
+Schedule B wrapper script (recommended for automation):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+bash scripts/fec-schedule-b-catchup.sh
+```
+
+Schedule A wrapper script (recommended for automation):
 
 ```bash
 cd /srv/illinois_campaign_finance/app

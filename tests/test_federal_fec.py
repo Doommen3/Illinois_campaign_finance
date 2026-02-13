@@ -4,6 +4,7 @@ from pathlib import Path
 from database.connection import get_db, init_db
 from database.federal_fec import (
     backfill_fec_missing_schedule_a,
+    backfill_fec_schedule_b,
     count_federal_candidates,
     federal_data_available,
     get_federal_receipt_mismatch_flags,
@@ -518,6 +519,235 @@ def test_federal_receipt_mismatch_flags_and_backfill(tmp_path: Path):
     assert final_state is not None
     assert final_state["next_last_index"] is None
     assert final_state["completed"] == 1
+
+    conn.close()
+
+
+def test_backfill_fec_schedule_b(tmp_path: Path):
+    db_path = str(tmp_path / "fec_schedule_b.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-sb-1",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-06",
+            "06",
+            "Democratic",
+            "DEM",
+            "Primary",
+            "Candidate Spend",
+            "CANDIDATE SPEND",
+            0,
+            0,
+            "seed.csv",
+            2,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle,
+            fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-sb-1",
+            "Candidate Spend",
+            "U.S. House",
+            "H",
+            "IL-06",
+            "06",
+            "Democratic",
+            "DEM",
+            "Primary",
+            2026,
+            "H2IL66666",
+            "SPEND, CANDIDATE",
+            "H",
+            "IL",
+            "06",
+            "DEM",
+            "matched",
+            98.0,
+            "test",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_committees (
+            candidate_id, committee_id, cycle, committee_name, committee_type,
+            committee_designation, committee_designation_full, filing_frequency,
+            committee_party, committee_city, committee_state, committee_zip, is_principal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "H2IL66666",
+            "C00888888",
+            2026,
+            "CANDIDATE SPEND COMMITTEE",
+            "H",
+            "P",
+            "Principal campaign committee",
+            "Q",
+            "DEM",
+            "CHICAGO",
+            "IL",
+            "60606",
+            1,
+        ),
+    )
+    conn.commit()
+
+    class ScheduleBClient:
+        base_url = "https://api.open.fec.gov/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint: str, params: dict):
+            self.calls.append((endpoint, dict(params)))
+            assert endpoint == "/schedules/schedule_b/"
+            if params.get("committee_id") != "C00888888":
+                return {
+                    "pagination": {"count": 0, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+
+            if params.get("last_index") == "sb-token-1":
+                return {
+                    "pagination": {"count": 1, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+
+            return {
+                "pagination": {
+                    "count": 1,
+                    "pages": 1,
+                    "per_page": params.get("per_page", 100),
+                    "last_indexes": {
+                        "last_index": "sb-token-1",
+                        "last_disbursement_date": "2025-11-30",
+                    },
+                },
+                "results": [
+                    {
+                        "sub_id": "sub-b-new-1",
+                        "committee_id": "C00888888",
+                        "committee_name": "CANDIDATE SPEND COMMITTEE",
+                        "recipient_name": "MEDIA BUY VENDOR LLC",
+                        "recipient_city": "CHICAGO",
+                        "recipient_state": "IL",
+                        "recipient_zip": "60601",
+                        "candidate_id": "H0IL00000",
+                        "candidate_name": "BENEFICIARY, CANDIDATE",
+                        "payee_employer": "N/A",
+                        "payee_occupation": "N/A",
+                        "line_number": "23",
+                        "disbursement_type": "DISB",
+                        "disbursement_type_description": "Operating Expenditure",
+                        "category_code": "004",
+                        "category_code_full": "Advertising Expenses",
+                        "election_type": "G",
+                        "election_type_full": "GENERAL",
+                        "disbursement_description": "Digital advertising",
+                        "memo_text": "",
+                        "disbursement_amount": 1250.75,
+                        "disbursement_date": "2025-12-01",
+                        "two_year_transaction_period": 2026,
+                        "load_date": "2026-02-13T11:00:00",
+                        "image_number": "img-b-new",
+                    }
+                ],
+            }
+
+    client = ScheduleBClient()
+
+    run_one = backfill_fec_schedule_b(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_committee=1,
+        include_completed=False,
+        refresh_cache=True,
+        include_all_committees=True,
+        client=client,
+    )
+    assert run_one["api_calls_made"] == 1
+    assert run_one["disbursements_upserted"] == 1
+    assert run_one["committees_processed"] >= 1
+
+    inserted = conn.execute(
+        """
+        SELECT
+            candidate_id,
+            committee_id,
+            recipient_name,
+            recipient_candidate_id,
+            disbursement_amount,
+            disbursement_date
+        FROM fec_schedule_b_disbursements
+        WHERE sub_id = 'sub-b-new-1'
+        """
+    ).fetchone()
+    assert inserted is not None
+    assert inserted["candidate_id"] == "H2IL66666"
+    assert inserted["committee_id"] == "C00888888"
+    assert inserted["recipient_name"] == "MEDIA BUY VENDOR LLC"
+    assert inserted["recipient_candidate_id"] == "H0IL00000"
+    assert inserted["disbursement_amount"] == 1250.75
+    assert inserted["disbursement_date"] == "2025-12-01"
+
+    state_one = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_b_backfill_state
+        WHERE committee_id = 'C00888888' AND cycle = 2026
+        """
+    ).fetchone()
+    assert state_one is not None
+    assert state_one["next_last_index"] == "sb-token-1"
+    assert state_one["completed"] == 0
+
+    run_two = backfill_fec_schedule_b(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_committee=1,
+        include_completed=False,
+        refresh_cache=True,
+        include_all_committees=True,
+        client=client,
+    )
+    assert run_two["api_calls_made"] == 1
+
+    state_two = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_b_backfill_state
+        WHERE committee_id = 'C00888888' AND cycle = 2026
+        """
+    ).fetchone()
+    assert state_two is not None
+    assert state_two["next_last_index"] is None
+    assert state_two["completed"] == 1
 
     conn.close()
 

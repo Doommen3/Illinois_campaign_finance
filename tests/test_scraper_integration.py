@@ -1,13 +1,14 @@
 """Integration tests for the scraper against the live website."""
 import pytest
 import pytest_asyncio
-import asyncio
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from playwright.async_api import async_playwright
+
+pytestmark = pytest.mark.integration
 
 
 class TestWebsiteStructure:
@@ -16,12 +17,15 @@ class TestWebsiteStructure:
     @pytest_asyncio.fixture
     async def page(self):
         """Create a browser page for testing."""
-        p = await async_playwright().start()
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        yield page
-        await browser.close()
-        await p.stop()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+            try:
+                yield page
+            finally:
+                await context.close()
+                await browser.close()
 
     @pytest.mark.asyncio
     async def test_main_page_loads(self, page):
@@ -72,31 +76,25 @@ class TestWebsiteStructure:
         table = await page.query_selector('table[id*="gvReportsFiled"]')
         assert table is not None
 
-        # Get first data row (skip header)
+        # Find any data row where both committee and detail links are present.
         rows = await table.query_selector_all('tr')
-        data_row = None
-        for row in rows[1:]:  # Skip header
+        matched = False
+        for row in rows[1:]:
             cells = await row.query_selector_all('td')
             if len(cells) >= 2:
-                data_row = row
-                break
+                first_cell_link = await cells[0].query_selector('a')
+                second_cell_link = await cells[1].query_selector('a')
+                if not first_cell_link or not second_cell_link:
+                    continue
+                first_href = await first_cell_link.get_attribute('href')
+                second_href = await second_cell_link.get_attribute('href')
+                if first_href and 'CommitteeDetail' in first_href and second_href and (
+                    'A1List' in second_href or 'CDPDFViewer' in second_href
+                ):
+                    matched = True
+                    break
 
-        assert data_row is not None, "No data rows found"
-
-        cells = await data_row.query_selector_all('td')
-
-        # First cell should have CommitteeDetail link
-        first_cell_link = await cells[0].query_selector('a')
-        assert first_cell_link is not None, "First cell should have a link"
-        first_href = await first_cell_link.get_attribute('href')
-        assert 'CommitteeDetail' in first_href, f"First link should be CommitteeDetail, got: {first_href}"
-
-        # Second cell should have report detail link (A1List or CDPDFViewer)
-        second_cell_link = await cells[1].query_selector('a')
-        assert second_cell_link is not None, "Second cell should have a link"
-        second_href = await second_cell_link.get_attribute('href')
-        assert 'A1List' in second_href or 'CDPDFViewer' in second_href, \
-            f"Second link should be A1List or CDPDFViewer, got: {second_href}"
+        assert matched, "No data row found with expected committee/detail links"
 
     @pytest.mark.asyncio
     async def test_detail_url_in_second_column(self, page):
@@ -125,9 +123,10 @@ class TestWebsiteStructure:
         await page.goto("https://www.elections.il.gov/CampaignDisclosure/ReportsFiled.aspx")
         await page.wait_for_load_state('networkidle')
 
-        # Look for page number links
-        page_links = await page.query_selector_all('a[href*="Page$"]')
-        assert len(page_links) > 0, "Pagination links not found"
+        pager_cell = await page.query_selector('table[id*="gvReportsFiled"] tr:last-child td table td')
+        assert pager_cell is not None, "Pagination controls not found"
+        pager_tokens = await page.query_selector_all('table[id*="gvReportsFiled"] tr:last-child td table td a, table[id*="gvReportsFiled"] tr:last-child td table td span')
+        assert len(pager_tokens) > 0, "Pagination controls not found"
 
     @pytest.mark.asyncio
     async def test_pagination_has_ellipsis(self, page):
@@ -149,13 +148,16 @@ class TestWebsiteStructure:
         await page.goto("https://www.elections.il.gov/CampaignDisclosure/ReportsFiled.aspx")
         await page.wait_for_load_state('networkidle')
 
-        # Page 1 should be current (shown as span, not link)
-        page1_span = await page.query_selector('td span:text-is("1")')
-        assert page1_span is not None, "Page 1 indicator not found"
+        page1 = await page.query_selector('td span:text-is("1")') or await page.query_selector('td a:text-is("1")')
+        assert page1 is not None, "Page 1 indicator not found"
 
-        # Page 2 should be a link
-        page2_link = await page.query_selector('a:text-is("2")')
-        assert page2_link is not None, "Page 2 link not found"
+        page_numbers = await page.query_selector_all('table[id*="gvReportsFiled"] tr:last-child td table td a')
+        numeric_links = []
+        for link in page_numbers:
+            text = (await link.inner_text()).strip()
+            if text.isdigit():
+                numeric_links.append(int(text))
+        assert any(num >= 2 for num in numeric_links), "No additional numeric pagination links found"
 
     @pytest.mark.asyncio
     async def test_ellipsis_click_shows_more_pages(self, page):

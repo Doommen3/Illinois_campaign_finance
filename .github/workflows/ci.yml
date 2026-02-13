@@ -30,4 +30,4 @@ jobs:
         run: ruff check . --select E9,F63,F7,F82
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -q -m "not integration"

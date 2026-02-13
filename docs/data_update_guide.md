@@ -109,7 +109,35 @@ $PYTHON run.py backfill-fec-schedule-a \
   --refresh-cache
 ```
 
-Wrapper script:
+### Schedule B Catch-Up for Committee Disbursements
+
+Use this command to fill missing federal spending rows (Schedule B) with resumable pagination.
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-b \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-committee 25 \
+  --refresh-cache
+```
+
+Optional principal-committee-only mode:
+
+```bash
+$PYTHON run.py backfill-fec-schedule-b --cycle 2026 --principal-only --max-calls 1000 --refresh-cache
+```
+
+Schedule B wrapper script:
+
+```bash
+bash scripts/fec-schedule-b-catchup.sh
+```
+
+Schedule A wrapper script:
 
 ```bash
 bash scripts/fec-schedule-a-catchup.sh

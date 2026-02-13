@@ -1292,6 +1292,172 @@ def _upsert_schedule_rows(
     return len(payload_rows)
 
 
+def _extract_schedule_b_recipient_name(row: dict) -> str:
+    direct = _clean_text(row.get("recipient_name"))
+    if direct:
+        return direct
+
+    payee_name = _clean_text(row.get("payee_name"))
+    if payee_name:
+        return payee_name
+
+    payee_first = _clean_text(row.get("payee_first_name"))
+    payee_last = _clean_text(row.get("payee_last_name"))
+    return " ".join(part for part in [payee_first, payee_last] if part).strip()
+
+
+def _upsert_schedule_b_rows(
+    conn: sqlite3.Connection,
+    rows: list[dict],
+    cycle: int,
+    candidate_id: str,
+    candidate_name: str,
+    committee_id: str,
+    default_committee_name: str | None,
+    api_source_identifier: str,
+) -> int:
+    payload_rows: list[tuple] = []
+
+    for row in rows:
+        sub_id = _clean_text(row.get("sub_id"))
+        if not sub_id:
+            fallback_payload = "|".join(
+                [
+                    committee_id,
+                    str(row.get("disbursement_date") or ""),
+                    str(row.get("disbursement_amount") or ""),
+                    _extract_schedule_b_recipient_name(row),
+                    str(row.get("image_number") or ""),
+                ]
+            )
+            sub_id = hashlib.sha1(fallback_payload.encode("utf-8")).hexdigest()
+
+        committee_payload = row.get("committee") if isinstance(row.get("committee"), dict) else {}
+        committee_name = (
+            _clean_text(row.get("committee_name"))
+            or _clean_text(committee_payload.get("name"))
+            or default_committee_name
+        )
+
+        recipient_name = _extract_schedule_b_recipient_name(row)
+        recipient_city = _clean_text(row.get("recipient_city")) or _clean_text(row.get("payee_city"))
+        recipient_state = _clean_text(row.get("recipient_state")) or _clean_text(row.get("payee_state"))
+        recipient_zip = _clean_text(row.get("recipient_zip")) or _clean_text(row.get("payee_zip"))
+
+        raw_disbursement_amount = row.get("disbursement_amount")
+        try:
+            disbursement_amount = (
+                float(raw_disbursement_amount) if raw_disbursement_amount is not None else None
+            )
+        except (TypeError, ValueError):
+            disbursement_amount = None
+
+        payload_rows.append(
+            (
+                sub_id,
+                cycle,
+                candidate_id,
+                candidate_name,
+                committee_id,
+                committee_name,
+                recipient_name or None,
+                recipient_city or None,
+                recipient_state or None,
+                recipient_zip or None,
+                _clean_text(row.get("recipient_committee_id")) or None,
+                _clean_text(row.get("candidate_id")) or None,
+                _clean_text(row.get("candidate_name")) or None,
+                _clean_text(row.get("payee_employer")) or None,
+                _clean_text(row.get("payee_occupation")) or None,
+                _clean_text(row.get("line_number")) or None,
+                _clean_text(row.get("disbursement_type")) or None,
+                _clean_text(row.get("disbursement_type_description")) or None,
+                _clean_text(row.get("category_code")) or None,
+                _clean_text(row.get("category_code_full")) or None,
+                _clean_text(row.get("election_type")) or None,
+                _clean_text(row.get("election_type_full")) or None,
+                _clean_text(row.get("disbursement_description")) or None,
+                _clean_text(row.get("memo_text")) or None,
+                disbursement_amount,
+                _clean_text(row.get("disbursement_date")) or None,
+                _coerce_int(row.get("two_year_transaction_period")),
+                _clean_text(row.get("load_date")) or None,
+                _clean_text(row.get("image_number")) or None,
+                api_source_identifier,
+            )
+        )
+
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id,
+            cycle,
+            candidate_id,
+            candidate_name,
+            committee_id,
+            committee_name,
+            recipient_name,
+            recipient_city,
+            recipient_state,
+            recipient_zip,
+            recipient_committee_id,
+            recipient_candidate_id,
+            recipient_candidate_name,
+            payee_employer,
+            payee_occupation,
+            line_number,
+            disbursement_type,
+            disbursement_type_desc,
+            category_code,
+            category_code_full,
+            election_type,
+            election_type_full,
+            disbursement_description,
+            memo_text,
+            disbursement_amount,
+            disbursement_date,
+            two_year_transaction_period,
+            load_date,
+            image_number,
+            api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sub_id) DO UPDATE SET
+            cycle = excluded.cycle,
+            candidate_id = excluded.candidate_id,
+            candidate_name = excluded.candidate_name,
+            committee_id = excluded.committee_id,
+            committee_name = excluded.committee_name,
+            recipient_name = excluded.recipient_name,
+            recipient_city = excluded.recipient_city,
+            recipient_state = excluded.recipient_state,
+            recipient_zip = excluded.recipient_zip,
+            recipient_committee_id = excluded.recipient_committee_id,
+            recipient_candidate_id = excluded.recipient_candidate_id,
+            recipient_candidate_name = excluded.recipient_candidate_name,
+            payee_employer = excluded.payee_employer,
+            payee_occupation = excluded.payee_occupation,
+            line_number = excluded.line_number,
+            disbursement_type = excluded.disbursement_type,
+            disbursement_type_desc = excluded.disbursement_type_desc,
+            category_code = excluded.category_code,
+            category_code_full = excluded.category_code_full,
+            election_type = excluded.election_type,
+            election_type_full = excluded.election_type_full,
+            disbursement_description = excluded.disbursement_description,
+            memo_text = excluded.memo_text,
+            disbursement_amount = excluded.disbursement_amount,
+            disbursement_date = excluded.disbursement_date,
+            two_year_transaction_period = excluded.two_year_transaction_period,
+            load_date = excluded.load_date,
+            image_number = excluded.image_number,
+            api_source_identifier = excluded.api_source_identifier,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        payload_rows,
+    )
+    return len(payload_rows)
+
+
 def rebuild_fec_donor_identities(
     conn: sqlite3.Connection,
     cycle: int | None = None,
@@ -1981,6 +2147,40 @@ def _ensure_fec_schedule_a_backfill_state_table(conn: sqlite3.Connection) -> Non
     )
 
 
+def _ensure_fec_schedule_b_backfill_state_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fec_schedule_b_backfill_state (
+            committee_id TEXT NOT NULL,
+            cycle INTEGER NOT NULL,
+            candidate_id TEXT,
+            candidate_name TEXT,
+            next_last_index TEXT,
+            next_last_disbursement_date TEXT,
+            completed INTEGER NOT NULL DEFAULT 0,
+            pages_processed_total INTEGER NOT NULL DEFAULT 0,
+            disbursements_upserted_total INTEGER NOT NULL DEFAULT 0,
+            api_calls_total INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (committee_id, cycle)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_backfill_cycle_completed
+        ON fec_schedule_b_backfill_state(cycle, completed, updated_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_backfill_candidate
+        ON fec_schedule_b_backfill_state(candidate_id, cycle)
+        """
+    )
+
+
 def get_federal_receipt_mismatch_flags(
     conn: sqlite3.Connection,
     cycle: int | None = None,
@@ -2351,6 +2551,67 @@ def _upsert_schedule_a_backfill_state(
     )
 
 
+def _upsert_schedule_b_backfill_state(
+    conn: sqlite3.Connection,
+    *,
+    committee_id: str,
+    cycle: int,
+    candidate_id: str | None,
+    candidate_name: str | None,
+    next_last_index: str | None,
+    next_last_disbursement_date: str | None,
+    completed: bool,
+    pages_processed_delta: int,
+    disbursements_upserted_delta: int,
+    api_calls_delta: int,
+    last_error: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_backfill_state (
+            committee_id,
+            cycle,
+            candidate_id,
+            candidate_name,
+            next_last_index,
+            next_last_disbursement_date,
+            completed,
+            pages_processed_total,
+            disbursements_upserted_total,
+            api_calls_total,
+            last_error,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(committee_id, cycle) DO UPDATE SET
+            candidate_id = excluded.candidate_id,
+            candidate_name = excluded.candidate_name,
+            next_last_index = excluded.next_last_index,
+            next_last_disbursement_date = excluded.next_last_disbursement_date,
+            completed = excluded.completed,
+            pages_processed_total = fec_schedule_b_backfill_state.pages_processed_total + excluded.pages_processed_total,
+            disbursements_upserted_total = (
+                fec_schedule_b_backfill_state.disbursements_upserted_total + excluded.disbursements_upserted_total
+            ),
+            api_calls_total = fec_schedule_b_backfill_state.api_calls_total + excluded.api_calls_total,
+            last_error = excluded.last_error,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            committee_id,
+            int(cycle),
+            candidate_id,
+            candidate_name,
+            _clean_text(next_last_index) or None,
+            _clean_text(next_last_disbursement_date) or None,
+            1 if completed else 0,
+            max(0, int(pages_processed_delta)),
+            max(0, int(disbursements_upserted_delta)),
+            max(0, int(api_calls_delta)),
+            _clean_text(last_error)[:500] if last_error else None,
+        ),
+    )
+
+
 def backfill_fec_missing_schedule_a(
     conn: sqlite3.Connection,
     *,
@@ -2632,6 +2893,255 @@ def backfill_fec_missing_schedule_a(
         "min_abs_gap": min_gap_value,
         "tolerance": tolerance_value,
         "include_completed": bool(include_completed),
+        "refresh_cache": bool(refresh_cache),
+    }
+
+
+def backfill_fec_schedule_b(
+    conn: sqlite3.Connection,
+    *,
+    api_key: str,
+    cycle: int,
+    max_calls: int = 1000,
+    per_page: int = 100,
+    max_pages_per_committee: int = 25,
+    include_completed: bool = False,
+    refresh_cache: bool = False,
+    include_all_committees: bool = True,
+    max_committees: int | None = None,
+    client: FecApiClient | None = None,
+) -> dict:
+    """Backfill FEC Schedule B disbursements for candidate committees."""
+    if not api_key:
+        raise ValueError("FEC API key is required")
+    if not _table_exists(conn, "raw_extractions"):
+        raise RuntimeError("raw_extractions table is required for FEC Schedule B backfill")
+    if not _table_exists(conn, "fec_candidate_committees"):
+        raise RuntimeError("fec_candidate_committees table is required for FEC Schedule B backfill")
+
+    _ensure_fec_schedule_b_backfill_state_table(conn)
+    conn.commit()
+
+    effective_cycle = int(cycle)
+    call_budget = max(1, int(max_calls))
+    per_page_value = min(max(1, int(per_page)), 100)
+    pages_per_committee_cap = max(1, int(max_pages_per_committee))
+
+    committee_rows = conn.execute(
+        """
+        SELECT
+            c.candidate_id,
+            c.cycle,
+            c.committee_id,
+            c.committee_name,
+            COALESCE(m.fec_name, m.candidate_name, c.candidate_id) AS candidate_name,
+            COALESCE(bs.next_last_index, '') AS next_last_index,
+            COALESCE(bs.next_last_disbursement_date, '') AS next_last_disbursement_date,
+            COALESCE(bs.completed, 0) AS completed,
+            bs.updated_at AS backfill_updated_at
+        FROM fec_candidate_committees c
+        LEFT JOIN (
+            SELECT
+                fec_candidate_id AS candidate_id,
+                cycle,
+                MAX(fec_name) AS fec_name,
+                MAX(candidate_name) AS candidate_name
+            FROM fec_candidate_match
+            WHERE fec_candidate_id IS NOT NULL
+            GROUP BY fec_candidate_id, cycle
+        ) m
+          ON m.candidate_id = c.candidate_id
+         AND m.cycle = c.cycle
+        LEFT JOIN fec_schedule_b_backfill_state bs
+          ON bs.committee_id = c.committee_id
+         AND bs.cycle = c.cycle
+        WHERE c.cycle = ?
+          AND c.committee_id IS NOT NULL
+          AND (? = 1 OR c.is_principal = 1)
+        ORDER BY
+            COALESCE(bs.completed, 0) ASC,
+            CASE WHEN bs.updated_at IS NULL THEN 0 ELSE 1 END ASC,
+            bs.updated_at ASC,
+            c.candidate_id ASC,
+            c.committee_id ASC
+        """,
+        (effective_cycle, 1 if include_all_committees else 0),
+    ).fetchall()
+
+    queue = list(committee_rows)
+    if max_committees is not None:
+        queue = queue[: max(0, int(max_committees))]
+
+    api_client = client or FecApiClient(api_key=api_key)
+    use_cache = not bool(refresh_cache)
+
+    api_calls_made = 0
+    pages_processed = 0
+    disbursements_upserted = 0
+    committees_processed = 0
+    committees_completed = 0
+    call_budget_reached = False
+
+    for committee in queue:
+        committee_id = _clean_text(committee["committee_id"])
+        candidate_id = _clean_text(committee["candidate_id"])
+        candidate_name = _clean_text(committee["candidate_name"]) or candidate_id
+        committee_name = _clean_text(committee["committee_name"]) or committee_id
+        if not committee_id or not candidate_id:
+            continue
+
+        already_completed = int(committee["completed"] or 0) == 1
+        if already_completed and not include_completed:
+            continue
+
+        committees_processed += 1
+        committee_pages = 0
+        committee_disbursements = 0
+        committee_api_calls = 0
+        next_last_index = _clean_text(committee["next_last_index"])
+        next_last_disbursement_date = _clean_text(committee["next_last_disbursement_date"])
+        committee_completed = False
+        last_error = None
+        seen_tokens: set[str] = set()
+
+        while committee_pages < pages_per_committee_cap and api_calls_made < call_budget:
+            params: dict[str, Any] = {
+                "committee_id": committee_id,
+                "two_year_transaction_period": effective_cycle,
+                "per_page": per_page_value,
+                "sort": "-disbursement_date",
+            }
+            if next_last_index:
+                params["last_index"] = next_last_index
+            if next_last_disbursement_date:
+                params["last_disbursement_date"] = next_last_disbursement_date
+
+            try:
+                payload, source_identifier, from_cache = _request_with_cache(
+                    conn,
+                    api_client,
+                    endpoint="/schedules/schedule_b/",
+                    params=params,
+                    use_cache=use_cache,
+                )
+            except Exception as exc:  # noqa: BLE001 - retain per-committee error and continue
+                last_error = str(exc)
+                break
+
+            if not from_cache:
+                api_calls_made += 1
+                committee_api_calls += 1
+
+            pages_processed += 1
+            committee_pages += 1
+
+            results = payload.get("results") or []
+            if not results:
+                committee_completed = True
+                next_last_index = ""
+                next_last_disbursement_date = ""
+                break
+
+            upserted_rows = _upsert_schedule_b_rows(
+                conn,
+                rows=results,
+                cycle=effective_cycle,
+                candidate_id=candidate_id,
+                candidate_name=candidate_name,
+                committee_id=committee_id,
+                default_committee_name=committee_name,
+                api_source_identifier=source_identifier,
+            )
+            committee_disbursements += upserted_rows
+            disbursements_upserted += upserted_rows
+            conn.commit()
+
+            pagination = payload.get("pagination") or {}
+            last_indexes = pagination.get("last_indexes") or {}
+            fetched_last_index = _clean_text(last_indexes.get("last_index"))
+            fetched_last_disbursement_date = _clean_text(
+                last_indexes.get("last_disbursement_date") or last_indexes.get("last_disbursement_dt")
+            )
+
+            if not fetched_last_index:
+                committee_completed = True
+                next_last_index = ""
+                next_last_disbursement_date = ""
+                break
+
+            token = f"{fetched_last_index}|{fetched_last_disbursement_date}"
+            if token in seen_tokens:
+                committee_completed = True
+                next_last_index = ""
+                next_last_disbursement_date = ""
+                break
+            seen_tokens.add(token)
+
+            next_last_index = fetched_last_index
+            next_last_disbursement_date = fetched_last_disbursement_date
+
+            if api_calls_made >= call_budget:
+                call_budget_reached = True
+                break
+
+        _upsert_schedule_b_backfill_state(
+            conn,
+            committee_id=committee_id,
+            cycle=effective_cycle,
+            candidate_id=candidate_id,
+            candidate_name=candidate_name,
+            next_last_index=next_last_index if not committee_completed else None,
+            next_last_disbursement_date=(
+                next_last_disbursement_date if not committee_completed else None
+            ),
+            completed=committee_completed,
+            pages_processed_delta=committee_pages,
+            disbursements_upserted_delta=committee_disbursements,
+            api_calls_delta=committee_api_calls,
+            last_error=last_error,
+        )
+        conn.commit()
+
+        if committee_completed:
+            committees_completed += 1
+
+        if api_calls_made >= call_budget:
+            call_budget_reached = True
+            break
+
+    selected_committee_ids = [row["committee_id"] for row in queue if _clean_text(row["committee_id"])]
+    selected_unique = list(dict.fromkeys(selected_committee_ids))
+    completed_in_state = 0
+    if selected_unique:
+        selected_placeholders = ",".join(["?"] * len(selected_unique))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM fec_schedule_b_backfill_state
+            WHERE cycle = ?
+              AND committee_id IN ({selected_placeholders})
+              AND completed = 1
+            """,
+            [effective_cycle, *selected_unique],
+        ).fetchone()
+        completed_in_state = int(row["count"] or 0) if row else 0
+
+    committees_selected = len(selected_unique)
+    committees_remaining = max(0, committees_selected - completed_in_state)
+
+    return {
+        "cycle": effective_cycle,
+        "committees_selected": committees_selected,
+        "committees_processed": committees_processed,
+        "committees_completed": committees_completed,
+        "committees_remaining": committees_remaining,
+        "pages_processed": pages_processed,
+        "disbursements_upserted": disbursements_upserted,
+        "api_calls_made": api_calls_made,
+        "call_budget_reached": bool(call_budget_reached),
+        "max_calls": call_budget,
+        "include_completed": bool(include_completed),
+        "include_all_committees": bool(include_all_committees),
         "refresh_cache": bool(refresh_cache),
     }
 
