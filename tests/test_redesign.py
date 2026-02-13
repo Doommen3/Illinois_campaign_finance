@@ -224,3 +224,109 @@ class TestDataExplanations:
     def test_527_has_help_text(self, client):
         resp = client.get("/527/")
         assert b"help-text" in resp.data
+
+
+# ---------- Network visualizations ----------
+
+
+class TestNetworkVisualizations:
+    def _read_template(self):
+        import os
+        tpl = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "webapp", "templates", "analytics", "networks.html",
+        )
+        with open(tpl) as f:
+            return f.read()
+
+    def test_networks_route_loads(self, client):
+        resp = client.get("/analytics/networks?load_mode=full")
+        assert resp.status_code == 200
+
+    def test_networks_template_has_tabs(self):
+        content = self._read_template()
+        for label in [
+            "Force Graph",
+            "Sankey Flow",
+            "Heatmap",
+            "Vendor Network",
+            "Money Flow",
+            "State-Federal",
+            "Lobbying Bridge",
+            "527 Dark Money",
+        ]:
+            assert label in content, f"Missing tab label: {label}"
+
+    def test_networks_template_has_svg_elements(self):
+        content = self._read_template()
+        for svg_id in [
+            "network-svg",
+            "sankey-svg",
+            "heatmap-svg",
+            "vendor-svg",
+            "combined-flow-svg",
+            "overlap-svg",
+            "lobbying-svg",
+            "dark-money-svg",
+        ]:
+            assert svg_id in content, f"Missing SVG id: {svg_id}"
+
+    def test_networks_template_has_data_blocks(self):
+        content = self._read_template()
+        for data_id in [
+            "analytics-network-data",
+            "vendor-network-data",
+            "overlap-graph-data",
+            "lobbying-graph-data",
+            "ecosystem-527-data",
+        ]:
+            assert data_id in content, f"Missing data block: {data_id}"
+
+    def test_networks_js_has_click_to_lock(self):
+        import os
+        js_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "webapp", "static", "js", "analytics_networks.js",
+        )
+        with open(js_path) as f:
+            content = f.read()
+        assert "lockedNodeId" in content
+        assert "applyHighlight" in content
+
+    def test_networks_js_has_sankey_renderer(self):
+        import os
+        js_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "webapp", "static", "js", "analytics_networks.js",
+        )
+        with open(js_path) as f:
+            content = f.read()
+        assert "renderSankey" in content
+        assert "renderHeatmap" in content
+        assert "renderVendor" in content
+        assert "renderOverlap" in content
+        assert "renderLobbying" in content
+        assert "renderDarkMoney" in content
+        assert "renderCombined" in content
+
+    def test_vendor_network_db_function(self, app):
+        from database.analytics import get_vendor_expenditure_network
+        from database.connection import get_db
+        conn = get_db(app.config["DATABASE_PATH"])
+        result = get_vendor_expenditure_network(conn)
+        assert "nodes" in result
+        assert "edges" in result
+        assert "centrality" in result
+        assert "summary" in result
+        conn.close()
+
+    def test_overlap_graph_db_function(self, app):
+        from database.analytics import get_state_federal_overlap_graph
+        from database.connection import get_db
+        conn = get_db(app.config["DATABASE_PATH"])
+        result = get_state_federal_overlap_graph(conn)
+        assert "nodes" in result
+        assert "edges" in result
+        assert "centrality" in result
+        assert "summary" in result
+        conn.close()

@@ -4,7 +4,8 @@
 
 {% block content %}
 <h1>Analytics: Networks</h1>
-<p class="subtitle">Interactive force and chord views for donor, committee, and candidate relationships.</p>
+<p class="subtitle">Interactive visualizations for donor, committee, candidate, vendor, lobbying, and 527 relationships.</p>
+<p class="help-text">Eight network views showing different financial relationship patterns. Use Full mode to load all visualizations. Click nodes to highlight their connections.</p>
 
 {% include "analytics/_subnav.html" %}
 
@@ -48,57 +49,168 @@
     </p>
 
     {% if heavy_sections_loaded %}
-    <div class="network-controls">
-        <label for="network-view-mode">View</label>
-        <select id="network-view-mode">
-            <option value="power">Power Players</option>
-            <option value="region">Regional View</option>
-        </select>
+    <style>
+    .tab-radio { display: none; }
+    .tab-labels { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 1rem; flex-wrap: wrap; }
+    .tab-labels label { padding: 0.5rem 0.75rem; cursor: pointer; color: #64748b; border-bottom: 2px solid transparent; margin-bottom: -2px; font-size: 0.85rem; white-space: nowrap; }
+    .tab-panel { display: none; }
+    #tab-force:checked ~ .tab-panels .panel-force,
+    #tab-sankey:checked ~ .tab-panels .panel-sankey,
+    #tab-heatmap:checked ~ .tab-panels .panel-heatmap,
+    #tab-vendor:checked ~ .tab-panels .panel-vendor,
+    #tab-combined:checked ~ .tab-panels .panel-combined,
+    #tab-overlap:checked ~ .tab-panels .panel-overlap,
+    #tab-lobbying:checked ~ .tab-panels .panel-lobbying,
+    #tab-darkmoney:checked ~ .tab-panels .panel-darkmoney { display: block; }
+    #tab-force:checked ~ .tab-labels .label-force,
+    #tab-sankey:checked ~ .tab-labels .label-sankey,
+    #tab-heatmap:checked ~ .tab-labels .label-heatmap,
+    #tab-vendor:checked ~ .tab-labels .label-vendor,
+    #tab-combined:checked ~ .tab-labels .label-combined,
+    #tab-overlap:checked ~ .tab-labels .label-overlap,
+    #tab-lobbying:checked ~ .tab-labels .label-lobbying,
+    #tab-darkmoney:checked ~ .tab-labels .label-darkmoney { color: #1e293b; border-bottom-color: #2563eb; }
+    .network-svg-wrap svg { width: 100%; max-height: 560px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+    </style>
 
-        <label for="network-region">Region</label>
-        <select id="network-region">
-            <option value="All">All Regions</option>
-        </select>
+    <input type="radio" name="network-tabs" id="tab-force" class="tab-radio" checked>
+    <input type="radio" name="network-tabs" id="tab-sankey" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-heatmap" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-vendor" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-combined" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-overlap" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-lobbying" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-darkmoney" class="tab-radio">
 
-        <button id="network-render-btn" type="button">Render</button>
+    <div class="tab-labels">
+        <label for="tab-force" class="label-force">Force Graph</label>
+        <label for="tab-sankey" class="label-sankey">Sankey Flow</label>
+        <label for="tab-heatmap" class="label-heatmap">Heatmap</label>
+        <label for="tab-vendor" class="label-vendor">Vendor Network</label>
+        <label for="tab-combined" class="label-combined">Money Flow</label>
+        <label for="tab-overlap" class="label-overlap">State-Federal</label>
+        <label for="tab-lobbying" class="label-lobbying">Lobbying Bridge</label>
+        <label for="tab-darkmoney" class="label-darkmoney">527 Dark Money</label>
     </div>
 
-    <div class="network-svg-wrap">
-        <svg id="network-svg" viewBox="0 0 980 520" role="img" aria-label="Campaign finance network graph"></svg>
-    </div>
-    <p id="network-summary" class="subtitle"></p>
-
-    <div class="network-chord-block">
-        <h3>Chord Diagram</h3>
-        <div class="chord-controls">
-            <label for="chord-view-mode">Mode</label>
-            <select id="chord-view-mode">
-                <option value="power">Power Players</option>
-                <option value="regions">Regions</option>
-            </select>
-
-            <label for="chord-top-n">Top entities</label>
-            <select id="chord-top-n">
-                <option value="8">8</option>
-                <option value="12" selected>12</option>
-                <option value="16">16</option>
-                <option value="20">20</option>
-            </select>
-
-            <label for="chord-region-filter">Region filter</label>
-            <select id="chord-region-filter">
-                <option value="All">All Regions</option>
-            </select>
-
-            <button id="chord-render-btn" type="button">Render Chord</button>
+    <div class="tab-panels">
+        <div class="tab-panel panel-force">
+            <div class="network-controls">
+                <label for="network-view-mode">View</label>
+                <select id="network-view-mode">
+                    <option value="power">Power Players</option>
+                    <option value="region">Regional View</option>
+                </select>
+                <label for="network-region">Region</label>
+                <select id="network-region">
+                    <option value="All">All Regions</option>
+                </select>
+                <button id="network-render-btn" type="button">Render</button>
+            </div>
+            <div class="network-svg-wrap">
+                <svg id="network-svg" viewBox="0 0 980 520" role="img" aria-label="Interactive force-directed network graph"></svg>
+            </div>
+            <p id="network-summary" class="subtitle"></p>
         </div>
-        <div class="network-svg-wrap chord-svg-wrap">
-            <svg id="chord-svg" viewBox="0 0 980 560" role="img" aria-label="Campaign finance chord diagram"></svg>
+
+        <div class="tab-panel panel-sankey">
+            <div class="network-controls">
+                <label for="sankey-donor-limit">Top Donors</label>
+                <select id="sankey-donor-limit">
+                    <option value="15">15</option>
+                    <option value="25" selected>25</option>
+                    <option value="40">40</option>
+                </select>
+                <label for="sankey-candidate-limit">Top Candidates</label>
+                <select id="sankey-candidate-limit">
+                    <option value="10">10</option>
+                    <option value="15" selected>15</option>
+                    <option value="20">20</option>
+                </select>
+                <button id="sankey-render-btn" type="button">Render</button>
+            </div>
+            <div class="network-svg-wrap">
+                <svg id="sankey-svg" viewBox="0 0 980 560" role="img" aria-label="Sankey flow diagram"></svg>
+            </div>
+            <p id="sankey-summary" class="subtitle"></p>
         </div>
-        <p id="chord-summary" class="subtitle"></p>
+
+        <div class="tab-panel panel-heatmap">
+            <div class="network-controls">
+                <label for="heatmap-donor-limit">Top Donors</label>
+                <select id="heatmap-donor-limit">
+                    <option value="15">15</option>
+                    <option value="22" selected>22</option>
+                    <option value="30">30</option>
+                </select>
+                <label for="heatmap-committee-limit">Top Committees</label>
+                <select id="heatmap-committee-limit">
+                    <option value="10">10</option>
+                    <option value="14" selected>14</option>
+                    <option value="20">20</option>
+                </select>
+                <button id="heatmap-render-btn" type="button">Render</button>
+            </div>
+            <div class="network-svg-wrap">
+                <svg id="heatmap-svg" viewBox="0 0 980 560" role="img" aria-label="Donor-committee heatmap"></svg>
+            </div>
+            <p id="heatmap-summary" class="subtitle"></p>
+        </div>
+
+        <div class="tab-panel panel-vendor">
+            <div class="network-svg-wrap">
+                <svg id="vendor-svg" viewBox="0 0 980 520" role="img" aria-label="Vendor expenditure network"></svg>
+            </div>
+            <p id="vendor-summary" class="subtitle"></p>
+        </div>
+
+        <div class="tab-panel panel-combined">
+            <div class="network-controls">
+                <label for="combined-donor-limit">Top Donors</label>
+                <select id="combined-donor-limit">
+                    <option value="15" selected>15</option>
+                    <option value="25">25</option>
+                </select>
+                <label for="combined-vendor-limit">Top Vendors</label>
+                <select id="combined-vendor-limit">
+                    <option value="10" selected>10</option>
+                    <option value="18">18</option>
+                </select>
+                <button id="combined-render-btn" type="button">Render</button>
+            </div>
+            <div class="network-svg-wrap">
+                <svg id="combined-flow-svg" viewBox="0 0 980 560" role="img" aria-label="Combined money flow diagram"></svg>
+            </div>
+            <p id="combined-summary" class="subtitle"></p>
+        </div>
+
+        <div class="tab-panel panel-overlap">
+            <div class="network-svg-wrap">
+                <svg id="overlap-svg" viewBox="0 0 980 520" role="img" aria-label="State-federal donor overlap"></svg>
+            </div>
+            <p id="overlap-summary" class="subtitle"></p>
+        </div>
+
+        <div class="tab-panel panel-lobbying">
+            <div class="network-svg-wrap">
+                <svg id="lobbying-svg" viewBox="0 0 980 520" role="img" aria-label="Lobbying-campaign finance bridge"></svg>
+            </div>
+            <p id="lobbying-summary" class="subtitle"></p>
+        </div>
+
+        <div class="tab-panel panel-darkmoney">
+            <div class="network-svg-wrap">
+                <svg id="dark-money-svg" viewBox="0 0 980 520" role="img" aria-label="527 dark money pathway"></svg>
+            </div>
+            <p id="darkmoney-summary" class="subtitle"></p>
+        </div>
     </div>
 
     <script id="analytics-network-data" type="application/json">{{ network|tojson }}</script>
+    <script id="vendor-network-data" type="application/json">{{ vendor_network|tojson }}</script>
+    <script id="overlap-graph-data" type="application/json">{{ overlap_graph|tojson }}</script>
+    <script id="lobbying-graph-data" type="application/json">{{ lobbying_graph|tojson }}</script>
+    <script id="ecosystem-527-data" type="application/json">{{ ecosystem_527|tojson }}</script>
     <script src="{{ url_for('static', filename='js/analytics_networks.js') }}"></script>
     {% else %}
     {% if full_mode_requested %}

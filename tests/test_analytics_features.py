@@ -735,7 +735,7 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Analytics: Networks" in networks.data
     assert b'id="network-svg"' in networks.data
     assert b'id="network-view-mode"' in networks.data
-    assert b"Chord Diagram" in networks.data
+    assert b"Sankey Flow" in networks.data
     assert b"Skipped in quick mode" not in networks.data
     assert b"Committee One" in networks.data
 

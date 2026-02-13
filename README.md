@@ -19,7 +19,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Raw extraction staging for full audit trails
 
 ### Analytics
-- **Network Analysis** — Weighted donor-committee-candidate graphs with degree centrality and Louvain community detection
+- **Network Analysis** — 8 interactive network visualizations: force graph (click-to-lock), 3-column Sankey flow, donor-committee heatmap, vendor expenditure network, combined money flow (4-column), state-federal donor overlap, lobbying-campaign finance bridge, and 527 dark money pathway
 - **Anomaly Detection** — Large contribution flags, monthly spike detection, high donor concentration risk (HHI-based)
 - **Risk Explainability** — Per-flag explainability payloads (rule, baseline, threshold, percentile context)
 - **Concentration Metrics** — Herfindahl-Hirschman Index (HHI), Gini coefficient, top-N donor share

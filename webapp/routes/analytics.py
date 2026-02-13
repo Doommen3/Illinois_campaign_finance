@@ -15,7 +15,9 @@ from database.analytics import (
     get_lobbying_influence_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
+    get_state_federal_overlap_graph,
     get_time_series,
+    get_vendor_expenditure_network,
     save_dashboard_snapshot,
 )
 from database.connection import get_db
@@ -336,10 +338,26 @@ def networks():
 
     network = payload.get("network", _empty_network()) if snapshot_state["heavy_sections_loaded"] else _empty_network()
 
+    empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
+    if snapshot_state["heavy_sections_loaded"]:
+        vendor_network = get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800)
+        overlap_graph = get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600)
+        lobbying_graph = get_lobbying_influence_graph(conn, client_limit=80, edge_limit=600)
+        ecosystem_527 = get_irs527_ecosystem_graph(conn, org_limit=80, edge_limit=600)
+    else:
+        vendor_network = empty_graph
+        overlap_graph = empty_graph
+        lobbying_graph = empty_graph
+        ecosystem_527 = empty_graph
+
     return render_template(
         "analytics/networks.html",
         **_base_context("networks", filters, snapshot_state),
         network=network,
+        vendor_network=vendor_network,
+        overlap_graph=overlap_graph,
+        lobbying_graph=lobbying_graph,
+        ecosystem_527=ecosystem_527,
     )
 
 

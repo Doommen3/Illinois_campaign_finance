@@ -4008,3 +4008,287 @@ def get_irs527_ecosystem_graph(
             "org_pool_size": len(keep_eins),
         },
     }
+
+
+def get_vendor_expenditure_network(
+    conn: sqlite3.Connection,
+    committee_limit: int = 60,
+    vendor_limit: int = 100,
+    edge_limit: int = 800,
+    min_amount: float = 1000.0,
+) -> dict:
+    """Build committee->vendor expenditure network from bulk_expenditures_clean."""
+    committee_limit = max(10, min(int(committee_limit), 500))
+    vendor_limit = max(10, min(int(vendor_limit), 500))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+    min_amount = max(0.0, float(min_amount))
+
+    if not _table_exists(conn, "bulk_expenditures_clean"):
+        return _empty_relationship_graph(
+            required_tables={"bulk_expenditures_clean": False},
+        )
+
+    has_committees = _table_exists(conn, "bulk_committees_clean")
+    has_lobbying_matches = _table_exists(conn, "lobbying_expenditure_matches")
+
+    committee_rows = conn.execute(
+        """
+        SELECT committee_id_sbe, SUM(amount) AS total_spent, COUNT(*) AS txn_count
+        FROM bulk_expenditures_clean
+        WHERE amount > 0
+        GROUP BY committee_id_sbe
+        ORDER BY total_spent DESC
+        LIMIT ?
+        """,
+        (committee_limit,),
+    ).fetchall()
+
+    keep_committees = {str(row["committee_id_sbe"]) for row in committee_rows}
+    if not keep_committees:
+        return _empty_relationship_graph(
+            required_tables={"bulk_expenditures_clean": True},
+        )
+
+    committee_names: dict[str, str] = {}
+    if has_committees:
+        placeholders = ",".join("?" * len(keep_committees))
+        name_rows = conn.execute(
+            f"SELECT id, name FROM bulk_committees_clean WHERE id IN ({placeholders})",
+            list(keep_committees),
+        ).fetchall()
+        for row in name_rows:
+            committee_names[str(row["id"])] = row["name"]
+
+    placeholders = ",".join("?" * len(keep_committees))
+    edge_rows = conn.execute(
+        f"""
+        SELECT committee_id_sbe, payee_last_or_business_name,
+               SUM(amount) AS total_amount, COUNT(*) AS txn_count
+        FROM bulk_expenditures_clean
+        WHERE committee_id_sbe IN ({placeholders})
+          AND amount > 0
+          AND payee_last_or_business_name IS NOT NULL
+          AND TRIM(payee_last_or_business_name) != ''
+        GROUP BY committee_id_sbe, payee_last_or_business_name
+        HAVING total_amount >= ?
+        ORDER BY total_amount DESC
+        LIMIT ?
+        """,
+        [*list(keep_committees), min_amount, edge_limit],
+    ).fetchall()
+
+    lobbying_matched_payees: set[str] = set()
+    if has_lobbying_matches:
+        lm_rows = conn.execute(
+            "SELECT DISTINCT payee_name FROM lobbying_expenditure_matches WHERE payee_name IS NOT NULL"
+        ).fetchall()
+        lobbying_matched_payees = {_normalize_name(row["payee_name"]) for row in lm_rows}
+
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+
+    for row in edge_rows:
+        cid = str(row["committee_id_sbe"])
+        payee = (row["payee_last_or_business_name"] or "").strip()
+        if not payee:
+            continue
+        vendor_key = f"vendor:{_stable_entity_key(payee)}"
+        committee_key = f"committee:{cid}"
+
+        if committee_key not in nodes:
+            nodes[committee_key] = {
+                "id": committee_key,
+                "label": committee_names.get(cid, f"Committee {cid}"),
+                "node_type": "committee",
+            }
+        is_lobbying_match = _normalize_name(payee) in lobbying_matched_payees
+        if vendor_key not in nodes:
+            nodes[vendor_key] = {
+                "id": vendor_key,
+                "label": payee,
+                "node_type": "vendor",
+                "is_lobbying_match": is_lobbying_match,
+            }
+
+        edges.append(
+            {
+                "source": committee_key,
+                "target": vendor_key,
+                "edge_type": "committee_vendor",
+                "weight": float(row["total_amount"]),
+                "count": int(row["txn_count"]),
+            }
+        )
+
+    vendor_totals: dict[str, float] = defaultdict(float)
+    for edge in edges:
+        vendor_totals[edge["target"]] += edge["weight"]
+    top_vendors = sorted(vendor_totals, key=lambda k: vendor_totals[k], reverse=True)[:vendor_limit]
+    top_vendor_set = set(top_vendors)
+    edges = [e for e in edges if e["target"] in top_vendor_set]
+    used_ids = {e["source"] for e in edges} | {e["target"] for e in edges}
+    final_nodes = [n for nid, n in nodes.items() if nid in used_ids]
+    centrality = _compute_graph_centrality(final_nodes, edges, limit=100)
+
+    return {
+        "nodes": final_nodes,
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(final_nodes),
+            "edge_count": len(edges),
+            "required_tables": {
+                "bulk_expenditures_clean": True,
+                "bulk_committees_clean": has_committees,
+                "lobbying_expenditure_matches": has_lobbying_matches,
+            },
+            "has_lobbying_matches": has_lobbying_matches,
+        },
+    }
+
+
+def get_state_federal_overlap_graph(
+    conn: sqlite3.Connection,
+    donor_limit: int = 100,
+    edge_limit: int = 600,
+) -> dict:
+    """Build state-federal donor overlap graph from fec_local_donor_matches."""
+    donor_limit = max(10, min(int(donor_limit), 1000))
+    edge_limit = max(50, min(int(edge_limit), 5000))
+
+    if not _table_exists(conn, "fec_local_donor_matches"):
+        return _empty_relationship_graph(
+            required_tables={"fec_local_donor_matches": False},
+        )
+
+    has_local_agg = _table_exists(conn, "analytics_donor_committee_agg")
+    has_federal = _table_exists(conn, "fec_schedule_a_contributions")
+
+    donor_rows = conn.execute(
+        """
+        SELECT federal_donor_entity_key, local_donor_key, primary_local_donor_key,
+               federal_donor_name, local_donor_name,
+               federal_total_amount, local_total_amount,
+               confidence_score
+        FROM fec_local_donor_matches
+        WHERE confidence_score >= 0.5
+        ORDER BY (federal_total_amount + local_total_amount) DESC
+        LIMIT ?
+        """,
+        (donor_limit,),
+    ).fetchall()
+
+    if not donor_rows:
+        return _empty_relationship_graph(
+            required_tables={"fec_local_donor_matches": True},
+        )
+
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    local_donor_keys: set[str] = set()
+    federal_donor_keys: set[str] = set()
+    donor_key_map: dict[str, str] = {}
+
+    for row in donor_rows:
+        donor_key = f"donor:{row['federal_donor_entity_key']}:{row['local_donor_key']}"
+        label = row["federal_donor_name"] or row["local_donor_name"] or "Unknown"
+        if donor_key not in nodes:
+            nodes[donor_key] = {
+                "id": donor_key,
+                "label": label,
+                "node_type": "donor",
+                "federal_amount": float(row["federal_total_amount"] or 0),
+                "local_amount": float(row["local_total_amount"] or 0),
+            }
+        local_dk = row["primary_local_donor_key"] or row["local_donor_key"]
+        local_donor_keys.add(local_dk)
+        federal_donor_keys.add(row["federal_donor_entity_key"])
+        donor_key_map[local_dk] = donor_key
+        donor_key_map[f"fed:{row['federal_donor_entity_key']}"] = donor_key
+
+    if has_local_agg and local_donor_keys:
+        placeholders = ",".join("?" * len(local_donor_keys))
+        local_flows = conn.execute(
+            f"""
+            SELECT donor_key, committee_id, committee_name, total_amount
+            FROM analytics_donor_committee_agg
+            WHERE source = 'bulk_receipts' AND donor_key IN ({placeholders})
+            ORDER BY total_amount DESC
+            """,
+            list(local_donor_keys),
+        ).fetchall()
+
+        for flow in local_flows:
+            cid = f"local_committee:{flow['committee_id']}"
+            if cid not in nodes:
+                nodes[cid] = {
+                    "id": cid,
+                    "label": flow["committee_name"] or f"Committee {flow['committee_id']}",
+                    "node_type": "local_committee",
+                }
+            mapped = donor_key_map.get(flow["donor_key"])
+            if mapped:
+                edges.append(
+                    {
+                        "source": mapped,
+                        "target": cid,
+                        "edge_type": "donor_local",
+                        "weight": float(flow["total_amount"]),
+                    }
+                )
+
+    if has_federal and federal_donor_keys:
+        placeholders = ",".join("?" * len(federal_donor_keys))
+        federal_flows = conn.execute(
+            f"""
+            SELECT contributor_id, committee_id, committee_name,
+                   SUM(contribution_receipt_amount) AS total_amount,
+                   COUNT(*) AS txn_count
+            FROM fec_schedule_a_contributions
+            WHERE contributor_id IN ({placeholders})
+            GROUP BY contributor_id, committee_id
+            ORDER BY total_amount DESC
+            """,
+            list(federal_donor_keys),
+        ).fetchall()
+
+        for flow in federal_flows:
+            cid = f"federal_committee:{flow['committee_id']}"
+            if cid not in nodes:
+                nodes[cid] = {
+                    "id": cid,
+                    "label": flow["committee_name"] or f"FEC {flow['committee_id']}",
+                    "node_type": "federal_committee",
+                }
+            mapped = donor_key_map.get(f"fed:{flow['contributor_id']}")
+            if mapped:
+                edges.append(
+                    {
+                        "source": mapped,
+                        "target": cid,
+                        "edge_type": "donor_federal",
+                        "weight": float(flow["total_amount"] or 0),
+                    }
+                )
+
+    edges.sort(key=lambda e: e["weight"], reverse=True)
+    edges = edges[:edge_limit]
+    used_ids = {e["source"] for e in edges} | {e["target"] for e in edges}
+    final_nodes = [n for nid, n in nodes.items() if nid in used_ids]
+    centrality = _compute_graph_centrality(final_nodes, edges, limit=100)
+
+    return {
+        "nodes": final_nodes,
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(final_nodes),
+            "edge_count": len(edges),
+            "required_tables": {
+                "fec_local_donor_matches": True,
+                "analytics_donor_committee_agg": has_local_agg,
+                "fec_schedule_a_contributions": has_federal,
+            },
+            "donor_count": len(donor_rows),
+        },
+    }
