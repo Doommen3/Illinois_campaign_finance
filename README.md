@@ -92,6 +92,7 @@ python run.py scrape-committee-reports --committee-id-sbe 32451 --committee-id-s
 # Scrape D-2 details and itemized contributions
 python run.py scrape-d2-details --batch-size 20
 python run.py scrape-d2-itemized --batch-size 50
+python run.py scrape-d2-all-pending --detail-batch-size 500 --itemized-batch-size 1000
 python run.py scrape-d2-details --committee-id-sbe 32451 --with-itemized
 python run.py scrape-d2-itemized --committee-id-sbe 32451
 

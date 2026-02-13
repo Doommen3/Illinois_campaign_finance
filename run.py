@@ -6,6 +6,7 @@ Usage:
     python run.py create-user                      # Create/update manual-entry user
     python run.py import-bulk-download             # Load normalized bulk download tables + joins
     python run.py refresh-analytics                # Rebuild analytics materialized/cache tables
+    python run.py rebuild-local-donor-entities     # Build confidence-scored local donor entities
     python run.py sync-fec-il-federal              # Sync Illinois federal candidates + FEC Schedule A data
     python run.py rebuild-fec-donor-identities     # Rebuild donor entity IDs for federal donor drill-down
     python run.py clean-data --apply                # Clean garbage rows and normalize donor metadata
@@ -19,6 +20,7 @@ Usage:
     python run.py scrape-d2-details --batch-size 20         # Scrape D-2 detail pages
     python run.py scrape-d2-details --committee-id-sbe 32451 --with-itemized
     python run.py scrape-d2-itemized --batch-size 50        # Scrape pending D-2 itemized links
+    python run.py scrape-d2-all-pending --detail-batch-size 500 --itemized-batch-size 1000
     python run.py scrape-details --batch-size 20   # Scrape detail pages
     python run.py scrape-status                    # Check scrape status
     python run.py runserver --port 5000            # Run web server

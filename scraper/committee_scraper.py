@@ -290,11 +290,28 @@ class CommitteeReportScraper:
         return parsed
 
     async def _find_grid_table(self):
+        tables = await self._page.query_selector_all("table")
+
+        # Prefer the filings grid by validating expected header names.
+        for table in tables:
+            rows = await table.query_selector_all("tr")
+            if not rows:
+                continue
+
+            header_cells = await rows[0].query_selector_all("th,td")
+            if not header_cells:
+                continue
+
+            headers = [(await cell.inner_text()).strip().lower() for cell in header_cells]
+            joined = " ".join(headers)
+            if "report type" in joined and "reporting period" in joined and "filed" in joined:
+                return table
+
+        # Fallback to previous generic behavior if headers shift.
         table = await self._page.query_selector('table.GridView, table[id*="GridView"], table[id*="gv"]')
         if table:
             return table
 
-        tables = await self._page.query_selector_all("table")
         for table in tables:
             rows = await table.query_selector_all("tr")
             if len(rows) > 1:
@@ -863,8 +880,11 @@ class CommitteeUrlSeeder:
 async def _navigate_to_next_page(page: Page, current_page: int) -> Optional[int]:
     """Navigate to the next grid page, handling ASP.NET links and ellipsis sets."""
     link = await page.query_selector(f'a:text-is("{current_page + 1}")')
+    fallback_increment = 1
     if not link:
         link = await page.query_selector('a:text-is("...")')
+        if link:
+            fallback_increment = 10
     if not link:
         link = await page.query_selector('a:text-is(">")')
     if not link:
@@ -884,11 +904,8 @@ async def _navigate_to_next_page(page: Page, current_page: int) -> Optional[int]
 
     new_page = await get_current_page_number(page)
     if not new_page:
-        link_text = (await link.inner_text()).strip()
-        if link_text == "...":
-            new_page = current_page + 10
-        else:
-            new_page = current_page + 1
+        # Avoid reading stale element handles after navigation.
+        new_page = current_page + fallback_increment
 
     if new_page <= current_page:
         return None

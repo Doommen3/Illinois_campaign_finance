@@ -22,6 +22,7 @@ from database.analytics import (
     save_dashboard_snapshot,
 )
 from database.federal_fec import rebuild_fec_donor_identities, sync_il_federal_fec
+from database.local_donor_entities import rebuild_local_donor_entities
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
 from scraper.committee_scraper import CommitteeReportScraper, D2DetailScraper, CommitteeUrlSeeder
@@ -67,6 +68,35 @@ def _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe):
 
     deduped = list(dict.fromkeys(resolved))
     return deduped or None, unresolved_sbe
+
+
+def _count_pending_d2_details(conn, committee_ids=None):
+    """Count pending D-2 detail rows, optionally filtered by committee IDs."""
+    query = "SELECT COUNT(*) AS count FROM d2_reports WHERE detail_scrape_status = 'pending'"
+    params = []
+    if committee_ids:
+        placeholders = ",".join(["?"] * len(committee_ids))
+        query += f" AND committee_id IN ({placeholders})"
+        params.extend(committee_ids)
+    return conn.execute(query, params).fetchone()["count"]
+
+
+def _count_pending_d2_itemized_links(conn, committee_ids=None):
+    """Count pending D-2 itemized links, optionally filtered by committee IDs."""
+    if committee_ids:
+        placeholders = ",".join(["?"] * len(committee_ids))
+        query = f"""
+            SELECT COUNT(*) AS count
+            FROM d2_itemized_links l
+            JOIN d2_reports d2 ON d2.id = l.d2_report_id
+            WHERE l.status = 'pending'
+              AND d2.committee_id IN ({placeholders})
+        """
+        return conn.execute(query, committee_ids).fetchone()["count"]
+
+    return conn.execute(
+        "SELECT COUNT(*) AS count FROM d2_itemized_links WHERE status = 'pending'"
+    ).fetchone()["count"]
 
 
 @click.group()
@@ -599,6 +629,132 @@ def scrape_d2_itemized_command(committee_ids, committee_ids_sbe, batch_size):
         conn.close()
 
 
+@cli.command('scrape-d2-all-pending')
+@click.option('--committee-id', 'committee_ids', multiple=True, type=int,
+              help='Internal committee ID(s) to target')
+@click.option('--committee-id-sbe', 'committee_ids_sbe', multiple=True, type=int,
+              help='Illinois SBE committee ID(s) to target')
+@click.option('--detail-batch-size', default=500, type=int, show_default=True,
+              help='Number of pending D-2 detail rows to process per cycle')
+@click.option('--itemized-batch-size', default=1000, type=int, show_default=True,
+              help='Number of pending itemized links to process per cycle')
+@click.option('--max-cycles', default=100, type=int, show_default=True,
+              help='Safety cap on detail/itemized loop cycles')
+def scrape_d2_all_pending_command(
+    committee_ids,
+    committee_ids_sbe,
+    detail_batch_size,
+    itemized_batch_size,
+    max_cycles,
+):
+    """Run D-2 detail + itemized scraping until pending queues are empty."""
+    committee_ids = list(committee_ids) if committee_ids else None
+    committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
+
+    conn = get_db(config.DATABASE_PATH)
+    committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
+    if unresolved_sbe:
+        click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
+
+    detail_batch_size = max(1, int(detail_batch_size))
+    itemized_batch_size = max(1, int(itemized_batch_size))
+    max_cycles = max(1, int(max_cycles))
+
+    click.echo('Scraping all pending D-2 rows until queues are empty...')
+    if committee_ids:
+        click.echo(f'  Target internal committee IDs: {committee_ids}')
+
+    rate_limiter = RateLimiter(
+        requests_per_minute=config.RATE_LIMIT_RPM,
+        min_delay=config.RATE_LIMIT_MIN_DELAY,
+        max_delay=config.RATE_LIMIT_MAX_DELAY
+    )
+    scraper = D2DetailScraper(conn, rate_limiter)
+
+    totals = {
+        "detail_reports_processed": 0,
+        "itemized_links_found_during_detail": 0,
+        "itemized_rows_saved_during_detail": 0,
+        "itemized_links_processed": 0,
+        "itemized_rows_saved": 0,
+        "errors": [],
+    }
+
+    try:
+        # Pass 1: keep scraping pending D-2 detail rows.
+        detail_cycles = 0
+        while detail_cycles < max_cycles:
+            pending_details = _count_pending_d2_details(conn, committee_ids=committee_ids)
+            if pending_details == 0:
+                break
+
+            detail_cycles += 1
+            click.echo(f'  Detail cycle {detail_cycles}: pending detail rows={pending_details}')
+
+            results = asyncio.run(scraper.scrape_d2_details(
+                committee_ids=committee_ids,
+                batch_size=detail_batch_size,
+                scrape_itemized=True,
+            ))
+            totals["detail_reports_processed"] += results["reports_processed"]
+            totals["itemized_links_found_during_detail"] += results["itemized_links_found"]
+            totals["itemized_rows_saved_during_detail"] += results["itemized_rows_saved"]
+            totals["errors"].extend(results.get("errors", []))
+
+            if results["reports_processed"] == 0:
+                click.echo('  Detail cycle made no progress; stopping detail loop.')
+                break
+
+        if detail_cycles >= max_cycles:
+            click.echo(f'  Reached max detail cycles ({max_cycles}); stopping detail loop.')
+
+        # Pass 2: drain any remaining pending itemized links.
+        itemized_cycles = 0
+        while itemized_cycles < max_cycles:
+            pending_links = _count_pending_d2_itemized_links(conn, committee_ids=committee_ids)
+            if pending_links == 0:
+                break
+
+            itemized_cycles += 1
+            click.echo(f'  Itemized cycle {itemized_cycles}: pending itemized links={pending_links}')
+            results = asyncio.run(scraper.scrape_pending_itemized(
+                committee_ids=committee_ids,
+                batch_size=itemized_batch_size,
+            ))
+            totals["itemized_links_processed"] += results["links_processed"]
+            totals["itemized_rows_saved"] += results["rows_saved"]
+            totals["errors"].extend(results.get("errors", []))
+
+            if results["links_processed"] == 0:
+                click.echo('  Itemized cycle made no progress; stopping itemized loop.')
+                break
+
+        if itemized_cycles >= max_cycles:
+            click.echo(f'  Reached max itemized cycles ({max_cycles}); stopping itemized loop.')
+
+        remaining_details = _count_pending_d2_details(conn, committee_ids=committee_ids)
+        remaining_links = _count_pending_d2_itemized_links(conn, committee_ids=committee_ids)
+
+        click.echo('\nD-2 all-pending scrape completed!')
+        click.echo(f'  Detail reports processed: {totals["detail_reports_processed"]}')
+        click.echo(f'  Itemized links found during detail pass: {totals["itemized_links_found_during_detail"]}')
+        click.echo(f'  Itemized rows saved during detail pass: {totals["itemized_rows_saved_during_detail"]}')
+        click.echo(f'  Itemized links processed in drain pass: {totals["itemized_links_processed"]}')
+        click.echo(f'  Itemized rows saved in drain pass: {totals["itemized_rows_saved"]}')
+        click.echo(f'  Remaining pending detail rows: {remaining_details}')
+        click.echo(f'  Remaining pending itemized links: {remaining_links}')
+        if totals["errors"]:
+            click.echo(f'  Errors: {len(totals["errors"])}')
+            for error in totals["errors"][:5]:
+                click.echo(f'    - {error}')
+
+    except Exception as e:
+        click.echo(f'Error during D-2 all-pending scrape: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 @cli.command('refresh-analytics')
 @click.option('--with-snapshot/--skip-snapshot', default=True, show_default=True,
               help='Also build and cache a full dashboard snapshot')
@@ -663,6 +819,66 @@ def refresh_analytics_command(
 
     except Exception as e:
         click.echo(f'Error refreshing analytics: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('rebuild-local-donor-entities')
+@click.option('--source', default='bulk_receipts', show_default=True,
+              help='analytics_donor_summary source to process')
+@click.option('--medium-threshold', default=0.70, type=float, show_default=True,
+              help='Minimum pair score to link rows into the same candidate entity')
+@click.option('--high-threshold', default=0.82, type=float, show_default=True,
+              help='Pair score threshold counted as high-confidence')
+@click.option('--auto-threshold', default=0.90, type=float, show_default=True,
+              help='Cluster confidence threshold for automatic merges')
+@click.option('--max-group-size', default=400, type=int, show_default=True,
+              help='Guardrail: skip probabilistic linking for larger canonical-name groups')
+@click.option('--preview-limit', default=25, type=int, show_default=True,
+              help='Number of top review entities to print')
+@click.option('--dry-run', is_flag=True, help='Analyze only; do not write donor entity tables')
+def rebuild_local_donor_entities_command(
+    source,
+    medium_threshold,
+    high_threshold,
+    auto_threshold,
+    max_group_size,
+    preview_limit,
+    dry_run,
+):
+    """Build confidence-scored local donor entities and review candidates."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Rebuilding local donor entities...')
+        stats = rebuild_local_donor_entities(
+            conn,
+            source=(source or '').strip() or 'bulk_receipts',
+            medium_threshold=float(medium_threshold),
+            high_threshold=float(high_threshold),
+            auto_threshold=float(auto_threshold),
+            max_group_size=max(2, int(max_group_size)),
+            dry_run=bool(dry_run),
+            preview_limit=max(0, int(preview_limit)),
+        )
+
+        top_review_entities = stats.pop('top_review_entities', [])
+        for key in sorted(stats.keys()):
+            click.echo(f'  {key}: {stats[key]}')
+
+        if top_review_entities:
+            click.echo('  top_review_entities:')
+            for row in top_review_entities:
+                click.echo(
+                    '    - '
+                    f"{row.get('canonical_name', '')}: members={row.get('member_count', 0)}, "
+                    f"total_amount={row.get('total_amount', 0)}, "
+                    f"confidence={row.get('confidence_score', 0)}, "
+                    f"peak={row.get('peak_confidence_score', 0)}"
+                )
+
+    except Exception as exc:
+        click.echo(f'Error rebuilding local donor entities: {exc}', err=True)
         sys.exit(1)
     finally:
         conn.close()

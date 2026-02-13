@@ -315,6 +315,65 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_amount
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
     ON analytics_donor_summary(source, donor_name);
 
+-- Local donor entity resolution layer (confidence-scored merges)
+CREATE TABLE IF NOT EXISTS donor_entity_local (
+    entity_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL, -- usually bulk_receipts
+    canonical_name TEXT NOT NULL,
+    display_name TEXT,
+    member_count INTEGER NOT NULL,
+    total_amount REAL NOT NULL DEFAULT 0,
+    confidence_score REAL NOT NULL DEFAULT 0,
+    peak_confidence_score REAL NOT NULL DEFAULT 0,
+    confidence_tier TEXT NOT NULL, -- high, medium, low
+    merge_action TEXT NOT NULL, -- auto_merge, review, singleton
+    method_version TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_source
+    ON donor_entity_local(source);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_source_action
+    ON donor_entity_local(source, merge_action, confidence_tier);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_source_amount
+    ON donor_entity_local(source, total_amount DESC);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_source_name
+    ON donor_entity_local(source, canonical_name);
+
+CREATE TABLE IF NOT EXISTS donor_entity_local_member (
+    source TEXT NOT NULL,
+    donor_key TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    donor_name TEXT,
+    donor_city TEXT,
+    donor_state TEXT,
+    donor_zip5 TEXT,
+    confidence_score REAL NOT NULL DEFAULT 0,
+    confidence_tier TEXT NOT NULL, -- high, medium, low
+    merge_action TEXT NOT NULL, -- auto_merge, review, singleton
+    total_amount REAL NOT NULL DEFAULT 0,
+    contribution_count INTEGER NOT NULL DEFAULT 0,
+    committee_count INTEGER NOT NULL DEFAULT 0,
+    review_status TEXT NOT NULL DEFAULT 'pending', -- pending, approved, rejected, not_needed
+    reasons_json TEXT,
+    method_version TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, donor_key),
+    FOREIGN KEY(entity_id) REFERENCES donor_entity_local(entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_member_entity
+    ON donor_entity_local_member(entity_id);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_member_source_review
+    ON donor_entity_local_member(source, merge_action, review_status);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_member_source_name
+    ON donor_entity_local_member(source, canonical_name);
+CREATE INDEX IF NOT EXISTS idx_donor_entity_local_member_source_amount
+    ON donor_entity_local_member(source, total_amount DESC);
+
 -- Federal Elections Commission (FEC) candidate and contribution ingestion
 CREATE TABLE IF NOT EXISTS fec_il_candidate_seed (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
