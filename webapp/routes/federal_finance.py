@@ -1,7 +1,10 @@
 """Federal candidate finance routes (FEC data)."""
 from __future__ import annotations
 
-from flask import Blueprint, current_app, render_template, request
+import csv
+from io import StringIO
+
+from flask import Blueprint, Response, current_app, render_template, request
 
 from database.models import Donor
 from database.federal_fec import (
@@ -60,6 +63,105 @@ def _federal_cache_refresh_requested() -> bool:
     return request.args.get('refresh_cache', 0, type=int) == 1
 
 
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _scalar(conn, sql: str, params=(), default=0):
+    try:
+        row = conn.execute(sql, params).fetchone()
+    except Exception:
+        return default
+    if not row:
+        return default
+    keys = row.keys() if hasattr(row, "keys") else []
+    if not keys:
+        return default
+    value = row[keys[0]]
+    return default if value is None else value
+
+
+def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, analysis_district: str) -> dict:
+    """Return filtered Schedule B/E row counts and totals for federal overview cards."""
+    metrics = {
+        'schedule_b_count': 0,
+        'schedule_b_total': 0.0,
+        'schedule_e_count': 0,
+        'schedule_e_total': 0.0,
+    }
+
+    if not _table_exists(conn, "fec_candidate_match"):
+        return metrics
+
+    district_value = (analysis_district or '').strip()
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        row = conn.execute(
+            """
+            WITH candidate_scope AS (
+                SELECT DISTINCT fec_candidate_id AS candidate_id, cycle
+                FROM fec_candidate_match
+                WHERE cycle = ?
+                  AND fec_candidate_id IS NOT NULL
+                  AND (? = '' OR office_code = ? OR office = ?)
+                  AND (? = '' OR district_code = ? OR district = ?)
+            )
+            SELECT
+                COUNT(*) AS disbursement_count,
+                COALESCE(SUM(sb.disbursement_amount), 0.0) AS disbursement_total
+            FROM fec_schedule_b_disbursements sb
+            JOIN candidate_scope cs
+              ON cs.candidate_id = sb.candidate_id
+             AND cs.cycle = sb.cycle
+            """,
+            (cycle, analysis_office, analysis_office, analysis_office, district_value, district_value, district_value),
+        ).fetchone()
+        if row:
+            metrics['schedule_b_count'] = int(row["disbursement_count"] or 0)
+            metrics['schedule_b_total'] = float(row["disbursement_total"] or 0.0)
+
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        row = conn.execute(
+            """
+            WITH candidate_scope AS (
+                SELECT DISTINCT fec_candidate_id AS candidate_id, cycle
+                FROM fec_candidate_match
+                WHERE cycle = ?
+                  AND fec_candidate_id IS NOT NULL
+                  AND (? = '' OR office_code = ? OR office = ?)
+                  AND (? = '' OR district_code = ? OR district = ?)
+            )
+            SELECT
+                COUNT(*) AS expenditure_count,
+                COALESCE(SUM(se.expenditure_amount), 0.0) AS expenditure_total
+            FROM fec_schedule_e_independent_expenditures se
+            JOIN candidate_scope cs
+              ON cs.candidate_id = se.candidate_id
+             AND cs.cycle = se.cycle
+            """,
+            (cycle, analysis_office, analysis_office, analysis_office, district_value, district_value, district_value),
+        ).fetchone()
+        if row:
+            metrics['schedule_e_count'] = int(row["expenditure_count"] or 0)
+            metrics['schedule_e_total'] = float(row["expenditure_total"] or 0.0)
+
+    return metrics
+
+
+def _csv_response(rows: list[list], headers: list[str], filename: str) -> Response:
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow(row)
+    response = Response(output.getvalue(), mimetype='text/csv')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    return response
+
+
 @federal_finance_bp.route('/', endpoint='list_federal_finance')
 @federal_finance_bp.route('/overview', endpoint='federal_overview')
 def federal_overview():
@@ -74,6 +176,10 @@ def federal_overview():
         'network_total_amount': 0.0,
         'network_donor_count': 0,
         'network_candidate_count': 0,
+        'schedule_b_count': 0,
+        'schedule_b_total': 0.0,
+        'schedule_e_count': 0,
+        'schedule_e_total': 0.0,
     }
     race_analytics: list[dict] = []
     geographic = {'states': [], 'cities': [], 'race_concentration': []}
@@ -87,7 +193,7 @@ def federal_overview():
             'cycle': cycle,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
-            'version': 1,
+            'version': 2,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -131,6 +237,14 @@ def federal_overview():
             overview['network_total_amount'] = network_snapshot['summary'].get('total_amount', 0.0)
             overview['network_donor_count'] = network_snapshot['summary'].get('donor_count', 0)
             overview['network_candidate_count'] = network_snapshot['summary'].get('candidate_count', 0)
+            overview.update(
+                _federal_schedule_b_e_metrics(
+                    conn,
+                    cycle=cycle,
+                    analysis_office=analysis_office,
+                    analysis_district=analysis_district,
+                )
+            )
             top_donors = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'donor'][:10]
             top_candidates = [row for row in network_snapshot.get('centrality', []) if row.get('node_type') == 'candidate'][:10]
 
@@ -763,6 +877,8 @@ def federal_candidate_detail(candidate_id: str):
     conn = current_app.get_database()
 
     cycle = request.args.get('cycle', 2026, type=int)
+    output_format = request.args.get('format', 'html', type=str).strip().lower()
+    export_table = request.args.get('table', '', type=str).strip().lower()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
     schedule_b_page = max(request.args.get('schedule_b_page', 1, type=int), 1)
     schedule_e_page = max(request.args.get('schedule_e_page', 1, type=int), 1)
@@ -792,6 +908,134 @@ def federal_candidate_detail(candidate_id: str):
     schedule_b_pages = (schedule_b_total + schedule_b_per_page - 1) // schedule_b_per_page if detail else 0
     schedule_e_total = detail['total_schedule_e_expenditures'] if detail else 0
     schedule_e_pages = (schedule_e_total + schedule_e_per_page - 1) // schedule_e_per_page if detail else 0
+
+    if output_format == 'csv':
+        if not detail:
+            return Response("federal candidate detail unavailable\n", mimetype='text/plain', status=404)
+
+        if export_table == 'schedule_b':
+            schedule_b_rows = get_federal_candidate_detail(
+                conn,
+                candidate_id=candidate_id,
+                cycle=cycle,
+                top_donor_limit=1,
+                contribution_limit=1,
+                contribution_offset=0,
+                schedule_b_limit=500000,
+                schedule_b_offset=0,
+                schedule_e_limit=1,
+                schedule_e_offset=0,
+            )["schedule_b_disbursements"]
+            csv_rows = [
+                [
+                    row.get('sub_id'),
+                    cycle,
+                    candidate_id,
+                    row.get('committee_id'),
+                    row.get('committee_name'),
+                    row.get('disbursement_date'),
+                    row.get('recipient_name'),
+                    row.get('recipient_city'),
+                    row.get('recipient_state'),
+                    row.get('recipient_zip'),
+                    row.get('recipient_candidate_id'),
+                    row.get('recipient_candidate_name'),
+                    row.get('disbursement_type'),
+                    row.get('disbursement_type_desc'),
+                    row.get('category_code'),
+                    row.get('category_code_full'),
+                    row.get('disbursement_amount'),
+                    row.get('memo_text'),
+                ]
+                for row in schedule_b_rows
+            ]
+            return _csv_response(
+                csv_rows,
+                [
+                    'sub_id',
+                    'cycle',
+                    'candidate_id',
+                    'committee_id',
+                    'committee_name',
+                    'disbursement_date',
+                    'recipient_name',
+                    'recipient_city',
+                    'recipient_state',
+                    'recipient_zip',
+                    'recipient_candidate_id',
+                    'recipient_candidate_name',
+                    'disbursement_type',
+                    'disbursement_type_desc',
+                    'category_code',
+                    'category_code_full',
+                    'disbursement_amount',
+                    'memo_text',
+                ],
+                filename=f"federal_candidate_{candidate_id}_schedule_b.csv",
+            )
+
+        if export_table == 'schedule_e':
+            schedule_e_rows = get_federal_candidate_detail(
+                conn,
+                candidate_id=candidate_id,
+                cycle=cycle,
+                top_donor_limit=1,
+                contribution_limit=1,
+                contribution_offset=0,
+                schedule_b_limit=1,
+                schedule_b_offset=0,
+                schedule_e_limit=500000,
+                schedule_e_offset=0,
+            )["schedule_e_independent_expenditures"]
+            csv_rows = [
+                [
+                    row.get('sub_id'),
+                    cycle,
+                    candidate_id,
+                    row.get('expenditure_date'),
+                    row.get('support_oppose_indicator'),
+                    row.get('committee_id'),
+                    row.get('committee_name'),
+                    row.get('payee_name'),
+                    row.get('payee_city'),
+                    row.get('payee_state'),
+                    row.get('payee_zip'),
+                    row.get('category_code'),
+                    row.get('category_code_full'),
+                    row.get('report_type'),
+                    row.get('line_number'),
+                    row.get('expenditure_amount'),
+                    row.get('expenditure_description'),
+                    row.get('memo_text'),
+                ]
+                for row in schedule_e_rows
+            ]
+            return _csv_response(
+                csv_rows,
+                [
+                    'sub_id',
+                    'cycle',
+                    'candidate_id',
+                    'expenditure_date',
+                    'support_oppose_indicator',
+                    'committee_id',
+                    'committee_name',
+                    'payee_name',
+                    'payee_city',
+                    'payee_state',
+                    'payee_zip',
+                    'category_code',
+                    'category_code_full',
+                    'report_type',
+                    'line_number',
+                    'expenditure_amount',
+                    'expenditure_description',
+                    'memo_text',
+                ],
+                filename=f"federal_candidate_{candidate_id}_schedule_e.csv",
+            )
+
+        return Response("unsupported csv export table\n", mimetype='text/plain', status=400)
 
     return render_template(
         'federal_finance/detail.html',

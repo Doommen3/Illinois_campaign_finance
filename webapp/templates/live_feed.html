@@ -102,6 +102,7 @@
 
 <div class="status-section">
     <h2>Federal Committee Disbursements (Schedule B) ({{ schedule_b_rows|length }})</h2>
+    <p class="subtitle"><a href="{{ url_for('main.live_feed', format='csv', table='schedule_b') }}">Export Schedule B CSV</a></p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>
@@ -144,6 +145,7 @@
 
 <div class="status-section">
     <h2>Federal Independent Expenditures (Schedule E) ({{ schedule_e_rows|length }})</h2>
+    <p class="subtitle"><a href="{{ url_for('main.live_feed', format='csv', table='schedule_e') }}">Export Schedule E CSV</a></p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>

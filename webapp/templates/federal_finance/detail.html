@@ -189,7 +189,11 @@
 
 <div class="status-section">
     <h2>Recent Disbursements (Schedule B)</h2>
-    <p class="subtitle">Showing {{ detail.schedule_b_disbursements|length }} of {{ schedule_b_total }} rows</p>
+    <p class="subtitle">
+        Showing {{ detail.schedule_b_disbursements|length }} of {{ schedule_b_total }} rows
+        ·
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_b') }}">Export CSV</a>
+    </p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>
@@ -240,7 +244,11 @@
 
 <div class="status-section">
     <h2>Independent Expenditures (Schedule E)</h2>
-    <p class="subtitle">Showing {{ detail.schedule_e_independent_expenditures|length }} of {{ schedule_e_total }} rows</p>
+    <p class="subtitle">
+        Showing {{ detail.schedule_e_independent_expenditures|length }} of {{ schedule_e_total }} rows
+        ·
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_e') }}">Export CSV</a>
+    </p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>

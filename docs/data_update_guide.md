@@ -159,6 +159,18 @@ Schedule E wrapper script:
 bash scripts/fec-schedule-e-catchup.sh
 ```
 
+Schedule E systemd timer/service (recommended):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+sudo cp docs/systemd/il-campaign-fec-schedule-e-catchup.service /etc/systemd/system/
+sudo cp docs/systemd/il-campaign-fec-schedule-e-catchup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now il-campaign-fec-schedule-e-catchup.timer
+systemctl list-timers il-campaign-fec-schedule-e-catchup.timer
+journalctl -u il-campaign-fec-schedule-e-catchup.service --since today
+```
+
 Schedule A wrapper script:
 
 ```bash

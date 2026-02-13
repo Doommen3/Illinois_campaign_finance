@@ -144,6 +144,7 @@ Visit `http://localhost:5000` to access the dashboard.
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
 ├── tests/                  pytest suite (11 test modules)
 ├── docs/                   Data update guide, roadmaps, checklists
+│   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
 └── data/                   SQLite database
 ```
@@ -308,12 +309,18 @@ systemctl restart ilcf-web.service
 | `/compare` | Candidate-vs-candidate or committee-vs-committee trend and overlap comparison |
 | `/candidates` | Unified candidates page — state (ISBE) and federal (FEC) |
 | `/candidate-finance` | State candidate finance detail (ISBE data) |
-| `/federal-finance` | Federal candidate finance detail (FEC data) |
+| `/federal-finance` | Federal candidate finance detail (FEC data, includes Schedule A/B/E drilldowns) |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
+
+CSV exports:
+- Candidate detail Schedule B: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_b`
+- Candidate detail Schedule E: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_e`
+- Live feed Schedule B: `/live-feed?format=csv&table=schedule_b`
+- Live feed Schedule E: `/live-feed?format=csv&table=schedule_e`
 
 ### Mobile Smoke Check
 
@@ -432,6 +439,18 @@ Schedule E wrapper script (recommended for automation):
 ```bash
 cd /srv/illinois_campaign_finance/app
 bash scripts/fec-schedule-e-catchup.sh
+```
+
+Install a dedicated Schedule E timer/service (sample unit files are in `docs/systemd/`):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+cp docs/systemd/il-campaign-fec-schedule-e-catchup.service /etc/systemd/system/
+cp docs/systemd/il-campaign-fec-schedule-e-catchup.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now il-campaign-fec-schedule-e-catchup.timer
+systemctl list-timers il-campaign-fec-schedule-e-catchup.timer
+journalctl -u il-campaign-fec-schedule-e-catchup.service --since today
 ```
 
 Schedule A wrapper script (recommended for automation):

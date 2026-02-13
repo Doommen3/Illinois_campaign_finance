@@ -112,6 +112,40 @@ class TestWebApp:
         assert b'Matched Donor Pairs' in response.data
         assert b'>17<' in response.data
 
+    def test_index_shows_schedule_b_e_metric_cards(self, app, client):
+        """Dashboard should show Schedule B and Schedule E metric cards with totals."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.executemany(
+            """
+            INSERT INTO fec_schedule_b_disbursements (
+                sub_id, cycle, candidate_id, committee_id, recipient_name,
+                disbursement_amount, disbursement_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("idx-sb-1", 2026, "H2IL00001", "C00000001", "Vendor A", 321.11, "2026-01-05"),
+                ("idx-sb-2", 2026, "H2IL00001", "C00000001", "Vendor B", 123.45, "2026-01-07"),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_schedule_e_independent_expenditures (
+                sub_id, cycle, candidate_id, committee_id, payee_name,
+                support_oppose_indicator, expenditure_amount, expenditure_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("idx-se-1", 2026, "H2IL00001", "C000IE001", "Payee A", "S", 987.65, "2026-01-10"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/')
+        assert response.status_code == 200
+        assert b'Federal Disbursements (Schedule B)' in response.data
+        assert b'Federal Independent Expenditures (Schedule E)' in response.data
+        assert b'$444.56 total' in response.data
+        assert b'$987.65 total' in response.data
+
     def test_committees_page_loads(self, client):
         """Test that the committees page loads."""
         response = client.get('/committees/')
@@ -613,7 +647,7 @@ class TestWebApp:
                     '60602',
                     'S',
                     'Communications',
-                    625.0,
+                    640.75,
                     '2026-01-22',
                     '48H3',
                     '24A',
@@ -689,6 +723,10 @@ class TestWebApp:
         assert b'Federal Finance (FEC)' in overview.data
         assert b'Top Federal Races' in overview.data
         assert b'Explore More' in overview.data
+        assert b'Schedule B Rows' in overview.data
+        assert b'Schedule E Rows' in overview.data
+        assert b'$625.00 total disbursed' in overview.data
+        assert b'$640.75 total independent expenditures' in overview.data
         assert b'$425.00' in overview.data
         conn = get_db(app.config['DATABASE_PATH'])
         snapshot_row = conn.execute(
@@ -762,6 +800,7 @@ class TestWebApp:
         assert b'/federal-finance/donors/' in detail.data
         assert b'Total Source:' in detail.data
         assert b'FEC candidate totals endpoint' in detail.data
+        assert b'Export CSV' in detail.data
 
         live_feed = client.get('/live-feed?local_limit=20&federal_limit=20&schedule_b_limit=20&schedule_e_limit=20')
         assert live_feed.status_code == 200
@@ -769,6 +808,36 @@ class TestWebApp:
         assert b'Federal Independent Expenditures (Schedule E)' in live_feed.data
         assert b'MEDIA BUY VENDOR' in live_feed.data
         assert b'AD CREATIVE STUDIO' in live_feed.data
+        assert b'Export Schedule B CSV' in live_feed.data
+        assert b'Export Schedule E CSV' in live_feed.data
+
+        schedule_b_csv = client.get('/federal-finance/H2IL01349?cycle=2026&format=csv&table=schedule_b')
+        assert schedule_b_csv.status_code == 200
+        assert schedule_b_csv.mimetype == 'text/csv'
+        assert 'federal_candidate_H2IL01349_schedule_b.csv' in schedule_b_csv.headers.get('Content-Disposition', '')
+        assert b'sub_id,cycle,candidate_id' in schedule_b_csv.data
+        assert b'MEDIA BUY VENDOR' in schedule_b_csv.data
+
+        schedule_e_csv = client.get('/federal-finance/H2IL01349?cycle=2026&format=csv&table=schedule_e')
+        assert schedule_e_csv.status_code == 200
+        assert schedule_e_csv.mimetype == 'text/csv'
+        assert 'federal_candidate_H2IL01349_schedule_e.csv' in schedule_e_csv.headers.get('Content-Disposition', '')
+        assert b'sub_id,cycle,candidate_id,expenditure_date' in schedule_e_csv.data
+        assert b'AD CREATIVE STUDIO' in schedule_e_csv.data
+
+        live_feed_schedule_b_csv = client.get('/live-feed?format=csv&table=schedule_b')
+        assert live_feed_schedule_b_csv.status_code == 200
+        assert live_feed_schedule_b_csv.mimetype == 'text/csv'
+        assert 'live_feed_schedule_b.csv' in live_feed_schedule_b_csv.headers.get('Content-Disposition', '')
+        assert b'disbursement_date,cycle,candidate_id' in live_feed_schedule_b_csv.data
+        assert b'MEDIA BUY VENDOR' in live_feed_schedule_b_csv.data
+
+        live_feed_schedule_e_csv = client.get('/live-feed?format=csv&table=schedule_e')
+        assert live_feed_schedule_e_csv.status_code == 200
+        assert live_feed_schedule_e_csv.mimetype == 'text/csv'
+        assert 'live_feed_schedule_e.csv' in live_feed_schedule_e_csv.headers.get('Content-Disposition', '')
+        assert b'expenditure_date,cycle,candidate_id' in live_feed_schedule_e_csv.data
+        assert b'AD CREATIVE STUDIO' in live_feed_schedule_e_csv.data
 
         donor_key = None
         conn = get_db(app.config['DATABASE_PATH'])

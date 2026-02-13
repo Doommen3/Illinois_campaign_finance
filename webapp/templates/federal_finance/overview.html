@@ -48,6 +48,16 @@
         <div class="stat-value">{{ format_currency(overview.network_total_amount) }}</div>
         <div class="stat-detail">Across graph edges >= $100</div>
     </div>
+    <div class="stat-card">
+        <h3>Schedule B Rows</h3>
+        <div class="stat-value">{{ overview.schedule_b_count }}</div>
+        <div class="stat-detail">{{ format_currency(overview.schedule_b_total) }} total disbursed</div>
+    </div>
+    <div class="stat-card">
+        <h3>Schedule E Rows</h3>
+        <div class="stat-value">{{ overview.schedule_e_count }}</div>
+        <div class="stat-detail">{{ format_currency(overview.schedule_e_total) }} total independent expenditures</div>
+    </div>
 </div>
 
 {% if overview.candidate_count == 0 %}

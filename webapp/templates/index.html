@@ -44,6 +44,16 @@
         <p class="stat-detail">{{ format_currency(stats.federal_total_amount) }} total</p>
     </div>
     <div class="stat-card">
+        <h3>Federal Disbursements (Schedule B)</h3>
+        <p class="stat-value">{{ stats.federal_disbursements }}</p>
+        <p class="stat-detail">{{ format_currency(stats.federal_disbursement_total) }} total</p>
+    </div>
+    <div class="stat-card">
+        <h3>Federal Independent Expenditures (Schedule E)</h3>
+        <p class="stat-value">{{ stats.federal_independent_expenditures }}</p>
+        <p class="stat-detail">{{ format_currency(stats.federal_independent_expenditure_total) }} total</p>
+    </div>
+    <div class="stat-card">
         <h3>Matched Donor Pairs</h3>
         <p class="stat-value">{{ stats.federal_matched_donors }}</p>
     </div>

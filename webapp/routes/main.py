@@ -1,10 +1,12 @@
 """Main routes for dashboard, search, and compare views."""
 from collections import defaultdict
+import csv
 from datetime import datetime
+from io import StringIO
 import sqlite3
 import time
 
-from flask import Blueprint, render_template, request, current_app
+from flask import Blueprint, Response, render_template, request, current_app
 
 from database.models import Committee, Report, Donor, Contribution
 
@@ -91,6 +93,17 @@ def _scalar(conn, sql: str, params=(), default=0):
         return default
     value = row[keys[0]]
     return default if value is None else value
+
+
+def _csv_response(rows: list[list], headers: list[str], filename: str) -> Response:
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow(row)
+    response = Response(output.getvalue(), mimetype='text/csv')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    return response
 
 
 def _get_candidate_stats(conn):
@@ -1540,6 +1553,8 @@ def live_feed():
     """Recent local donations and federal Schedule A/B/E activity feed."""
     conn = current_app.get_database()
 
+    output_format = request.args.get('format', 'html', type=str).strip().lower()
+    export_table = request.args.get('table', '', type=str).strip().lower()
     local_limit = min(max(request.args.get('local_limit', 75, type=int), 10), 300)
     federal_limit = min(max(request.args.get('federal_limit', 75, type=int), 10), 300)
     schedule_b_limit = min(max(request.args.get('schedule_b_limit', 75, type=int), 10), 300)
@@ -1564,6 +1579,77 @@ def live_feed():
             """,
             default=None,
         )
+
+    if output_format == 'csv':
+        if export_table == 'schedule_b':
+            csv_rows = [
+                [
+                    row.get('disbursement_date'),
+                    row.get('cycle'),
+                    row.get('candidate_id'),
+                    row.get('candidate_name'),
+                    row.get('committee_name'),
+                    row.get('recipient_name'),
+                    row.get('recipient_city'),
+                    row.get('recipient_state'),
+                    row.get('category'),
+                    row.get('amount'),
+                ]
+                for row in _recent_federal_schedule_b_disbursements(conn, limit=500000)
+            ]
+            return _csv_response(
+                csv_rows,
+                [
+                    'disbursement_date',
+                    'cycle',
+                    'candidate_id',
+                    'candidate_name',
+                    'committee_name',
+                    'recipient_name',
+                    'recipient_city',
+                    'recipient_state',
+                    'category',
+                    'amount',
+                ],
+                filename='live_feed_schedule_b.csv',
+            )
+
+        if export_table == 'schedule_e':
+            csv_rows = [
+                [
+                    row.get('expenditure_date'),
+                    row.get('cycle'),
+                    row.get('candidate_id'),
+                    row.get('candidate_name'),
+                    row.get('support_oppose_indicator'),
+                    row.get('committee_name'),
+                    row.get('payee_name'),
+                    row.get('payee_city'),
+                    row.get('payee_state'),
+                    row.get('category'),
+                    row.get('amount'),
+                ]
+                for row in _recent_federal_schedule_e_expenditures(conn, limit=500000)
+            ]
+            return _csv_response(
+                csv_rows,
+                [
+                    'expenditure_date',
+                    'cycle',
+                    'candidate_id',
+                    'candidate_name',
+                    'support_oppose_indicator',
+                    'committee_name',
+                    'payee_name',
+                    'payee_city',
+                    'payee_state',
+                    'category',
+                    'amount',
+                ],
+                filename='live_feed_schedule_e.csv',
+            )
+
+        return Response("unsupported csv export table\n", mimetype='text/plain', status=400)
 
     return render_template(
         'live_feed.html',
