@@ -346,8 +346,8 @@ def analytics_reconciliation():
 def analytics_donor_cogiving():
     """Get donor co-giving network."""
     conn = current_app.get_database()
-    donor_limit = min(max(request.args.get('donor_limit', 800, type=int), 50), 5000)
-    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    donor_limit = min(max(request.args.get('donor_limit', 200, type=int), 50), 5000)
+    edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
     min_shared_amount = max(request.args.get('min_shared_amount', 5000.0, type=float), 0.0)
     min_shared_targets = max(request.args.get('min_shared_targets', 2, type=int), 1)
     return jsonify(
@@ -365,8 +365,8 @@ def analytics_donor_cogiving():
 def analytics_committee_similarity():
     """Get committee similarity network."""
     conn = current_app.get_database()
-    committee_limit = min(max(request.args.get('committee_limit', 500, type=int), 50), 5000)
-    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    committee_limit = min(max(request.args.get('committee_limit', 120, type=int), 50), 5000)
+    edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
     min_shared_donors = max(request.args.get('min_shared_donors', 3, type=int), 1)
     min_shared_amount = max(request.args.get('min_shared_amount', 10000.0, type=float), 0.0)
     return jsonify(
@@ -384,8 +384,8 @@ def analytics_committee_similarity():
 def analytics_candidate_competition():
     """Get state/federal/combined candidate competition networks."""
     conn = current_app.get_database()
-    candidate_limit = min(max(request.args.get('candidate_limit', 250, type=int), 50), 2000)
-    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    candidate_limit = min(max(request.args.get('candidate_limit', 80, type=int), 50), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
     min_shared_donors = max(request.args.get('min_shared_donors', 2, type=int), 1)
     min_shared_amount = max(request.args.get('min_shared_amount', 2500.0, type=float), 0.0)
     return jsonify(
@@ -403,8 +403,8 @@ def analytics_candidate_competition():
 def analytics_lobbying_influence():
     """Get lobbying influence graph."""
     conn = current_app.get_database()
-    client_limit = min(max(request.args.get('client_limit', 120, type=int), 20), 2000)
-    edge_limit = min(max(request.args.get('edge_limit', 1500, type=int), 50), 10000)
+    client_limit = min(max(request.args.get('client_limit', 80, type=int), 20), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
     return jsonify(
         get_lobbying_influence_graph(
             conn,
@@ -418,8 +418,8 @@ def analytics_lobbying_influence():
 def analytics_irs527_ecosystem():
     """Get IRS 527 ecosystem graph."""
     conn = current_app.get_database()
-    org_limit = min(max(request.args.get('org_limit', 150, type=int), 20), 2000)
-    edge_limit = min(max(request.args.get('edge_limit', 1800, type=int), 50), 10000)
+    org_limit = min(max(request.args.get('org_limit', 100, type=int), 20), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
     return jsonify(
         get_irs527_ecosystem_graph(
             conn,

@@ -424,12 +424,12 @@ def relationships():
     conn = current_app.get_database()
     filters = _parse_filters()
 
-    donor_limit = min(max(request.args.get("donor_limit", 800, type=int) or 800, 50), 5000)
-    committee_limit = min(max(request.args.get("committee_limit", 500, type=int) or 500, 50), 5000)
-    candidate_limit = min(max(request.args.get("candidate_limit", 250, type=int) or 250, 50), 2000)
-    client_limit = min(max(request.args.get("client_limit", 120, type=int) or 120, 20), 2000)
-    org_limit = min(max(request.args.get("org_limit", 150, type=int) or 150, 20), 2000)
-    edge_limit = min(max(request.args.get("edge_limit", 1200, type=int) or 1200, 50), 10000)
+    donor_limit = min(max(request.args.get("donor_limit", 200, type=int) or 200, 50), 5000)
+    committee_limit = min(max(request.args.get("committee_limit", 120, type=int) or 120, 50), 5000)
+    candidate_limit = min(max(request.args.get("candidate_limit", 80, type=int) or 80, 50), 2000)
+    client_limit = min(max(request.args.get("client_limit", 80, type=int) or 80, 20), 2000)
+    org_limit = min(max(request.args.get("org_limit", 100, type=int) or 100, 20), 2000)
+    edge_limit = min(max(request.args.get("edge_limit", 200, type=int) or 200, 50), 10000)
 
     min_shared_amount = max(request.args.get("min_shared_amount", 5000.0, type=float) or 5000.0, 0.0)
     min_shared_targets = max(request.args.get("min_shared_targets", 2, type=int) or 2, 1)

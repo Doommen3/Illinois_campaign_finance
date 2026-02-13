@@ -2694,6 +2694,9 @@ def get_committee_similarity_network(
     edge_limit = max(50, min(int(edge_limit), 10000))
     min_shared_donors = max(1, int(min_shared_donors))
     min_shared_amount = max(0.0, float(min_shared_amount))
+    # Constrain the donor universe for the committee self-join path so query time
+    # stays bounded on large production datasets.
+    committee_donor_cap = min(max(int(committee_limit) * 6, 600), 6000)
     source = _donor_flow_source(conn)
 
     if source == "bulk_receipts" and _table_exists(conn, "analytics_donor_committee_agg"):
@@ -2730,14 +2733,49 @@ def get_committee_similarity_network(
             }
             for row in committee_rows
         }
-        placeholders = ",".join(["?"] * len(committee_ids))
-        pair_rows = conn.execute(
-            f"""
-            WITH donor_edges AS (
-                SELECT donor_key, committee_id, COALESCE(total_amount, 0) AS donor_amount
+        committee_top_donor_cte = """
+            top_committee_donors AS (
+                SELECT donor_key
                 FROM analytics_donor_committee_agg
                 WHERE source = 'bulk_receipts'
-                  AND committee_id IN ({placeholders})
+                  AND donor_key IS NOT NULL
+                GROUP BY donor_key
+                ORDER BY SUM(total_amount) DESC
+                LIMIT ?
+            ),
+        """
+        if _rows_for_source_exist(conn, "analytics_donor_summary", "bulk_receipts"):
+            committee_top_donor_cte = """
+            top_committee_donors AS (
+                SELECT donor_key
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts'
+                  AND donor_key IS NOT NULL
+                ORDER BY total_amount DESC
+                LIMIT ?
+            ),
+            """
+        pair_rows = conn.execute(
+            f"""
+            WITH top_committees AS (
+                SELECT committee_id
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                  AND committee_id IS NOT NULL
+                GROUP BY committee_id
+                ORDER BY SUM(total_amount) DESC
+                LIMIT ?
+            ),
+            {committee_top_donor_cte}
+            donor_edges AS (
+                SELECT
+                    a.donor_key,
+                    a.committee_id,
+                    COALESCE(a.total_amount, 0) AS donor_amount
+                FROM analytics_donor_committee_agg a
+                JOIN top_committees tc ON tc.committee_id = a.committee_id
+                JOIN top_committee_donors td ON td.donor_key = a.donor_key
+                WHERE a.source = 'bulk_receipts'
             )
             SELECT
                 e1.committee_id AS committee_a,
@@ -2754,7 +2792,7 @@ def get_committee_similarity_network(
             ORDER BY shared_amount DESC, shared_donor_count DESC
             LIMIT ?
             """,
-            [*committee_ids, min_shared_donors, min_shared_amount, edge_limit],
+            [committee_limit, committee_donor_cap, min_shared_donors, min_shared_amount, edge_limit],
         ).fetchall()
 
         nodes: dict[str, dict] = {}
@@ -2822,6 +2860,7 @@ def get_committee_similarity_network(
                 "edge_count": len(edges),
                 "source": source,
                 "committee_pool_size": len(committee_ids),
+                "committee_donor_cap": committee_donor_cap,
                 "min_shared_donors": min_shared_donors,
                 "min_shared_amount": min_shared_amount,
             },
@@ -3141,26 +3180,59 @@ def get_candidate_competition_networks(
     edge_limit = max(50, min(int(edge_limit), 10000))
     min_shared_donors = max(1, int(min_shared_donors))
     min_shared_amount = max(0.0, float(min_shared_amount))
+    candidate_donor_cap = min(max(int(candidate_limit) * 25, 1500), 8000)
 
     state_rows: list[dict] = []
     state_available = _table_exists(conn, "analytics_donor_committee_agg") and _table_exists(
         conn, "bulk_cmte_candidate_links_clean"
     )
+    state_candidate_name_expr = "'Candidate ' || l.candidate_id"
+    if _column_exists(conn, "bulk_cmte_candidate_links_clean", "candidate_full_name"):
+        state_candidate_name_expr = (
+            "COALESCE(NULLIF(TRIM(l.candidate_full_name), ''), 'Candidate ' || l.candidate_id)"
+        )
+    elif _column_exists(conn, "bulk_cmte_candidate_links_clean", "candidate_name"):
+        state_candidate_name_expr = (
+            "COALESCE(NULLIF(TRIM(l.candidate_name), ''), 'Candidate ' || l.candidate_id)"
+        )
+    state_top_donor_cte = """
+                top_state_donors AS (
+                    SELECT donor_key
+                    FROM analytics_donor_committee_agg
+                    WHERE source = 'bulk_receipts'
+                      AND donor_key IS NOT NULL
+                    GROUP BY donor_key
+                    ORDER BY SUM(total_amount) DESC
+                    LIMIT ?
+                ),
+    """
+    if _rows_for_source_exist(conn, "analytics_donor_summary", "bulk_receipts"):
+        state_top_donor_cte = """
+                top_state_donors AS (
+                    SELECT donor_key
+                    FROM analytics_donor_summary
+                    WHERE source = 'bulk_receipts'
+                      AND donor_key IS NOT NULL
+                    ORDER BY total_amount DESC
+                    LIMIT ?
+                ),
+        """
     if state_available:
         state_rows = [
             dict(row)
             for row in conn.execute(
-                """
+                f"""
                 WITH committee_candidate_counts AS (
                     SELECT committee_id_sbe, COUNT(DISTINCT candidate_id) AS candidate_count
                     FROM bulk_cmte_candidate_links_clean
                     WHERE candidate_id IS NOT NULL
                     GROUP BY committee_id_sbe
                 ),
+                {state_top_donor_cte}
                 donor_candidate AS (
                     SELECT
                         l.candidate_id,
-                        COALESCE(MAX(l.candidate_full_name), 'Candidate ' || l.candidate_id) AS candidate_name,
+                        MAX({state_candidate_name_expr}) AS candidate_name,
                         a.donor_key,
                         COALESCE(
                             SUM(
@@ -3173,6 +3245,8 @@ def get_candidate_competition_networks(
                             0
                         ) AS donor_amount
                     FROM analytics_donor_committee_agg a
+                    JOIN top_state_donors td
+                      ON td.donor_key = a.donor_key
                     JOIN bulk_cmte_candidate_links_clean l
                       ON l.committee_id_sbe = a.committee_id
                     LEFT JOIN committee_candidate_counts cc
@@ -3197,7 +3271,7 @@ def get_candidate_competition_networks(
                 JOIN top_candidates tc ON tc.candidate_id = dc.candidate_id
                 WHERE dc.donor_amount > 0
                 """,
-                (candidate_limit,),
+                (candidate_donor_cap, candidate_limit),
             ).fetchall()
         ]
     for row in state_rows:
@@ -3212,15 +3286,28 @@ def get_candidate_competition_networks(
             dict(row)
             for row in conn.execute(
                 """
-                WITH donor_candidate AS (
+                WITH top_federal_donors AS (
+                    SELECT
+                        COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_key
+                    FROM fec_schedule_a_contributions sa
+                    WHERE sa.candidate_id IS NOT NULL
+                    GROUP BY donor_key
+                    ORDER BY SUM(sa.contribution_receipt_amount) DESC
+                    LIMIT ?
+                ),
+                donor_candidate AS (
                     SELECT
                         COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_key,
                         sa.candidate_id AS candidate_id,
                         COALESCE(MAX(sa.candidate_name), 'Candidate ' || sa.candidate_id) AS candidate_name,
                         COALESCE(SUM(sa.contribution_receipt_amount), 0) AS donor_amount
                     FROM fec_schedule_a_contributions sa
+                    JOIN top_federal_donors td
+                      ON td.donor_key = COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id)
                     WHERE sa.candidate_id IS NOT NULL
-                    GROUP BY donor_key, sa.candidate_id
+                    GROUP BY
+                        COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id),
+                        sa.candidate_id
                 ),
                 top_candidates AS (
                     SELECT candidate_id
@@ -3238,7 +3325,7 @@ def get_candidate_competition_networks(
                 JOIN top_candidates tc ON tc.candidate_id = dc.candidate_id
                 WHERE dc.donor_amount > 0
                 """,
-                (candidate_limit,),
+                (candidate_donor_cap, candidate_limit),
             ).fetchall()
         ]
     for row in federal_rows:
@@ -3328,6 +3415,7 @@ def get_candidate_competition_networks(
         "combined": combined_network,
         "summary": {
             "candidate_limit": candidate_limit,
+            "candidate_donor_cap": candidate_donor_cap,
             "edge_limit": edge_limit,
             "min_shared_donors": min_shared_donors,
             "min_shared_amount": min_shared_amount,
