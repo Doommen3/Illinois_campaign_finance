@@ -1,9 +1,11 @@
 """Cross-matching engine for lobbying, IRS 527, and campaign finance data."""
 from __future__ import annotations
 
+import math
 import logging
 import re
 import sqlite3
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,17 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds for concise log output."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {sec:04.1f}s"
+    hours, minutes = divmod(int(minutes), 60)
+    return f"{hours}h {minutes:02d}m {sec:04.1f}s"
 
 
 def match_lobbying_to_donors(conn: sqlite3.Connection, threshold: float = 0.80) -> dict:
@@ -225,15 +238,21 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
 
     Stores results in irs527_expenditure_recipient_matches table.
     """
+    started = time.perf_counter()
     if not _table_exists(conn, "irs527_expenditures"):
         return {"matches": 0, "skipped": "missing_tables"}
 
     conn.execute("DELETE FROM irs527_expenditure_recipient_matches")
     conn.commit()
 
+    logger.info(
+        "Starting 527-expenditure matching (threshold=%.2f): loading expenditures + targets",
+        threshold,
+    )
+    load_started = time.perf_counter()
     expenditures = conn.execute(
         """
-        SELECT rowid_local, ein, org_name, recipient_name
+        SELECT ein, org_name, recipient_name
         FROM irs527_expenditures
         WHERE state = 'IL' AND recipient_name IS NOT NULL
         """
@@ -262,21 +281,125 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
                 cand_tokens.append(("candidate", str(c["candidate_id"]), c["candidate_full_name"], tokens))
 
     all_targets = cmte_tokens + cand_tokens
+    logger.info(
+        "Loaded %d IL expenditures and %d match targets in %s",
+        len(expenditures),
+        len(all_targets),
+        _format_duration(time.perf_counter() - load_started),
+    )
+
+    if not expenditures or not all_targets:
+        logger.info(
+            "527-expenditure-to-committee/candidate matches: 0 (elapsed=%s)",
+            _format_duration(time.perf_counter() - started),
+        )
+        return {"matches": 0}
+
+    # Sparse-index approach: tokenize targets once, then only score candidates that share >=1 token.
+    # This preserves exact Jaccard scores for threshold > 0 while avoiding full cartesian scans.
+    index_started = time.perf_counter()
+    token_to_id: dict[str, int] = {}
+    target_meta: list[tuple[str, str, str]] = []
+    target_token_sets: list[frozenset[int]] = []
+    target_token_counts: list[int] = []
+    postings: dict[int, list[int]] = {}
+
+    def _token_id(token: str) -> int:
+        existing = token_to_id.get(token)
+        if existing is not None:
+            return existing
+        existing = len(token_to_id)
+        token_to_id[token] = existing
+        return existing
+
+    for matched_type, matched_id, matched_name, target_tokens in all_targets:
+        token_ids = frozenset(_token_id(tok) for tok in target_tokens)
+        if not token_ids:
+            continue
+        target_idx = len(target_meta)
+        target_meta.append((matched_type, matched_id, matched_name))
+        target_token_sets.append(token_ids)
+        target_token_counts.append(len(token_ids))
+        for tok_id in token_ids:
+            postings.setdefault(tok_id, []).append(target_idx)
+
+    logger.info(
+        "Built sparse target index in %s (targets=%d, unique_tokens=%d)",
+        _format_duration(time.perf_counter() - index_started),
+        len(target_meta),
+        len(token_to_id),
+    )
+
+    if not target_meta:
+        logger.info(
+            "527-expenditure-to-committee/candidate matches: 0 (elapsed=%s)",
+            _format_duration(time.perf_counter() - started),
+        )
+        return {"matches": 0}
 
     matches = 0
     batch = []
-    for exp in expenditures:
+    scored_pairs = 0
+    loop_started = time.perf_counter()
+    total_expenditures = len(expenditures)
+    progress_every = 5000
+    exhaustive_mode = threshold <= 0.0
+    if exhaustive_mode:
+        logger.warning(
+            "Threshold %.3f requires exhaustive scoring; sparse candidate pruning is disabled.",
+            threshold,
+        )
+
+    for idx, exp in enumerate(expenditures, start=1):
         exp_tokens = _normalize_name_tokens(exp["recipient_name"])
         if not exp_tokens:
             continue
-        for matched_type, matched_id, matched_name, t_tokens in all_targets:
-            score = _jaccard(exp_tokens, t_tokens)
+
+        exp_token_ids = frozenset(_token_id(tok) for tok in exp_tokens)
+        if not exp_token_ids:
+            continue
+        exp_token_count = len(exp_token_ids)
+
+        if exhaustive_mode:
+            candidate_intersections = {
+                target_idx: len(exp_token_ids & target_token_sets[target_idx])
+                for target_idx in range(len(target_meta))
+            }
+        else:
+            candidate_intersections: dict[int, int] = {}
+            for tok_id in exp_token_ids:
+                for target_idx in postings.get(tok_id, ()):
+                    candidate_intersections[target_idx] = candidate_intersections.get(target_idx, 0) + 1
+
+        scored_pairs += len(candidate_intersections)
+        for target_idx, intersection in candidate_intersections.items():
+            union = exp_token_count + target_token_counts[target_idx] - intersection
+            if union <= 0:
+                continue
+            score = intersection / union
             if score >= threshold:
+                matched_type, matched_id, matched_name = target_meta[target_idx]
                 batch.append((
                     exp["ein"], exp["org_name"], exp["recipient_name"],
                     matched_type, matched_id, matched_name, score,
                 ))
                 matches += 1
+
+        if idx % progress_every == 0:
+            elapsed = time.perf_counter() - loop_started
+            rate = idx / elapsed if elapsed > 0 else 0.0
+            remaining = total_expenditures - idx
+            eta_seconds = remaining / rate if rate > 0 else math.inf
+            eta_text = _format_duration(eta_seconds) if math.isfinite(eta_seconds) else "unknown"
+            logger.info(
+                "527-expenditure progress: %d/%d (%.1f%%), matches=%d, rate=%.1f rows/s, eta=%s",
+                idx,
+                total_expenditures,
+                (idx / total_expenditures) * 100,
+                matches,
+                rate,
+                eta_text,
+            )
 
     if batch:
         conn.executemany(
@@ -289,7 +412,16 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
         )
         conn.commit()
 
-    logger.info("527-expenditure-to-committee/candidate matches: %d", matches)
+    full_pair_count = total_expenditures * len(target_meta)
+    reduction = (full_pair_count / scored_pairs) if scored_pairs else 0.0
+    logger.info(
+        "527-expenditure-to-committee/candidate matches: %d (elapsed=%s, scored_pairs=%d/%d, reduction=%.1fx)",
+        matches,
+        _format_duration(time.perf_counter() - started),
+        scored_pairs,
+        full_pair_count,
+        reduction,
+    )
     return {"matches": matches}
 
 
