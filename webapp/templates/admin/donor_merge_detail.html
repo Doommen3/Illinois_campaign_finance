@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Donor Merge Detail - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Donor Merge Detail</h1>
+<p class="subtitle">
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status='pending') }}">&laquo; Back to merge review queue</a>
+</p>
+
+<div class="donor-summary">
+    <p><strong>Name:</strong> {{ entity.display_name if entity.display_name else entity.canonical_name }}</p>
+    <p><strong>Entity ID:</strong> {{ entity.entity_id }}</p>
+    <p><strong>Source:</strong> {{ entity.source }}</p>
+    <p><strong>Total Contributed:</strong> {{ format_currency(entity.total_amount) }}</p>
+    <p><strong>Member Count:</strong> {{ entity.member_count }}</p>
+    <p><strong>Confidence:</strong> {{ "%.2f"|format(entity.confidence_score) }} ({{ entity.confidence_tier }})</p>
+    <p><strong>Current Review Status:</strong> <span class="badge badge-{{ entity.entity_review_status }}">{{ entity.entity_review_status }}</span></p>
+    <p><strong>Member Decisions:</strong> pending={{ entity.pending_count }}, approved={{ entity.approved_count }}, rejected={{ entity.rejected_count }}</p>
+</div>
+
+<div class="entry-form">
+    <h2>Set Entity Decision</h2>
+    <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="source" value="{{ source }}">
+        <input type="hidden" name="decision" value="approved">
+        <button type="submit" class="btn btn-success">Approve All Members</button>
+    </form>
+    <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="source" value="{{ source }}">
+        <input type="hidden" name="decision" value="pending">
+        <button type="submit" class="btn btn-primary">Reset All to Pending</button>
+    </form>
+    <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+        <input type="hidden" name="source" value="{{ source }}">
+        <input type="hidden" name="decision" value="rejected">
+        <button type="submit" class="btn btn-danger" onclick="return confirm('Reject all members in this merge entity?');">Reject All Members</button>
+    </form>
+</div>
+
+<h2>Member Rows</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Donor Key</th>
+            <th>Name &amp; Address</th>
+            <th>Occupation &amp; Employer</th>
+            <th>Total Amount</th>
+            <th>Contribs</th>
+            <th>Committees</th>
+            <th>Confidence</th>
+            <th>Status</th>
+            <th>Reasons</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for member in members %}
+        <tr>
+            <td>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=member.donor_key, source=source) }}">{{ member.donor_key }}</a>
+            </td>
+            <td>
+                {{ member.donor_name if member.donor_name else '-' }}
+                <br>
+                <small>{{ member.donor_address if member.donor_address else '-' }}</small>
+                <br>
+                <small>{{ member.donor_city if member.donor_city else '-' }}{% if member.donor_state %}, {{ member.donor_state }}{% endif %}</small>
+            </td>
+            <td>
+                <small>{{ member.occupation if member.occupation else '-' }}</small>
+                <br>
+                <small>{{ member.employer if member.employer else '-' }}</small>
+            </td>
+            <td>{{ format_currency(member.total_amount) }}</td>
+            <td>{{ member.contribution_count }}</td>
+            <td>{{ member.committee_count }}</td>
+            <td>{{ "%.2f"|format(member.confidence_score) }}</td>
+            <td><span class="badge badge-{{ member.review_status }}">{{ member.review_status }}</span></td>
+            <td>
+                {% if member.reasons %}
+                    <small>{{ member.reasons|join('; ') }}</small>
+                {% else %}
+                    <small>-</small>
+                {% endif %}
+            </td>
+            <td>
+                <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="source" value="{{ source }}">
+                    <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
+                    <input type="hidden" name="decision" value="approved">
+                    <button type="submit" class="btn btn-small btn-success">Approve</button>
+                </form>
+                <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="source" value="{{ source }}">
+                    <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
+                    <input type="hidden" name="decision" value="pending">
+                    <button type="submit" class="btn btn-small btn-primary">Pending</button>
+                </form>
+                <form class="inline-form" method="post" action="{{ url_for('admin.donor_merge_decision', entity_id=entity.entity_id) }}">
+                    <input type="hidden" name="source" value="{{ source }}">
+                    <input type="hidden" name="donor_key" value="{{ member.donor_key }}">
+                    <input type="hidden" name="decision" value="rejected">
+                    <button type="submit" class="btn btn-small btn-danger">Reject</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="10">No member rows found for this entity.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

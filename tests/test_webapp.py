@@ -1502,6 +1502,183 @@ class TestWebApp:
         assert response.status_code == 200
         assert b'Manual Entry Queue' in response.data
 
+    def test_admin_donor_merges_requires_login(self, client):
+        """Admin donor merge review routes should require login."""
+        response = client.get('/admin/donor-merges')
+        assert response.status_code == 302
+        assert '/auth/login' in response.headers.get('Location', '')
+
+    def test_admin_donor_merge_queue_loads(self, app, client):
+        """Admin donor merge queue should render review entities."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            """
+            INSERT INTO donor_entity_local (
+                entity_id, source, canonical_name, display_name, member_count, total_amount,
+                confidence_score, peak_confidence_score, confidence_tier, merge_action, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "entity:admin:1",
+                "bulk_receipts",
+                "kenneth griffin",
+                "Kenneth Griffin",
+                2,
+                108833900.0,
+                0.95,
+                0.95,
+                "high",
+                "review",
+                "test:v1",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local_member (
+                source, donor_key, entity_id, canonical_name, donor_name, donor_city, donor_state, donor_zip5,
+                confidence_score, confidence_tier, merge_action, total_amount, contribution_count, committee_count,
+                review_status, reasons_json, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:admin:key1", "entity:admin:1", "kenneth griffin",
+                    "Kenneth Griffin", "CHICAGO", "IL", "60603",
+                    0.95, "high", "review", 55016400.0, 8, 3, "pending", "{}", "test:v1",
+                ),
+                (
+                    "bulk_receipts", "entity:admin:key2", "entity:admin:1", "kenneth griffin",
+                    "Kenneth Griffin", "CHICAGO", "IL", "60611",
+                    0.92, "high", "review", 53817500.0, 10, 6, "approved", "{}", "test:v1",
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        login = client.post('/auth/login', data={
+            'username': 'manual_admin',
+            'password': 'secret123',
+            'next': '/admin/donor-merges'
+        }, follow_redirects=False)
+        assert login.status_code == 302
+
+        response = client.get('/admin/donor-merges?source=bulk_receipts&status=pending')
+        assert response.status_code == 200
+        assert b'Donor Merge Review' in response.data
+        assert b'Kenneth Griffin' in response.data
+        assert b'entity:admin:1' in response.data
+        assert b'Pending (1)' in response.data
+
+    def test_admin_donor_merge_decision_updates_status(self, app, client):
+        """Admin donor merge decisions should persist to local member review_status rows."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            """
+            INSERT INTO donor_entity_local (
+                entity_id, source, canonical_name, display_name, member_count, total_amount,
+                confidence_score, peak_confidence_score, confidence_tier, merge_action, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "entity:admin:decision",
+                "bulk_receipts",
+                "kenneth griffin",
+                "Kenneth Griffin",
+                2,
+                108833900.0,
+                0.95,
+                0.95,
+                "high",
+                "review",
+                "test:v1",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local_member (
+                source, donor_key, entity_id, canonical_name, donor_name, donor_city, donor_state, donor_zip5,
+                confidence_score, confidence_tier, merge_action, total_amount, contribution_count, committee_count,
+                review_status, reasons_json, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:admin:decision:key1", "entity:admin:decision", "kenneth griffin",
+                    "Kenneth Griffin", "CHICAGO", "IL", "60603",
+                    0.95, "high", "review", 55016400.0, 8, 3, "pending", "{}", "test:v1",
+                ),
+                (
+                    "bulk_receipts", "entity:admin:decision:key2", "entity:admin:decision", "kenneth griffin",
+                    "Kenneth Griffin", "CHICAGO", "IL", "60611",
+                    0.92, "high", "review", 53817500.0, 10, 6, "pending", "{}", "test:v1",
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        login = client.post('/auth/login', data={
+            'username': 'manual_admin',
+            'password': 'secret123',
+            'next': '/admin/donor-merges'
+        }, follow_redirects=False)
+        assert login.status_code == 302
+
+        entity_id_url = quote("entity:admin:decision", safe="")
+        first_update = client.post(
+            f'/admin/donor-merges/{entity_id_url}/decision',
+            data={
+                'source': 'bulk_receipts',
+                'decision': 'approved',
+                'donor_key': 'entity:admin:decision:key1',
+            },
+            follow_redirects=False,
+        )
+        assert first_update.status_code == 302
+
+        conn = get_db(app.config['DATABASE_PATH'])
+        key1_status = conn.execute(
+            """
+            SELECT review_status
+            FROM donor_entity_local_member
+            WHERE source = 'bulk_receipts' AND donor_key = 'entity:admin:decision:key1'
+            """
+        ).fetchone()["review_status"]
+        key2_status = conn.execute(
+            """
+            SELECT review_status
+            FROM donor_entity_local_member
+            WHERE source = 'bulk_receipts' AND donor_key = 'entity:admin:decision:key2'
+            """
+        ).fetchone()["review_status"]
+        assert key1_status == "approved"
+        assert key2_status == "pending"
+        conn.close()
+
+        second_update = client.post(
+            f'/admin/donor-merges/{entity_id_url}/decision',
+            data={
+                'source': 'bulk_receipts',
+                'decision': 'rejected',
+            },
+            follow_redirects=False,
+        )
+        assert second_update.status_code == 302
+
+        conn = get_db(app.config['DATABASE_PATH'])
+        statuses = conn.execute(
+            """
+            SELECT donor_key, review_status
+            FROM donor_entity_local_member
+            WHERE source = 'bulk_receipts'
+              AND entity_id = 'entity:admin:decision'
+            ORDER BY donor_key
+            """
+        ).fetchall()
+        conn.close()
+        assert [row["review_status"] for row in statuses] == ["rejected", "rejected"]
+
     def test_api_stats(self, client):
         """Test that the API stats endpoint works."""
         response = client.get('/api/stats')

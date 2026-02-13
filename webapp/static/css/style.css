@@ -330,6 +330,21 @@ h2 {
     color: #374151;
 }
 
+.badge-approved {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.badge-rejected {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.badge-not_needed {
+    background-color: #e2e8f0;
+    color: #334155;
+}
+
 .badge-error {
     background-color: #fee2e2;
     color: #991b1b;
@@ -641,6 +656,12 @@ h2 {
     outline: none;
     border-color: #3182ce;
     box-shadow: 0 0 0 3px rgba(49, 130, 206, 0.1);
+}
+
+.inline-form {
+    display: inline-block;
+    margin-right: 0.35rem;
+    margin-bottom: 0.35rem;
 }
 
 /* Search form */

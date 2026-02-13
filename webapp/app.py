@@ -50,6 +50,7 @@ def create_app(config=None):
     from webapp.routes.d2_receipts_recon import d2_receipts_recon_bp
     from webapp.routes.analytics import analytics_bp
     from webapp.routes.manual_entry import manual_entry_bp
+    from webapp.routes.admin import admin_bp
     from webapp.routes.api import api_bp
 
     app.register_blueprint(main_bp)
@@ -62,6 +63,7 @@ def create_app(config=None):
     app.register_blueprint(d2_receipts_recon_bp, url_prefix='/d2-reconciliation')
     app.register_blueprint(analytics_bp, url_prefix='/analytics')
     app.register_blueprint(manual_entry_bp, url_prefix='/manual-entry')
+    app.register_blueprint(admin_bp, url_prefix='/admin')
     app.register_blueprint(api_bp, url_prefix='/api')
 
     # Context processors

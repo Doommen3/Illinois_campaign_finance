@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Donor Merge Review - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Donor Merge Review</h1>
+<p class="subtitle">{{ total }} entities in current filter</p>
+
+<div class="filter-controls">
+    <span>Status:</span>
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status='pending', q=query, sort=sort_by, dir=sort_dir) }}"
+       class="{% if status == 'pending' %}active{% endif %}">
+        Pending ({{ status_counts.get('pending', 0) }})
+    </a> |
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status='approved', q=query, sort=sort_by, dir=sort_dir) }}"
+       class="{% if status == 'approved' %}active{% endif %}">
+        Approved ({{ status_counts.get('approved', 0) }})
+    </a> |
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status='rejected', q=query, sort=sort_by, dir=sort_dir) }}"
+       class="{% if status == 'rejected' %}active{% endif %}">
+        Rejected ({{ status_counts.get('rejected', 0) }})
+    </a> |
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status='all', q=query, sort=sort_by, dir=sort_dir) }}"
+       class="{% if status == 'all' %}active{% endif %}">
+        All ({{ status_counts.get('all', 0) }})
+    </a>
+</div>
+
+<form class="search-form" method="get" action="{{ url_for('admin.donor_merge_queue') }}">
+    <input type="hidden" name="status" value="{{ status }}">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    <label>
+        Source
+        <input type="text" name="source" value="{{ source }}">
+    </label>
+    <label>
+        Search Name
+        <input type="text" name="q" value="{{ query }}" placeholder="kenneth griffin">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>
+                <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc') }}">
+                    Donor Entity{% if sort_by == 'name' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort='total_amount', dir='asc' if sort_by != 'total_amount' or sort_dir == 'desc' else 'desc') }}">
+                    Total Amount{% if sort_by == 'total_amount' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort='member_count', dir='asc' if sort_by != 'member_count' or sort_dir == 'desc' else 'desc') }}">
+                    Members{% if sort_by == 'member_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>
+                <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort='confidence', dir='asc' if sort_by != 'confidence' or sort_dir == 'desc' else 'desc') }}">
+                    Confidence{% if sort_by == 'confidence' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                </a>
+            </th>
+            <th>Review Status</th>
+            <th>Member Decisions</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entity in entities %}
+        <tr>
+            <td>
+                <a href="{{ url_for('admin.donor_merge_detail', entity_id=entity.entity_id, source=source) }}">
+                    {{ entity.display_name if entity.display_name else entity.canonical_name }}
+                </a>
+                <br>
+                <small>{{ entity.entity_id }}</small>
+            </td>
+            <td>{{ format_currency(entity.total_amount) }}</td>
+            <td>{{ entity.member_count }}</td>
+            <td>{{ "%.2f"|format(entity.confidence_score) }}</td>
+            <td><span class="badge badge-{{ entity.entity_review_status }}">{{ entity.entity_review_status }}</span></td>
+            <td>
+                <small>
+                    pending={{ entity.pending_count }},
+                    approved={{ entity.approved_count }},
+                    rejected={{ entity.rejected_count }}
+                </small>
+            </td>
+            <td>
+                <a class="btn btn-small" href="{{ url_for('admin.donor_merge_detail', entity_id=entity.entity_id, source=source) }}">Review</a>
+                <a class="btn btn-small" href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity.entity_id, source=source) }}">Donor View</a>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="7">No merge review entities found for this filter.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort=sort_by, dir=sort_dir, page=page-1) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('admin.donor_merge_queue', source=source, status=status, q=query, sort=sort_by, dir=sort_dir, page=page+1) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

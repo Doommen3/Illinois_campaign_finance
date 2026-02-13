@@ -1401,6 +1401,577 @@ class Donor:
         ).fetchone()
         return int(row["count"] or 0) if row else 0
 
+    @classmethod
+    def _normalize_review_status_filter(cls, status: Optional[str]) -> str:
+        normalized = (status or "pending").strip().lower()
+        if normalized in {"all", "pending", "approved", "rejected", "not_needed"}:
+            return normalized
+        return "pending"
+
+    @classmethod
+    def get_local_entity_review_status_counts(
+        cls,
+        conn: sqlite3.Connection,
+        source: str = "bulk_receipts",
+    ) -> dict:
+        """Count review-queue entities by derived review status."""
+        if (
+            not source
+            or not cls._table_exists(conn, "donor_entity_local")
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return {"all": 0, "pending": 0, "approved": 0, "rejected": 0, "not_needed": 0}
+
+        row = conn.execute(
+            """
+            WITH entity_status AS (
+                SELECT
+                    e.entity_id,
+                    SUM(CASE WHEN m.review_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN m.review_status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+                    SUM(CASE WHEN m.review_status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
+                    SUM(CASE WHEN m.review_status = 'not_needed' THEN 1 ELSE 0 END) AS not_needed_count
+                FROM donor_entity_local e
+                JOIN donor_entity_local_member m
+                  ON m.source = e.source
+                 AND m.entity_id = e.entity_id
+                WHERE e.source = ?
+                  AND e.merge_action = 'review'
+                  AND m.merge_action = 'review'
+                GROUP BY e.entity_id
+            )
+            SELECT
+                COUNT(*) AS all_count,
+                SUM(CASE WHEN rejected_count > 0 THEN 1 ELSE 0 END) AS rejected_count,
+                SUM(
+                    CASE
+                        WHEN rejected_count = 0
+                         AND pending_count = 0
+                         AND approved_count > 0
+                        THEN 1 ELSE 0
+                    END
+                ) AS approved_count,
+                SUM(
+                    CASE
+                        WHEN rejected_count = 0
+                         AND pending_count = 0
+                         AND approved_count = 0
+                         AND not_needed_count > 0
+                        THEN 1 ELSE 0
+                    END
+                ) AS not_needed_count,
+                SUM(
+                    CASE
+                        WHEN rejected_count = 0
+                         AND (
+                            pending_count > 0
+                            OR (pending_count = 0 AND approved_count = 0 AND not_needed_count = 0)
+                         )
+                        THEN 1 ELSE 0
+                    END
+                ) AS pending_count
+            FROM entity_status
+            """,
+            (source,),
+        ).fetchone()
+        if not row:
+            return {"all": 0, "pending": 0, "approved": 0, "rejected": 0, "not_needed": 0}
+        return {
+            "all": int(row["all_count"] or 0),
+            "pending": int(row["pending_count"] or 0),
+            "approved": int(row["approved_count"] or 0),
+            "rejected": int(row["rejected_count"] or 0),
+            "not_needed": int(row["not_needed_count"] or 0),
+        }
+
+    @classmethod
+    def get_local_entity_review_queue(
+        cls,
+        conn: sqlite3.Connection,
+        source: str = "bulk_receipts",
+        status: str = "pending",
+        query: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = "total_amount",
+        sort_dir: str = "desc",
+    ) -> List[dict]:
+        """Return paginated review-queue entities with status rollups."""
+        if (
+            not source
+            or not cls._table_exists(conn, "donor_entity_local")
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return []
+
+        sort_map = {
+            "name": "canonical_name",
+            "total_amount": "total_amount",
+            "member_count": "member_count",
+            "confidence": "confidence_score",
+            "confidence_score": "confidence_score",
+            "pending_count": "pending_count",
+            "approved_count": "approved_count",
+        }
+        order_by = sort_map.get(sort_by, "total_amount")
+        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+        status_filter = cls._normalize_review_status_filter(status)
+        query_text = (query or "").strip().lower()
+        query_pattern = f"%{query_text}%"
+
+        rows = conn.execute(
+            f"""
+            WITH entity_status AS (
+                SELECT
+                    e.entity_id,
+                    e.source,
+                    e.canonical_name,
+                    e.display_name,
+                    e.member_count,
+                    e.total_amount,
+                    e.confidence_score,
+                    e.peak_confidence_score,
+                    e.confidence_tier,
+                    e.merge_action,
+                    e.method_version,
+                    SUM(CASE WHEN m.review_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN m.review_status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+                    SUM(CASE WHEN m.review_status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
+                    SUM(CASE WHEN m.review_status = 'not_needed' THEN 1 ELSE 0 END) AS not_needed_count
+                FROM donor_entity_local e
+                JOIN donor_entity_local_member m
+                  ON m.source = e.source
+                 AND m.entity_id = e.entity_id
+                WHERE e.source = ?
+                  AND e.merge_action = 'review'
+                  AND m.merge_action = 'review'
+                GROUP BY
+                    e.entity_id,
+                    e.source,
+                    e.canonical_name,
+                    e.display_name,
+                    e.member_count,
+                    e.total_amount,
+                    e.confidence_score,
+                    e.peak_confidence_score,
+                    e.confidence_tier,
+                    e.merge_action,
+                    e.method_version
+            ),
+            tagged AS (
+                SELECT
+                    entity_id,
+                    source,
+                    canonical_name,
+                    display_name,
+                    member_count,
+                    total_amount,
+                    confidence_score,
+                    peak_confidence_score,
+                    confidence_tier,
+                    merge_action,
+                    method_version,
+                    pending_count,
+                    approved_count,
+                    rejected_count,
+                    not_needed_count,
+                    CASE
+                        WHEN rejected_count > 0 THEN 'rejected'
+                        WHEN pending_count = 0 AND approved_count > 0 THEN 'approved'
+                        WHEN pending_count = 0 AND approved_count = 0 AND not_needed_count > 0 THEN 'not_needed'
+                        ELSE 'pending'
+                    END AS entity_review_status
+                FROM entity_status
+            )
+            SELECT
+                entity_id,
+                source,
+                canonical_name,
+                display_name,
+                member_count,
+                total_amount,
+                confidence_score,
+                peak_confidence_score,
+                confidence_tier,
+                merge_action,
+                method_version,
+                pending_count,
+                approved_count,
+                rejected_count,
+                not_needed_count,
+                entity_review_status
+            FROM tagged
+            WHERE (
+                    ? = ''
+                    OR canonical_name LIKE ?
+                    OR COALESCE(display_name, '') LIKE ?
+                  )
+              AND (
+                    ? = 'all'
+                    OR entity_review_status = ?
+                  )
+            ORDER BY {order_by} {direction}, total_amount DESC, canonical_name ASC
+            LIMIT ? OFFSET ?
+            """,
+            (
+                source,
+                query_text,
+                query_pattern,
+                query_pattern,
+                status_filter,
+                status_filter,
+                limit,
+                offset,
+            ),
+        ).fetchall()
+
+        queue_rows = []
+        for row in rows:
+            queue_rows.append(
+                {
+                    "entity_id": row["entity_id"],
+                    "source": row["source"],
+                    "canonical_name": row["canonical_name"],
+                    "display_name": row["display_name"],
+                    "member_count": int(row["member_count"] or 0),
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "confidence_score": float(row["confidence_score"] or 0.0),
+                    "peak_confidence_score": float(row["peak_confidence_score"] or 0.0),
+                    "confidence_tier": row["confidence_tier"],
+                    "merge_action": row["merge_action"],
+                    "method_version": row["method_version"],
+                    "pending_count": int(row["pending_count"] or 0),
+                    "approved_count": int(row["approved_count"] or 0),
+                    "rejected_count": int(row["rejected_count"] or 0),
+                    "not_needed_count": int(row["not_needed_count"] or 0),
+                    "entity_review_status": row["entity_review_status"],
+                }
+            )
+        return queue_rows
+
+    @classmethod
+    def count_local_entity_review_queue(
+        cls,
+        conn: sqlite3.Connection,
+        source: str = "bulk_receipts",
+        status: str = "pending",
+        query: Optional[str] = None,
+    ) -> int:
+        """Count review-queue entities with filters."""
+        if (
+            not source
+            or not cls._table_exists(conn, "donor_entity_local")
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return 0
+
+        status_filter = cls._normalize_review_status_filter(status)
+        query_text = (query or "").strip().lower()
+        query_pattern = f"%{query_text}%"
+
+        row = conn.execute(
+            """
+            WITH entity_status AS (
+                SELECT
+                    e.entity_id,
+                    e.canonical_name,
+                    e.display_name,
+                    SUM(CASE WHEN m.review_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN m.review_status = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+                    SUM(CASE WHEN m.review_status = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
+                    SUM(CASE WHEN m.review_status = 'not_needed' THEN 1 ELSE 0 END) AS not_needed_count
+                FROM donor_entity_local e
+                JOIN donor_entity_local_member m
+                  ON m.source = e.source
+                 AND m.entity_id = e.entity_id
+                WHERE e.source = ?
+                  AND e.merge_action = 'review'
+                  AND m.merge_action = 'review'
+                GROUP BY e.entity_id, e.canonical_name, e.display_name
+            ),
+            tagged AS (
+                SELECT
+                    entity_id,
+                    canonical_name,
+                    display_name,
+                    CASE
+                        WHEN rejected_count > 0 THEN 'rejected'
+                        WHEN pending_count = 0 AND approved_count > 0 THEN 'approved'
+                        WHEN pending_count = 0 AND approved_count = 0 AND not_needed_count > 0 THEN 'not_needed'
+                        ELSE 'pending'
+                    END AS entity_review_status
+                FROM entity_status
+            )
+            SELECT COUNT(*) AS count
+            FROM tagged
+            WHERE (
+                    ? = ''
+                    OR canonical_name LIKE ?
+                    OR COALESCE(display_name, '') LIKE ?
+                  )
+              AND (
+                    ? = 'all'
+                    OR entity_review_status = ?
+                  )
+            """,
+            (
+                source,
+                query_text,
+                query_pattern,
+                query_pattern,
+                status_filter,
+                status_filter,
+            ),
+        ).fetchone()
+        return int(row["count"] or 0) if row else 0
+
+    @classmethod
+    def get_local_entity_review_entity(
+        cls,
+        conn: sqlite3.Connection,
+        entity_id: str,
+        source: str = "bulk_receipts",
+    ) -> Optional[dict]:
+        """Get one local donor entity with member review counts."""
+        if (
+            not entity_id
+            or not source
+            or not cls._table_exists(conn, "donor_entity_local")
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return None
+
+        row = conn.execute(
+            """
+            SELECT
+                e.entity_id,
+                e.source,
+                e.canonical_name,
+                e.display_name,
+                e.member_count,
+                e.total_amount,
+                e.confidence_score,
+                e.peak_confidence_score,
+                e.confidence_tier,
+                e.merge_action,
+                e.method_version,
+                COALESCE(SUM(CASE WHEN m.review_status = 'pending' THEN 1 ELSE 0 END), 0) AS pending_count,
+                COALESCE(SUM(CASE WHEN m.review_status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_count,
+                COALESCE(SUM(CASE WHEN m.review_status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_count,
+                COALESCE(SUM(CASE WHEN m.review_status = 'not_needed' THEN 1 ELSE 0 END), 0) AS not_needed_count
+            FROM donor_entity_local e
+            LEFT JOIN donor_entity_local_member m
+              ON m.source = e.source
+             AND m.entity_id = e.entity_id
+            WHERE e.source = ?
+              AND e.entity_id = ?
+            GROUP BY
+                e.entity_id,
+                e.source,
+                e.canonical_name,
+                e.display_name,
+                e.member_count,
+                e.total_amount,
+                e.confidence_score,
+                e.peak_confidence_score,
+                e.confidence_tier,
+                e.merge_action,
+                e.method_version
+            LIMIT 1
+            """,
+            (source, entity_id),
+        ).fetchone()
+        if not row:
+            return None
+
+        pending_count = int(row["pending_count"] or 0)
+        approved_count = int(row["approved_count"] or 0)
+        rejected_count = int(row["rejected_count"] or 0)
+        not_needed_count = int(row["not_needed_count"] or 0)
+        entity_status = "pending"
+        if rejected_count > 0:
+            entity_status = "rejected"
+        elif pending_count == 0 and approved_count > 0:
+            entity_status = "approved"
+        elif pending_count == 0 and approved_count == 0 and not_needed_count > 0:
+            entity_status = "not_needed"
+
+        return {
+            "entity_id": row["entity_id"],
+            "source": row["source"],
+            "canonical_name": row["canonical_name"],
+            "display_name": row["display_name"],
+            "member_count": int(row["member_count"] or 0),
+            "total_amount": float(row["total_amount"] or 0.0),
+            "confidence_score": float(row["confidence_score"] or 0.0),
+            "peak_confidence_score": float(row["peak_confidence_score"] or 0.0),
+            "confidence_tier": row["confidence_tier"],
+            "merge_action": row["merge_action"],
+            "method_version": row["method_version"],
+            "pending_count": pending_count,
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+            "not_needed_count": not_needed_count,
+            "entity_review_status": entity_status,
+        }
+
+    @classmethod
+    def get_local_entity_review_members(
+        cls,
+        conn: sqlite3.Connection,
+        entity_id: str,
+        source: str = "bulk_receipts",
+    ) -> List[dict]:
+        """Get all member rows for an entity review."""
+        if (
+            not entity_id
+            or not source
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return []
+
+        rows = conn.execute(
+            """
+            SELECT
+                m.source,
+                m.entity_id,
+                m.donor_key,
+                m.canonical_name,
+                m.donor_name,
+                m.donor_city,
+                m.donor_state,
+                m.donor_zip5,
+                m.confidence_score,
+                m.confidence_tier,
+                m.merge_action,
+                m.total_amount,
+                m.contribution_count,
+                m.committee_count,
+                m.review_status,
+                m.reasons_json,
+                m.method_version,
+                COALESCE(summary.donor_address, '') AS donor_address,
+                COALESCE(summary.occupation, '') AS occupation,
+                COALESCE(summary.employer, '') AS employer
+            FROM donor_entity_local_member m
+            LEFT JOIN analytics_donor_summary summary
+              ON summary.source = m.source
+             AND summary.donor_key = m.donor_key
+            WHERE m.source = ?
+              AND m.entity_id = ?
+            ORDER BY m.total_amount DESC, m.donor_key ASC
+            """,
+            (source, entity_id),
+        ).fetchall()
+
+        members = []
+        for row in rows:
+            reasons = []
+            if row["reasons_json"]:
+                try:
+                    parsed = json.loads(row["reasons_json"])
+                    if isinstance(parsed, list):
+                        reasons = [str(value) for value in parsed if value]
+                    elif isinstance(parsed, dict):
+                        for key, value in parsed.items():
+                            if isinstance(value, bool):
+                                if value:
+                                    reasons.append(str(key).replace("_", " "))
+                            elif isinstance(value, list):
+                                if value:
+                                    reasons.append(f"{key}: {', '.join(str(item) for item in value if item)}")
+                            elif value not in (None, ""):
+                                reasons.append(f"{key}: {value}")
+                except (ValueError, TypeError):
+                    reasons = []
+
+            members.append(
+                {
+                    "source": row["source"],
+                    "entity_id": row["entity_id"],
+                    "donor_key": row["donor_key"],
+                    "canonical_name": row["canonical_name"],
+                    "donor_name": row["donor_name"],
+                    "donor_city": row["donor_city"],
+                    "donor_state": row["donor_state"],
+                    "donor_zip5": row["donor_zip5"],
+                    "confidence_score": float(row["confidence_score"] or 0.0),
+                    "confidence_tier": row["confidence_tier"],
+                    "merge_action": row["merge_action"],
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "contribution_count": int(row["contribution_count"] or 0),
+                    "committee_count": int(row["committee_count"] or 0),
+                    "review_status": row["review_status"] or "pending",
+                    "reasons_json": row["reasons_json"],
+                    "reasons": reasons,
+                    "method_version": row["method_version"],
+                    "donor_address": row["donor_address"] or None,
+                    "occupation": row["occupation"] or None,
+                    "employer": row["employer"] or None,
+                }
+            )
+        return members
+
+    @classmethod
+    def update_local_entity_review_status(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        source: str,
+        entity_id: str,
+        review_status: str,
+        donor_key: Optional[str] = None,
+    ) -> int:
+        """Update member review status for one entity (or a single donor_key)."""
+        normalized_status = cls._normalize_review_status_filter(review_status)
+        if normalized_status == "all":
+            normalized_status = "pending"
+
+        if (
+            not source
+            or not entity_id
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return 0
+
+        if donor_key:
+            cursor = conn.execute(
+                """
+                UPDATE donor_entity_local_member
+                SET review_status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE source = ?
+                  AND entity_id = ?
+                  AND donor_key = ?
+                  AND merge_action = 'review'
+                """,
+                (normalized_status, source, entity_id, donor_key),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                UPDATE donor_entity_local_member
+                SET review_status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE source = ?
+                  AND entity_id = ?
+                  AND merge_action = 'review'
+                """,
+                (normalized_status, source, entity_id),
+            )
+
+        updated_count = int(cursor.rowcount or 0)
+        if updated_count > 0 and cls._table_exists(conn, "donor_entity_local"):
+            conn.execute(
+                """
+                UPDATE donor_entity_local
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE source = ?
+                  AND entity_id = ?
+                """,
+                (source, entity_id),
+            )
+        conn.commit()
+        return updated_count
+
 
 @dataclass
 class Contribution:
