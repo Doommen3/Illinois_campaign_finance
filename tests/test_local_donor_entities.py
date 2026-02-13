@@ -1,5 +1,6 @@
 """Tests for local donor entity resolution."""
 
+import json
 from pathlib import Path
 
 from database.connection import get_db, init_db
@@ -264,4 +265,137 @@ def test_rebuild_local_donor_entities_preserves_review_status(tmp_path: Path):
     ).fetchone()["review_status"]
 
     assert status == "approved"
+    conn.close()
+
+
+def test_rebuild_local_donor_entities_bridge_rule_links_high_dollar_same_state_employer(tmp_path: Path):
+    db_path = str(tmp_path / "local_entities_bridge_rule.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|1396 n. waukegan road||lake forest|il|60045",
+        donor_name="Richard Uihlein",
+        donor_address="1396 N. Waukegan Road, Lake Forest, IL, 60045",
+        donor_city="Lake Forest",
+        donor_state="IL",
+        occupation="small business owner",
+        employer="Uline Company",
+        total_amount=26_404_670.51,
+        contribution_count=465,
+        committee_count=254,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|po box 52||lake bluff|il|60044",
+        donor_name="Richard Uihlein",
+        donor_address="PO Box 52, Lake Bluff, IL, 60044",
+        donor_city="Lake Bluff",
+        donor_state="IL",
+        occupation="Uline",
+        employer="Uline Shipping",
+        total_amount=21_674_532.0,
+        contribution_count=55,
+        committee_count=40,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|1010 jericho rd||aurora|il|60506",
+        donor_name="Richard Uihlein",
+        donor_address="1010 Jericho Road, Aurora, IL, 60506",
+        donor_city="Aurora",
+        donor_state="IL",
+        occupation="retired",
+        employer="",
+        total_amount=500.0,
+        contribution_count=1,
+        committee_count=1,
+    )
+    conn.commit()
+
+    stats = rebuild_local_donor_entities(conn, source="bulk_receipts", dry_run=False)
+    assert stats["processed_groups"] == 1
+
+    rows = conn.execute(
+        """
+        SELECT donor_key, entity_id, merge_action, confidence_score, reasons_json
+        FROM donor_entity_local_member
+        WHERE source = 'bulk_receipts'
+        ORDER BY donor_key
+        """
+    ).fetchall()
+    assert len(rows) == 3
+
+    by_key = {row["donor_key"]: row for row in rows}
+    richard_home = by_key["richard|uihlein|1396 n. waukegan road||lake forest|il|60045"]
+    richard_po_box = by_key["richard|uihlein|po box 52||lake bluff|il|60044"]
+    richard_small = by_key["richard|uihlein|1010 jericho rd||aurora|il|60506"]
+
+    assert richard_home["entity_id"] == richard_po_box["entity_id"]
+    assert richard_home["entity_id"] != richard_small["entity_id"]
+    assert richard_home["merge_action"] == "review"
+    assert float(richard_home["confidence_score"]) >= 0.70
+    assert float(richard_po_box["confidence_score"]) >= 0.70
+
+    home_reasons = json.loads(richard_home["reasons_json"])
+    po_box_reasons = json.loads(richard_po_box["reasons_json"])
+    assert home_reasons["signals"]["bridge_rule"] is True
+    assert po_box_reasons["signals"]["bridge_rule"] is True
+
+    conn.close()
+
+
+def test_rebuild_local_donor_entities_bridge_rule_does_not_link_low_dollar_pairs(tmp_path: Path):
+    db_path = str(tmp_path / "local_entities_bridge_rule_safety.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    _insert_summary_row(
+        conn,
+        donor_key="john|doe|10 main st||chicago|il|60601",
+        donor_name="John Doe",
+        donor_address="10 Main St, Chicago, IL, 60601",
+        donor_city="Chicago",
+        donor_state="IL",
+        occupation="Engineer",
+        employer="Acme Company",
+        total_amount=700.0,
+        contribution_count=2,
+        committee_count=1,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="john|doe|44 oak ave||evanston|il|60201",
+        donor_name="John Doe",
+        donor_address="44 Oak Ave, Evanston, IL, 60201",
+        donor_city="Evanston",
+        donor_state="IL",
+        occupation="Analyst",
+        employer="Acme Logistics",
+        total_amount=500.0,
+        contribution_count=1,
+        committee_count=1,
+    )
+    conn.commit()
+
+    rebuild_local_donor_entities(conn, source="bulk_receipts", dry_run=False)
+
+    rows = conn.execute(
+        """
+        SELECT donor_key, entity_id, merge_action
+        FROM donor_entity_local_member
+        WHERE source = 'bulk_receipts'
+        ORDER BY donor_key
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    by_key = {row["donor_key"]: row for row in rows}
+    left = by_key["john|doe|10 main st||chicago|il|60601"]
+    right = by_key["john|doe|44 oak ave||evanston|il|60201"]
+
+    assert left["entity_id"] != right["entity_id"]
+    assert left["merge_action"] == "singleton"
+    assert right["merge_action"] == "singleton"
+
     conn.close()

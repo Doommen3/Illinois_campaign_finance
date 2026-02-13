@@ -40,6 +40,24 @@ _EMPLOYER_STOP_WORDS = {
     "holdings",
 }
 _OCCUPATION_STOP_WORDS = {"self", "employed", "retired"}
+_WEAK_EMPLOYER_ANCHORS = {
+    "self",
+    "owner",
+    "business",
+    "retired",
+    "none",
+    "unknown",
+    "individual",
+    "state",
+    "city",
+    "county",
+    "committee",
+    "fund",
+    "campaign",
+    "democratic",
+    "republican",
+}
+_BRIDGE_MIN_TOTAL_AMOUNT = 1_000_000.0
 _ORG_KEYWORDS = {
     "llc",
     "inc",
@@ -293,6 +311,7 @@ class _PairScore:
     employer_similarity: float
     occupation_similarity: float
     multi_home_bonus: bool
+    bridge_rule: bool
 
 
 class _UnionFind:
@@ -356,6 +375,7 @@ def _score_pair(
     right_idx: int,
     group_size: int,
     medium_threshold: float,
+    high_threshold: float,
 ) -> Optional[_PairScore]:
     city_state_match = bool(left.city_state_key and left.city_state_key == right.city_state_key)
     zip_match = bool(left.donor_zip5 and left.donor_zip5 == right.donor_zip5)
@@ -365,12 +385,25 @@ def _score_pair(
     occupation_similarity = _jaccard(left.occupation_tokens, right.occupation_tokens)
 
     multi_home_bonus = city_state_match and employer_similarity >= 0.85 and address_similarity < 0.30
+    bridge_rule = (
+        bool(left.full_name_normalized)
+        and left.full_name_normalized == right.full_name_normalized
+        and bool(left.donor_state)
+        and left.donor_state == right.donor_state
+        and bool(left.employer_anchor)
+        and left.employer_anchor == right.employer_anchor
+        and left.employer_anchor not in _WEAK_EMPLOYER_ANCHORS
+        and len(left.employer_anchor) >= 4
+        and employer_similarity >= 0.40
+        and max(left.total_amount, right.total_amount) >= _BRIDGE_MIN_TOTAL_AMOUNT
+    )
     signal_present = (
         zip_match
         or address_similarity >= 0.40
         or employer_similarity >= 0.60
         or occupation_similarity >= 0.60
         or multi_home_bonus
+        or bridge_rule
     )
 
     score = 0.32
@@ -416,6 +449,11 @@ def _score_pair(
         # to cross medium-confidence thresholds without auto-merging.
         score += 0.10
 
+    if bridge_rule:
+        # Allow high-dollar same-name/same-state/same-employer-anchor variants
+        # (often alternate home/PO box records) to be reviewed together.
+        score = max(score, min(high_threshold - 0.01, medium_threshold + 0.02))
+
     if group_size >= 10:
         score -= 0.04
     if group_size >= 20:
@@ -437,6 +475,7 @@ def _score_pair(
         employer_similarity=employer_similarity,
         occupation_similarity=occupation_similarity,
         multi_home_bonus=multi_home_bonus,
+        bridge_rule=bridge_rule,
     )
 
 
@@ -769,6 +808,7 @@ def rebuild_local_donor_entities(
                 right_idx=right_idx,
                 group_size=group_size,
                 medium_threshold=medium_threshold,
+                high_threshold=high_threshold,
             )
             if not scored:
                 continue
@@ -904,6 +944,7 @@ def rebuild_local_donor_entities(
                         "employer_similarity": round(float(edge.employer_similarity), 4),
                         "occupation_similarity": round(float(edge.occupation_similarity), 4),
                         "multi_home_bonus": bool(edge.multi_home_bonus),
+                        "bridge_rule": bool(edge.bridge_rule),
                     }
                 elif component_size <= 1:
                     reason_payload["note"] = "no medium-confidence links in canonical-name group"
