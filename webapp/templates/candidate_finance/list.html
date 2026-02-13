@@ -106,6 +106,7 @@
             <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
             <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
             <th>{{ sort_link('max_ending_funds_available', 'Max Ending Funds') }}</th>
+            <th>Provenance</th>
         </tr>
     </thead>
     <tbody>
@@ -140,10 +141,26 @@
             <td>{{ format_currency(row.sum_total_receipts) }}</td>
             <td>{{ format_currency(row.sum_total_expenditures) }}</td>
             <td>{{ format_currency(row.max_ending_funds_available) }}</td>
+            <td>
+                <details class="provenance-panel">
+                    <summary>Show</summary>
+                    <p><strong>Source table:</strong> bulk_candidate_committee_finance_agg</p>
+                    <p><strong>Source filing link:</strong>
+                        {% if row.candidate_id is not none and row.committee_id_sbe is not none %}
+                        <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">Itemized drilldown</a>
+                        {% else %}
+                        not available
+                        {% endif %}
+                    </p>
+                    <p><strong>Import batch:</strong> ISBE bulk candidate aggregate import</p>
+                    <p><strong>Sync timestamp:</strong> {{ row.period_end_date if row.period_end_date else 'not available' }}</p>
+                    <p><strong>Normalization notes:</strong> Candidate/committee mapping is grouped by candidate_id + committee_id_sbe.</p>
+                </details>
+            </td>
         </tr>
         {% else %}
         <tr>
-            <td colspan="13">No rows found for this query.</td>
+            <td colspan="14">No rows found for this query.</td>
         </tr>
         {% endfor %}
     </tbody>

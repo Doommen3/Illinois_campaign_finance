@@ -60,6 +60,7 @@
                     Committees{% if sort_by == 'committee_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
+            <th>Provenance</th>
         </tr>
     </thead>
     <tbody>
@@ -87,10 +88,20 @@
             <td>{{ format_currency(donor.total_amount) }}</td>
             <td>{{ donor.contribution_count }}</td>
             <td>{{ donor.committee_count if donor.committee_count is not none else '-' }}</td>
+            <td>
+                <details class="provenance-panel">
+                    <summary>Show</summary>
+                    <p><strong>Source table:</strong> {% if donor.donor_key %}analytics_donor_summary{% else %}donors{% endif %}</p>
+                    <p><strong>Source filing link:</strong> not available</p>
+                    <p><strong>Import batch:</strong> {% if donor.donor_key %}{{ donor.source if donor.source else donor_source }} materialized refresh{% else %}legacy donor ingestion{% endif %}</p>
+                    <p><strong>Sync timestamp:</strong> not available</p>
+                    <p><strong>Normalization notes:</strong> {% if donor.donor_key %}donor_key={{ donor.donor_key }}{% else %}normalized donor entity{% endif %}</p>
+                </details>
+            </td>
         </tr>
         {% else %}
         <tr>
-            <td colspan="10">No donors found.</td>
+            <td colspan="11">No donors found.</td>
         </tr>
         {% endfor %}
     </tbody>

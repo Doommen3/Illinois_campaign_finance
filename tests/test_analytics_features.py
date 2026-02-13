@@ -239,6 +239,8 @@ def test_analytics_service_outputs(analytics_conn):
     anomaly_types = {row["flag_type"] for row in anomalies}
     assert "large_single_contribution" in anomaly_types
     assert "monthly_spike" in anomaly_types
+    assert all("explainability" in row for row in anomalies)
+    assert any(row.get("percentile") is not None for row in anomalies if row["flag_type"] == "large_single_contribution")
 
     concentration = get_donor_concentration(analytics_conn, limit=20)
     committee_one = next(row for row in concentration if row["committee_name"] == "Committee One")
@@ -535,6 +537,7 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert risk.status_code == 200
     assert b"Analytics: Risk" in risk.data
     assert b"Risk and Anomaly Flags" in risk.data
+    assert b"Explainability" in risk.data
     assert b"Skipped in quick mode" not in risk.data
     assert b"Committee One" in risk.data
 
@@ -570,6 +573,8 @@ def test_analytics_api_endpoints(analytics_client):
     anomalies_data = anomalies.get_json()
     assert "data" in anomalies_data
     assert len(anomalies_data["data"]) > 0
+    assert "explainability" in anomalies_data["data"][0]
+    assert "threshold" in anomalies_data["data"][0]
 
     concentration = analytics_client.get("/api/analytics/concentration?limit=10")
     assert concentration.status_code == 200

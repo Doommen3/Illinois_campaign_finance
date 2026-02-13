@@ -42,6 +42,28 @@
 {% include "analytics/_status.html" %}
 
 <div class="status-section">
+    <h2>Interactive Geo Views</h2>
+    <p class="subtitle">State choropleth-style grid and city concentration chart for the active filters.</p>
+    <div class="two-column">
+        <div class="column">
+            <h3>State Choropleth Grid</h3>
+            <div class="network-svg-wrap">
+                <svg id="geo-state-grid-svg" viewBox="0 0 980 420" role="img" aria-label="State contribution choropleth grid"></svg>
+            </div>
+        </div>
+        <div class="column">
+            <h3>Top City Concentration</h3>
+            <div class="network-svg-wrap">
+                <svg id="geo-city-bars-svg" viewBox="0 0 980 420" role="img" aria-label="City concentration bars"></svg>
+            </div>
+        </div>
+    </div>
+    <script id="analytics-geo-summary" type="application/json">{{ geo_summary|tojson }}</script>
+    <script id="analytics-geo-timeseries" type="application/json">{{ time_series|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/analytics_visuals.js', v='20260213-1') }}"></script>
+</div>
+
+<div class="status-section">
     <h2>Time-Series Intelligence</h2>
     <table class="data-table">
         <thead>

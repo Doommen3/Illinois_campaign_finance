@@ -115,6 +115,102 @@ def _percentile(values: list[float], p: float) -> float:
     return float(sorted_vals[idx])
 
 
+def _percentile_rank(values: list[float], value: float) -> float | None:
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    count = 0
+    for item in sorted_vals:
+        if item <= value:
+            count += 1
+        else:
+            break
+    return round((count / len(sorted_vals)) * 100.0, 2)
+
+
+def _amount_distribution_markers(conn: sqlite3.Connection, source: str) -> dict:
+    if source == "bulk_receipts" and _table_exists(conn, "bulk_receipts_clean"):
+        row = conn.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    r.amount AS amount,
+                    ROW_NUMBER() OVER (ORDER BY r.amount) AS rn,
+                    COUNT(*) OVER () AS cnt
+                FROM bulk_receipts_clean r
+                WHERE COALESCE(r.amount, 0) > 0
+                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+            )
+            SELECT
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.50) AS INTEGER) + 1 THEN amount END) AS p50,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.90) AS INTEGER) + 1 THEN amount END) AS p90,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.99) AS INTEGER) + 1 THEN amount END) AS p99,
+                MAX(amount) AS max_amount,
+                MAX(cnt) AS count_rows
+            FROM ordered
+            """
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            WITH ordered AS (
+                SELECT
+                    amount,
+                    ROW_NUMBER() OVER (ORDER BY amount) AS rn,
+                    COUNT(*) OVER () AS cnt
+                FROM contributions
+                WHERE COALESCE(amount, 0) > 0
+            )
+            SELECT
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.50) AS INTEGER) + 1 THEN amount END) AS p50,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.90) AS INTEGER) + 1 THEN amount END) AS p90,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.99) AS INTEGER) + 1 THEN amount END) AS p99,
+                MAX(amount) AS max_amount,
+                MAX(cnt) AS count_rows
+            FROM ordered
+            """
+        ).fetchone()
+
+    if not row:
+        return {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
+            "max_amount": 0.0,
+            "count_rows": 0,
+        }
+
+    return {
+        "p50": float(row["p50"] or 0.0),
+        "p90": float(row["p90"] or 0.0),
+        "p95": float(row["p95"] or 0.0),
+        "p99": float(row["p99"] or 0.0),
+        "max_amount": float(row["max_amount"] or 0.0),
+        "count_rows": int(row["count_rows"] or 0),
+    }
+
+
+def _estimate_amount_percentile(value: float, markers: dict) -> float | None:
+    if not markers or markers.get("count_rows", 0) <= 0:
+        return None
+    p99 = float(markers.get("p99") or 0.0)
+    p95 = float(markers.get("p95") or 0.0)
+    p90 = float(markers.get("p90") or 0.0)
+    p50 = float(markers.get("p50") or 0.0)
+    if value >= p99 and p99 > 0:
+        return 99.0
+    if value >= p95 and p95 > 0:
+        return 95.0
+    if value >= p90 and p90 > 0:
+        return 90.0
+    if value >= p50 and p50 > 0:
+        return 50.0
+    return 10.0
+
+
 def _gini(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -878,6 +974,7 @@ def get_anomaly_flags(
     """Generate anomaly/risk flags from contribution and concentration data."""
     flags: list[dict] = []
     source = _donor_flow_source(conn)
+    amount_markers = _amount_distribution_markers(conn, source)
     range_start, range_end = _normalize_date_range(date_from, date_to)
     committee_month_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
@@ -917,6 +1014,7 @@ def get_anomaly_flags(
             if baseline <= 0:
                 baseline = large_threshold
             event_date = _normalize_date_iso(row["event_date"]) or _normalize_month_key(row["event_date"]) or None
+            percentile = _estimate_amount_percentile(amount, amount_markers)
             flags.append(
                 {
                     "flag_type": "large_single_contribution",
@@ -926,7 +1024,17 @@ def get_anomaly_flags(
                     "event_date": event_date,
                     "value": round(amount, 2),
                     "baseline": round(baseline, 2),
+                    "threshold": round(baseline, 2),
+                    "percentile": percentile,
                     "details": "Contribution amount exceeds dynamic large-transaction threshold.",
+                    "explainability": {
+                        "rule": "large_single_contribution",
+                        "why_flagged": "Contribution amount is above the dynamic large contribution threshold.",
+                        "threshold": round(baseline, 2),
+                        "baseline": round(baseline, 2),
+                        "percentile": percentile,
+                        "distribution_markers": amount_markers,
+                    },
                 }
             )
 
@@ -994,6 +1102,7 @@ def get_anomaly_flags(
         for row in large_rows:
             amount = float(row["amount"] or 0.0)
             event_date = _normalize_date_iso(row["event_date"]) or _normalize_month_key(row["event_date"]) or None
+            percentile = _estimate_amount_percentile(amount, amount_markers)
             flags.append(
                 {
                     "flag_type": "large_single_contribution",
@@ -1003,7 +1112,17 @@ def get_anomaly_flags(
                     "event_date": event_date,
                     "value": round(amount, 2),
                     "baseline": round(large_threshold, 2),
+                    "threshold": round(large_threshold, 2),
+                    "percentile": percentile,
                     "details": "Receipt amount exceeds dynamic large-transaction threshold.",
+                    "explainability": {
+                        "rule": "large_single_contribution",
+                        "why_flagged": "Receipt amount is above the dynamic large contribution threshold.",
+                        "threshold": round(large_threshold, 2),
+                        "baseline": round(large_threshold, 2),
+                        "percentile": percentile,
+                        "distribution_markers": amount_markers,
+                    },
                 }
             )
 
@@ -1061,6 +1180,7 @@ def get_anomaly_flags(
             if amount < large_threshold:
                 break
             event_date = _normalize_date_iso(row["transaction_date"]) or _normalize_date_iso(row["filed_date"])
+            percentile = _percentile_rank(amounts, amount)
             flags.append(
                 {
                     "flag_type": "large_single_contribution",
@@ -1070,7 +1190,17 @@ def get_anomaly_flags(
                     "event_date": event_date,
                     "value": round(amount, 2),
                     "baseline": round(large_threshold, 2),
+                    "threshold": round(large_threshold, 2),
+                    "percentile": percentile,
                     "details": "Contribution amount exceeds dynamic large-transaction threshold.",
+                    "explainability": {
+                        "rule": "large_single_contribution",
+                        "why_flagged": "Contribution amount is above the dynamic large contribution threshold.",
+                        "threshold": round(large_threshold, 2),
+                        "baseline": round(large_threshold, 2),
+                        "percentile": percentile,
+                        "distribution_markers": amount_markers,
+                    },
                 }
             )
 
@@ -1086,6 +1216,7 @@ def get_anomaly_flags(
         months = sorted(month_map.keys())
         if len(months) < 4:
             continue
+        monthly_values = [month_map[m] for m in months if month_map[m] > 0]
         for i in range(3, len(months)):
             current_month = months[i]
             current_total = month_map[current_month]
@@ -1096,6 +1227,7 @@ def get_anomaly_flags(
                 continue
             ratio = current_total / baseline_avg
             if ratio >= 3 and (current_total - baseline_avg) >= 2000:
+                percentile = _percentile_rank(monthly_values, current_total)
                 flags.append(
                     {
                         "flag_type": "monthly_spike",
@@ -1105,7 +1237,19 @@ def get_anomaly_flags(
                         "event_date": current_month,
                         "value": round(current_total, 2),
                         "baseline": round(baseline_avg, 2),
+                        "threshold": 3.0,
+                        "percentile": percentile,
                         "details": "Monthly receipts are at least 3x trailing 3-month average.",
+                        "explainability": {
+                            "rule": "monthly_spike",
+                            "why_flagged": "Current month exceeded both ratio and absolute delta thresholds.",
+                            "threshold": 3.0,
+                            "baseline": round(baseline_avg, 2),
+                            "percentile": percentile,
+                            "ratio": round(ratio, 2),
+                            "min_abs_delta": 2000.0,
+                            "baseline_months": baseline_months,
+                        },
                     }
                 )
 
@@ -1114,8 +1258,10 @@ def get_anomaly_flags(
         if precomputed_concentration is not None
         else get_donor_concentration(conn, limit=5000)
     )
+    concentration_hhi_values = [float(row["hhi"] or 0.0) for row in concentration if row.get("donor_count", 0) >= 3]
     for row in concentration:
         if row["hhi"] >= 4500 and row["donor_count"] >= 3:
+            percentile = _percentile_rank(concentration_hhi_values, float(row["hhi"] or 0.0))
             flags.append(
                 {
                     "flag_type": "high_donor_concentration",
@@ -1125,7 +1271,19 @@ def get_anomaly_flags(
                     "event_date": None,
                     "value": row["hhi"],
                     "baseline": 2500.0,
+                    "threshold": 4500.0,
+                    "percentile": percentile,
                     "details": "Committee donor base is highly concentrated by HHI.",
+                    "explainability": {
+                        "rule": "high_donor_concentration",
+                        "why_flagged": "HHI exceeds high concentration threshold for competitive donor diversity.",
+                        "threshold": 4500.0,
+                        "baseline": 2500.0,
+                        "percentile": percentile,
+                        "top1_share": row["top1_share"],
+                        "top5_share": row["top5_share"],
+                        "top10_share": row["top10_share"],
+                    },
                 }
             )
 

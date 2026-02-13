@@ -790,6 +790,264 @@ class TestWebApp:
         response = client.get('/search')
         assert response.status_code == 200
 
+    def test_search_extended_categories(self, app, client):
+        """Test global search includes candidates, reports, filed docs, and donor keys."""
+        conn = get_db(app.config['DATABASE_PATH'])
+
+        conn.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidate_committee_finance_agg (
+                candidate_id INTEGER,
+                candidate_full_name TEXT,
+                office_sought TEXT,
+                committee_id_sbe INTEGER,
+                sum_total_receipts REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO bulk_candidate_committee_finance_agg (
+                candidate_id, candidate_full_name, office_sought, committee_id_sbe, sum_total_receipts
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (301, "Local Search Candidate", "Mayor", 991, 25000.0),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO fec_il_candidate_seed (
+                candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+                party, party_code, election_stage, candidate_name, normalized_candidate_name,
+                write_in, already_listed_general, source_file, source_row_number
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "search-seed-1",
+                "2026-02-07",
+                2026,
+                "U.S. House",
+                "H",
+                "IL-01",
+                "01",
+                "Democratic",
+                "DEM",
+                "Primary",
+                "Federal Search Candidate",
+                "FEDERAL SEARCH CANDIDATE",
+                0,
+                0,
+                "seed.csv",
+                1,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO fec_candidate_match (
+                seed_candidate_key, candidate_name, office, office_code, district, district_code,
+                party, party_code, election_stage, cycle, fec_candidate_id, fec_name, match_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "search-seed-1",
+                "Federal Search Candidate",
+                "U.S. House",
+                "H",
+                "IL-01",
+                "01",
+                "Democratic",
+                "DEM",
+                "Primary",
+                2026,
+                "H2IL01001",
+                "SEARCH, FEDERAL",
+                "matched",
+            ),
+        )
+
+        conn.execute("DROP TABLE IF EXISTS bulk_d2_receipts_recon")
+        conn.execute(
+            """
+            CREATE TABLE bulk_d2_receipts_recon (
+                filed_doc_id INTEGER,
+                committee_id_sbe INTEGER,
+                committee_name TEXT,
+                receipts_minus_d2_total REAL,
+                first_receipt_date TEXT,
+                last_receipt_date TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO bulk_d2_receipts_recon (
+                filed_doc_id, committee_id_sbe, committee_name, receipts_minus_d2_total, first_receipt_date, last_receipt_date
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (9001, 991, "Doc Search Committee", 125.0, "2026-01-01", "2026-01-31"),
+        )
+
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bulk_receipts",
+                "bulk-search-key-1",
+                None,
+                "Bulk Search Donor",
+                "1 Main St, Chicago, IL 60601",
+                "Chicago",
+                "IL",
+                "Engineer",
+                "Search Corp",
+                5555.0,
+                4,
+                2,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        candidates = client.get("/search?q=Search%20Candidate&type=candidates")
+        assert candidates.status_code == 200
+        assert b"Local Search Candidate" in candidates.data
+        assert b"Federal Search Candidate" in candidates.data
+        assert b"Provenance" in candidates.data
+
+        reports = client.get("/search?q=Test%20Committee&type=reports")
+        assert reports.status_code == 200
+        assert b"Reports" in reports.data
+        assert b"Test Committee" in reports.data
+
+        filed_docs = client.get("/search?q=9001&type=filed_docs")
+        assert filed_docs.status_code == 200
+        assert b"Filed Doc IDs" in filed_docs.data
+        assert b"9001" in filed_docs.data
+
+        donor_keys = client.get("/search?q=bulk-search-key&type=donor_keys")
+        assert donor_keys.status_code == 200
+        assert b"Donor Keys" in donor_keys.data
+        assert b"bulk-search-key-1" in donor_keys.data
+
+    def test_compare_page_candidate_mode(self, app, client):
+        """Test compare route renders side-by-side candidate overlap when bulk tables exist."""
+        conn = get_db(app.config['DATABASE_PATH'])
+
+        conn.execute("DROP TABLE IF EXISTS bulk_candidates_clean")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidates_clean (
+                candidate_id INTEGER,
+                candidate_full_name TEXT,
+                office_sought TEXT,
+                district_type TEXT,
+                district TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_candidates_clean (
+                candidate_id, candidate_full_name, office_sought, district_type, district
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (201, "Candidate Left", "Mayor", "Municipal", "1"),
+                (202, "Candidate Right", "Mayor", "Municipal", "2"),
+            ],
+        )
+
+        conn.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidate_committee_finance_agg (
+                candidate_id INTEGER,
+                candidate_full_name TEXT,
+                office_sought TEXT,
+                committee_id_sbe INTEGER,
+                sum_total_receipts REAL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_candidate_committee_finance_agg (
+                candidate_id, candidate_full_name, office_sought, committee_id_sbe, sum_total_receipts
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (201, "Candidate Left", "Mayor", 101, 12000.0),
+                (202, "Candidate Right", "Mayor", 102, 15000.0),
+            ],
+        )
+
+        conn.execute("DROP TABLE IF EXISTS bulk_committee_candidate_links")
+        conn.execute(
+            """
+            CREATE TABLE bulk_committee_candidate_links (
+                candidate_id INTEGER,
+                committee_id_sbe INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_committee_candidate_links (candidate_id, committee_id_sbe)
+            VALUES (?, ?)
+            """,
+            [(201, 101), (202, 102)],
+        )
+
+        conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
+        conn.execute(
+            """
+            CREATE TABLE bulk_receipts_clean (
+                committee_id_sbe INTEGER,
+                amount REAL,
+                received_date TEXT,
+                first_name TEXT,
+                last_or_business_name TEXT,
+                address_line_1 TEXT,
+                address_line_2 TEXT,
+                city TEXT,
+                state TEXT,
+                postal_code TEXT,
+                d2_part_code TEXT,
+                is_archived INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_receipts_clean (
+                committee_id_sbe, amount, received_date, first_name, last_or_business_name,
+                address_line_1, address_line_2, city, state, postal_code, d2_part_code, is_archived
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (101, 3000.0, "2026-01-05", "Alex", "Overlap", "1 Main", "", "Chicago", "IL", "60601", "1", 0),
+                (102, 4500.0, "2026-01-12", "Alex", "Overlap", "1 Main", "", "Chicago", "IL", "60601", "1", 0),
+                (101, 900.0, "2026-02-01", "Pat", "Solo", "2 Main", "", "Chicago", "IL", "60602", "1", 0),
+                (102, 1200.0, "2026-02-07", "Jamie", "Solo", "3 Main", "", "Chicago", "IL", "60603", "1", 0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get("/compare?mode=candidate&left=201&right=202")
+        assert response.status_code == 200
+        assert b"Trend Comparison" in response.data
+        assert b"Donor Overlap" in response.data
+        assert b"Alex Overlap" in response.data
+
     def test_committees_sort_query_loads(self, client):
         """Test committees page supports sort params."""
         response = client.get('/committees/?sort=total_contributions&dir=desc')

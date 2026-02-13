@@ -4,13 +4,18 @@
 
 {% block content %}
 <h1>Search</h1>
+<p class="subtitle">Search across committees, donors, candidates, reports, filed doc IDs, and donor keys.</p>
 
 <form action="{{ url_for('main.search') }}" method="get" class="search-form">
-    <input type="text" name="q" value="{{ query }}" placeholder="Search committees, donors...">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search names, IDs, donor keys, filed docs...">
     <select name="type">
         <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
         <option value="committees" {% if type == 'committees' %}selected{% endif %}>Committees</option>
         <option value="donors" {% if type == 'donors' %}selected{% endif %}>Donors</option>
+        <option value="candidates" {% if type == 'candidates' %}selected{% endif %}>Candidates</option>
+        <option value="reports" {% if type == 'reports' %}selected{% endif %}>Reports</option>
+        <option value="filed_docs" {% if type == 'filed_docs' %}selected{% endif %}>Filed Doc IDs</option>
+        <option value="donor_keys" {% if type == 'donor_keys' %}selected{% endif %}>Donor Keys</option>
     </select>
     <button type="submit">Search</button>
 </form>
@@ -33,6 +38,14 @@
                         <a href="{{ url_for('committees.committee_detail', committee_id=committee.id) }}">
                             {{ committee.name }}
                         </a>
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> committees</p>
+                            <p><strong>Source filing link:</strong> {{ committee.detail_url if committee.detail_url else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> legacy committee scrape/import</p>
+                            <p><strong>Sync timestamp:</strong> {{ committee.updated_at if committee.updated_at else 'not available' }}</p>
+                            <p><strong>Normalization notes:</strong> {{ committee.source_identifier if committee.source_identifier else 'source identifier not present' }}</p>
+                        </details>
                     </td>
                 </tr>
                 {% endfor %}
@@ -59,6 +72,14 @@
                         <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
                             {{ donor.name }}
                         </a>
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> donors</p>
+                            <p><strong>Source filing link:</strong> not available</p>
+                            <p><strong>Import batch:</strong> legacy contribution scrape/manual entry</p>
+                            <p><strong>Sync timestamp:</strong> {{ donor.created_at if donor.created_at else 'not available' }}</p>
+                            <p><strong>Normalization notes:</strong> normalized_name={{ donor.normalized_name if donor.normalized_name else 'none' }}</p>
+                        </details>
                     </td>
                     <td>{{ donor.address|truncate(40) if donor.address else '-' }}</td>
                     <td>{{ format_currency(donor.total_amount) }}</td>
@@ -69,7 +90,188 @@
     </section>
     {% endif %}
 
-    {% if not committees and not donors %}
+    {% if type in ('all', 'candidates') and candidates %}
+    <section>
+        <h2>Candidates ({{ candidates|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Scope</th>
+                    <th>Name</th>
+                    <th>Office</th>
+                    <th>Totals</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for candidate in candidates %}
+                <tr>
+                    <td>{{ candidate.scope }}</td>
+                    <td>
+                        {% if candidate.scope == 'federal' and candidate.candidate_id %}
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate.candidate_id) }}">
+                            {{ candidate.candidate_name }}
+                        </a>
+                        {% else %}
+                        <a href="{{ url_for('candidate_finance.list_candidate_finance', q=candidate.candidate_name) }}">
+                            {{ candidate.candidate_name }}
+                        </a>
+                        {% endif %}
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> {{ candidate.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ candidate.provenance.source_filing_link if candidate.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ candidate.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ candidate.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ candidate.provenance.normalization_notes }}</p>
+                        </details>
+                    </td>
+                    <td>
+                        {{ candidate.office if candidate.office else '-' }}
+                        {% if candidate.district %}
+                        <br><small>District {{ candidate.district }}</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if candidate.scope == 'local' %}
+                        {{ format_currency(candidate.total_receipts) }}<br>
+                        <small>{{ candidate.committee_count }} committees</small>
+                        {% else %}
+                        {% if candidate.cycle %}Cycle {{ candidate.cycle }}{% else %}-{% endif %}<br>
+                        <small>{{ candidate.match_status }}</small>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if type in ('all', 'reports') and reports %}
+    <section>
+        <h2>Reports ({{ reports|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Report</th>
+                    <th>Committee</th>
+                    <th>Filed</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in reports %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('reports.report_detail', report_id=row.id) }}">
+                            {{ row.report_type if row.report_type else 'Report ' ~ row.id }}
+                        </a>
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> {{ row.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ row.provenance.source_filing_link if row.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ row.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ row.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ row.provenance.normalization_notes }}</p>
+                        </details>
+                    </td>
+                    <td>{{ row.committee_name }}</td>
+                    <td>
+                        {{ row.filed_date if row.filed_date else '-' }}
+                        {% if row.reporting_period %}
+                        <br><small>{{ row.reporting_period }}</small>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if type in ('all', 'filed_docs') and filed_docs %}
+    <section>
+        <h2>Filed Doc IDs ({{ filed_docs|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Filed Doc ID</th>
+                    <th>Committee</th>
+                    <th>Receipts</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in filed_docs %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon', q=row.filed_doc_id) }}">
+                            {{ row.filed_doc_id }}
+                        </a>
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> {{ row.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ url_for('d2_receipts_recon.list_d2_receipts_recon', q=row.filed_doc_id) }}</p>
+                            <p><strong>Import batch:</strong> {{ row.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ row.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ row.normalization_notes }}</p>
+                        </details>
+                    </td>
+                    <td>{{ row.committee_name if row.committee_name else ('Committee ' ~ row.committee_id_sbe) }}</td>
+                    <td>
+                        {% if row.amount is not none %}{{ format_currency(row.amount) }}{% else %}-{% endif %}
+                        {% if row.receipt_row_count is not none %}
+                        <br><small>{{ row.receipt_row_count }} rows</small>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if type in ('all', 'donor_keys') and donor_keys %}
+    <section>
+        <h2>Donor Keys ({{ donor_keys|length }})</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Donor Key</th>
+                    <th>Totals</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in donor_keys %}
+                <tr>
+                    <td>
+                        <a href="{{ url_for('donors.donor_detail_by_key', donor_key=row.donor_key, source=row.source) }}">
+                            {{ row.donor_name }}
+                        </a>
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> {{ row.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ row.provenance.source_filing_link if row.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ row.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ row.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ row.provenance.normalization_notes }}</p>
+                        </details>
+                    </td>
+                    <td>
+                        <code>{{ row.donor_key }}</code><br>
+                        <small>{{ row.source }}</small>
+                    </td>
+                    <td>
+                        {{ format_currency(row.total_amount) }}<br>
+                        <small>{{ row.contribution_count }} contributions • {{ row.committee_count }} committees</small>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if not committees and not donors and not candidates and not reports and not filed_docs and not donor_keys %}
     <p class="no-results">No results found for "{{ query }}"</p>
     {% endif %}
 </div>

@@ -81,6 +81,27 @@
 </div>
 
 <div class="status-section">
+    <h2>Trend Visuals</h2>
+    <p class="subtitle">Interactive monthly trend line and month-over-month change profile.</p>
+    <div class="two-column">
+        <div class="column">
+            <h3>Time-Series Line Chart</h3>
+            <div class="network-svg-wrap">
+                <svg id="overview-time-series-svg" viewBox="0 0 980 340" role="img" aria-label="Overview time-series line chart"></svg>
+            </div>
+        </div>
+        <div class="column">
+            <h3>MoM Change Distribution</h3>
+            <div class="network-svg-wrap">
+                <svg id="overview-mom-svg" viewBox="0 0 980 340" role="img" aria-label="Month over month change chart"></svg>
+            </div>
+        </div>
+    </div>
+    <script id="analytics-overview-time-series" type="application/json">{{ time_series|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/analytics_visuals.js', v='20260213-1') }}"></script>
+</div>
+
+<div class="status-section">
     <h2>Time-Series Preview</h2>
     <table class="data-table">
         <thead>

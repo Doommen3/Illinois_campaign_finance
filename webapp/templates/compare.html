@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% block title %}Compare - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Compare</h1>
+<p class="subtitle">Side-by-side trends and donor overlap for candidates or committees.</p>
+
+<form class="search-form compare-form" method="get" action="{{ url_for('main.compare') }}">
+    <label>
+        Compare mode
+        <select name="mode" onchange="this.form.submit()">
+            <option value="candidate" {% if mode == 'candidate' %}selected{% endif %}>Candidate vs Candidate</option>
+            <option value="committee" {% if mode == 'committee' %}selected{% endif %}>Committee vs Committee</option>
+        </select>
+    </label>
+    <label>
+        Left
+        <select name="left" required>
+            <option value="">Select left side</option>
+            {% for option in options %}
+            <option value="{{ option.value }}" {% if left_value == option.value %}selected{% endif %}>
+                {{ option.label }}{% if option.meta %} ({{ option.meta }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>
+        Right
+        <select name="right" required>
+            <option value="">Select right side</option>
+            {% for option in options %}
+            <option value="{{ option.value }}" {% if right_value == option.value %}selected{% endif %}>
+                {{ option.label }}{% if option.meta %} ({{ option.meta }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+    </label>
+    <button type="submit">Compare</button>
+</form>
+
+{% if compare_error %}
+<div class="status-section">
+    <p class="error-text">{{ compare_error }}</p>
+</div>
+{% endif %}
+
+{% if left_profile and right_profile %}
+<div class="two-column compare-columns">
+    <div class="column">
+        <h2>{{ left_profile.label }}</h2>
+        <p class="subtitle">{{ left_profile.meta if left_profile.meta else '-' }}</p>
+        <div class="stats-grid compare-stats-grid">
+            <div class="stat-card">
+                <h3>Total Amount</h3>
+                <p class="stat-value">{{ format_currency(left_profile.total_amount) }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Contributions</h3>
+                <p class="stat-value">{{ left_profile.contribution_count }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Unique Donors</h3>
+                <p class="stat-value">{{ left_profile.donor_count }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>{% if mode == 'candidate' %}Committees{% else %}Donor Counterparties{% endif %}</h3>
+                <p class="stat-value">{{ left_profile.counterparty_count }}</p>
+            </div>
+        </div>
+        <details class="provenance-panel">
+            <summary>Provenance</summary>
+            <p><strong>Source table:</strong> {{ left_profile.provenance.source_table }}</p>
+            <p><strong>Source filing link:</strong> {{ left_profile.provenance.source_filing_link if left_profile.provenance.source_filing_link else 'not available' }}</p>
+            <p><strong>Import batch:</strong> {{ left_profile.provenance.import_batch }}</p>
+            <p><strong>Sync timestamp:</strong> {{ left_profile.provenance.sync_timestamp }}</p>
+            <p><strong>Normalization notes:</strong> {{ left_profile.provenance.normalization_notes }}</p>
+        </details>
+
+        <h3>Top Donors</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Total</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in left_profile.top_donors %}
+                <tr>
+                    <td>{{ row.donor_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.contribution_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No donor rows available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="column">
+        <h2>{{ right_profile.label }}</h2>
+        <p class="subtitle">{{ right_profile.meta if right_profile.meta else '-' }}</p>
+        <div class="stats-grid compare-stats-grid">
+            <div class="stat-card">
+                <h3>Total Amount</h3>
+                <p class="stat-value">{{ format_currency(right_profile.total_amount) }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Contributions</h3>
+                <p class="stat-value">{{ right_profile.contribution_count }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>Unique Donors</h3>
+                <p class="stat-value">{{ right_profile.donor_count }}</p>
+            </div>
+            <div class="stat-card">
+                <h3>{% if mode == 'candidate' %}Committees{% else %}Donor Counterparties{% endif %}</h3>
+                <p class="stat-value">{{ right_profile.counterparty_count }}</p>
+            </div>
+        </div>
+        <details class="provenance-panel">
+            <summary>Provenance</summary>
+            <p><strong>Source table:</strong> {{ right_profile.provenance.source_table }}</p>
+            <p><strong>Source filing link:</strong> {{ right_profile.provenance.source_filing_link if right_profile.provenance.source_filing_link else 'not available' }}</p>
+            <p><strong>Import batch:</strong> {{ right_profile.provenance.import_batch }}</p>
+            <p><strong>Sync timestamp:</strong> {{ right_profile.provenance.sync_timestamp }}</p>
+            <p><strong>Normalization notes:</strong> {{ right_profile.provenance.normalization_notes }}</p>
+        </details>
+
+        <h3>Top Donors</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Total</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in right_profile.top_donors %}
+                <tr>
+                    <td>{{ row.donor_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.contribution_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No donor rows available.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Trend Comparison</h2>
+    <p class="subtitle">Monthly total amount for both sides under current compare mode.</p>
+    <div class="network-svg-wrap">
+        <svg id="compare-trend-svg" viewBox="0 0 980 340" role="img" aria-label="Monthly compare trend chart"></svg>
+    </div>
+    <script id="compare-trend-data" type="application/json">{{ overlap.month_rows|tojson }}</script>
+    <script id="compare-trend-labels" type="application/json">{{ {'left': left_profile.label, 'right': right_profile.label}|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/compare.js') }}"></script>
+</div>
+
+<div class="status-section">
+    <h2>Donor Overlap</h2>
+    <p class="subtitle">
+        Overlap donors: <strong>{{ overlap.donor_overlap_count }}</strong> |
+        Shared amount floor: <strong>{{ format_currency(overlap.shared_amount) }}</strong>
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Donor</th>
+                <th>Left Amount</th>
+                <th>Right Amount</th>
+                <th>Shared Floor</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in overlap.rows %}
+            <tr>
+                <td>{{ row.donor_name }}</td>
+                <td>{{ format_currency(row.left_amount) }}</td>
+                <td>{{ format_currency(row.right_amount) }}</td>
+                <td>{{ format_currency(row.shared_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No donor overlap detected for these selections.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

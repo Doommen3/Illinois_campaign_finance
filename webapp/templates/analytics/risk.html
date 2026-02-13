@@ -42,6 +42,27 @@
 {% include "analytics/_status.html" %}
 
 <div class="status-section">
+    <h2>Risk Distribution Views</h2>
+    <p class="subtitle">Histogram and severity profile for currently visible anomaly rows.</p>
+    <div class="two-column">
+        <div class="column">
+            <h3>Anomaly Value Histogram</h3>
+            <div class="network-svg-wrap">
+                <svg id="anomaly-histogram-svg" viewBox="0 0 980 320" role="img" aria-label="Anomaly value histogram"></svg>
+            </div>
+        </div>
+        <div class="column">
+            <h3>Severity by Flag Type</h3>
+            <div class="network-svg-wrap">
+                <svg id="anomaly-severity-svg" viewBox="0 0 980 320" role="img" aria-label="Anomaly severity chart"></svg>
+            </div>
+        </div>
+    </div>
+    <script id="analytics-risk-anomalies" type="application/json">{{ anomalies|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/analytics_visuals.js', v='20260213-1') }}"></script>
+</div>
+
+<div class="status-section">
     <h2>Risk and Anomaly Flags</h2>
     <table class="data-table">
         <thead>
@@ -52,7 +73,10 @@
                 <th>Date/Month</th>
                 <th>Value</th>
                 <th>Baseline</th>
+                <th>Threshold</th>
+                <th>Percentile</th>
                 <th>Severity</th>
+                <th>Explainability</th>
             </tr>
         </thead>
         <tbody>
@@ -65,16 +89,43 @@
                     <td>{{ row.event_date if row.event_date else '-' }}</td>
                     <td>{{ row.value }}</td>
                     <td>{{ row.baseline }}</td>
+                    <td>{{ row.threshold if row.threshold is not none else '-' }}</td>
+                    <td>{% if row.percentile is not none %}{{ row.percentile }}{% else %}-{% endif %}</td>
                     <td>{{ row.severity }}</td>
+                    <td>
+                        <details class="provenance-panel">
+                            <summary>Explain</summary>
+                            {% if row.explainability %}
+                            <p><strong>Rule:</strong> {{ row.explainability.rule }}</p>
+                            <p><strong>Why flagged:</strong> {{ row.explainability.why_flagged }}</p>
+                            <p><strong>Threshold:</strong> {{ row.explainability.threshold }}</p>
+                            <p><strong>Baseline:</strong> {{ row.explainability.baseline }}</p>
+                            <p><strong>Percentile:</strong> {{ row.explainability.percentile if row.explainability.percentile is not none else 'not available' }}</p>
+                            {% if row.explainability.ratio %}
+                            <p><strong>Ratio:</strong> {{ row.explainability.ratio }}</p>
+                            {% endif %}
+                            {% if row.explainability.min_abs_delta %}
+                            <p><strong>Min abs delta:</strong> {{ row.explainability.min_abs_delta }}</p>
+                            {% endif %}
+                            <p><strong>Source table:</strong> analytics anomaly cache</p>
+                            <p><strong>Source filing link:</strong> {{ url_for('api.analytics_anomalies', limit=anomaly_limit, date_from=date_from, date_to=date_to) }}</p>
+                            <p><strong>Import batch:</strong> analytics snapshot build</p>
+                            <p><strong>Sync timestamp:</strong> {{ snapshot_meta.completed_at if snapshot_meta and snapshot_meta.completed_at else 'not available' }}</p>
+                            <p><strong>Normalization notes:</strong> donor/committee entities are normalized before scoring.</p>
+                            {% else %}
+                            <p>No explainability payload for this row.</p>
+                            {% endif %}
+                        </details>
+                    </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7">No anomaly flags found.</td></tr>
+                <tr><td colspan="10">No anomaly flags found.</td></tr>
                 {% endfor %}
             {% else %}
                 {% if full_mode_requested %}
-                <tr><td colspan="7">Full-mode snapshot is not ready yet.</td></tr>
+                <tr><td colspan="10">Full-mode snapshot is not ready yet.</td></tr>
                 {% else %}
-                <tr><td colspan="7">Skipped in quick mode. Switch to Full mode to compute anomaly flags.</td></tr>
+                <tr><td colspan="10">Skipped in quick mode. Switch to Full mode to compute anomaly flags.</td></tr>
                 {% endif %}
             {% endif %}
         </tbody>
