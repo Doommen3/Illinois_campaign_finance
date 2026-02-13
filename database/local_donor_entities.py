@@ -449,17 +449,17 @@ def _score_pair(
         # to cross medium-confidence thresholds without auto-merging.
         score += 0.10
 
-    if bridge_rule:
-        # Allow high-dollar same-name/same-state/same-employer-anchor variants
-        # (often alternate home/PO box records) to be reviewed together.
-        score = max(score, min(high_threshold - 0.01, medium_threshold + 0.02))
-
     if group_size >= 10:
         score -= 0.04
     if group_size >= 20:
         score -= 0.06
     if group_size >= 40:
         score -= 0.08
+
+    if bridge_rule:
+        # Apply bridge floor after large-group penalties so high-dollar
+        # same-identity candidates remain review-eligible.
+        score = max(score, min(high_threshold - 0.01, medium_threshold + 0.02))
 
     if not signal_present and score < medium_threshold:
         return None

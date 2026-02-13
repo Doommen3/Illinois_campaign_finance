@@ -399,3 +399,78 @@ def test_rebuild_local_donor_entities_bridge_rule_does_not_link_low_dollar_pairs
     assert right["merge_action"] == "singleton"
 
     conn.close()
+
+
+def test_rebuild_local_donor_entities_bridge_rule_survives_large_group_penalty(tmp_path: Path):
+    db_path = str(tmp_path / "local_entities_bridge_rule_large_group.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    # Target pair that should link via bridge rule.
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|1396 n. waukegan road||lake forest|il|60045",
+        donor_name="Richard Uihlein",
+        donor_address="1396 N. Waukegan Road, Lake Forest, IL, 60045",
+        donor_city="Lake Forest",
+        donor_state="IL",
+        occupation="small business owner",
+        employer="Uline Company",
+        total_amount=26_404_670.51,
+        contribution_count=465,
+        committee_count=254,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|po box 52||lake bluff|il|60044",
+        donor_name="Richard Uihlein",
+        donor_address="PO Box 52, Lake Bluff, IL, 60044",
+        donor_city="Lake Bluff",
+        donor_state="IL",
+        occupation="Uline",
+        employer="Uline Shipping",
+        total_amount=21_674_532.0,
+        contribution_count=55,
+        committee_count=40,
+    )
+
+    # Add many low-signal rows with same canonical name to trigger large-group penalties.
+    for idx in range(50):
+        _insert_summary_row(
+            conn,
+            donor_key=f"richard|uihlein|{1000 + idx} elm st||springfield|il|6270{idx % 10}",
+            donor_name="Richard Uihlein",
+            donor_address=f"{1000 + idx} Elm St, Springfield, IL, 6270{idx % 10}",
+            donor_city="Springfield",
+            donor_state="IL",
+            occupation="retired",
+            employer=f"Other Employer {idx}",
+            total_amount=100.0 + idx,
+            contribution_count=1,
+            committee_count=1,
+        )
+    conn.commit()
+
+    stats = rebuild_local_donor_entities(conn, source="bulk_receipts", dry_run=False)
+    assert stats["processed_groups"] == 1
+
+    rows = conn.execute(
+        """
+        SELECT donor_key, entity_id, merge_action, confidence_score
+        FROM donor_entity_local_member
+        WHERE source = 'bulk_receipts'
+          AND donor_key IN (
+            'richard|uihlein|1396 n. waukegan road||lake forest|il|60045',
+            'richard|uihlein|po box 52||lake bluff|il|60044'
+          )
+        ORDER BY donor_key
+        """
+    ).fetchall()
+    assert len(rows) == 2
+
+    assert rows[0]["entity_id"] == rows[1]["entity_id"]
+    assert rows[0]["merge_action"] == "review"
+    assert float(rows[0]["confidence_score"]) >= 0.70
+    assert float(rows[1]["confidence_score"]) >= 0.70
+
+    conn.close()
