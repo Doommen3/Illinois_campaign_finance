@@ -38,6 +38,7 @@
 
 {% block content %}
 <h1>Federal Candidate Detail</h1>
+<p class="help-text">Detailed view of a single federal candidate's financial activity across FEC Schedules A (contributions), B (disbursements), and E (independent expenditures). Use tabs to navigate between sections.</p>
 
 {% if not detail %}
 <div class="status-section">
@@ -81,6 +82,41 @@
     <p><strong>Schedule E Date Range:</strong> {{ detail.summary.earliest_expenditure_date if detail.summary.earliest_expenditure_date else '-' }} to {{ detail.summary.latest_expenditure_date if detail.summary.latest_expenditure_date else '-' }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
 </div>
+
+<style>
+.tab-radio { display: none; }
+.tab-labels { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 1rem; }
+.tab-label { padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; color: #64748b; font-weight: 500; }
+.tab-label:hover { color: #1e293b; }
+.tab-panel { display: none; }
+#tab-overview:checked ~ .tab-panels .panel-overview,
+#tab-money-in:checked ~ .tab-panels .panel-money-in,
+#tab-money-out:checked ~ .tab-panels .panel-money-out,
+#tab-outside:checked ~ .tab-panels .panel-outside,
+#tab-cross-role:checked ~ .tab-panels .panel-cross-role { display: block; }
+#tab-overview:checked ~ .tab-labels .label-overview,
+#tab-money-in:checked ~ .tab-labels .label-money-in,
+#tab-money-out:checked ~ .tab-labels .label-money-out,
+#tab-outside:checked ~ .tab-labels .label-outside,
+#tab-cross-role:checked ~ .tab-labels .label-cross-role { color: #1e293b; border-bottom-color: #2563eb; }
+</style>
+
+<input type="radio" name="tabs" id="tab-overview" class="tab-radio" checked>
+<input type="radio" name="tabs" id="tab-money-in" class="tab-radio">
+<input type="radio" name="tabs" id="tab-money-out" class="tab-radio">
+<input type="radio" name="tabs" id="tab-outside" class="tab-radio">
+<input type="radio" name="tabs" id="tab-cross-role" class="tab-radio">
+
+<div class="tab-labels">
+    <label class="tab-label label-overview" for="tab-overview">Overview</label>
+    <label class="tab-label label-money-in" for="tab-money-in">Money In</label>
+    <label class="tab-label label-money-out" for="tab-money-out">Money Out</label>
+    <label class="tab-label label-outside" for="tab-outside">Outside Spending</label>
+    <label class="tab-label label-cross-role" for="tab-cross-role">Cross-Role</label>
+</div>
+
+<div class="tab-panels">
+<div class="tab-panel panel-overview">
 
 <div class="stats-grid">
     <div class="stat-card">
@@ -143,6 +179,9 @@
         </table>
     </div>
 </div>
+
+</div><!-- end panel-overview -->
+<div class="tab-panel panel-money-in">
 
 <div class="status-section">
     <h2>Top Donors</h2>
@@ -248,6 +287,9 @@
     {% endif %}
 </div>
 
+</div><!-- end panel-money-in -->
+<div class="tab-panel panel-money-out">
+
 <div class="status-section">
     <h2>Recent Disbursements (Schedule B)</h2>
     <p class="subtitle">
@@ -352,6 +394,9 @@
     </div>
 </div>
 
+</div><!-- end panel-money-out -->
+<div class="tab-panel panel-outside">
+
 <div class="status-section">
     <h2>Independent Expenditures (Schedule E)</h2>
     <p class="subtitle">
@@ -407,6 +452,9 @@
     {% endif %}
 </div>
 
+</div><!-- end panel-outside -->
+<div class="tab-panel panel-cross-role">
+
 <div class="status-section">
     <h2>Cross-Role Organizations (A and B/E)</h2>
     <p class="subtitle">
@@ -452,5 +500,8 @@
         </table>
     </div>
 </div>
+
+</div><!-- end panel-cross-role -->
+</div><!-- end tab-panels -->
 {% endif %}
 {% endblock %}

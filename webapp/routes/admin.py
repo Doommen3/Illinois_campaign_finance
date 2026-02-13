@@ -12,6 +12,13 @@ from webapp.auth import login_required
 admin_bp = Blueprint("admin", __name__)
 
 
+@admin_bp.route("/")
+@login_required
+def admin_hub():
+    """Consolidated admin hub with links to all tools."""
+    return render_template("admin/hub.html")
+
+
 @admin_bp.route("/federal-receipt-audit")
 @login_required
 def federal_receipt_audit():

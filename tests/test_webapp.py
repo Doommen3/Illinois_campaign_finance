@@ -754,7 +754,6 @@ class TestWebApp:
         networks = client.get('/federal-finance/networks?cycle=2026&network_min_edge_amount=0')
         assert networks.status_code == 200
         assert b'Federal Donor-Candidate Network' in networks.data
-        assert b'Matched Donor Overlap Network (Local + Federal)' in networks.data
         assert b'id="federal-network-svg"' in networks.data
         assert b'id="federal-graph-mode"' in networks.data
         assert b'Trend Matrix' in networks.data
@@ -766,27 +765,34 @@ class TestWebApp:
         assert b'id="federal-flow-min"' in networks.data
         assert b'id="federal-flow-limit"' in networks.data
         assert b'id="federal-flow-search"' in networks.data
-        assert b'Multi-layer Money Flow Network (A/B/E)' in networks.data
-        assert b'Top Multi-layer Flows' in networks.data
-        assert b'Cross-Role Organizations (Donor and Payee)' in networks.data
-        assert b'id="overlap-network-svg"' in networks.data
-        assert b'id="overlap-graph-mode"' in networks.data
-        assert b'Trend Matrix' in networks.data
-        assert b'Interactive Force' not in networks.data
-        assert b'id="overlap-highlight-race"' in networks.data
-        assert b'id="overlap-highlight-party"' in networks.data
-        assert b'Donor Overlap UpSet' in networks.data
-        assert b'id="overlap-upset-svg"' in networks.data
-        assert b'id="overlap-upset-metric"' in networks.data
-        assert b'id="overlap-upset-limit"' in networks.data
+        # Multilayer, cross-role, and overlap moved to Money Flow / Matching pages
+        assert b'Multi-layer Money Flow Network (A/B/E)' not in networks.data
+        assert b'Cross-Role Organizations (Donor and Payee)' not in networks.data
+
+        money_flow = client.get('/federal-finance/money-flow?cycle=2026&network_min_edge_amount=0')
+        assert money_flow.status_code == 200
+        assert b'Money Flow' in money_flow.data
+
+        influence_page = client.get('/federal-finance/influence?cycle=2026')
+        assert influence_page.status_code == 200
+        assert b'Influence' in influence_page.data
+
+        follow_page = client.get('/federal-finance/follow-the-money?cycle=2026')
+        assert follow_page.status_code == 200
+        assert b'Follow the Money' in follow_page.data
+
+        geography_page = client.get('/federal-finance/geography?cycle=2026')
+        assert geography_page.status_code == 200
+        assert b'Geography' in geography_page.data or b'Geographic' in geography_page.data
 
         intelligence = client.get('/federal-finance/donor-intelligence?cycle=2026')
         assert intelligence.status_code == 200
         assert b'Federal Donor Intelligence' in intelligence.data
         assert b'Donor Segmentation' in intelligence.data
         assert b'Donor Network Clustering' in intelligence.data
-        assert b'Influence Scores - Donors' in intelligence.data
-        assert b'Follow the Money (Multi-Hop)' in intelligence.data
+        # Influence and Follow the Money moved to their own pages
+        assert b'Influence Scores - Donors' not in intelligence.data
+        assert b'Follow the Money (Multi-Hop)' not in intelligence.data
 
         matching = client.get('/federal-finance/matching?cycle=2026')
         assert matching.status_code == 200
@@ -886,9 +892,9 @@ class TestWebApp:
         assert b'Local Donations (Committee Breakdown)' in match_profile.data
         assert b'Friends of Springfield' in match_profile.data
 
-        follow = client.get(f'/federal-finance/donor-intelligence?cycle=2026&follow_donor_key={quote(donor_key)}&follow_min_edge_amount=0')
+        follow = client.get(f'/federal-finance/follow-the-money?cycle=2026&follow_donor_key={quote(donor_key)}&follow_min_edge_amount=0')
         assert follow.status_code == 200
-        assert b'id="follow-money-svg"' in follow.data
+        assert b'Follow the Money' in follow.data
 
     def test_candidate_committee_itemized_page_loads_with_bulk_tables(self, app, client):
         """Test candidate/committee drill-down page renders itemized lines and supports filters/CSV."""

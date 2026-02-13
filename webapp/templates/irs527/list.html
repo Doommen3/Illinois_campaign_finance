@@ -5,6 +5,7 @@
 {% block content %}
 <h1>IRS 527 Political Organizations</h1>
 <p class="subtitle">{{ total }} organizations with Illinois connections</p>
+<p class="help-text">IRS Section 527 political organizations with Illinois connections. These tax-exempt organizations can raise unlimited funds for political activities. Cross-matched against state committees and campaign donors.</p>
 
 <form action="{{ url_for('irs527.list_orgs') }}" method="get" class="search-form">
     <input type="text" name="q" placeholder="Search organizations..." value="{{ query }}">

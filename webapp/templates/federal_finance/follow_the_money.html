@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block title %}Follow the Money - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Follow the Money</h1>
+<p class="subtitle">Multi-hop path tracing through the campaign finance network.</p>
+<p class="help-text">Enter a donor entity key to trace how money flows from that donor through committees to candidates, and discover connections to other donors. Each "hop" represents one step in the money chain (e.g., donor -> committee -> candidate -> another donor who also gave to that candidate).</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_follow_the_money') }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="analysis_office">
+        <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
+        <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
+        <option value="S" {% if analysis_office == 'S' %}selected{% endif %}>U.S. Senate</option>
+        <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
+    </select>
+    <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District">
+    <input type="text" name="follow_donor_key" value="{{ follow_donor_key }}" placeholder="Donor entity key (required)">
+    <input type="text" name="follow_max_hops" value="{{ follow_max_hops }}" placeholder="Max hops (1-8)">
+    <input type="text" name="follow_min_edge_amount" value="{{ follow_min_edge_amount }}" placeholder="Min edge amount">
+    <button type="submit">Trace</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_follow_the_money') }}">Clear</a>
+</form>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+</div>
+{% else %}
+<div class="status-section">
+    {% if follow_money.start_node_found %}
+    <p class="subtitle">
+        Nodes: <strong>{{ follow_money.summary.node_count }}</strong> |
+        Edges: <strong>{{ follow_money.summary.edge_count }}</strong> |
+        Candidates: <strong>{{ follow_money.summary.candidate_count }}</strong> |
+        Committees: <strong>{{ follow_money.summary.committee_count }}</strong> |
+        Connected Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong>
+    </p>
+    <div class="network-svg-wrap">
+        <svg id="follow-money-svg" viewBox="0 0 1000 520" role="img" aria-label="Follow the money multi hop network"></svg>
+    </div>
+    {% elif follow_donor_key %}
+    <p>No multi-hop network found for <strong>{{ follow_donor_key }}</strong> under current filters.</p>
+    {% else %}
+    <p>Enter a donor entity key in the form above to trace their money flow through the campaign finance network.</p>
+    <p class="help-text">You can find donor entity keys on the <a href="{{ url_for('federal_finance.federal_candidates') }}">Federal Candidates</a> page by clicking into a candidate and viewing their donor list.</p>
+    {% endif %}
+
+    {% if follow_money.reachable_candidates %}
+    <h3>Reachable Candidates</h3>
+    <p class="help-text">Candidates that can be reached from the starting donor within {{ follow_max_hops }} hops. Lower hop distance means a more direct financial connection.</p>
+    <table class="data-table">
+        <thead>
+            <tr><th>Candidate</th><th>Race</th><th>Party</th><th>Hop Distance</th></tr>
+        </thead>
+        <tbody>
+            {% for row in follow_money.reachable_candidates[:40] %}
+            <tr>
+                <td>
+                    {% if row.candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    {% else %}{{ row.candidate_name }}{% endif %}
+                </td>
+                <td>{{ row.race_label if row.race_label else '-' }}</td>
+                <td>{{ row.party_display if row.party_display else '-' }}</td>
+                <td>{{ row.hop_distance }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<script>
+(() => {
+    const followGraph = {{ follow_money|tojson }} || {};
+    if (!followGraph.start_node_found) return;
+
+    const PARTY_COLORS = {
+        Democratic: "#2563eb", Republican: "#dc2626", Independent: "#0f766e",
+        Libertarian: "#d97706", Green: "#16a34a", Other: "#7c3aed", "Unknown Party": "#64748b",
+    };
+    const svg = document.getElementById("follow-money-svg");
+    if (!svg) return;
+
+    const clearSvg = () => { while (svg.firstChild) svg.removeChild(svg.firstChild); };
+    const drawLine = (x1, y1, x2, y2, width, color, opacity) => {
+        const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        l.setAttribute("x1", String(x1)); l.setAttribute("y1", String(y1));
+        l.setAttribute("x2", String(x2)); l.setAttribute("y2", String(y2));
+        l.setAttribute("stroke", color); l.setAttribute("stroke-width", String(width));
+        l.setAttribute("stroke-opacity", String(opacity));
+        svg.appendChild(l);
+    };
+    const drawCircle = (x, y, r, fill, stroke = "#0f172a") => {
+        const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        c.setAttribute("cx", String(x)); c.setAttribute("cy", String(y));
+        c.setAttribute("r", String(r)); c.setAttribute("fill", fill);
+        c.setAttribute("stroke", stroke); c.setAttribute("stroke-width", "1");
+        svg.appendChild(c);
+    };
+    const drawText = (x, y, text, color = "#334155", size = "10px", anchor = "middle") => {
+        const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
+        t.setAttribute("fill", color); t.setAttribute("font-size", size);
+        t.setAttribute("text-anchor", anchor);
+        t.textContent = text;
+        svg.appendChild(t);
+    };
+    const shortLabel = (value, maxLen = 24) => {
+        const text = String(value || "").trim() || "Unknown";
+        return text.length <= maxLen ? text : `${text.slice(0, maxLen - 1)}…`;
+    };
+
+    clearSvg();
+    const nodes = followGraph.nodes || [];
+    const edges = followGraph.edges || [];
+    const hops = new Map();
+    for (const node of nodes) {
+        const hop = Number(node.hop_distance || 0);
+        if (!hops.has(hop)) hops.set(hop, []);
+        hops.get(hop).push(node);
+    }
+
+    const pos = new Map();
+    const sortedHops = Array.from(hops.keys()).sort((a, b) => a - b);
+    sortedHops.forEach((hop, hopIndex) => {
+        const col = hops.get(hop) || [];
+        const x = 100 + (hopIndex * (800 / Math.max(1, sortedHops.length - 1)));
+        col.forEach((node, idx) => {
+            const y = 40 + (idx * (440 / Math.max(1, col.length - 1)));
+            pos.set(node.id, {x, y});
+        });
+    });
+
+    for (const edge of edges.slice(0, 500)) {
+        const a = pos.get(edge.source);
+        const b = pos.get(edge.target);
+        if (!a || !b) continue;
+        const color = edge.edge_type === "donor_committee" ? "#4f46e5" : "#dc2626";
+        drawLine(a.x, a.y, b.x, b.y, Math.max(0.5, Math.log10((edge.weight || 0) + 1)), color, 0.35);
+    }
+
+    for (const node of nodes) {
+        const p = pos.get(node.id);
+        if (!p) continue;
+        let fill = "#94a3b8";
+        if (node.node_type === "donor") fill = "#2563eb";
+        if (node.node_type === "committee") fill = "#0f766e";
+        if (node.node_type === "candidate") {
+            const party = String(node.party_display || node.party_code || "Unknown Party");
+            fill = PARTY_COLORS[party] || "#b91c1c";
+        }
+        drawCircle(p.x, p.y, 6, fill);
+        drawText(p.x, p.y - 9, shortLabel(node.label || node.id), "#1e293b", "9px", "middle");
+    }
+})();
+</script>
+{% endif %}
+{% endblock %}

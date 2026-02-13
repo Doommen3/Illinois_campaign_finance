@@ -5,6 +5,7 @@
 {% block content %}
 <h1>IL Lobbying Entities</h1>
 <p class="subtitle">{{ total }} lobbying entities registered with IL Secretary of State</p>
+<p class="help-text">Active lobbying entities registered with the Illinois Secretary of State and their client relationships. Cross-matched against campaign donors and expenditure payees to surface lobbying-campaign finance connections.</p>
 
 <form action="{{ url_for('lobbying.list_entities') }}" method="get" class="search-form">
     <input type="text" name="q" placeholder="Search entities..." value="{{ query }}">

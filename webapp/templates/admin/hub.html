@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Tools - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Admin Tools</h1>
+<p class="subtitle">Consolidated hub for data quality, entry, and management tools.</p>
+
+<div class="status-section">
+    <h2>Data Quality &amp; Reconciliation</h2>
+    <p class="help-text">Tools for auditing data integrity across local and federal sources.</p>
+    <table class="data-table">
+        <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon') }}">D2 Receipts Reconciliation</a></td>
+                <td>Compare D2 form totals against itemized receipt sums per filing. Large differences may indicate missing data or reporting errors.</td>
+            </tr>
+            <tr>
+                <td><a href="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">D2 Expenditures Reconciliation</a></td>
+                <td>Compare D2 itemized expenditure totals against itemized sums, broken down by D2 parts (Transfers Out, Loans Made, Expenditures, Independent Expenditures).</td>
+            </tr>
+            <tr>
+                <td><a href="{{ url_for('admin.federal_receipt_audit') }}">Federal Receipt Audit</a></td>
+                <td>Compare FEC-reported receipt totals against synced Schedule A subtotals. Flags discrepancies between official FEC totals and downloaded data.</td>
+            </tr>
+            <tr>
+                <td><a href="{{ url_for('admin.federal_disbursement_audit') }}">Federal Disbursement Audit</a></td>
+                <td>Compare FEC-reported disbursement totals against synced Schedule B subtotals. Identifies gaps in disbursement data coverage.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Data Entry &amp; Review</h2>
+    <p class="help-text">Manual data entry and entity resolution review workflows.</p>
+    <table class="data-table">
+        <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><a href="{{ url_for('manual_entry.queue') }}">Manual Entry Queue</a></td>
+                <td>Paper-filed reports requiring manual contribution data entry. Prioritized by filing date and report type.</td>
+            </tr>
+            <tr>
+                <td><a href="{{ url_for('admin.donor_merge_queue') }}">Donor Merge Review</a></td>
+                <td>Review algorithmically proposed donor entity merges. Approve or reject groupings of donor records that appear to represent the same person.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Data Management</h2>
+    <p class="help-text">Bulk data views and legacy tools.</p>
+    <table class="data-table">
+        <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Candidate Finance</a></td>
+                <td>ISBE bulk candidate-committee aggregate data with filtering, sorting, and CSV export. Use for validating state-level campaign finance totals.</td>
+            </tr>
+            <tr>
+                <td><a href="{{ url_for('main.legacy') }}">Legacy Tools</a></td>
+                <td>Historical scrape-era pages retained for QA, validation, and manual workflows. Includes committee, report, and donor views from the original data pipeline.</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}

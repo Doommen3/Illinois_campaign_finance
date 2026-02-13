@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Influence Scores - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Influence Scores</h1>
+<p class="subtitle">Network-based influence metrics for federal donors and candidates.</p>
+<p class="help-text">Influence scores combine multiple network centrality measures to identify the most connected and impactful actors in the campaign finance network. <strong>Weighted Degree</strong> is the total dollar amount of connections. <strong>Degree</strong> is the number of unique connections. <strong>PageRank</strong> measures importance based on the quality of connections (similar to Google's algorithm). <strong>Influence Score</strong> is a composite of all three.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_influence') }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="analysis_office">
+        <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
+        <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
+        <option value="S" {% if analysis_office == 'S' %}selected{% endif %}>U.S. Senate</option>
+        <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
+    </select>
+    <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
+    <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
+    <input type="text" name="cluster_limit" value="{{ cluster_limit }}" placeholder="Limit">
+    <button type="submit">Update</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_influence') }}">Clear</a>
+</form>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+</div>
+{% else %}
+<div class="two-column">
+    <div class="column">
+        <h2>Top Donors by Influence</h2>
+        <p class="help-text">Donors ranked by a composite influence score combining total contribution amounts, number of candidate connections, and network centrality (PageRank).</p>
+        <table class="data-table">
+            <thead>
+                <tr><th>Donor</th><th>Influence</th><th>Weighted Degree</th><th>Degree</th><th>PageRank</th></tr>
+            </thead>
+            <tbody>
+                {% for row in influence.donors[:25] %}
+                <tr>
+                    <td>
+                        {% if row.donor_entity_key %}
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">{{ row.label }}</a>
+                        {% else %}{{ row.label }}{% endif %}
+                    </td>
+                    <td>{{ row.influence_score }}</td>
+                    <td>{{ format_currency(row.weighted_degree) }}</td>
+                    <td>{{ row.degree }}</td>
+                    <td>{{ row.pagerank_score }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No donor influence rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="column">
+        <h2>Top Candidates by Influence</h2>
+        <p class="help-text">Candidates ranked by influence score. Higher scores indicate candidates with more donors, larger total contributions, and connections to influential donors.</p>
+        <table class="data-table">
+            <thead>
+                <tr><th>Candidate</th><th>Influence</th><th>Weighted Degree</th><th>Degree</th><th>PageRank</th></tr>
+            </thead>
+            <tbody>
+                {% for row in influence.candidates[:25] %}
+                <tr>
+                    <td>
+                        {% if row.candidate_id %}
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
+                        {% else %}{{ row.label }}{% endif %}
+                    </td>
+                    <td>{{ row.influence_score }}</td>
+                    <td>{{ format_currency(row.weighted_degree) }}</td>
+                    <td>{{ row.degree }}</td>
+                    <td>{{ row.pagerank_score }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No candidate influence rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

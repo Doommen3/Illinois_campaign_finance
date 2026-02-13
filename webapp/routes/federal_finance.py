@@ -358,8 +358,6 @@ def federal_networks():
 
     network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
     network_limit = min(max(request.args.get('network_limit', 1500, type=int), 100), 5000)
-    overlap_edge_limit = min(max(request.args.get('overlap_edge_limit', 900, type=int), 100), 5000)
-    local_match_limit = min(max(request.args.get('local_match_limit', 100000, type=int), 1000), 500000)
 
     federal_network = {
         'nodes': [],
@@ -373,55 +371,6 @@ def federal_networks():
             'total_amount': 0.0,
         },
     }
-    multilayer_network = {
-        'nodes': [],
-        'edges': [],
-        'centrality': [],
-        'summary': {
-            'node_count': 0,
-            'edge_count': 0,
-            'donor_count': 0,
-            'candidate_count': 0,
-            'candidate_committee_count': 0,
-            'vendor_count': 0,
-            'ie_committee_count': 0,
-            'total_amount': 0.0,
-            'donor_candidate_total_amount': 0.0,
-            'committee_vendor_total_amount': 0.0,
-            'ie_committee_candidate_total_amount': 0.0,
-        },
-        'layer_summary': [],
-    }
-    cross_role_orgs = {
-        'rows': [],
-        'summary': {
-            'matched_organization_count': 0,
-            'total_donor_amount': 0.0,
-            'total_out_amount': 0.0,
-        },
-    }
-    overlap_network = {
-        'nodes': [],
-        'edges': [],
-        'centrality': [],
-        'summary': {
-            'node_count': 0,
-            'edge_count': 0,
-            'matched_donors': 0,
-            'federal_candidate_count': 0,
-            'local_committee_count': 0,
-        },
-        'match_summary': {
-            'federal_donors_considered': 0,
-            'local_donors_considered': 0,
-            'federal_donors_matched': 0,
-            'local_donors_matched': 0,
-            'match_rate': 0.0,
-            'tier_counts': {},
-            'matches': [],
-        },
-    }
-
     cache_status = None
     if table_available:
         payload = None
@@ -431,9 +380,7 @@ def federal_networks():
             'analysis_district': analysis_district or '',
             'network_min_edge_amount': round(network_min_edge_amount, 2),
             'network_limit': network_limit,
-            'overlap_edge_limit': overlap_edge_limit,
-            'local_match_limit': local_match_limit,
-            'version': 2,
+            'version': 3,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -454,38 +401,7 @@ def federal_networks():
                 min_edge_amount=network_min_edge_amount,
                 limit=network_limit,
             )
-            multilayer_network = get_federal_multilayer_network_graph(
-                conn,
-                cycle=cycle,
-                office_code=analysis_office or None,
-                district_code=analysis_district or None,
-                min_edge_amount=network_min_edge_amount,
-                limit=network_limit,
-            )
-            cross_role_orgs = get_federal_cross_role_organizations(
-                conn,
-                cycle=cycle,
-                office_code=analysis_office or None,
-                district_code=analysis_district or None,
-                limit=60,
-                min_total_amount=network_min_edge_amount,
-            )
-            overlap_network = get_federal_local_overlap_network(
-                conn,
-                cycle=cycle,
-                office_code=analysis_office or None,
-                district_code=analysis_district or None,
-                min_edge_amount=network_min_edge_amount,
-                edge_limit=overlap_edge_limit,
-                federal_donor_limit=max(2000, network_limit),
-                local_donor_limit=local_match_limit,
-            )
-            payload = {
-                'federal_network': federal_network,
-                'multilayer_network': multilayer_network,
-                'cross_role_orgs': cross_role_orgs,
-                'overlap_network': overlap_network,
-            }
+            payload = {'federal_network': federal_network}
             if _federal_cache_enabled():
                 cache_status = save_federal_view_snapshot(
                     conn,
@@ -496,21 +412,13 @@ def federal_networks():
                 )
         else:
             federal_network = payload.get('federal_network', federal_network)
-            multilayer_network = payload.get('multilayer_network', multilayer_network)
-            cross_role_orgs = payload.get('cross_role_orgs', cross_role_orgs)
-            overlap_network = payload.get('overlap_network', overlap_network)
 
     return render_template(
         'federal_finance/networks.html',
         **_base_context('networks', table_available, cycle, analysis_office, analysis_district),
         network_min_edge_amount=network_min_edge_amount,
         network_limit=network_limit,
-        overlap_edge_limit=overlap_edge_limit,
-        local_match_limit=local_match_limit,
         federal_network=federal_network,
-        multilayer_network=multilayer_network,
-        cross_role_orgs=cross_role_orgs,
-        overlap_network=overlap_network,
         cache_status=cache_status,
     )
 
@@ -533,10 +441,6 @@ def federal_donor_intelligence():
     cluster_limit = min(max(request.args.get('cluster_limit', 1500, type=int), 100), 5000)
     min_edge_amount = max(request.args.get('network_min_edge_amount', 100.0, type=float), 0.0)
 
-    follow_donor_key = request.args.get('follow_donor_key', '', type=str).strip()
-    follow_max_hops = min(max(request.args.get('follow_max_hops', 3, type=int), 1), 8)
-    follow_min_edge_amount = max(request.args.get('follow_min_edge_amount', 0.0, type=float), 0.0)
-
     donor_segmentation = {
         'method': segmentation_method,
         'donor_count': 0,
@@ -545,22 +449,11 @@ def federal_donor_intelligence():
         'sample_donors': [],
     }
     donor_clusters = {'cluster_count': 0, 'clusters': [], 'graph_summary': {}}
-    influence = {'donors': [], 'candidates': []}
-    follow_money = {
-        'requested_donor_entity_key': follow_donor_key,
-        'start_node_found': False,
-        'nodes': [],
-        'edges': [],
-        'summary': {'node_count': 0, 'edge_count': 0, 'max_hops': follow_max_hops},
-        'reachable_candidates': [],
-        'reachable_committees': [],
-        'connected_donors': [],
-    }
 
     cache_status = None
     if table_available:
         payload = None
-        cache_allowed = _federal_cache_enabled() and not follow_donor_key
+        cache_allowed = _federal_cache_enabled()
         cache_params = {
             'cycle': cycle,
             'analysis_office': analysis_office or '',
@@ -572,7 +465,7 @@ def federal_donor_intelligence():
             'segmentation_dbscan_min_samples': segmentation_dbscan_min_samples,
             'cluster_limit': cluster_limit,
             'network_min_edge_amount': round(min_edge_amount, 2),
-            'version': 1,
+            'version': 2,
         }
         if cache_allowed and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -604,19 +497,10 @@ def federal_donor_intelligence():
                 min_edge_amount=min_edge_amount,
                 limit=cluster_limit,
             )
-            influence = get_federal_influence_scores(
-                conn,
-                cycle=cycle,
-                office_code=analysis_office or None,
-                district_code=analysis_district or None,
-                min_edge_amount=min_edge_amount,
-                limit=cluster_limit,
-            )
             if cache_allowed:
                 payload = {
                     'donor_segmentation': donor_segmentation,
                     'donor_clusters': donor_clusters,
-                    'influence': influence,
                 }
                 cache_status = save_federal_view_snapshot(
                     conn,
@@ -628,18 +512,6 @@ def federal_donor_intelligence():
         else:
             donor_segmentation = payload.get('donor_segmentation', donor_segmentation)
             donor_clusters = payload.get('donor_clusters', donor_clusters)
-            influence = payload.get('influence', influence)
-
-        if follow_donor_key:
-            follow_money = get_federal_follow_the_money(
-                conn,
-                donor_entity_key=follow_donor_key,
-                cycle=cycle,
-                office_code=analysis_office or None,
-                district_code=analysis_district or None,
-                max_hops=follow_max_hops,
-                min_edge_amount=follow_min_edge_amount,
-            )
 
     return render_template(
         'federal_finance/donor_intelligence.html',
@@ -651,14 +523,153 @@ def federal_donor_intelligence():
         segmentation_dbscan_min_samples=segmentation_dbscan_min_samples,
         cluster_limit=cluster_limit,
         network_min_edge_amount=min_edge_amount,
+        donor_segmentation=donor_segmentation,
+        donor_clusters=donor_clusters,
+        cache_status=cache_status,
+    )
+
+
+@federal_finance_bp.route('/money-flow')
+def federal_money_flow():
+    """Multi-layer money flow network (A/B/E) and cross-role organizations."""
+    conn = current_app.get_database()
+    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
+    network_limit = min(max(request.args.get('network_limit', 1500, type=int), 100), 5000)
+
+    multilayer_network = {
+        'nodes': [], 'edges': [], 'centrality': [],
+        'summary': {
+            'node_count': 0, 'edge_count': 0, 'donor_count': 0,
+            'candidate_count': 0, 'candidate_committee_count': 0,
+            'vendor_count': 0, 'ie_committee_count': 0,
+            'total_amount': 0.0, 'donor_candidate_total_amount': 0.0,
+            'committee_vendor_total_amount': 0.0,
+            'ie_committee_candidate_total_amount': 0.0,
+        },
+        'layer_summary': [],
+    }
+    cross_role_orgs = {
+        'rows': [],
+        'summary': {'matched_organization_count': 0, 'total_donor_amount': 0.0, 'total_out_amount': 0.0},
+    }
+
+    if table_available:
+        multilayer_network = get_federal_multilayer_network_graph(
+            conn, cycle=cycle,
+            office_code=analysis_office or None,
+            district_code=analysis_district or None,
+            min_edge_amount=network_min_edge_amount,
+            limit=network_limit,
+        )
+        cross_role_orgs = get_federal_cross_role_organizations(
+            conn, cycle=cycle,
+            office_code=analysis_office or None,
+            district_code=analysis_district or None,
+            limit=60, min_total_amount=network_min_edge_amount,
+        )
+
+    return render_template(
+        'federal_finance/money_flow.html',
+        **_base_context('money_flow', table_available, cycle, analysis_office, analysis_district),
+        network_min_edge_amount=network_min_edge_amount,
+        network_limit=network_limit,
+        multilayer_network=multilayer_network,
+        cross_role_orgs=cross_role_orgs,
+    )
+
+
+@federal_finance_bp.route('/influence')
+def federal_influence():
+    """Influence scores for donors and candidates."""
+    conn = current_app.get_database()
+    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    min_edge_amount = max(request.args.get('network_min_edge_amount', 100.0, type=float), 0.0)
+    cluster_limit = min(max(request.args.get('cluster_limit', 1500, type=int), 100), 5000)
+
+    influence = {'donors': [], 'candidates': []}
+
+    if table_available:
+        influence = get_federal_influence_scores(
+            conn, cycle=cycle,
+            office_code=analysis_office or None,
+            district_code=analysis_district or None,
+            min_edge_amount=min_edge_amount,
+            limit=cluster_limit,
+        )
+
+    return render_template(
+        'federal_finance/influence.html',
+        **_base_context('influence', table_available, cycle, analysis_office, analysis_district),
+        network_min_edge_amount=min_edge_amount,
+        cluster_limit=cluster_limit,
+        influence=influence,
+    )
+
+
+@federal_finance_bp.route('/follow-the-money')
+def federal_follow_the_money():
+    """Multi-hop donor path tracing."""
+    conn = current_app.get_database()
+    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    follow_donor_key = request.args.get('follow_donor_key', '', type=str).strip()
+    follow_max_hops = min(max(request.args.get('follow_max_hops', 3, type=int), 1), 8)
+    follow_min_edge_amount = max(request.args.get('follow_min_edge_amount', 0.0, type=float), 0.0)
+
+    follow_money = {
+        'requested_donor_entity_key': follow_donor_key,
+        'start_node_found': False,
+        'nodes': [], 'edges': [],
+        'summary': {'node_count': 0, 'edge_count': 0, 'max_hops': follow_max_hops},
+        'reachable_candidates': [], 'reachable_committees': [], 'connected_donors': [],
+    }
+
+    if table_available and follow_donor_key:
+        follow_money = get_federal_follow_the_money(
+            conn, donor_entity_key=follow_donor_key, cycle=cycle,
+            office_code=analysis_office or None,
+            district_code=analysis_district or None,
+            max_hops=follow_max_hops,
+            min_edge_amount=follow_min_edge_amount,
+        )
+
+    return render_template(
+        'federal_finance/follow_the_money.html',
+        **_base_context('follow_the_money', table_available, cycle, analysis_office, analysis_district),
         follow_donor_key=follow_donor_key,
         follow_max_hops=follow_max_hops,
         follow_min_edge_amount=follow_min_edge_amount,
-        donor_segmentation=donor_segmentation,
-        donor_clusters=donor_clusters,
-        influence=influence,
         follow_money=follow_money,
-        cache_status=cache_status,
+    )
+
+
+@federal_finance_bp.route('/geography')
+def federal_geography():
+    """Geographic concentration analysis for federal contributions."""
+    conn = current_app.get_database()
+    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    geographic = {'states': [], 'cities': [], 'race_concentration': []}
+
+    if table_available:
+        geographic = get_federal_geographic_concentration(
+            conn, cycle=cycle,
+            office_code=analysis_office or None,
+            district_code=analysis_district or None,
+            limit_states=20, limit_cities=25, limit_races=15,
+        )
+
+    return render_template(
+        'federal_finance/geography.html',
+        **_base_context('geography', table_available, cycle, analysis_office, analysis_district),
+        geographic=geographic,
     )
 
 

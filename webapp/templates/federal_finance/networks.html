@@ -4,7 +4,8 @@
 
 {% block content %}
 <h1>Federal Networks</h1>
-<p class="subtitle">Visual network analysis for federal donors/candidates and local-federal overlap.</p>
+<p class="subtitle">Visual network analysis for federal donor-candidate contribution flows.</p>
+<p class="help-text">This page visualizes who gives to whom in the federal campaign finance system. Nodes represent donors and candidates. Edges represent contribution flows. Node size reflects total contribution amounts. Colors indicate party affiliation. Use the Trend Matrix view for a heatmap of donor-candidate relationships, or the Sankey view for a flow diagram. Click any node to highlight its connections.</p>
 
 {% include "federal_finance/_subnav.html" %}
 
@@ -19,8 +20,6 @@
     <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
     <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
     <input type="text" name="network_limit" value="{{ network_limit }}" placeholder="Federal edges">
-    <input type="text" name="overlap_edge_limit" value="{{ overlap_edge_limit }}" placeholder="Overlap edges">
-    <input type="text" name="local_match_limit" value="{{ local_match_limit }}" placeholder="Local donor limit">
     <button type="submit">Update</button>
     <a class="btn btn-small" href="{{ url_for('federal_finance.federal_networks') }}">Clear</a>
 </form>
@@ -134,233 +133,18 @@
     </table>
 </div>
 
-<div class="status-section">
-    <h2>Multi-layer Money Flow Network (A/B/E)</h2>
-    <p class="subtitle">
-        Nodes: <strong>{{ multilayer_network.summary.node_count }}</strong> |
-        Edges: <strong>{{ multilayer_network.summary.edge_count }}</strong> |
-        Donors: <strong>{{ multilayer_network.summary.donor_count }}</strong> |
-        Candidate Committees: <strong>{{ multilayer_network.summary.candidate_committee_count }}</strong> |
-        Vendors: <strong>{{ multilayer_network.summary.vendor_count }}</strong> |
-        IE Committees: <strong>{{ multilayer_network.summary.ie_committee_count }}</strong> |
-        Candidates: <strong>{{ multilayer_network.summary.candidate_count }}</strong>
-    </p>
-    <p class="subtitle">
-        A total: <strong>{{ format_currency(multilayer_network.summary.donor_candidate_total_amount) }}</strong> |
-        B total: <strong>{{ format_currency(multilayer_network.summary.committee_vendor_total_amount) }}</strong> |
-        E total: <strong>{{ format_currency(multilayer_network.summary.ie_committee_candidate_total_amount) }}</strong> |
-        Combined: <strong>{{ format_currency(multilayer_network.summary.total_amount) }}</strong>
-    </p>
-
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Layer</th>
-                <th>Edges</th>
-                <th>Total Amount</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in multilayer_network.layer_summary %}
-            <tr>
-                <td>{{ row.label }}</td>
-                <td>{{ row.edge_count }}</td>
-                <td>{{ format_currency(row.total_amount) }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="3">No multi-layer rows found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    <h3>Top Multi-layer Flows</h3>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Layer</th>
-                <th>Source</th>
-                <th>Target</th>
-                <th>Candidate</th>
-                <th>Amount</th>
-                <th>Rows</th>
-                <th>Date Range</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for edge in multilayer_network.edges[:60] %}
-            <tr>
-                <td>{{ edge.layer_label }}</td>
-                <td>{{ edge.source_label if edge.source_label else edge.source }}</td>
-                <td>{{ edge.target_label if edge.target_label else edge.target }}</td>
-                <td>
-                    {% if edge.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=edge.candidate_id, cycle=cycle) }}">
-                        {{ edge.candidate_name if edge.candidate_name else edge.candidate_id }}
-                    </a>
-                    {% else %}
-                    -
-                    {% endif %}
-                </td>
-                <td>{{ format_currency(edge.weight) }}</td>
-                <td>{{ edge.row_count if edge.row_count else 0 }}</td>
-                <td>{{ edge.earliest_date if edge.earliest_date else '-' }} to {{ edge.latest_date if edge.latest_date else '-' }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="7">No multi-layer edges found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    <h3>Cross-Role Organizations (Donor and Payee)</h3>
-    <p class="subtitle">
-        {{ cross_role_orgs.summary.matched_organization_count }} matched organizations |
-        {{ format_currency(cross_role_orgs.summary.total_donor_amount) }} donated |
-        {{ format_currency(cross_role_orgs.summary.total_out_amount) }} received
-    </p>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Organization</th>
-                <th>Candidates</th>
-                <th>Donated (A)</th>
-                <th>Received via B</th>
-                <th>Received via E</th>
-                <th>Total Out</th>
-                <th>Net In-Out</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in cross_role_orgs.rows %}
-            <tr>
-                <td>
-                    {{ row.organization_name }}
-                    {% if row.state or row.zip5 %}
-                    <br><small>{{ row.state if row.state else '' }} {{ row.zip5 if row.zip5 else '' }}</small>
-                    {% endif %}
-                </td>
-                <td>{{ row.candidate_count }}</td>
-                <td>{{ format_currency(row.donor_amount) }} ({{ row.donor_count }})</td>
-                <td>{{ format_currency(row.schedule_b_amount) }} ({{ row.schedule_b_count }})</td>
-                <td>{{ format_currency(row.schedule_e_amount) }} ({{ row.schedule_e_count }})</td>
-                <td>{{ format_currency(row.total_out_amount) }}</td>
-                <td>{{ format_currency(row.net_in_minus_out) }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="7">No cross-role organizations found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-
-<div class="status-section">
-    <h2>Matched Donor Overlap Network (Local + Federal)</h2>
-    <p class="subtitle">
-        Nodes: <strong>{{ overlap_network.summary.node_count }}</strong> |
-        Edges: <strong>{{ overlap_network.summary.edge_count }}</strong> |
-        Matched Donors: <strong>{{ overlap_network.summary.matched_donors }}</strong> |
-        Federal Candidates: <strong>{{ overlap_network.summary.federal_candidate_count }}</strong> |
-        Local Committees: <strong>{{ overlap_network.summary.local_committee_count }}</strong>
-    </p>
-    <p class="subtitle">
-        Match rate: <strong>{{ (overlap_network.match_summary.match_rate * 100)|round(2) }}%</strong> |
-        Federal matched donors: <strong>{{ overlap_network.match_summary.federal_donors_matched }}</strong> |
-        Local matched donors: <strong>{{ overlap_network.match_summary.local_donors_matched }}</strong>
-    </p>
-    <div class="search-form graph-controls">
-        <label>View
-            <select id="overlap-graph-mode">
-                <option value="matrix">Trend Matrix</option>
-                <option value="sankey">Sankey</option>
-            </select>
-        </label>
-        <label>Highlight Race
-            <select id="overlap-highlight-race">
-                <option value="">All races</option>
-            </select>
-        </label>
-        <label>Highlight Party
-            <select id="overlap-highlight-party">
-                <option value="">All parties</option>
-            </select>
-        </label>
-    </div>
-    <div class="network-svg-wrap">
-        <svg id="overlap-network-svg" viewBox="0 0 1000 560" role="img" aria-label="Matched donor overlap network graph"></svg>
-    </div>
-
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Node</th>
-                <th>Type</th>
-                <th>Race</th>
-                <th>Party</th>
-                <th>Weighted Degree</th>
-                <th>Degree</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in overlap_network.centrality[:40] %}
-            <tr>
-                <td>
-                    {% if row.node_type == 'federal_candidate' and row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
-                    {% elif row.node_type == 'matched_donor' and row.federal_donor_entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.federal_donor_entity_key, cycle=cycle) }}">{{ row.label }}</a>
-                    {% else %}
-                    {{ row.label }}
-                    {% endif %}
-                </td>
-                <td>{{ row.node_type }}</td>
-                <td>{% if row.node_type == 'federal_candidate' %}{{ row.race_label if row.race_label else '-' }}{% else %}-{% endif %}</td>
-                <td>{% if row.node_type == 'federal_candidate' %}{{ row.party_display if row.party_display else '-' }}{% else %}-{% endif %}</td>
-                <td>{{ format_currency(row.weighted_degree) }}</td>
-                <td>{{ row.degree }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="6">No overlap network nodes.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    <h3>Donor Overlap UpSet</h3>
-    <p class="subtitle">Intersection view of matched donors that give to multiple federal candidates.</p>
-    <div class="search-form graph-controls">
-        <label>Candidate Sets
-            <select id="overlap-upset-sets">
-                <option value="5">5</option>
-                <option value="6" selected>6</option>
-                <option value="8">8</option>
-                <option value="10">10</option>
-            </select>
-        </label>
-        <label>Metric
-            <select id="overlap-upset-metric">
-                <option value="donor_count" selected>Donor Count</option>
-                <option value="total_amount">Total Amount</option>
-            </select>
-        </label>
-        <label>Intersections
-            <select id="overlap-upset-limit">
-                <option value="10">10</option>
-                <option value="15" selected>15</option>
-                <option value="20">20</option>
-                <option value="30">30</option>
-            </select>
-        </label>
-    </div>
-    <div class="network-svg-wrap">
-        <svg id="overlap-upset-svg" viewBox="0 0 1000 560" role="img" aria-label="Matched donor overlap upset chart"></svg>
-    </div>
-    <p id="overlap-upset-summary" class="subtitle"></p>
-</div>
+<p class="help-text" style="margin-top: 1rem;">
+    Looking for multi-layer money flow (A/B/E) or cross-role organizations?
+    See <a href="{{ url_for('federal_finance.federal_money_flow', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Money Flow</a>.
+    For local/federal donor overlap, see <a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Matching</a>.
+</p>
 
 <script>
 (() => {
     const SVG_NS = "http://www.w3.org/2000/svg";
     const cycle = {{ cycle|tojson }};
     const federalGraph = {{ federal_network|tojson }} || {};
-    const overlapGraph = {{ overlap_network|tojson }} || {};
+    const overlapGraph = {};
     const PARTY_COLORS = {
         Democratic: "#2563eb",
         Republican: "#dc2626",

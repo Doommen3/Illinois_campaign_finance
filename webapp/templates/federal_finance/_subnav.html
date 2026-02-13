@@ -12,9 +12,25 @@
         href="{{ url_for('federal_finance.federal_networks', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
     >Networks</a>
     <a
+        class="federal-subnav-link {% if active_page == 'money_flow' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_money_flow', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Money Flow</a>
+    <a
         class="federal-subnav-link {% if active_page == 'donor_intelligence' %}active{% endif %}"
         href="{{ url_for('federal_finance.federal_donor_intelligence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
     >Donor Intelligence</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'influence' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_influence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Influence</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'follow_the_money' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_follow_the_money', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Follow the Money</a>
+    <a
+        class="federal-subnav-link {% if active_page == 'geography' %}active{% endif %}"
+        href="{{ url_for('federal_finance.federal_geography', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+    >Geography</a>
     <a
         class="federal-subnav-link {% if active_page == 'matching' %}active{% endif %}"
         href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% block title %}Money Flow (A/B/E) - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Multi-layer Money Flow (A/B/E)</h1>
+<p class="subtitle">Tracks money across Schedule A contributions, Schedule B disbursements, and Schedule E independent expenditures.</p>
+<p class="help-text">This page shows how money flows through multiple layers of the federal campaign finance system. Schedule A tracks individual contributions to committees. Schedule B tracks how committees spend that money (disbursements). Schedule E tracks independent expenditures by outside groups for or against candidates.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_money_flow') }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="analysis_office">
+        <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
+        <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
+        <option value="S" {% if analysis_office == 'S' %}selected{% endif %}>U.S. Senate</option>
+        <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
+    </select>
+    <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
+    <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
+    <input type="text" name="network_limit" value="{{ network_limit }}" placeholder="Edge limit">
+    <button type="submit">Update</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_money_flow') }}">Clear</a>
+</form>
+
+{% if not table_available %}
+<div class="status-section">
+    <p>FEC tables are not available yet.</p>
+</div>
+{% else %}
+<div class="status-section">
+    <h2>Layer Summary</h2>
+    <p class="help-text">Each layer represents a different type of financial transaction in the federal campaign finance system.</p>
+    <p class="subtitle">
+        Nodes: <strong>{{ multilayer_network.summary.node_count }}</strong> |
+        Edges: <strong>{{ multilayer_network.summary.edge_count }}</strong> |
+        Donors: <strong>{{ multilayer_network.summary.donor_count }}</strong> |
+        Candidate Committees: <strong>{{ multilayer_network.summary.candidate_committee_count }}</strong> |
+        Vendors: <strong>{{ multilayer_network.summary.vendor_count }}</strong> |
+        IE Committees: <strong>{{ multilayer_network.summary.ie_committee_count }}</strong> |
+        Candidates: <strong>{{ multilayer_network.summary.candidate_count }}</strong>
+    </p>
+    <p class="subtitle">
+        A total: <strong>{{ format_currency(multilayer_network.summary.donor_candidate_total_amount) }}</strong> |
+        B total: <strong>{{ format_currency(multilayer_network.summary.committee_vendor_total_amount) }}</strong> |
+        E total: <strong>{{ format_currency(multilayer_network.summary.ie_committee_candidate_total_amount) }}</strong> |
+        Combined: <strong>{{ format_currency(multilayer_network.summary.total_amount) }}</strong>
+    </p>
+
+    <table class="data-table">
+        <thead>
+            <tr><th>Layer</th><th>Edges</th><th>Total Amount</th></tr>
+        </thead>
+        <tbody>
+            {% for row in multilayer_network.layer_summary %}
+            <tr>
+                <td>{{ row.label }}</td>
+                <td>{{ row.edge_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">No multi-layer rows found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Top Multi-layer Flows</h2>
+    <p class="help-text">The largest financial flows across all layers, showing how money moves from donors through committees to candidates and vendors.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Layer</th><th>Source</th><th>Target</th><th>Candidate</th>
+                <th>Amount</th><th>Rows</th><th>Date Range</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in multilayer_network.edges[:60] %}
+            <tr>
+                <td>{{ edge.layer_label }}</td>
+                <td>{{ edge.source_label if edge.source_label else edge.source }}</td>
+                <td>{{ edge.target_label if edge.target_label else edge.target }}</td>
+                <td>
+                    {% if edge.candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=edge.candidate_id, cycle=cycle) }}">
+                        {{ edge.candidate_name if edge.candidate_name else edge.candidate_id }}
+                    </a>
+                    {% else %}-{% endif %}
+                </td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.row_count if edge.row_count else 0 }}</td>
+                <td>{{ edge.earliest_date if edge.earliest_date else '-' }} to {{ edge.latest_date if edge.latest_date else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No multi-layer edges found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Cross-Role Organizations (Donor and Payee)</h2>
+    <p class="help-text">Organizations that appear on both sides of campaign finance: as donors (Schedule A contributions) and as recipients of payments (Schedule B disbursements or Schedule E independent expenditures). This can reveal entities with outsized influence across the system.</p>
+    <p class="subtitle">
+        {{ cross_role_orgs.summary.matched_organization_count }} matched organizations |
+        {{ format_currency(cross_role_orgs.summary.total_donor_amount) }} donated |
+        {{ format_currency(cross_role_orgs.summary.total_out_amount) }} received
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Organization</th><th>Candidates</th><th>Donated (A)</th>
+                <th>Received via B</th><th>Received via E</th><th>Total Out</th><th>Net In-Out</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in cross_role_orgs.rows %}
+            <tr>
+                <td>
+                    {{ row.organization_name }}
+                    {% if row.state or row.zip5 %}
+                    <br><small>{{ row.state if row.state else '' }} {{ row.zip5 if row.zip5 else '' }}</small>
+                    {% endif %}
+                </td>
+                <td>{{ row.candidate_count }}</td>
+                <td>{{ format_currency(row.donor_amount) }} ({{ row.donor_count }})</td>
+                <td>{{ format_currency(row.schedule_b_amount) }} ({{ row.schedule_b_count }})</td>
+                <td>{{ format_currency(row.schedule_e_amount) }} ({{ row.schedule_e_count }})</td>
+                <td>{{ format_currency(row.total_out_amount) }}</td>
+                <td>{{ format_currency(row.net_in_minus_out) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No cross-role organizations found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
