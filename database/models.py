@@ -771,86 +771,103 @@ class Donor:
         source = cls.get_directory_source(conn)
         if source:
             if cls._local_entity_materialization_is_ready(conn, source):
+                # Keep entity mode fast by sorting on base entity columns only.
+                # Per-row enrichments (anchor + counts) are computed only for the
+                # selected page instead of the full entity population.
                 sort_map = {
-                    "source": "source",
+                    "source": "e.source",
+                    "name": "e.canonical_name",
+                    "total_amount": "e.total_amount",
+                    "created_at": "e.canonical_name",
+                }
+                final_sort_map = {
+                    "source": "se.source",
                     "name": "donor_name",
-                    "address": "donor_address",
-                    "occupation": "occupation",
-                    "employer": "employer",
-                    "total_amount": "total_amount",
-                    "contribution_count": "contribution_count",
-                    "committee_count": "committee_count",
-                    "city": "donor_city",
-                    "state": "donor_state",
+                    "total_amount": "se.total_amount",
                     "created_at": "donor_name",
                 }
-                order_by = sort_map.get(sort_by, "total_amount")
+                order_by = sort_map.get(sort_by, "e.total_amount")
+                final_order_by = final_sort_map.get(sort_by, "se.total_amount")
                 direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
                 rows = conn.execute(
                     f"""
-                    WITH anchor_member AS (
+                    WITH selected_entities AS (
                         SELECT
+                            e.entity_id,
+                            e.source,
+                            e.canonical_name,
+                            e.display_name,
+                            e.total_amount,
+                            e.merge_action,
+                            e.confidence_score
+                        FROM donor_entity_local e
+                        WHERE e.source = ?
+                        ORDER BY {order_by} {direction}, e.canonical_name ASC
+                        LIMIT ? OFFSET ?
+                    ),
+                    selected_members AS (
+                        SELECT
+                            m.source,
                             m.entity_id,
                             m.donor_key,
                             m.donor_name,
                             m.donor_city,
                             m.donor_state,
                             m.total_amount,
+                            m.contribution_count,
                             ROW_NUMBER() OVER (
                                 PARTITION BY m.entity_id
                                 ORDER BY m.total_amount DESC, m.donor_key ASC
                             ) AS rn
                         FROM donor_entity_local_member m
-                        WHERE m.source = ?
+                        JOIN selected_entities se
+                          ON se.source = m.source
+                         AND se.entity_id = m.entity_id
                     ),
                     member_totals AS (
                         SELECT
-                            m.entity_id,
-                            COALESCE(SUM(m.contribution_count), 0) AS contribution_count
-                        FROM donor_entity_local_member m
-                        WHERE m.source = ?
-                        GROUP BY m.entity_id
+                            entity_id,
+                            COALESCE(SUM(contribution_count), 0) AS contribution_count
+                        FROM selected_members
+                        GROUP BY entity_id
                     ),
                     committee_totals AS (
                         SELECT
-                            m.entity_id,
+                            sm.entity_id,
                             COUNT(DISTINCT a.committee_id) AS committee_count
-                        FROM donor_entity_local_member m
+                        FROM selected_members sm
                         LEFT JOIN analytics_donor_committee_agg a
-                            ON a.source = m.source
-                           AND a.donor_key = m.donor_key
-                        WHERE m.source = ?
-                        GROUP BY m.entity_id
+                            ON a.source = sm.source
+                           AND a.donor_key = sm.donor_key
+                        GROUP BY sm.entity_id
                     )
                     SELECT
-                        e.source AS source,
-                        e.entity_id AS entity_id,
-                        COALESCE(NULLIF(e.display_name, ''), NULLIF(anchor.donor_name, ''), e.canonical_name) AS donor_name,
+                        se.source AS source,
+                        se.entity_id AS entity_id,
+                        COALESCE(NULLIF(se.display_name, ''), NULLIF(anchor.donor_name, ''), se.canonical_name) AS donor_name,
                         COALESCE(summary.donor_address, '') AS donor_address,
                         COALESCE(summary.occupation, '') AS occupation,
                         COALESCE(summary.employer, '') AS employer,
                         COALESCE(anchor.donor_city, '') AS donor_city,
                         COALESCE(anchor.donor_state, '') AS donor_state,
-                        COALESCE(e.total_amount, 0) AS total_amount,
+                        COALESCE(se.total_amount, 0) AS total_amount,
                         COALESCE(mt.contribution_count, 0) AS contribution_count,
                         COALESCE(ct.committee_count, 0) AS committee_count,
                         COALESCE(anchor.donor_key, '') AS anchor_donor_key,
-                        e.merge_action AS merge_action,
-                        e.confidence_score AS confidence_score
-                    FROM donor_entity_local e
-                    LEFT JOIN anchor_member anchor
-                        ON anchor.entity_id = e.entity_id
+                        se.merge_action AS merge_action,
+                        se.confidence_score AS confidence_score
+                    FROM selected_entities se
+                    LEFT JOIN selected_members anchor
+                        ON anchor.entity_id = se.entity_id
                        AND anchor.rn = 1
                     LEFT JOIN analytics_donor_summary summary
-                        ON summary.source = e.source
+                        ON summary.source = se.source
                        AND summary.donor_key = anchor.donor_key
-                    LEFT JOIN member_totals mt ON mt.entity_id = e.entity_id
-                    LEFT JOIN committee_totals ct ON ct.entity_id = e.entity_id
-                    WHERE e.source = ?
-                    ORDER BY {order_by} {direction}, donor_name ASC
-                    LIMIT ? OFFSET ?
+                    LEFT JOIN member_totals mt ON mt.entity_id = se.entity_id
+                    LEFT JOIN committee_totals ct ON ct.entity_id = se.entity_id
+                    ORDER BY {final_order_by} {direction}, donor_name ASC
                     """,
-                    (source, source, source, source, limit, offset),
+                    (source, limit, offset),
                 ).fetchall()
                 donors = []
                 for row in rows:
@@ -1217,40 +1234,6 @@ class Donor:
         resolved_source = source or cls.get_directory_source(conn) or "bulk_receipts"
         row = conn.execute(
             """
-            WITH anchor_member AS (
-                SELECT
-                    m.entity_id,
-                    m.donor_key,
-                    m.donor_name,
-                    m.donor_city,
-                    m.donor_state,
-                    m.total_amount,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY m.entity_id
-                        ORDER BY m.total_amount DESC, m.donor_key ASC
-                    ) AS rn
-                FROM donor_entity_local_member m
-                WHERE m.source = ?
-            ),
-            member_totals AS (
-                SELECT
-                    m.entity_id,
-                    COALESCE(SUM(m.contribution_count), 0) AS contribution_count
-                FROM donor_entity_local_member m
-                WHERE m.source = ?
-                GROUP BY m.entity_id
-            ),
-            committee_totals AS (
-                SELECT
-                    m.entity_id,
-                    COUNT(DISTINCT a.committee_id) AS committee_count
-                FROM donor_entity_local_member m
-                LEFT JOIN analytics_donor_committee_agg a
-                    ON a.source = m.source
-                   AND a.donor_key = m.donor_key
-                WHERE m.source = ?
-                GROUP BY m.entity_id
-            )
             SELECT
                 e.source AS source,
                 e.entity_id AS entity_id,
@@ -1261,25 +1244,44 @@ class Donor:
                 COALESCE(anchor.donor_city, '') AS donor_city,
                 COALESCE(anchor.donor_state, '') AS donor_state,
                 COALESCE(e.total_amount, 0) AS total_amount,
-                COALESCE(mt.contribution_count, 0) AS contribution_count,
-                COALESCE(ct.committee_count, 0) AS committee_count,
+                COALESCE((
+                    SELECT SUM(m2.contribution_count)
+                    FROM donor_entity_local_member m2
+                    WHERE m2.source = e.source
+                      AND m2.entity_id = e.entity_id
+                ), 0) AS contribution_count,
+                COALESCE((
+                    SELECT COUNT(DISTINCT a.committee_id)
+                    FROM donor_entity_local_member m3
+                    LEFT JOIN analytics_donor_committee_agg a
+                        ON a.source = m3.source
+                       AND a.donor_key = m3.donor_key
+                    WHERE m3.source = e.source
+                      AND m3.entity_id = e.entity_id
+                ), 0) AS committee_count,
                 COALESCE(anchor.donor_key, '') AS anchor_donor_key,
                 e.merge_action AS merge_action,
                 e.confidence_score AS confidence_score
             FROM donor_entity_local e
-            LEFT JOIN anchor_member anchor
-                ON anchor.entity_id = e.entity_id
-               AND anchor.rn = 1
+            LEFT JOIN donor_entity_local_member anchor
+                ON anchor.source = e.source
+               AND anchor.entity_id = e.entity_id
+               AND anchor.donor_key = (
+                    SELECT m4.donor_key
+                    FROM donor_entity_local_member m4
+                    WHERE m4.source = e.source
+                      AND m4.entity_id = e.entity_id
+                    ORDER BY m4.total_amount DESC, m4.donor_key ASC
+                    LIMIT 1
+               )
             LEFT JOIN analytics_donor_summary summary
                 ON summary.source = e.source
                AND summary.donor_key = anchor.donor_key
-            LEFT JOIN member_totals mt ON mt.entity_id = e.entity_id
-            LEFT JOIN committee_totals ct ON ct.entity_id = e.entity_id
             WHERE e.source = ?
               AND e.entity_id = ?
             LIMIT 1
             """,
-            (resolved_source, resolved_source, resolved_source, resolved_source, entity_id),
+            (resolved_source, entity_id),
         ).fetchone()
 
         if not row:
