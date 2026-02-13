@@ -17,6 +17,8 @@ from database.federal_fec import (
     get_federal_follow_the_money,
     get_federal_geographic_concentration,
     get_federal_influence_scores,
+    get_federal_multilayer_network_graph,
+    get_federal_cross_role_organizations,
     get_federal_local_donor_matches,
     get_federal_local_overlap_network,
     get_federal_network_graph,
@@ -224,6 +226,13 @@ def test_sync_il_federal_fec_and_queries(tmp_path: Path):
     assert detail["summary"]["reported_total_receipts"] == 1250.0
     assert detail["summary"]["reported_total_disbursements"] == 550.0
     assert detail["summary"]["schedule_total_amount"] == 250.0
+    assert detail["summary"]["money_in_total"] == 1250.0
+    assert detail["summary"]["money_in_source"] == "reported_receipts"
+    assert detail["summary"]["money_out_total"] == 550.0
+    assert detail["summary"]["money_out_source"] == "reported_disbursements"
+    assert detail["summary"]["outside_spending_total"] == 0.0
+    assert detail["summary"]["outside_pressure_ratio"] == 0.0
+    assert detail["summary"]["net_money_flow"] == 700.0
     assert detail["summary"]["uses_reported_total_receipts"] is True
     assert detail["top_donors"][0]["donor_name"] == "Jane Donor"
     assert detail["top_donors"][0]["donor_entity_key"]
@@ -747,6 +756,9 @@ def test_backfill_fec_schedule_b(tmp_path: Path):
     assert detail["summary"]["schedule_b_total_amount"] == 1250.75
     assert detail["summary"]["schedule_b_disbursement_count"] == 1
     assert detail["total_schedule_b_disbursements"] == 1
+    assert detail["schedule_b_transfer_chains"]
+    assert detail["schedule_b_transfer_chains"][0]["recipient_candidate_id"] == "H0IL00000"
+    assert detail["schedule_b_transfer_chains"][0]["match_type"] == "candidate_id"
 
     state_one = conn.execute(
         """
@@ -1118,6 +1130,352 @@ def test_backfill_fec_schedule_e(tmp_path: Path):
     conn.close()
 
 
+def test_federal_candidate_detail_schedule_b_e_sorting_and_cross_role(tmp_path: Path):
+    db_path = str(tmp_path / "fec_candidate_detail_sorting.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-sort-1",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-04",
+            "04",
+            "Democratic",
+            "DEM",
+            "Primary",
+            "Candidate Sorting",
+            "CANDIDATE SORTING",
+            0,
+            0,
+            "seed.csv",
+            1,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-sort-2",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-08",
+            "08",
+            "Republican",
+            "REP",
+            "Primary",
+            "Recipient Candidate",
+            "RECIPIENT CANDIDATE",
+            0,
+            0,
+            "seed.csv",
+            2,
+        ),
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle,
+            fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "seed-sort-1",
+                "Candidate Sorting",
+                "U.S. House",
+                "H",
+                "IL-04",
+                "04",
+                "Democratic",
+                "DEM",
+                "Primary",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "H",
+                "IL",
+                "04",
+                "DEM",
+                "matched",
+                95.0,
+                "test",
+            ),
+            (
+                "seed-sort-2",
+                "Recipient Candidate",
+                "U.S. House",
+                "H",
+                "IL-08",
+                "08",
+                "Republican",
+                "REP",
+                "Primary",
+                2026,
+                "H2IL08880",
+                "RECIPIENT, CANDIDATE",
+                "H",
+                "IL",
+                "08",
+                "REP",
+                "matched",
+                90.0,
+                "test",
+            ),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_candidate_committees (
+            candidate_id, committee_id, cycle, committee_name, committee_type,
+            committee_designation, committee_designation_full, filing_frequency,
+            committee_party, committee_city, committee_state, committee_zip, is_principal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "H2IL04444",
+                "C00444444",
+                2026,
+                "SORTING COMMITTEE",
+                "H",
+                "P",
+                "Principal campaign committee",
+                "Q",
+                "DEM",
+                "CHICAGO",
+                "IL",
+                "60601",
+                1,
+            ),
+            (
+                "H2IL08880",
+                "C00888880",
+                2026,
+                "RECIPIENT COMMITTEE",
+                "H",
+                "P",
+                "Principal campaign committee",
+                "Q",
+                "REP",
+                "CHICAGO",
+                "IL",
+                "60602",
+                1,
+            ),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "sort-a-1",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00444444",
+                "SORTING COMMITTEE",
+                "DUAL ORG LLC",
+                "CHICAGO",
+                "IL",
+                "60601",
+                "",
+                "",
+                None,
+                0,
+                "11AI",
+                "PAC",
+                "Committee contribution",
+                "",
+                600.0,
+                "2026-01-05",
+                2026,
+                "legacy-sort-1",
+                "dual org llc|IL|60601",
+                "name_state_zip",
+                "2026-01-05",
+                "img-sort-1",
+                "src-sort-1",
+            ),
+            (
+                "sort-a-2",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00444444",
+                "SORTING COMMITTEE",
+                "OTHER DONOR",
+                "CHICAGO",
+                "IL",
+                "60603",
+                "",
+                "",
+                None,
+                0,
+                "11AI",
+                "PAC",
+                "Committee contribution",
+                "",
+                200.0,
+                "2026-01-07",
+                2026,
+                "legacy-sort-2",
+                "other donor|IL|60603",
+                "name_state_zip",
+                "2026-01-07",
+                "img-sort-2",
+                "src-sort-2",
+            ),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, recipient_city, recipient_state, recipient_zip,
+            recipient_committee_id, recipient_candidate_id, recipient_candidate_name,
+            disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "sort-b-1",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00444444",
+                "SORTING COMMITTEE",
+                "DUAL ORG LLC",
+                "CHICAGO",
+                "IL",
+                "60601",
+                "C00888880",
+                "H2IL08880",
+                "RECIPIENT, CANDIDATE",
+                300.0,
+                "2026-01-12",
+                "src-sort-b-1",
+            ),
+            (
+                "sort-b-2",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00444444",
+                "SORTING COMMITTEE",
+                "ALPHA VENDOR",
+                "CHICAGO",
+                "IL",
+                "60604",
+                None,
+                None,
+                None,
+                80.0,
+                "2026-01-08",
+                "src-sort-b-2",
+            ),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_e_independent_expenditures (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            payee_name, payee_city, payee_state, payee_zip, support_oppose_indicator,
+            expenditure_amount, expenditure_date, report_type, line_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "sort-e-1",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00IE4444",
+                "IE COMMITTEE A",
+                "DUAL ORG LLC",
+                "CHICAGO",
+                "IL",
+                "60601",
+                "S",
+                140.0,
+                "2026-01-10",
+                "48H3",
+                "24A",
+                "src-sort-e-1",
+            ),
+            (
+                "sort-e-2",
+                2026,
+                "H2IL04444",
+                "SORTING, CANDIDATE",
+                "C00IE4445",
+                "IE COMMITTEE B",
+                "BETA MEDIA",
+                "CHICAGO",
+                "IL",
+                "60604",
+                "O",
+                60.0,
+                "2026-01-09",
+                "48H3",
+                "24A",
+                "src-sort-e-2",
+            ),
+        ],
+    )
+    conn.commit()
+
+    detail = get_federal_candidate_detail(
+        conn,
+        candidate_id="H2IL04444",
+        cycle=2026,
+        schedule_b_sort="amount",
+        schedule_b_dir="asc",
+        schedule_e_sort="payee",
+        schedule_e_dir="asc",
+    )
+    assert detail is not None
+    assert detail["schedule_b_disbursements"][0]["disbursement_amount"] == 80.0
+    assert detail["schedule_b_disbursements"][1]["disbursement_amount"] == 300.0
+    assert detail["schedule_e_independent_expenditures"][0]["payee_name"] == "BETA MEDIA"
+    assert detail["schedule_e_independent_expenditures"][1]["payee_name"] == "DUAL ORG LLC"
+    assert detail["cross_role_summary"]["matched_organization_count"] >= 1
+    assert any(row["organization_name"] == "DUAL ORG LLC" for row in detail["cross_role_organizations"])
+    assert detail["schedule_b_transfer_chains"]
+    assert detail["schedule_b_transfer_chains"][0]["recipient_candidate_id"] == "H2IL08880"
+    assert detail["schedule_b_transfer_chains"][0]["match_type"] == "candidate_id + committee_id"
+
+    conn.close()
+
+
 def test_federal_race_analytics_and_network(tmp_path: Path):
     db_path = str(tmp_path / "fec_network.db")
     init_db(db_path)
@@ -1319,7 +1677,86 @@ def test_federal_race_analytics_and_network(tmp_path: Path):
                 "img-3",
                 "src-3",
             ),
+            (
+                "sub-4",
+                2026,
+                "H2IL00001",
+                "ONE, CANDIDATE",
+                "C00000001",
+                "COMMITTEE ONE",
+                "MEDIA BUY VENDOR LLC",
+                "Chicago",
+                "IL",
+                "60601",
+                "MEDIA BUY VENDOR LLC",
+                "Services",
+                None,
+                0,
+                "11AI",
+                "PAC",
+                "Committee contribution",
+                "",
+                300.0,
+                "2026-01-15",
+                2026,
+                "legacy-4",
+                "2026-01-15",
+                "img-4",
+                "src-4",
+            ),
         ],
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, recipient_city, recipient_state, recipient_zip,
+            recipient_committee_id, disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "sb-1",
+            2026,
+            "H2IL00001",
+            "ONE, CANDIDATE",
+            "C00000001",
+            "COMMITTEE ONE",
+            "MEDIA BUY VENDOR LLC",
+            "CHICAGO",
+            "IL",
+            "60601",
+            "C00999999",
+            400.0,
+            "2026-01-20",
+            "src-sb-1",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_e_independent_expenditures (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            payee_name, payee_city, payee_state, payee_zip, support_oppose_indicator,
+            expenditure_amount, expenditure_date, report_type, line_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "se-1",
+            2026,
+            "H2IL00001",
+            "ONE, CANDIDATE",
+            "C00IE0001",
+            "INDEPENDENT SPENDING PAC",
+            "MEDIA BUY VENDOR LLC",
+            "CHICAGO",
+            "IL",
+            "60601",
+            "S",
+            250.0,
+            "2026-01-21",
+            "48H3",
+            "24A",
+            "src-se-1",
+        ),
     )
     conn.commit()
 
@@ -1327,12 +1764,14 @@ def test_federal_race_analytics_and_network(tmp_path: Path):
     assert len(races) == 2
     race_one = next(row for row in races if row["district_code"] == "01")
     assert race_one["candidate_count"] == 1
-    assert race_one["donor_count"] == 2
-    assert race_one["total_amount"] == 1200.0
+    assert race_one["donor_count"] == 3
+    assert race_one["total_amount"] == 1500.0
+    assert race_one["outside_spending_total"] == 250.0
+    assert race_one["outside_pressure_ratio"] == 0.1667
 
     network = get_federal_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=100)
-    assert network["summary"]["edge_count"] == 3
-    assert network["summary"]["donor_count"] == 2
+    assert network["summary"]["edge_count"] == 4
+    assert network["summary"]["donor_count"] == 3
     assert network["summary"]["candidate_count"] == 2
     candidate_nodes = [row for row in network["nodes"] if row["node_type"] == "candidate"]
     assert candidate_nodes
@@ -1349,7 +1788,20 @@ def test_federal_race_analytics_and_network(tmp_path: Path):
         limit=100,
     )
     assert house_01_network["summary"]["candidate_count"] == 1
-    assert house_01_network["summary"]["edge_count"] == 2
+    assert house_01_network["summary"]["edge_count"] == 3
+
+    cross_role = get_federal_cross_role_organizations(conn, cycle=2026, limit=20, min_total_amount=0.0)
+    assert cross_role["summary"]["matched_organization_count"] >= 1
+    assert any(row["organization_name"] == "MEDIA BUY VENDOR LLC" for row in cross_role["rows"])
+
+    multi = get_federal_multilayer_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=200)
+    edge_types = {edge["edge_type"] for edge in multi["edges"]}
+    assert "donor_candidate" in edge_types
+    assert "committee_vendor" in edge_types
+    assert "ie_committee_candidate" in edge_types
+    assert multi["summary"]["candidate_committee_count"] >= 1
+    assert multi["summary"]["vendor_count"] >= 1
+    assert multi["summary"]["ie_committee_count"] >= 1
 
     conn.close()
 

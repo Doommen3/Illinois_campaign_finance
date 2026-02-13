@@ -2,6 +2,40 @@
 
 {% block title %}Federal Candidate Detail - Illinois Campaign Finance Tracker{% endblock %}
 
+{% macro schedule_b_sort_link(field, label) -%}
+<a href="{{ url_for(
+    'federal_finance.federal_candidate_detail',
+    candidate_id=candidate_id,
+    cycle=cycle,
+    contribution_page=contribution_page,
+    schedule_b_page=1,
+    schedule_e_page=schedule_e_page,
+    schedule_b_sort=field,
+    schedule_b_dir='asc' if schedule_b_sort != field or schedule_b_dir == 'desc' else 'desc',
+    schedule_e_sort=schedule_e_sort,
+    schedule_e_dir=schedule_e_dir
+) }}">
+    {{ label }}{% if schedule_b_sort == field %} ({{ schedule_b_dir }}){% endif %}
+</a>
+{%- endmacro %}
+
+{% macro schedule_e_sort_link(field, label) -%}
+<a href="{{ url_for(
+    'federal_finance.federal_candidate_detail',
+    candidate_id=candidate_id,
+    cycle=cycle,
+    contribution_page=contribution_page,
+    schedule_b_page=schedule_b_page,
+    schedule_e_page=1,
+    schedule_b_sort=schedule_b_sort,
+    schedule_b_dir=schedule_b_dir,
+    schedule_e_sort=field,
+    schedule_e_dir='asc' if schedule_e_sort != field or schedule_e_dir == 'desc' else 'desc'
+) }}">
+    {{ label }}{% if schedule_e_sort == field %} ({{ schedule_e_dir }}){% endif %}
+</a>
+{%- endmacro %}
+
 {% block content %}
 <h1>Federal Candidate Detail</h1>
 
@@ -46,6 +80,35 @@
     <p><strong>Schedule B Date Range:</strong> {{ detail.summary.earliest_disbursement_date if detail.summary.earliest_disbursement_date else '-' }} to {{ detail.summary.latest_disbursement_date if detail.summary.latest_disbursement_date else '-' }}</p>
     <p><strong>Schedule E Date Range:</strong> {{ detail.summary.earliest_expenditure_date if detail.summary.earliest_expenditure_date else '-' }} to {{ detail.summary.latest_expenditure_date if detail.summary.latest_expenditure_date else '-' }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Money In (A)</h3>
+        <div class="stat-value">{{ format_currency(detail.summary.money_in_total) }}</div>
+        <div class="stat-detail">Source: {{ detail.summary.money_in_source }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Money Out (B)</h3>
+        <div class="stat-value">{{ format_currency(detail.summary.money_out_total) }}</div>
+        <div class="stat-detail">Source: {{ detail.summary.money_out_source }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Outside Spending (E)</h3>
+        <div class="stat-value">{{ format_currency(detail.summary.outside_spending_total) }}</div>
+        <div class="stat-detail">
+            {% if detail.summary.outside_pressure_ratio is not none %}
+            {{ (detail.summary.outside_pressure_ratio * 100)|round(2) }}% of money in
+            {% else %}
+            -
+            {% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <h3>Net Flow</h3>
+        <div class="stat-value">{{ format_currency(detail.summary.net_money_flow) }}</div>
+        <div class="stat-detail">Money in minus money out</div>
+    </div>
 </div>
 
 <div class="status-section">
@@ -111,9 +174,7 @@
                         <br><small>{{ row.donor_entity_method_label }}</small>
                         {% endif %}
                     </td>
-                    <td>
-                        {{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}
-                    </td>
+                    <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
                     <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
                     <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
                     <td>{{ row.contribution_count }}</td>
@@ -175,13 +236,13 @@
     {% if contribution_pages > 1 %}
     <nav class="pagination">
         {% if contribution_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page-1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page-1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ contribution_page }} of {{ contribution_pages }}</span>
 
         {% if contribution_page < contribution_pages %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page+1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page+1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}
@@ -191,21 +252,21 @@
     <h2>Recent Disbursements (Schedule B)</h2>
     <p class="subtitle">
         Showing {{ detail.schedule_b_disbursements|length }} of {{ schedule_b_total }} rows
-        ·
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_b') }}">Export CSV</a>
+        -
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_b', schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">Export CSV</a>
     </p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Date</th>
-                    <th>Committee</th>
-                    <th>Recipient</th>
+                    <th>{{ schedule_b_sort_link('date', 'Date') }}</th>
+                    <th>{{ schedule_b_sort_link('committee', 'Committee') }}</th>
+                    <th>{{ schedule_b_sort_link('recipient', 'Recipient') }}</th>
                     <th>Location</th>
                     <th>Recipient Candidate</th>
-                    <th>Type</th>
-                    <th>Category</th>
-                    <th>Amount</th>
+                    <th>{{ schedule_b_sort_link('type', 'Type') }}</th>
+                    <th>{{ schedule_b_sort_link('category', 'Category') }}</th>
+                    <th>{{ schedule_b_sort_link('amount', 'Amount') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -230,37 +291,86 @@
     {% if schedule_b_pages > 1 %}
     <nav class="pagination">
         {% if schedule_b_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page-1, schedule_e_page=schedule_e_page) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page-1, schedule_e_page=schedule_e_page, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ schedule_b_page }} of {{ schedule_b_pages }}</span>
 
         {% if schedule_b_page < schedule_b_pages %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page+1, schedule_e_page=schedule_e_page) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page+1, schedule_e_page=schedule_e_page, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}
 </div>
 
 <div class="status-section">
+    <h2>Explicit Transfer Chains (Schedule B IDs)</h2>
+    <p class="subtitle">Rows where Schedule B includes recipient candidate and/or committee IDs resolved to known entities.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Recipient Candidate</th>
+                    <th>Recipient Committee</th>
+                    <th>Match Type</th>
+                    <th>Rows</th>
+                    <th>Total</th>
+                    <th>Date Range</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.schedule_b_transfer_chains %}
+                <tr>
+                    <td>
+                        {% if row.recipient_candidate_id %}
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.recipient_candidate_id, cycle=cycle) }}">
+                            {{ row.recipient_candidate_name if row.recipient_candidate_name else row.recipient_candidate_id }}
+                        </a>
+                        <br><small>{{ row.recipient_candidate_id }}</small>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if row.recipient_committee_id %}
+                        {{ row.recipient_committee_name if row.recipient_committee_name else row.recipient_committee_id }}
+                        <br><small>{{ row.recipient_committee_id }}</small>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td>{{ row.match_type }}</td>
+                    <td>{{ row.transfer_count }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.earliest_disbursement_date if row.earliest_disbursement_date else '-' }} to {{ row.latest_disbursement_date if row.latest_disbursement_date else '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No explicit Schedule B transfer chains were found for this candidate/cycle.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="status-section">
     <h2>Independent Expenditures (Schedule E)</h2>
     <p class="subtitle">
         Showing {{ detail.schedule_e_independent_expenditures|length }} of {{ schedule_e_total }} rows
-        ·
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_e') }}">Export CSV</a>
+        -
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, format='csv', table='schedule_e', schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">Export CSV</a>
     </p>
     <div class="table-scroll">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Date</th>
-                    <th>Support/Oppose</th>
-                    <th>Committee</th>
-                    <th>Payee</th>
+                    <th>{{ schedule_e_sort_link('date', 'Date') }}</th>
+                    <th>{{ schedule_e_sort_link('support_oppose', 'Support/Oppose') }}</th>
+                    <th>{{ schedule_e_sort_link('committee', 'Committee') }}</th>
+                    <th>{{ schedule_e_sort_link('payee', 'Payee') }}</th>
                     <th>Location</th>
-                    <th>Category</th>
+                    <th>{{ schedule_e_sort_link('category', 'Category') }}</th>
                     <th>Report/Line</th>
-                    <th>Amount</th>
+                    <th>{{ schedule_e_sort_link('amount', 'Amount') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -285,16 +395,62 @@
     {% if schedule_e_pages > 1 %}
     <nav class="pagination">
         {% if schedule_e_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page-1) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page-1, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ schedule_e_page }} of {{ schedule_e_pages }}</span>
 
         {% if schedule_e_page < schedule_e_pages %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page+1) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page+1, schedule_b_sort=schedule_b_sort, schedule_b_dir=schedule_b_dir, schedule_e_sort=schedule_e_sort, schedule_e_dir=schedule_e_dir) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Cross-Role Organizations (A and B/E)</h2>
+    <p class="subtitle">
+        {{ detail.cross_role_summary.matched_organization_count if detail.cross_role_summary else 0 }} matched organizations
+        -
+        {{ format_currency(detail.cross_role_summary.total_donor_amount if detail.cross_role_summary else 0.0) }} donated
+        -
+        {{ format_currency(detail.cross_role_summary.total_out_amount if detail.cross_role_summary else 0.0) }} received
+    </p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Organization</th>
+                    <th>Candidates</th>
+                    <th>Donated (A)</th>
+                    <th>Received via B</th>
+                    <th>Received via E</th>
+                    <th>Total Out</th>
+                    <th>Net In-Out</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.cross_role_organizations %}
+                <tr>
+                    <td>
+                        {{ row.organization_name if row.organization_name else '-' }}
+                        {% if row.state or row.zip5 %}
+                        <br><small>{{ row.state if row.state else '' }} {{ row.zip5 if row.zip5 else '' }}</small>
+                        {% endif %}
+                    </td>
+                    <td>{{ row.candidate_count }}</td>
+                    <td>{{ format_currency(row.donor_amount) }} ({{ row.donor_count }})</td>
+                    <td>{{ format_currency(row.schedule_b_amount) }} ({{ row.schedule_b_count }})</td>
+                    <td>{{ format_currency(row.schedule_e_amount) }} ({{ row.schedule_e_count }})</td>
+                    <td>{{ format_currency(row.total_out_amount) }}</td>
+                    <td>{{ format_currency(row.net_in_minus_out) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7">No organizations were found in both donor and payee roles for this candidate/cycle.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 {% endif %}
 {% endblock %}

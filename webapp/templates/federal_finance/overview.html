@@ -77,6 +77,8 @@
                 <th>Donors</th>
                 <th>Contributions</th>
                 <th>Total Amount</th>
+                <th>Outside Spending (E)</th>
+                <th>Outside Pressure Ratio</th>
                 <th>Top Candidate Share</th>
             </tr>
         </thead>
@@ -88,10 +90,12 @@
                 <td>{{ row.donor_count }}</td>
                 <td>{{ row.contribution_count }}</td>
                 <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ format_currency(row.outside_spending_total) }}</td>
+                <td>{{ (row.outside_pressure_ratio * 100)|round(2) }}%</td>
                 <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
             </tr>
             {% else %}
-            <tr><td colspan="6">No race analytics rows found for this filter.</td></tr>
+            <tr><td colspan="8">No race analytics rows found for this filter.</td></tr>
             {% endfor %}
         </tbody>
     </table>

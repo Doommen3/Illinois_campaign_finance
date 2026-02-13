@@ -725,6 +725,8 @@ class TestWebApp:
         assert b'Explore More' in overview.data
         assert b'Schedule B Rows' in overview.data
         assert b'Schedule E Rows' in overview.data
+        assert b'Outside Spending (E)' in overview.data
+        assert b'Outside Pressure Ratio' in overview.data
         assert b'$625.00 total disbursed' in overview.data
         assert b'$640.75 total independent expenditures' in overview.data
         assert b'$425.00' in overview.data
@@ -764,6 +766,9 @@ class TestWebApp:
         assert b'id="federal-flow-min"' in networks.data
         assert b'id="federal-flow-limit"' in networks.data
         assert b'id="federal-flow-search"' in networks.data
+        assert b'Multi-layer Money Flow Network (A/B/E)' in networks.data
+        assert b'Top Multi-layer Flows' in networks.data
+        assert b'Cross-Role Organizations (Donor and Payee)' in networks.data
         assert b'id="overlap-network-svg"' in networks.data
         assert b'id="overlap-graph-mode"' in networks.data
         assert b'Trend Matrix' in networks.data
@@ -796,11 +801,23 @@ class TestWebApp:
         assert b'Recent Contributions' in detail.data
         assert b'Recent Disbursements (Schedule B)' in detail.data
         assert b'Independent Expenditures (Schedule E)' in detail.data
+        assert b'Money In (A)' in detail.data
+        assert b'Money Out (B)' in detail.data
+        assert b'Outside Spending (E)' in detail.data
+        assert b'Explicit Transfer Chains (Schedule B IDs)' in detail.data
+        assert b'Cross-Role Organizations (A and B/E)' in detail.data
         assert b'Reported Disbursements:' in detail.data
         assert b'/federal-finance/donors/' in detail.data
         assert b'Total Source:' in detail.data
         assert b'FEC candidate totals endpoint' in detail.data
         assert b'Export CSV' in detail.data
+
+        detail_sorted = client.get(
+            '/federal-finance/H2IL01349?cycle=2026&schedule_b_sort=amount&schedule_b_dir=asc&schedule_e_sort=amount&schedule_e_dir=asc'
+        )
+        assert detail_sorted.status_code == 200
+        assert b'schedule_b_sort=amount' in detail_sorted.data
+        assert b'schedule_e_sort=amount' in detail_sorted.data
 
         live_feed = client.get('/live-feed?local_limit=20&federal_limit=20&schedule_b_limit=20&schedule_e_limit=20')
         assert live_feed.status_code == 200

@@ -1111,6 +1111,21 @@ def _build_donor_key(
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
 
 
+def _normalize_org_identity(
+    value: str | None,
+    *,
+    state: str | None = None,
+    zip_code: str | None = None,
+) -> str:
+    """Build a lightweight organization identity key for A/B/E cross-role matching."""
+    name_key = _normalize_name(value)
+    if not name_key:
+        return ""
+    state_key = _clean_text(state).upper()
+    zip_key = _clean_text(zip_code)[:5]
+    return "|".join([name_key, state_key, zip_key])
+
+
 def _extract_contributor_name(row: dict) -> str:
     direct = _clean_text(row.get("contributor_name"))
     if direct:
@@ -4135,6 +4150,10 @@ def get_federal_candidate_detail(
     schedule_b_offset: int = 0,
     schedule_e_limit: int = 200,
     schedule_e_offset: int = 0,
+    schedule_b_sort: str = "date",
+    schedule_b_dir: str = "desc",
+    schedule_e_sort: str = "date",
+    schedule_e_dir: str = "desc",
 ) -> dict | None:
     _ensure_missing_donor_identities(conn, cycle=cycle)
     has_schedule_b = _table_exists(conn, "fec_schedule_b_disbursements")
@@ -4344,6 +4363,19 @@ def get_federal_candidate_detail(
     schedule_b_rows: list[dict] = []
     total_schedule_b_disbursements = 0
     if has_schedule_b:
+        schedule_b_sort_field = _clean_text(schedule_b_sort).lower() or "date"
+        schedule_b_sort_dir = "ASC" if _clean_text(schedule_b_dir).lower() == "asc" else "DESC"
+        schedule_b_sort_columns = {
+            "date": "disbursement_date",
+            "amount": "disbursement_amount",
+            "recipient": "recipient_name",
+            "committee": "committee_name",
+            "type": "disbursement_type_desc",
+            "category": "category_code_full",
+        }
+        schedule_b_order_column = schedule_b_sort_columns.get(schedule_b_sort_field, "disbursement_date")
+        schedule_b_order_sql = f"{schedule_b_order_column} {schedule_b_sort_dir}, sub_id DESC"
+
         schedule_b_where = "WHERE candidate_id = ?"
         schedule_b_params: list[Any] = [candidate_id]
         if cycle is not None:
@@ -4371,7 +4403,7 @@ def get_federal_candidate_detail(
                 memo_text
             FROM fec_schedule_b_disbursements
             {schedule_b_where}
-            ORDER BY disbursement_date DESC, disbursement_amount DESC, sub_id DESC
+            ORDER BY {schedule_b_order_sql}
             LIMIT ? OFFSET ?
             """,
             schedule_b_params + [max(1, int(schedule_b_limit)), max(0, int(schedule_b_offset))],
@@ -4390,6 +4422,19 @@ def get_federal_candidate_detail(
     schedule_e_rows: list[dict] = []
     total_schedule_e_expenditures = 0
     if has_schedule_e:
+        schedule_e_sort_field = _clean_text(schedule_e_sort).lower() or "date"
+        schedule_e_sort_dir = "ASC" if _clean_text(schedule_e_dir).lower() == "asc" else "DESC"
+        schedule_e_sort_columns = {
+            "date": "expenditure_date",
+            "amount": "expenditure_amount",
+            "support_oppose": "support_oppose_indicator",
+            "committee": "committee_name",
+            "payee": "payee_name",
+            "category": "category_code_full",
+        }
+        schedule_e_order_column = schedule_e_sort_columns.get(schedule_e_sort_field, "expenditure_date")
+        schedule_e_order_sql = f"{schedule_e_order_column} {schedule_e_sort_dir}, sub_id DESC"
+
         schedule_e_where = "WHERE candidate_id = ?"
         schedule_e_params: list[Any] = [candidate_id]
         if cycle is not None:
@@ -4417,7 +4462,7 @@ def get_federal_candidate_detail(
                 expenditure_description
             FROM fec_schedule_e_independent_expenditures
             {schedule_e_where}
-            ORDER BY expenditure_date DESC, expenditure_amount DESC, sub_id DESC
+            ORDER BY {schedule_e_order_sql}
             LIMIT ? OFFSET ?
             """,
             schedule_e_params + [max(1, int(schedule_e_limit)), max(0, int(schedule_e_offset))],
@@ -4460,6 +4505,36 @@ def get_federal_candidate_detail(
         if reported_total_disbursements not in (None, 0)
         else None
     )
+    schedule_total_amount = float(summary["schedule_total_amount"] or 0.0)
+    schedule_e_total_amount = float(summary["schedule_e_total_amount"] or 0.0)
+    reported_total_receipts = (
+        float(summary["reported_total_receipts"] or 0.0)
+        if summary["reported_total_receipts"] is not None
+        else None
+    )
+    money_in_total = reported_total_receipts if reported_total_receipts is not None else schedule_total_amount
+    money_in_source = "reported_receipts" if reported_total_receipts is not None else "schedule_a_synced"
+    money_out_total = (
+        reported_total_disbursements if reported_total_disbursements is not None else schedule_b_total_amount
+    )
+    money_out_source = "reported_disbursements" if reported_total_disbursements is not None else "schedule_b_synced"
+    outside_spending_total = schedule_e_total_amount
+    net_money_flow = money_in_total - money_out_total
+    outside_pressure_ratio = (outside_spending_total / money_in_total) if money_in_total > 0 else None
+
+    cross_role = get_federal_cross_role_organizations(
+        conn,
+        cycle=cycle,
+        candidate_id=candidate_id,
+        limit=50,
+        min_total_amount=0.0,
+    )
+    transfer_chains = _get_candidate_schedule_b_transfer_chains(
+        conn,
+        candidate_id=candidate_id,
+        cycle=cycle,
+        limit=50,
+    )
 
     return {
         "summary": {
@@ -4477,23 +4552,26 @@ def get_federal_candidate_detail(
             "contribution_count": int(summary["contribution_count"] or 0),
             "donor_count": int(summary["donor_count"] or 0),
             "total_amount": float(summary["total_amount"] or 0.0),
-            "reported_total_receipts": (
-                float(summary["reported_total_receipts"] or 0.0)
-                if summary["reported_total_receipts"] is not None
-                else None
-            ),
+            "reported_total_receipts": reported_total_receipts,
             "reported_total_disbursements": reported_total_disbursements,
-            "schedule_total_amount": float(summary["schedule_total_amount"] or 0.0),
+            "schedule_total_amount": schedule_total_amount,
             "schedule_b_total_amount": schedule_b_total_amount,
             "schedule_b_disbursement_count": int(summary["schedule_b_disbursement_count"] or 0),
             "earliest_disbursement_date": summary["earliest_disbursement_date"],
             "latest_disbursement_date": summary["latest_disbursement_date"],
-            "schedule_e_total_amount": float(summary["schedule_e_total_amount"] or 0.0),
+            "schedule_e_total_amount": schedule_e_total_amount,
             "schedule_e_expenditure_count": int(summary["schedule_e_expenditure_count"] or 0),
             "earliest_expenditure_date": summary["earliest_expenditure_date"],
             "latest_expenditure_date": summary["latest_expenditure_date"],
             "disbursement_gap_amount": disbursement_gap_amount,
             "disbursement_gap_ratio": disbursement_gap_ratio,
+            "money_in_total": round(money_in_total, 2),
+            "money_in_source": money_in_source,
+            "money_out_total": round(money_out_total, 2),
+            "money_out_source": money_out_source,
+            "outside_spending_total": round(outside_spending_total, 2),
+            "outside_pressure_ratio": round(outside_pressure_ratio, 4) if outside_pressure_ratio is not None else None,
+            "net_money_flow": round(net_money_flow, 2),
             "uses_reported_total_receipts": summary["reported_total_receipts"] is not None,
             "uses_reported_total_disbursements": summary["reported_total_disbursements"] is not None,
             "latest_contribution_date": summary["latest_contribution_date"],
@@ -4598,6 +4676,9 @@ def get_federal_candidate_detail(
         "total_contributions": int(total_contributions_row["count"] or 0) if total_contributions_row else 0,
         "total_schedule_b_disbursements": total_schedule_b_disbursements,
         "total_schedule_e_expenditures": total_schedule_e_expenditures,
+        "cross_role_organizations": cross_role.get("rows", []),
+        "cross_role_summary": cross_role.get("summary", {}),
+        "schedule_b_transfer_chains": transfer_chains,
     }
 
 
@@ -4663,6 +4744,8 @@ def get_federal_race_analytics(
                 "donor_keys": set(),
                 "contribution_count": 0,
                 "total_amount": 0.0,
+                "outside_expenditure_count": 0,
+                "outside_spending_total": 0.0,
                 "earliest_contribution_date": None,
                 "latest_contribution_date": None,
             },
@@ -4722,6 +4805,29 @@ def get_federal_race_analytics(
         ):
             race["latest_contribution_date"] = latest_date
 
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        outside_rows = conn.execute(
+            """
+            SELECT
+                candidate_id,
+                COUNT(*) AS expenditure_count,
+                COALESCE(SUM(expenditure_amount), 0.0) AS total_amount
+            FROM fec_schedule_e_independent_expenditures
+            WHERE candidate_id IS NOT NULL
+              AND (? IS NULL OR cycle = ?)
+            GROUP BY candidate_id
+            """,
+            (cycle, cycle),
+        ).fetchall()
+        for row in outside_rows:
+            candidate_id = _clean_text(row["candidate_id"])
+            race_id = candidate_to_race.get(candidate_id)
+            if not race_id:
+                continue
+            race = races[race_id]
+            race["outside_expenditure_count"] += int(row["expenditure_count"] or 0)
+            race["outside_spending_total"] += float(row["total_amount"] or 0.0)
+
     output: list[dict] = []
     for race in races.values():
         candidate_totals = [
@@ -4738,6 +4844,9 @@ def get_federal_race_analytics(
         top_candidate_name = candidate_totals[0][1] if candidate_totals else None
         top_candidate_amount = candidate_totals[0][2] if candidate_totals else 0.0
         total_amount = float(race["total_amount"] or 0.0)
+        outside_spending_total = float(race["outside_spending_total"] or 0.0)
+        outside_expenditure_count = int(race["outside_expenditure_count"] or 0)
+        outside_pressure_ratio = (outside_spending_total / total_amount) if total_amount > 0 else 0.0
         top_candidate_share = (top_candidate_amount / total_amount) if total_amount > 0 else 0.0
         contribution_count = int(race["contribution_count"] or 0)
 
@@ -4754,6 +4863,9 @@ def get_federal_race_analytics(
                 "contribution_count": contribution_count,
                 "total_amount": round(total_amount, 2),
                 "avg_contribution_amount": round(total_amount / contribution_count, 2) if contribution_count > 0 else 0.0,
+                "outside_spending_total": round(outside_spending_total, 2),
+                "outside_expenditure_count": outside_expenditure_count,
+                "outside_pressure_ratio": round(outside_pressure_ratio, 4),
                 "top_candidate_id": top_candidate_id,
                 "top_candidate_name": top_candidate_name,
                 "top_candidate_amount": round(top_candidate_amount, 2),
@@ -4960,6 +5072,791 @@ def get_federal_network_graph(
             "earliest_contribution_date": earliest_contribution_date,
             "latest_contribution_date": latest_contribution_date,
         },
+    }
+
+
+def _candidate_in_scope(
+    candidate_id: str | None,
+    *,
+    candidate_filter: str,
+    candidate_meta: dict[str, dict[str, str]],
+    office_filter: str,
+    district_filter: str,
+) -> bool:
+    candidate_key = _clean_text(candidate_id)
+    if not candidate_key:
+        return False
+    if candidate_filter:
+        return candidate_key == candidate_filter
+    if office_filter or district_filter:
+        return _candidate_passes_filter(candidate_meta.get(candidate_key), office_filter, district_filter)
+    return True
+
+
+def get_federal_cross_role_organizations(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    office_code: str | None = None,
+    district_code: str | None = None,
+    candidate_id: str | None = None,
+    limit: int = 200,
+    min_total_amount: float = 0.0,
+) -> dict:
+    """Find organizations that appear as both Schedule A donors and Schedule B/E payees."""
+    _ensure_missing_donor_identities(conn, cycle=cycle)
+
+    limit_value = max(1, int(limit))
+    min_total_amount_value = max(0.0, float(min_total_amount))
+    candidate_filter = _clean_text(candidate_id)
+    office_filter = ""
+    district_filter = ""
+    candidate_meta: dict[str, dict[str, str]] = {}
+    if not candidate_filter:
+        office_filter = _canonical_office_code(office_code)
+        district_filter = _normalize_district_filter(office_filter, district_code) if office_filter else ""
+        if office_filter or district_filter:
+            candidate_meta = _candidate_filter_metadata(conn, cycle=cycle)
+
+    entities: dict[str, dict[str, Any]] = {}
+
+    def _ensure_entity(org_key: str, name: str, state: str, zip5: str) -> dict[str, Any]:
+        entity = entities.setdefault(
+            org_key,
+            {
+                "organization_key": org_key,
+                "organization_name": "",
+                "state": "",
+                "zip5": "",
+                "donor_amount": 0.0,
+                "donor_count": 0,
+                "schedule_b_amount": 0.0,
+                "schedule_b_count": 0,
+                "schedule_e_amount": 0.0,
+                "schedule_e_count": 0,
+                "candidate_ids": set(),
+            },
+        )
+        if not entity["organization_name"] and name:
+            entity["organization_name"] = name
+        if not entity["state"] and state:
+            entity["state"] = state
+        if not entity["zip5"] and zip5:
+            entity["zip5"] = zip5
+        return entity
+
+    if _table_exists(conn, "fec_schedule_a_contributions"):
+        donor_rows = conn.execute(
+            """
+            SELECT
+                candidate_id,
+                contributor_name AS organization_name,
+                contributor_state AS state,
+                contributor_zip AS zip_code,
+                COUNT(*) AS row_count,
+                COALESCE(SUM(contribution_receipt_amount), 0.0) AS total_amount
+            FROM fec_schedule_a_contributions
+            WHERE candidate_id IS NOT NULL
+              AND (? IS NULL OR cycle = ?)
+            GROUP BY candidate_id, contributor_name, contributor_state, contributor_zip
+            """,
+            (cycle, cycle),
+        ).fetchall()
+        for row in donor_rows:
+            candidate_key = _clean_text(row["candidate_id"])
+            if not _candidate_in_scope(
+                candidate_key,
+                candidate_filter=candidate_filter,
+                candidate_meta=candidate_meta,
+                office_filter=office_filter,
+                district_filter=district_filter,
+            ):
+                continue
+
+            name = _clean_text(row["organization_name"])
+            state = _clean_text(row["state"]).upper()
+            zip5 = _normalize_zip5(row["zip_code"])
+            org_key = _normalize_org_identity(name, state=state, zip_code=zip5)
+            if not org_key:
+                continue
+
+            entity = _ensure_entity(org_key, name, state, zip5)
+            entity["candidate_ids"].add(candidate_key)
+            entity["donor_amount"] += float(row["total_amount"] or 0.0)
+            entity["donor_count"] += int(row["row_count"] or 0)
+
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        schedule_b_rows = conn.execute(
+            """
+            SELECT
+                candidate_id,
+                recipient_name AS organization_name,
+                recipient_state AS state,
+                recipient_zip AS zip_code,
+                COUNT(*) AS row_count,
+                COALESCE(SUM(disbursement_amount), 0.0) AS total_amount
+            FROM fec_schedule_b_disbursements
+            WHERE candidate_id IS NOT NULL
+              AND (? IS NULL OR cycle = ?)
+            GROUP BY candidate_id, recipient_name, recipient_state, recipient_zip
+            """,
+            (cycle, cycle),
+        ).fetchall()
+        for row in schedule_b_rows:
+            candidate_key = _clean_text(row["candidate_id"])
+            if not _candidate_in_scope(
+                candidate_key,
+                candidate_filter=candidate_filter,
+                candidate_meta=candidate_meta,
+                office_filter=office_filter,
+                district_filter=district_filter,
+            ):
+                continue
+
+            name = _clean_text(row["organization_name"])
+            state = _clean_text(row["state"]).upper()
+            zip5 = _normalize_zip5(row["zip_code"])
+            org_key = _normalize_org_identity(name, state=state, zip_code=zip5)
+            if not org_key:
+                continue
+
+            entity = _ensure_entity(org_key, name, state, zip5)
+            entity["candidate_ids"].add(candidate_key)
+            entity["schedule_b_amount"] += float(row["total_amount"] or 0.0)
+            entity["schedule_b_count"] += int(row["row_count"] or 0)
+
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        schedule_e_rows = conn.execute(
+            """
+            SELECT
+                candidate_id,
+                payee_name AS organization_name,
+                payee_state AS state,
+                payee_zip AS zip_code,
+                COUNT(*) AS row_count,
+                COALESCE(SUM(expenditure_amount), 0.0) AS total_amount
+            FROM fec_schedule_e_independent_expenditures
+            WHERE candidate_id IS NOT NULL
+              AND (? IS NULL OR cycle = ?)
+            GROUP BY candidate_id, payee_name, payee_state, payee_zip
+            """,
+            (cycle, cycle),
+        ).fetchall()
+        for row in schedule_e_rows:
+            candidate_key = _clean_text(row["candidate_id"])
+            if not _candidate_in_scope(
+                candidate_key,
+                candidate_filter=candidate_filter,
+                candidate_meta=candidate_meta,
+                office_filter=office_filter,
+                district_filter=district_filter,
+            ):
+                continue
+
+            name = _clean_text(row["organization_name"])
+            state = _clean_text(row["state"]).upper()
+            zip5 = _normalize_zip5(row["zip_code"])
+            org_key = _normalize_org_identity(name, state=state, zip_code=zip5)
+            if not org_key:
+                continue
+
+            entity = _ensure_entity(org_key, name, state, zip5)
+            entity["candidate_ids"].add(candidate_key)
+            entity["schedule_e_amount"] += float(row["total_amount"] or 0.0)
+            entity["schedule_e_count"] += int(row["row_count"] or 0)
+
+    donor_org_count = 0
+    payee_org_count = 0
+    matched_rows: list[dict] = []
+    total_donor_amount = 0.0
+    total_out_amount = 0.0
+    for entity in entities.values():
+        donor_amount = float(entity["donor_amount"] or 0.0)
+        donor_count = int(entity["donor_count"] or 0)
+        schedule_b_amount = float(entity["schedule_b_amount"] or 0.0)
+        schedule_e_amount = float(entity["schedule_e_amount"] or 0.0)
+        schedule_b_count = int(entity["schedule_b_count"] or 0)
+        schedule_e_count = int(entity["schedule_e_count"] or 0)
+        out_amount = schedule_b_amount + schedule_e_amount
+        out_count = schedule_b_count + schedule_e_count
+
+        if donor_count > 0:
+            donor_org_count += 1
+        if out_count > 0:
+            payee_org_count += 1
+        if donor_count <= 0 or out_count <= 0:
+            continue
+
+        activity_total = donor_amount + out_amount
+        if activity_total < min_total_amount_value:
+            continue
+
+        net_in_minus_out = donor_amount - out_amount
+        matched_rows.append(
+            {
+                "organization_key": entity["organization_key"],
+                "organization_name": entity["organization_name"] or entity["organization_key"],
+                "state": entity["state"] or None,
+                "zip5": entity["zip5"] or None,
+                "candidate_count": len(entity["candidate_ids"]),
+                "donor_amount": round(donor_amount, 2),
+                "donor_count": donor_count,
+                "schedule_b_amount": round(schedule_b_amount, 2),
+                "schedule_b_count": schedule_b_count,
+                "schedule_e_amount": round(schedule_e_amount, 2),
+                "schedule_e_count": schedule_e_count,
+                "total_out_amount": round(out_amount, 2),
+                "total_out_count": out_count,
+                "activity_total": round(activity_total, 2),
+                "net_in_minus_out": round(net_in_minus_out, 2),
+            }
+        )
+        total_donor_amount += donor_amount
+        total_out_amount += out_amount
+
+    matched_rows.sort(
+        key=lambda row: (
+            float(row["activity_total"] or 0.0),
+            float(row["donor_amount"] or 0.0),
+            float(row["total_out_amount"] or 0.0),
+        ),
+        reverse=True,
+    )
+    total_matched_rows = len(matched_rows)
+
+    return {
+        "rows": matched_rows[:limit_value],
+        "summary": {
+            "cycle": cycle,
+            "office_filter": office_filter or None,
+            "district_filter": district_filter or None,
+            "candidate_filter": candidate_filter or None,
+            "donor_organization_count": donor_org_count,
+            "payee_organization_count": payee_org_count,
+            "matched_organization_count": total_matched_rows,
+            "total_donor_amount": round(total_donor_amount, 2),
+            "total_out_amount": round(total_out_amount, 2),
+            "min_total_amount": min_total_amount_value,
+        },
+    }
+
+
+def _get_candidate_schedule_b_transfer_chains(
+    conn: sqlite3.Connection,
+    *,
+    candidate_id: str,
+    cycle: int | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    if not _table_exists(conn, "fec_schedule_b_disbursements"):
+        return []
+
+    where_sql = "WHERE candidate_id = ?"
+    params: list[Any] = [candidate_id]
+    if cycle is not None:
+        where_sql += " AND cycle = ?"
+        params.append(int(cycle))
+
+    candidate_lookup_rows = conn.execute(
+        """
+        SELECT DISTINCT
+            fec_candidate_id,
+            COALESCE(fec_name, candidate_name, fec_candidate_id) AS candidate_name
+        FROM fec_candidate_match
+        WHERE fec_candidate_id IS NOT NULL
+          AND (? IS NULL OR cycle = ?)
+        """,
+        (cycle, cycle),
+    ).fetchall()
+    candidate_lookup = {
+        _clean_text(row["fec_candidate_id"]): _clean_text(row["candidate_name"]) or _clean_text(row["fec_candidate_id"])
+        for row in candidate_lookup_rows
+        if _clean_text(row["fec_candidate_id"])
+    }
+
+    committee_lookup_rows = conn.execute(
+        """
+        SELECT
+            cc.committee_id,
+            COALESCE(MAX(cc.committee_name), cc.committee_id) AS committee_name,
+            COALESCE(MAX(cm.fec_candidate_id), MAX(cc.candidate_id)) AS owner_candidate_id,
+            COALESCE(MAX(cm.fec_name), MAX(cm.candidate_name), MAX(cc.candidate_id)) AS owner_candidate_name
+        FROM fec_candidate_committees cc
+        LEFT JOIN fec_candidate_match cm
+          ON cm.fec_candidate_id = cc.candidate_id
+         AND cm.cycle = cc.cycle
+        WHERE cc.committee_id IS NOT NULL
+          AND (? IS NULL OR cc.cycle = ?)
+        GROUP BY cc.committee_id
+        """,
+        (cycle, cycle),
+    ).fetchall()
+    committee_lookup = {
+        _clean_text(row["committee_id"]): {
+            "committee_name": _clean_text(row["committee_name"]) or _clean_text(row["committee_id"]),
+            "owner_candidate_id": _clean_text(row["owner_candidate_id"]),
+            "owner_candidate_name": _clean_text(row["owner_candidate_name"]),
+        }
+        for row in committee_lookup_rows
+        if _clean_text(row["committee_id"])
+    }
+
+    transfer_rows = conn.execute(
+        f"""
+        SELECT
+            recipient_candidate_id,
+            recipient_candidate_name,
+            recipient_committee_id,
+            recipient_name,
+            COUNT(*) AS transfer_count,
+            COALESCE(SUM(disbursement_amount), 0.0) AS total_amount,
+            MIN(disbursement_date) AS earliest_disbursement_date,
+            MAX(disbursement_date) AS latest_disbursement_date
+        FROM fec_schedule_b_disbursements
+        {where_sql}
+          AND (
+              NULLIF(recipient_candidate_id, '') IS NOT NULL
+              OR NULLIF(recipient_committee_id, '') IS NOT NULL
+          )
+        GROUP BY recipient_candidate_id, recipient_candidate_name, recipient_committee_id, recipient_name
+        ORDER BY total_amount DESC, transfer_count DESC, latest_disbursement_date DESC
+        LIMIT ?
+        """,
+        params + [max(1, int(limit))],
+    ).fetchall()
+
+    output: list[dict] = []
+    for row in transfer_rows:
+        recipient_candidate_id = _clean_text(row["recipient_candidate_id"])
+        recipient_committee_id = _clean_text(row["recipient_committee_id"])
+        committee_meta = committee_lookup.get(recipient_committee_id, {})
+
+        resolved_candidate_id = recipient_candidate_id or _clean_text(committee_meta.get("owner_candidate_id"))
+        resolved_candidate_name = (
+            candidate_lookup.get(resolved_candidate_id)
+            or _clean_text(row["recipient_candidate_name"])
+            or _clean_text(committee_meta.get("owner_candidate_name"))
+            or resolved_candidate_id
+            or None
+        )
+        resolved_committee_name = (
+            _clean_text(committee_meta.get("committee_name"))
+            or _clean_text(row["recipient_name"])
+            or recipient_committee_id
+            or None
+        )
+
+        if recipient_candidate_id and recipient_committee_id:
+            match_type = "candidate_id + committee_id"
+        elif recipient_candidate_id:
+            match_type = "candidate_id"
+        elif recipient_committee_id and _clean_text(committee_meta.get("owner_candidate_id")):
+            match_type = "committee_id -> candidate"
+        elif recipient_committee_id:
+            match_type = "committee_id"
+        else:
+            match_type = "unresolved"
+
+        output.append(
+            {
+                "recipient_candidate_id": resolved_candidate_id or None,
+                "recipient_candidate_name": resolved_candidate_name,
+                "recipient_committee_id": recipient_committee_id or None,
+                "recipient_committee_name": resolved_committee_name,
+                "match_type": match_type,
+                "transfer_count": int(row["transfer_count"] or 0),
+                "total_amount": round(float(row["total_amount"] or 0.0), 2),
+                "earliest_disbursement_date": row["earliest_disbursement_date"],
+                "latest_disbursement_date": row["latest_disbursement_date"],
+            }
+        )
+    return output
+
+
+def get_federal_multilayer_network_graph(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    office_code: str | None = None,
+    district_code: str | None = None,
+    min_edge_amount: float = 1000.0,
+    limit: int = 1500,
+) -> dict:
+    """Build a multi-layer flow network across Schedule A/B/E."""
+    _ensure_missing_donor_identities(conn, cycle=cycle)
+
+    office_filter = _canonical_office_code(office_code)
+    district_filter = _normalize_district_filter(office_filter, district_code) if office_filter else ""
+    edge_limit = max(1, int(limit))
+    query_limit = max(edge_limit * 4, edge_limit)
+    min_edge = float(max(0.0, min_edge_amount))
+    candidate_meta = _candidate_filter_metadata(conn, cycle=cycle)
+
+    staged_edges: list[dict] = []
+
+    schedule_a_edges, _candidate_meta, _office_scope, _district_scope = _filtered_edge_rows(
+        conn,
+        cycle=cycle,
+        office_code=office_filter or None,
+        district_code=district_filter or None,
+    )
+    for row in schedule_a_edges:
+        donor_key = _clean_text(row.get("donor_entity_key"))
+        candidate_id_value = _clean_text(row.get("candidate_id"))
+        if not donor_key or not candidate_id_value:
+            continue
+
+        weight = float(row.get("total_amount") or 0.0)
+        if weight < min_edge:
+            continue
+
+        staged_edges.append(
+            {
+                "_source_id": f"donor:{donor_key}",
+                "_target_id": f"candidate:{candidate_id_value}",
+                "_source_node": {
+                    "id": f"donor:{donor_key}",
+                    "label": _clean_text(row.get("donor_name")) or "Unknown Donor",
+                    "node_type": "donor",
+                    "entity_key": donor_key,
+                    "city": _clean_text(row.get("donor_city")) or None,
+                    "state": _clean_text(row.get("donor_state")) or None,
+                },
+                "_target_node": {
+                    "id": f"candidate:{candidate_id_value}",
+                    "label": _clean_text(row.get("candidate_name")) or candidate_id_value,
+                    "node_type": "candidate",
+                    "candidate_id": candidate_id_value,
+                    "office_display": row.get("office_display"),
+                    "district_display": row.get("district_display"),
+                    "race_label": row.get("race_label"),
+                    "party_code": row.get("party_code"),
+                    "party_display": row.get("party_display"),
+                },
+                "source": f"donor:{donor_key}",
+                "target": f"candidate:{candidate_id_value}",
+                "edge_type": "donor_candidate",
+                "layer_label": "Schedule A: Donor -> Candidate",
+                "weight": round(weight, 2),
+                "row_count": int(row.get("contribution_count") or 0),
+                "candidate_id": candidate_id_value,
+                "candidate_name": _clean_text(row.get("candidate_name")) or candidate_id_value,
+                "race_label": row.get("race_label"),
+                "party_display": row.get("party_display"),
+                "earliest_date": row.get("earliest_contribution_date"),
+                "latest_date": row.get("latest_contribution_date"),
+            }
+        )
+
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        schedule_b_rows = conn.execute(
+            """
+            SELECT
+                sb.candidate_id,
+                sb.committee_id,
+                COALESCE(MAX(sb.committee_name), sb.committee_id, 'Unknown Committee') AS committee_name,
+                COALESCE(NULLIF(sb.recipient_name, ''), NULLIF(sb.recipient_committee_id, ''), sb.sub_id) AS recipient_name,
+                COALESCE(MAX(sb.recipient_city), '') AS recipient_city,
+                COALESCE(MAX(sb.recipient_state), '') AS recipient_state,
+                COALESCE(MAX(sb.recipient_zip), '') AS recipient_zip,
+                COALESCE(MAX(sb.recipient_committee_id), '') AS recipient_committee_id,
+                COALESCE(MAX(sb.recipient_candidate_id), '') AS recipient_candidate_id,
+                COUNT(*) AS row_count,
+                COALESCE(SUM(sb.disbursement_amount), 0.0) AS total_amount,
+                MIN(sb.disbursement_date) AS earliest_date,
+                MAX(sb.disbursement_date) AS latest_date
+            FROM fec_schedule_b_disbursements sb
+            WHERE sb.candidate_id IS NOT NULL
+              AND sb.committee_id IS NOT NULL
+              AND (? IS NULL OR sb.cycle = ?)
+            GROUP BY
+                sb.candidate_id,
+                sb.committee_id,
+                COALESCE(NULLIF(sb.recipient_name, ''), NULLIF(sb.recipient_committee_id, ''), sb.sub_id),
+                COALESCE(sb.recipient_state, ''),
+                COALESCE(sb.recipient_zip, '')
+            HAVING COALESCE(SUM(sb.disbursement_amount), 0.0) >= ?
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            (cycle, cycle, min_edge, query_limit),
+        ).fetchall()
+        for row in schedule_b_rows:
+            candidate_id_value = _clean_text(row["candidate_id"])
+            if not _candidate_in_scope(
+                candidate_id_value,
+                candidate_filter="",
+                candidate_meta=candidate_meta,
+                office_filter=office_filter,
+                district_filter=district_filter,
+            ):
+                continue
+
+            committee_id = _clean_text(row["committee_id"])
+            if not committee_id:
+                continue
+
+            recipient_name = _clean_text(row["recipient_name"])
+            recipient_state = _clean_text(row["recipient_state"]).upper()
+            recipient_zip5 = _normalize_zip5(row["recipient_zip"])
+            recipient_identity = _normalize_org_identity(
+                recipient_name,
+                state=recipient_state,
+                zip_code=recipient_zip5,
+            )
+            if not recipient_identity:
+                recipient_identity = _build_donor_key(recipient_name, recipient_state, recipient_zip5, None)
+            if not recipient_identity:
+                continue
+
+            weight = float(row["total_amount"] or 0.0)
+            if weight < min_edge:
+                continue
+
+            candidate_row_meta = candidate_meta.get(candidate_id_value, {})
+            candidate_name = _clean_text(candidate_row_meta.get("candidate_name")) or candidate_id_value
+
+            staged_edges.append(
+                {
+                    "_source_id": f"candidate_committee:{committee_id}",
+                    "_target_id": f"vendor:{recipient_identity}",
+                    "_source_node": {
+                        "id": f"candidate_committee:{committee_id}",
+                        "label": _clean_text(row["committee_name"]) or committee_id,
+                        "node_type": "candidate_committee",
+                        "committee_id": committee_id,
+                        "candidate_id": candidate_id_value,
+                        "candidate_name": candidate_name,
+                        "race_label": candidate_row_meta.get("race_label"),
+                        "party_display": candidate_row_meta.get("party_display"),
+                    },
+                    "_target_node": {
+                        "id": f"vendor:{recipient_identity}",
+                        "label": recipient_name or recipient_identity,
+                        "node_type": "vendor",
+                        "entity_key": recipient_identity,
+                        "city": _clean_text(row["recipient_city"]) or None,
+                        "state": recipient_state or None,
+                        "zip5": recipient_zip5 or None,
+                    },
+                    "source": f"candidate_committee:{committee_id}",
+                    "target": f"vendor:{recipient_identity}",
+                    "edge_type": "committee_vendor",
+                    "layer_label": "Schedule B: Candidate Committee -> Vendor",
+                    "weight": round(weight, 2),
+                    "row_count": int(row["row_count"] or 0),
+                    "candidate_id": candidate_id_value,
+                    "candidate_name": candidate_name,
+                    "committee_id": committee_id,
+                    "committee_name": _clean_text(row["committee_name"]) or committee_id,
+                    "counterparty_name": recipient_name or recipient_identity,
+                    "counterparty_state": recipient_state or None,
+                    "counterparty_zip5": recipient_zip5 or None,
+                    "recipient_candidate_id": _clean_text(row["recipient_candidate_id"]) or None,
+                    "recipient_committee_id": _clean_text(row["recipient_committee_id"]) or None,
+                    "race_label": candidate_row_meta.get("race_label"),
+                    "party_display": candidate_row_meta.get("party_display"),
+                    "earliest_date": row["earliest_date"],
+                    "latest_date": row["latest_date"],
+                }
+            )
+
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        schedule_e_rows = conn.execute(
+            """
+            SELECT
+                se.candidate_id,
+                se.committee_id,
+                COALESCE(MAX(se.committee_name), se.committee_id, 'Unknown IE Committee') AS committee_name,
+                GROUP_CONCAT(DISTINCT COALESCE(se.support_oppose_indicator, '')) AS support_oppose_values,
+                COUNT(*) AS row_count,
+                COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
+                MIN(se.expenditure_date) AS earliest_date,
+                MAX(se.expenditure_date) AS latest_date
+            FROM fec_schedule_e_independent_expenditures se
+            WHERE se.candidate_id IS NOT NULL
+              AND se.committee_id IS NOT NULL
+              AND (? IS NULL OR se.cycle = ?)
+            GROUP BY se.candidate_id, se.committee_id
+            HAVING COALESCE(SUM(se.expenditure_amount), 0.0) >= ?
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            (cycle, cycle, min_edge, query_limit),
+        ).fetchall()
+        for row in schedule_e_rows:
+            candidate_id_value = _clean_text(row["candidate_id"])
+            if not _candidate_in_scope(
+                candidate_id_value,
+                candidate_filter="",
+                candidate_meta=candidate_meta,
+                office_filter=office_filter,
+                district_filter=district_filter,
+            ):
+                continue
+
+            committee_id = _clean_text(row["committee_id"])
+            if not committee_id:
+                continue
+
+            weight = float(row["total_amount"] or 0.0)
+            if weight < min_edge:
+                continue
+
+            candidate_row_meta = candidate_meta.get(candidate_id_value, {})
+            candidate_name = _clean_text(candidate_row_meta.get("candidate_name")) or candidate_id_value
+
+            staged_edges.append(
+                {
+                    "_source_id": f"ie_committee:{committee_id}",
+                    "_target_id": f"candidate:{candidate_id_value}",
+                    "_source_node": {
+                        "id": f"ie_committee:{committee_id}",
+                        "label": _clean_text(row["committee_name"]) or committee_id,
+                        "node_type": "ie_committee",
+                        "committee_id": committee_id,
+                    },
+                    "_target_node": {
+                        "id": f"candidate:{candidate_id_value}",
+                        "label": candidate_name,
+                        "node_type": "candidate",
+                        "candidate_id": candidate_id_value,
+                        "office_display": candidate_row_meta.get("office_display"),
+                        "district_display": candidate_row_meta.get("district_display"),
+                        "race_label": candidate_row_meta.get("race_label"),
+                        "party_code": candidate_row_meta.get("party_code"),
+                        "party_display": candidate_row_meta.get("party_display"),
+                    },
+                    "source": f"ie_committee:{committee_id}",
+                    "target": f"candidate:{candidate_id_value}",
+                    "edge_type": "ie_committee_candidate",
+                    "layer_label": "Schedule E: IE Committee -> Candidate",
+                    "weight": round(weight, 2),
+                    "row_count": int(row["row_count"] or 0),
+                    "committee_id": committee_id,
+                    "committee_name": _clean_text(row["committee_name"]) or committee_id,
+                    "candidate_id": candidate_id_value,
+                    "candidate_name": candidate_name,
+                    "support_oppose_values": _clean_text(row["support_oppose_values"]) or None,
+                    "race_label": candidate_row_meta.get("race_label"),
+                    "party_display": candidate_row_meta.get("party_display"),
+                    "earliest_date": row["earliest_date"],
+                    "latest_date": row["latest_date"],
+                }
+            )
+
+    staged_edges.sort(
+        key=lambda row: (
+            float(row.get("weight") or 0.0),
+            int(row.get("row_count") or 0),
+        ),
+        reverse=True,
+    )
+    staged_edges = staged_edges[:edge_limit]
+
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict] = []
+    weighted_degree: dict[str, float] = defaultdict(float)
+    edge_degree: dict[str, int] = defaultdict(int)
+    total_amount = 0.0
+    earliest_date = None
+    latest_date = None
+    layer_stats = {
+        "donor_candidate": {"edge_count": 0, "total_amount": 0.0, "label": "Schedule A"},
+        "committee_vendor": {"edge_count": 0, "total_amount": 0.0, "label": "Schedule B"},
+        "ie_committee_candidate": {"edge_count": 0, "total_amount": 0.0, "label": "Schedule E"},
+    }
+
+    for row in staged_edges:
+        source_id = row["_source_id"]
+        target_id = row["_target_id"]
+        source_node = dict(row["_source_node"])
+        target_node = dict(row["_target_node"])
+        edge = {key: value for key, value in row.items() if not key.startswith("_")}
+        edge["source_label"] = source_node.get("label")
+        edge["target_label"] = target_node.get("label")
+        edge["source_node_type"] = source_node.get("node_type")
+        edge["target_node_type"] = target_node.get("node_type")
+
+        nodes.setdefault(source_id, source_node)
+        nodes.setdefault(target_id, target_node)
+        edges.append(edge)
+
+        weight = float(edge.get("weight") or 0.0)
+        weighted_degree[source_id] += weight
+        weighted_degree[target_id] += weight
+        edge_degree[source_id] += 1
+        edge_degree[target_id] += 1
+        total_amount += weight
+
+        edge_type = _clean_text(edge.get("edge_type"))
+        if edge_type in layer_stats:
+            layer_stats[edge_type]["edge_count"] += 1
+            layer_stats[edge_type]["total_amount"] += weight
+
+        edge_earliest = edge.get("earliest_date")
+        edge_latest = edge.get("latest_date")
+        if edge_earliest and (earliest_date is None or edge_earliest < earliest_date):
+            earliest_date = edge_earliest
+        if edge_latest and (latest_date is None or edge_latest > latest_date):
+            latest_date = edge_latest
+
+    centrality = [
+        {
+            "node_id": node_id,
+            "label": node.get("label"),
+            "node_type": node.get("node_type"),
+            "weighted_degree": round(weighted_degree.get(node_id, 0.0), 2),
+            "degree": edge_degree.get(node_id, 0),
+            "candidate_id": node.get("candidate_id"),
+            "committee_id": node.get("committee_id"),
+            "entity_key": node.get("entity_key"),
+            "race_label": node.get("race_label"),
+            "party_display": node.get("party_display"),
+            "state": node.get("state"),
+            "city": node.get("city"),
+            "zip5": node.get("zip5"),
+        }
+        for node_id, node in nodes.items()
+    ]
+    centrality.sort(key=lambda row: (row["weighted_degree"], row["degree"]), reverse=True)
+
+    donor_count = sum(1 for node in nodes.values() if node.get("node_type") == "donor")
+    candidate_count = sum(1 for node in nodes.values() if node.get("node_type") == "candidate")
+    candidate_committee_count = sum(1 for node in nodes.values() if node.get("node_type") == "candidate_committee")
+    vendor_count = sum(1 for node in nodes.values() if node.get("node_type") == "vendor")
+    ie_committee_count = sum(1 for node in nodes.values() if node.get("node_type") == "ie_committee")
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "donor_count": donor_count,
+            "candidate_count": candidate_count,
+            "candidate_committee_count": candidate_committee_count,
+            "vendor_count": vendor_count,
+            "ie_committee_count": ie_committee_count,
+            "total_amount": round(total_amount, 2),
+            "donor_candidate_total_amount": round(layer_stats["donor_candidate"]["total_amount"], 2),
+            "committee_vendor_total_amount": round(layer_stats["committee_vendor"]["total_amount"], 2),
+            "ie_committee_candidate_total_amount": round(layer_stats["ie_committee_candidate"]["total_amount"], 2),
+            "min_edge_amount": min_edge,
+            "cycle": cycle,
+            "office_filter": office_filter or None,
+            "district_filter": district_filter or None,
+            "earliest_date": earliest_date,
+            "latest_date": latest_date,
+        },
+        "layer_summary": [
+            {
+                "edge_type": edge_type,
+                "label": payload["label"],
+                "edge_count": int(payload["edge_count"] or 0),
+                "total_amount": round(float(payload["total_amount"] or 0.0), 2),
+            }
+            for edge_type, payload in layer_stats.items()
+        ],
     }
 
 

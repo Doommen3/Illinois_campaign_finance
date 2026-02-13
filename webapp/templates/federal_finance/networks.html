@@ -135,6 +135,124 @@
 </div>
 
 <div class="status-section">
+    <h2>Multi-layer Money Flow Network (A/B/E)</h2>
+    <p class="subtitle">
+        Nodes: <strong>{{ multilayer_network.summary.node_count }}</strong> |
+        Edges: <strong>{{ multilayer_network.summary.edge_count }}</strong> |
+        Donors: <strong>{{ multilayer_network.summary.donor_count }}</strong> |
+        Candidate Committees: <strong>{{ multilayer_network.summary.candidate_committee_count }}</strong> |
+        Vendors: <strong>{{ multilayer_network.summary.vendor_count }}</strong> |
+        IE Committees: <strong>{{ multilayer_network.summary.ie_committee_count }}</strong> |
+        Candidates: <strong>{{ multilayer_network.summary.candidate_count }}</strong>
+    </p>
+    <p class="subtitle">
+        A total: <strong>{{ format_currency(multilayer_network.summary.donor_candidate_total_amount) }}</strong> |
+        B total: <strong>{{ format_currency(multilayer_network.summary.committee_vendor_total_amount) }}</strong> |
+        E total: <strong>{{ format_currency(multilayer_network.summary.ie_committee_candidate_total_amount) }}</strong> |
+        Combined: <strong>{{ format_currency(multilayer_network.summary.total_amount) }}</strong>
+    </p>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Layer</th>
+                <th>Edges</th>
+                <th>Total Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in multilayer_network.layer_summary %}
+            <tr>
+                <td>{{ row.label }}</td>
+                <td>{{ row.edge_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3">No multi-layer rows found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h3>Top Multi-layer Flows</h3>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Layer</th>
+                <th>Source</th>
+                <th>Target</th>
+                <th>Candidate</th>
+                <th>Amount</th>
+                <th>Rows</th>
+                <th>Date Range</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in multilayer_network.edges[:60] %}
+            <tr>
+                <td>{{ edge.layer_label }}</td>
+                <td>{{ edge.source_label if edge.source_label else edge.source }}</td>
+                <td>{{ edge.target_label if edge.target_label else edge.target }}</td>
+                <td>
+                    {% if edge.candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=edge.candidate_id, cycle=cycle) }}">
+                        {{ edge.candidate_name if edge.candidate_name else edge.candidate_id }}
+                    </a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.row_count if edge.row_count else 0 }}</td>
+                <td>{{ edge.earliest_date if edge.earliest_date else '-' }} to {{ edge.latest_date if edge.latest_date else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No multi-layer edges found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h3>Cross-Role Organizations (Donor and Payee)</h3>
+    <p class="subtitle">
+        {{ cross_role_orgs.summary.matched_organization_count }} matched organizations |
+        {{ format_currency(cross_role_orgs.summary.total_donor_amount) }} donated |
+        {{ format_currency(cross_role_orgs.summary.total_out_amount) }} received
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Organization</th>
+                <th>Candidates</th>
+                <th>Donated (A)</th>
+                <th>Received via B</th>
+                <th>Received via E</th>
+                <th>Total Out</th>
+                <th>Net In-Out</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in cross_role_orgs.rows %}
+            <tr>
+                <td>
+                    {{ row.organization_name }}
+                    {% if row.state or row.zip5 %}
+                    <br><small>{{ row.state if row.state else '' }} {{ row.zip5 if row.zip5 else '' }}</small>
+                    {% endif %}
+                </td>
+                <td>{{ row.candidate_count }}</td>
+                <td>{{ format_currency(row.donor_amount) }} ({{ row.donor_count }})</td>
+                <td>{{ format_currency(row.schedule_b_amount) }} ({{ row.schedule_b_count }})</td>
+                <td>{{ format_currency(row.schedule_e_amount) }} ({{ row.schedule_e_count }})</td>
+                <td>{{ format_currency(row.total_out_amount) }}</td>
+                <td>{{ format_currency(row.net_in_minus_out) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No cross-role organizations found.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
     <h2>Matched Donor Overlap Network (Local + Federal)</h2>
     <p class="subtitle">
         Nodes: <strong>{{ overlap_network.summary.node_count }}</strong> |

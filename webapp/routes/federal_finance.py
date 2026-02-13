@@ -17,6 +17,8 @@ from database.federal_fec import (
     get_federal_follow_the_money,
     get_federal_geographic_concentration,
     get_federal_influence_scores,
+    get_federal_multilayer_network_graph,
+    get_federal_cross_role_organizations,
     get_federal_local_donor_matches,
     get_federal_local_overlap_network,
     get_federal_network_graph,
@@ -371,6 +373,33 @@ def federal_networks():
             'total_amount': 0.0,
         },
     }
+    multilayer_network = {
+        'nodes': [],
+        'edges': [],
+        'centrality': [],
+        'summary': {
+            'node_count': 0,
+            'edge_count': 0,
+            'donor_count': 0,
+            'candidate_count': 0,
+            'candidate_committee_count': 0,
+            'vendor_count': 0,
+            'ie_committee_count': 0,
+            'total_amount': 0.0,
+            'donor_candidate_total_amount': 0.0,
+            'committee_vendor_total_amount': 0.0,
+            'ie_committee_candidate_total_amount': 0.0,
+        },
+        'layer_summary': [],
+    }
+    cross_role_orgs = {
+        'rows': [],
+        'summary': {
+            'matched_organization_count': 0,
+            'total_donor_amount': 0.0,
+            'total_out_amount': 0.0,
+        },
+    }
     overlap_network = {
         'nodes': [],
         'edges': [],
@@ -404,7 +433,7 @@ def federal_networks():
             'network_limit': network_limit,
             'overlap_edge_limit': overlap_edge_limit,
             'local_match_limit': local_match_limit,
-            'version': 1,
+            'version': 2,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -425,6 +454,22 @@ def federal_networks():
                 min_edge_amount=network_min_edge_amount,
                 limit=network_limit,
             )
+            multilayer_network = get_federal_multilayer_network_graph(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                min_edge_amount=network_min_edge_amount,
+                limit=network_limit,
+            )
+            cross_role_orgs = get_federal_cross_role_organizations(
+                conn,
+                cycle=cycle,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                limit=60,
+                min_total_amount=network_min_edge_amount,
+            )
             overlap_network = get_federal_local_overlap_network(
                 conn,
                 cycle=cycle,
@@ -437,6 +482,8 @@ def federal_networks():
             )
             payload = {
                 'federal_network': federal_network,
+                'multilayer_network': multilayer_network,
+                'cross_role_orgs': cross_role_orgs,
                 'overlap_network': overlap_network,
             }
             if _federal_cache_enabled():
@@ -449,6 +496,8 @@ def federal_networks():
                 )
         else:
             federal_network = payload.get('federal_network', federal_network)
+            multilayer_network = payload.get('multilayer_network', multilayer_network)
+            cross_role_orgs = payload.get('cross_role_orgs', cross_role_orgs)
             overlap_network = payload.get('overlap_network', overlap_network)
 
     return render_template(
@@ -459,6 +508,8 @@ def federal_networks():
         overlap_edge_limit=overlap_edge_limit,
         local_match_limit=local_match_limit,
         federal_network=federal_network,
+        multilayer_network=multilayer_network,
+        cross_role_orgs=cross_role_orgs,
         overlap_network=overlap_network,
         cache_status=cache_status,
     )
@@ -882,6 +933,18 @@ def federal_candidate_detail(candidate_id: str):
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
     schedule_b_page = max(request.args.get('schedule_b_page', 1, type=int), 1)
     schedule_e_page = max(request.args.get('schedule_e_page', 1, type=int), 1)
+    schedule_b_sort = request.args.get('schedule_b_sort', 'date', type=str).strip().lower()
+    schedule_b_dir = request.args.get('schedule_b_dir', 'desc', type=str).strip().lower()
+    schedule_e_sort = request.args.get('schedule_e_sort', 'date', type=str).strip().lower()
+    schedule_e_dir = request.args.get('schedule_e_dir', 'desc', type=str).strip().lower()
+    if schedule_b_sort not in {'date', 'amount', 'recipient', 'committee', 'type', 'category'}:
+        schedule_b_sort = 'date'
+    if schedule_b_dir not in {'asc', 'desc'}:
+        schedule_b_dir = 'desc'
+    if schedule_e_sort not in {'date', 'amount', 'support_oppose', 'committee', 'payee', 'category'}:
+        schedule_e_sort = 'date'
+    if schedule_e_dir not in {'asc', 'desc'}:
+        schedule_e_dir = 'desc'
     contribution_per_page = 100
     schedule_b_per_page = 100
     schedule_e_per_page = 100
@@ -900,6 +963,10 @@ def federal_candidate_detail(candidate_id: str):
         schedule_b_offset=schedule_b_offset,
         schedule_e_limit=schedule_e_per_page,
         schedule_e_offset=schedule_e_offset,
+        schedule_b_sort=schedule_b_sort,
+        schedule_b_dir=schedule_b_dir,
+        schedule_e_sort=schedule_e_sort,
+        schedule_e_dir=schedule_e_dir,
     )
 
     contribution_total = detail['total_contributions'] if detail else 0
@@ -925,6 +992,10 @@ def federal_candidate_detail(candidate_id: str):
                 schedule_b_offset=0,
                 schedule_e_limit=1,
                 schedule_e_offset=0,
+                schedule_b_sort=schedule_b_sort,
+                schedule_b_dir=schedule_b_dir,
+                schedule_e_sort=schedule_e_sort,
+                schedule_e_dir=schedule_e_dir,
             )["schedule_b_disbursements"]
             csv_rows = [
                 [
@@ -986,6 +1057,10 @@ def federal_candidate_detail(candidate_id: str):
                 schedule_b_offset=0,
                 schedule_e_limit=500000,
                 schedule_e_offset=0,
+                schedule_b_sort=schedule_b_sort,
+                schedule_b_dir=schedule_b_dir,
+                schedule_e_sort=schedule_e_sort,
+                schedule_e_dir=schedule_e_dir,
             )["schedule_e_independent_expenditures"]
             csv_rows = [
                 [
@@ -1048,7 +1123,11 @@ def federal_candidate_detail(candidate_id: str):
         schedule_b_page=schedule_b_page,
         schedule_b_total=schedule_b_total,
         schedule_b_pages=schedule_b_pages,
+        schedule_b_sort=schedule_b_sort,
+        schedule_b_dir=schedule_b_dir,
         schedule_e_page=schedule_e_page,
         schedule_e_total=schedule_e_total,
         schedule_e_pages=schedule_e_pages,
+        schedule_e_sort=schedule_e_sort,
+        schedule_e_dir=schedule_e_dir,
     )
