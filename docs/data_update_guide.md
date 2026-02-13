@@ -30,8 +30,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=app
-WorkingDirectory=/srv/illinois_campaign_finance/current
-ExecStart=/srv/illinois_campaign_finance/current/scripts/sync-fec.sh
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/srv/illinois_campaign_finance/app/scripts/sync-fec.sh
 EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
 ```
 

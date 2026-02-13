@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # --- Configuration -----------------------------------------------------------
-APP_DIR="${APP_DIR:-/srv/illinois_campaign_finance/current}"
+APP_DIR="${APP_DIR:-/srv/illinois_campaign_finance/app}"
 SHARED_DIR="${SHARED_DIR:-/srv/illinois_campaign_finance/shared}"
 ENV_FILE="${SHARED_DIR}/.env"
 LOG_DIR="${SHARED_DIR}/logs"

@@ -176,7 +176,7 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
 ```
 /srv/illinois_campaign_finance/
-├── current/                    Application code (git checkout)
+├── app/                        Application code (git checkout)
 │   ├── run.py                  CLI entry point
 │   ├── webapp/                 Flask app
 │   ├── scripts/
@@ -202,11 +202,12 @@ git push origin main
 # SSH into server and pull
 ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
-cd /srv/illinois_campaign_finance/current
+cd /srv/illinois_campaign_finance/app
+git config --global --add safe.directory /srv/illinois_campaign_finance/app  # first time only
 git pull origin main
 
 # Restart the web application
-systemctl restart il-campaign-finance
+systemctl restart ilcf-web
 ```
 
 ### Key Web Routes
@@ -233,7 +234,7 @@ To run manually:
 ```bash
 ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
-cd /srv/illinois_campaign_finance/current
+cd /srv/illinois_campaign_finance/app
 bash scripts/sync-fec.sh
 ```
 
@@ -270,7 +271,7 @@ scp -i ~/.ssh/hetzner_ed25519 *.txt root@178.156.162.56:/srv/illinois_campaign_f
 ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
 # Import and rebuild analytics
-cd /srv/illinois_campaign_finance/current
+cd /srv/illinois_campaign_finance/app
 python run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
 python run.py refresh-analytics --with-snapshot
 ```
@@ -291,8 +292,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/srv/illinois_campaign_finance/current
-ExecStart=/srv/illinois_campaign_finance/current/scripts/sync-fec.sh
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/srv/illinois_campaign_finance/app/scripts/sync-fec.sh
 EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
 EOF
 
