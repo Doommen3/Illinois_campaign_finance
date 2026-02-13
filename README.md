@@ -32,24 +32,28 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
+- Streamlined 3-group navigation (Explore, Analytics, Admin) with consolidated admin hub
 - Candidate/committee itemized inflow (receipts) and outflow (expenditures) drilldowns with CSV export
 - D2-vs-itemized reconciliation pages for both receipts and expenditures
 - Expanded global search across committees, donors, candidates, reports, filed-doc IDs, and donor keys
 - Candidate/committee side-by-side compare mode with trend overlays and donor overlap summaries
 - Row-level provenance panels on key tables (source table, sync timing, normalization notes, backlinks)
 - Interactive dashboards with visual summaries for trends, geography, and risk/anomaly distributions
+- Federal finance suite with dedicated pages for networks, money flow, influence scores, follow-the-money path tracing, geographic concentration, donor intelligence, and matching
+- CSS-only tabbed interfaces on candidate detail (Overview/Money In/Money Out/Outside Spending/Cross-Role) and live feed (Local/Federal/Disbursements/Outside Spending)
+- Contextual help-text explanations on all major pages describing data sources and methodology
 - Federal-state cross-reference views and donor overlap analysis
 - IL lobbying entity/client browser with cross-matched campaign finance connections
 - IRS 527 organization browser with financial summaries, directors, and IL expenditures
 - Dark money tracker showing 527 expenditures flowing to IL committees and candidates
-- Session authentication for manual data entry
+- Session authentication with consolidated admin tool hub
 
 ## Tech Stack
 
 - **Python 3.12** — Core language
 - **Flask 3.0** — Web framework (Jinja2 templates)
 - **Playwright** — Async browser automation for scraping
-- **SQLite** — Database (WAL mode, 38-table schema, optimized pragmas)
+- **SQLite** — Database (WAL mode, 53-table schema, optimized pragmas)
 - **Click** — CLI command framework
 - **pytest** — Test suite
 
@@ -161,13 +165,13 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── irs527_loader.py    IRS 527 FullDataFile pipe-delimited loader
 │   └── cross_matching.py   Cross-matching engine (lobbying, 527, campaign finance)
 ├── webapp/                 Flask web application
-│   ├── routes/             15 route modules (dashboard, analytics, API, lobbying, 527, etc.)
-│   └── templates/          42 Jinja2 templates
+│   ├── routes/             15 route modules (dashboard, analytics, federal finance, lobbying, 527, etc.)
+│   └── templates/          50+ Jinja2 templates (incl. tabbed detail views)
 ├── scripts/                Automation scripts
 │   ├── sync-fec.sh         Weekly FEC data sync wrapper
 │   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
-├── tests/                  pytest suite (16 test modules)
+├── tests/                  pytest suite (17 test modules)
 ├── docs/                   Data update guide, roadmaps, checklists
 │   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
@@ -384,10 +388,20 @@ Notes:
 | `/candidate-finance/<candidate_id>/<committee_id>/itemized-expenditures` | Candidate/committee itemized expenditures (money out) |
 | `/d2-reconciliation` | D2-vs-itemized receipts reconciliation |
 | `/d2-expenditures-reconciliation` | D2-vs-itemized expenditures reconciliation |
-| `/federal-finance` | Federal candidate finance detail (FEC data, includes Schedule A/B/E drilldowns) |
+| `/federal-finance/` | Federal finance overview with race analytics and contribution summary |
+| `/federal-finance/candidates` | Sortable federal candidate list with totals raised/spent |
+| `/federal-finance/networks` | Donor-candidate network graph with flow tables and trend matrix |
+| `/federal-finance/money-flow` | Multi-layer money flow (A/B/E) and cross-role organization analysis |
+| `/federal-finance/donor-intelligence` | Donor segmentation (K-Means/DBSCAN) and network clustering |
+| `/federal-finance/influence` | Influence scores for donors and candidates (PageRank, degree, weighted) |
+| `/federal-finance/follow-the-money` | Multi-hop donor path tracing with interactive SVG visualization |
+| `/federal-finance/geography` | Geographic concentration analysis (states, cities, HHI per race) |
+| `/federal-finance/matching` | Federal/local donor matching diagnostics and overlap analysis |
+| `/federal-finance/<candidate_id>` | Federal candidate detail with tabbed A/B/E drilldowns |
+| `/admin/` | Consolidated admin hub (requires login) — links to all data tools |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
-| `/analytics` | Network, anomaly, concentration, and geographic analytics |
+| `/analytics/` | Network, anomaly, concentration, and geographic analytics |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
 | `/lobbying/` | IL lobbying entities list with client counts |
