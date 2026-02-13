@@ -57,51 +57,53 @@
 {% else %}
 <p class="subtitle">{{ total }} candidate seed rows (cycle {{ cycle }})</p>
 
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>{{ sort_link('candidate_name', 'Candidate') }}</th>
-            <th>{{ sort_link('office', 'Office') }}</th>
-            <th>{{ sort_link('district', 'District') }}</th>
-            <th>{{ sort_link('party', 'Party') }}</th>
-            <th>{{ sort_link('match_status', 'Match') }}</th>
-            <th>{{ sort_link('fec_candidate_id', 'FEC Candidate ID') }}</th>
-            <th>{{ sort_link('committee_count', 'Committees') }}</th>
-            <th>{{ sort_link('contribution_count', 'Contributions') }}</th>
-            <th>{{ sort_link('donor_count', 'Donors') }}</th>
-            <th>{{ sort_link('total_amount', 'Total Amount') }}</th>
-            <th>{{ sort_link('latest_contribution_date', 'Latest Date') }}</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in rows %}
-        <tr>
-            <td>
-                {% if row.fec_candidate_id %}
-                <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.fec_candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
-                {% else %}
-                {{ row.candidate_name }}
-                {% endif %}
-                {% if row.fec_name and row.fec_name != row.candidate_name %}
-                <br><small>FEC: {{ row.fec_name }}</small>
-                {% endif %}
-            </td>
-            <td>{{ row.office if row.office else '-' }}</td>
-            <td>{{ row.district if row.district else '-' }}</td>
-            <td>{{ row.party if row.party else '-' }}</td>
-            <td>{{ row.match_status }}</td>
-            <td>{{ row.fec_candidate_id if row.fec_candidate_id else '-' }}</td>
-            <td>{{ row.committee_count }}</td>
-            <td>{{ row.contribution_count }}</td>
-            <td>{{ row.donor_count }}</td>
-            <td>{{ format_currency(row.total_amount) }}</td>
-            <td>{{ row.latest_contribution_date if row.latest_contribution_date else '-' }}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="11">No synced FEC candidate rows found for this filter.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>{{ sort_link('candidate_name', 'Candidate') }}</th>
+                <th>{{ sort_link('office', 'Office') }}</th>
+                <th>{{ sort_link('district', 'District') }}</th>
+                <th>{{ sort_link('party', 'Party') }}</th>
+                <th>{{ sort_link('match_status', 'Match') }}</th>
+                <th>{{ sort_link('fec_candidate_id', 'FEC Candidate ID') }}</th>
+                <th>{{ sort_link('committee_count', 'Committees') }}</th>
+                <th>{{ sort_link('contribution_count', 'Contributions') }}</th>
+                <th>{{ sort_link('donor_count', 'Donors') }}</th>
+                <th>{{ sort_link('total_amount', 'Total Amount') }}</th>
+                <th>{{ sort_link('latest_contribution_date', 'Latest Date') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>
+                    {% if row.fec_candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.fec_candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    {% else %}
+                    {{ row.candidate_name }}
+                    {% endif %}
+                    {% if row.fec_name and row.fec_name != row.candidate_name %}
+                    <br><small>FEC: {{ row.fec_name }}</small>
+                    {% endif %}
+                </td>
+                <td>{{ row.office if row.office else '-' }}</td>
+                <td>{{ row.district if row.district else '-' }}</td>
+                <td>{{ row.party if row.party else '-' }}</td>
+                <td>{{ row.match_status }}</td>
+                <td>{{ row.fec_candidate_id if row.fec_candidate_id else '-' }}</td>
+                <td>{{ row.committee_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.latest_contribution_date if row.latest_contribution_date else '-' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="11">No synced FEC candidate rows found for this filter.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
 
 {% if total_pages > 1 %}
 <nav class="pagination">

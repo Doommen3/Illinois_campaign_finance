@@ -270,6 +270,17 @@ h2 {
     display: table;
 }
 
+.table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll .data-table {
+    width: max-content;
+    min-width: 100%;
+}
+
 .column .data-table {
     box-shadow: none;
 }

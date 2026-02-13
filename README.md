@@ -139,7 +139,9 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── routes/             12 route modules (dashboard, analytics, API, etc.)
 │   └── templates/          36 Jinja2 templates
 ├── scripts/                Automation scripts
-│   └── sync-fec.sh         Weekly FEC data sync wrapper
+│   ├── sync-fec.sh         Weekly FEC data sync wrapper
+│   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
+│   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
 ├── tests/                  pytest suite (11 test modules)
 ├── docs/                   Data update guide, roadmaps, checklists
 ├── Bulk_download/          ISBE bulk export TXT files
@@ -308,6 +310,7 @@ systemctl restart ilcf-web.service
 | `/candidate-finance` | State candidate finance detail (ISBE data) |
 | `/federal-finance` | Federal candidate finance detail (FEC data) |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
+| `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
@@ -404,6 +407,31 @@ Schedule B wrapper script (recommended for automation):
 ```bash
 cd /srv/illinois_campaign_finance/app
 bash scripts/fec-schedule-b-catchup.sh
+```
+
+### Hourly Schedule E Catch-Up (independent expenditures)
+
+Use this to fill missing federal independent expenditure rows (Schedule E) with resumable pagination.
+
+One-off run:
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-e \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-candidate 25 \
+  --refresh-cache
+```
+
+Schedule E wrapper script (recommended for automation):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+bash scripts/fec-schedule-e-catchup.sh
 ```
 
 Schedule A wrapper script (recommended for automation):

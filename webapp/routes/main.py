@@ -105,6 +105,10 @@ def _get_candidate_stats(conn):
         'federal_candidates': 0,
         'federal_contributions': 0,
         'federal_total_amount': 0.0,
+        'federal_disbursements': 0,
+        'federal_disbursement_total': 0.0,
+        'federal_independent_expenditures': 0,
+        'federal_independent_expenditure_total': 0.0,
         'federal_matched_donors': 0,
     }
 
@@ -167,6 +171,36 @@ def _get_candidate_stats(conn):
                 default=0,
             )
         )
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        stats['federal_disbursements'] = int(
+            _scalar(
+                conn,
+                "SELECT COUNT(*) AS count FROM fec_schedule_b_disbursements",
+                default=0,
+            )
+        )
+        stats['federal_disbursement_total'] = float(
+            _scalar(
+                conn,
+                "SELECT COALESCE(SUM(disbursement_amount), 0) AS total FROM fec_schedule_b_disbursements",
+                default=0.0,
+            )
+        )
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        stats['federal_independent_expenditures'] = int(
+            _scalar(
+                conn,
+                "SELECT COUNT(*) AS count FROM fec_schedule_e_independent_expenditures",
+                default=0,
+            )
+        )
+        stats['federal_independent_expenditure_total'] = float(
+            _scalar(
+                conn,
+                "SELECT COALESCE(SUM(expenditure_amount), 0) AS total FROM fec_schedule_e_independent_expenditures",
+                default=0.0,
+            )
+        )
     if _table_exists(conn, "fec_candidate_cycle_totals"):
         totals_rows = int(
             _scalar(
@@ -215,6 +249,8 @@ def _get_candidate_stats(conn):
     freshness = {
         'local_receipt_date': None,
         'federal_receipt_date': None,
+        'federal_disbursement_date': None,
+        'federal_independent_expenditure_date': None,
         'federal_sync_updated_at': None,
     }
     if _table_exists(conn, "bulk_receipts_clean"):
@@ -227,6 +263,18 @@ def _get_candidate_stats(conn):
         freshness['federal_receipt_date'] = _scalar(
             conn,
             "SELECT MAX(contribution_receipt_date) AS max_date FROM fec_schedule_a_contributions",
+            default=None,
+        )
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        freshness['federal_disbursement_date'] = _scalar(
+            conn,
+            "SELECT MAX(disbursement_date) AS max_date FROM fec_schedule_b_disbursements",
+            default=None,
+        )
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        freshness['federal_independent_expenditure_date'] = _scalar(
+            conn,
+            "SELECT MAX(expenditure_date) AS max_date FROM fec_schedule_e_independent_expenditures",
             default=None,
         )
     if _table_exists(conn, "fec_candidate_cycle_totals"):
@@ -242,6 +290,8 @@ def _get_candidate_stats(conn):
             SELECT MAX(updated_at) AS max_updated_at
             FROM raw_extractions
             WHERE source_type = 'fec_api:schedules_schedule_a'
+               OR source_type = 'fec_api:schedules_schedule_b'
+               OR source_type = 'fec_api:schedules_schedule_e'
                OR source_type LIKE 'fec_api:candidate_%_totals'
             """,
             default=None,
@@ -1212,6 +1262,99 @@ def _recent_federal_candidate_donations(conn, limit: int = 75) -> list[dict]:
     return output
 
 
+def _recent_federal_schedule_b_disbursements(conn, limit: int = 75) -> list[dict]:
+    if not _table_exists(conn, "fec_schedule_b_disbursements"):
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            sub_id,
+            cycle,
+            disbursement_date,
+            candidate_id,
+            candidate_name,
+            committee_name,
+            recipient_name,
+            recipient_city,
+            recipient_state,
+            disbursement_amount,
+            category_code_full,
+            disbursement_type_desc
+        FROM fec_schedule_b_disbursements
+        WHERE COALESCE(disbursement_amount, 0) > 0
+        ORDER BY disbursement_date DESC, updated_at DESC, sub_id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+
+    output = []
+    for row in rows:
+        output.append(
+            {
+                "disbursement_date": row["disbursement_date"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or row["candidate_id"] or "Unknown Candidate",
+                "committee_name": row["committee_name"],
+                "recipient_name": row["recipient_name"] or "Unknown Recipient",
+                "recipient_city": row["recipient_city"],
+                "recipient_state": row["recipient_state"],
+                "amount": float(row["disbursement_amount"] or 0.0),
+                "category": row["category_code_full"] or row["disbursement_type_desc"] or "-",
+            }
+        )
+    return output
+
+
+def _recent_federal_schedule_e_expenditures(conn, limit: int = 75) -> list[dict]:
+    if not _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            sub_id,
+            cycle,
+            expenditure_date,
+            candidate_id,
+            candidate_name,
+            committee_name,
+            payee_name,
+            payee_city,
+            payee_state,
+            support_oppose_indicator,
+            expenditure_amount,
+            category_code_full
+        FROM fec_schedule_e_independent_expenditures
+        WHERE COALESCE(expenditure_amount, 0) > 0
+        ORDER BY expenditure_date DESC, updated_at DESC, sub_id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+
+    output = []
+    for row in rows:
+        output.append(
+            {
+                "expenditure_date": row["expenditure_date"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or row["candidate_id"] or "Unknown Candidate",
+                "committee_name": row["committee_name"],
+                "payee_name": row["payee_name"] or "Unknown Payee",
+                "payee_city": row["payee_city"],
+                "payee_state": row["payee_state"],
+                "support_oppose_indicator": row["support_oppose_indicator"] or "",
+                "amount": float(row["expenditure_amount"] or 0.0),
+                "category": row["category_code_full"] or "-",
+            }
+        )
+    return output
+
+
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
@@ -1394,17 +1537,23 @@ def search():
 
 @main_bp.route('/live-feed')
 def live_feed():
-    """Recent donation feed for local and federal candidate contributions."""
+    """Recent local donations and federal Schedule A/B/E activity feed."""
     conn = current_app.get_database()
 
     local_limit = min(max(request.args.get('local_limit', 75, type=int), 10), 300)
     federal_limit = min(max(request.args.get('federal_limit', 75, type=int), 10), 300)
+    schedule_b_limit = min(max(request.args.get('schedule_b_limit', 75, type=int), 10), 300)
+    schedule_e_limit = min(max(request.args.get('schedule_e_limit', 75, type=int), 10), 300)
 
     local_rows = _recent_local_candidate_donations(conn, limit=local_limit)
     federal_rows = _recent_federal_candidate_donations(conn, limit=federal_limit)
+    schedule_b_rows = _recent_federal_schedule_b_disbursements(conn, limit=schedule_b_limit)
+    schedule_e_rows = _recent_federal_schedule_e_expenditures(conn, limit=schedule_e_limit)
 
     local_latest_date = local_rows[0]["received_date"] if local_rows else None
     federal_latest_date = federal_rows[0]["contribution_receipt_date"] if federal_rows else None
+    federal_schedule_b_latest_date = schedule_b_rows[0]["disbursement_date"] if schedule_b_rows else None
+    federal_schedule_e_latest_date = schedule_e_rows[0]["expenditure_date"] if schedule_e_rows else None
     federal_latest_coverage_date = None
     if _table_exists(conn, "fec_candidate_cycle_totals"):
         federal_latest_coverage_date = _scalar(
@@ -1420,10 +1569,16 @@ def live_feed():
         'live_feed.html',
         local_rows=local_rows,
         federal_rows=federal_rows,
+        schedule_b_rows=schedule_b_rows,
+        schedule_e_rows=schedule_e_rows,
         local_limit=local_limit,
         federal_limit=federal_limit,
+        schedule_b_limit=schedule_b_limit,
+        schedule_e_limit=schedule_e_limit,
         local_latest_date=local_latest_date,
         federal_latest_date=federal_latest_date,
+        federal_schedule_b_latest_date=federal_schedule_b_latest_date,
+        federal_schedule_e_latest_date=federal_schedule_e_latest_date,
         federal_latest_coverage_date=federal_latest_coverage_date,
     )
 

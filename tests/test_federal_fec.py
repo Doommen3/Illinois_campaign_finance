@@ -5,8 +5,10 @@ from database.connection import get_db, init_db
 from database.federal_fec import (
     backfill_fec_missing_schedule_a,
     backfill_fec_schedule_b,
+    backfill_fec_schedule_e,
     count_federal_candidates,
     federal_data_available,
+    get_federal_disbursement_mismatch_flags,
     get_federal_receipt_mismatch_flags,
     get_federal_candidate_detail,
     get_federal_donor_detail,
@@ -149,6 +151,7 @@ class FakeFecClient:
                         "candidate_id": candidate_id,
                         "cycle": int(params.get("cycle") or 2026),
                         "receipts": 1250.0,
+                        "disbursements": 550.0,
                         "contributions": 1250.0,
                         "individual_contributions": 1250.0,
                         "coverage_start_date": "2025-01-01",
@@ -219,6 +222,7 @@ def test_sync_il_federal_fec_and_queries(tmp_path: Path):
     assert detail["summary"]["contribution_count"] == 1
     assert detail["summary"]["total_amount"] == 1250.0
     assert detail["summary"]["reported_total_receipts"] == 1250.0
+    assert detail["summary"]["reported_total_disbursements"] == 550.0
     assert detail["summary"]["schedule_total_amount"] == 250.0
     assert detail["summary"]["uses_reported_total_receipts"] is True
     assert detail["top_donors"][0]["donor_name"] == "Jane Donor"
@@ -610,6 +614,30 @@ def test_backfill_fec_schedule_b(tmp_path: Path):
             1,
         ),
     )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_cycle_totals (
+            candidate_id, cycle, receipts, disbursements, contributions, individual_contributions,
+            coverage_start_date, coverage_end_date, transaction_coverage_date,
+            last_report_year, last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "H2IL66666",
+            2026,
+            3000.0,
+            2500.0,
+            3000.0,
+            2800.0,
+            "2026-01-01",
+            "2026-03-31",
+            "2026-03-31",
+            2026,
+            "Q1",
+            4000.0,
+            '{"source":"test"}',
+        ),
+    )
     conn.commit()
 
     class ScheduleBClient:
@@ -713,6 +741,13 @@ def test_backfill_fec_schedule_b(tmp_path: Path):
     assert inserted["disbursement_amount"] == 1250.75
     assert inserted["disbursement_date"] == "2025-12-01"
 
+    detail = get_federal_candidate_detail(conn, candidate_id="H2IL66666", cycle=2026)
+    assert detail is not None
+    assert detail["summary"]["reported_total_disbursements"] == 2500.0
+    assert detail["summary"]["schedule_b_total_amount"] == 1250.75
+    assert detail["summary"]["schedule_b_disbursement_count"] == 1
+    assert detail["total_schedule_b_disbursements"] == 1
+
     state_one = conn.execute(
         """
         SELECT next_last_index, completed
@@ -748,6 +783,337 @@ def test_backfill_fec_schedule_b(tmp_path: Path):
     assert state_two is not None
     assert state_two["next_last_index"] is None
     assert state_two["completed"] == 1
+
+    conn.close()
+
+
+def test_federal_disbursement_mismatch_flags(tmp_path: Path):
+    db_path = str(tmp_path / "fec_disbursement_audit.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-disb-audit-1",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-08",
+            "08",
+            "Democratic",
+            "DEM",
+            "Primary",
+            "Candidate Spend Gap",
+            "CANDIDATE SPEND GAP",
+            0,
+            0,
+            "seed.csv",
+            2,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle,
+            fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-disb-audit-1",
+            "Candidate Spend Gap",
+            "U.S. House",
+            "H",
+            "IL-08",
+            "08",
+            "Democratic",
+            "DEM",
+            "Primary",
+            2026,
+            "H2IL08888",
+            "SPEND GAP, CANDIDATE",
+            "H",
+            "IL",
+            "08",
+            "DEM",
+            "matched",
+            96.0,
+            "test",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_cycle_totals (
+            candidate_id, cycle, receipts, disbursements, contributions, individual_contributions,
+            coverage_start_date, coverage_end_date, transaction_coverage_date,
+            last_report_year, last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "H2IL08888",
+            2026,
+            8000.0,
+            5000.0,
+            8000.0,
+            7800.0,
+            "2026-01-01",
+            "2026-03-31",
+            "2026-03-31",
+            2026,
+            "Q1",
+            12000.0,
+            '{"source":"test"}',
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "sub-disb-audit-1",
+            2026,
+            "H2IL08888",
+            "SPEND GAP, CANDIDATE",
+            "C00888888",
+            "SPEND GAP COMMITTEE",
+            "MEDIA BUY VENDOR",
+            1200.0,
+            "2026-01-15",
+            "src-disb-audit",
+        ),
+    )
+    conn.commit()
+
+    flags = get_federal_disbursement_mismatch_flags(
+        conn,
+        cycle=2026,
+        status="flagged",
+        min_abs_diff=1.0,
+        tolerance=0.01,
+        limit=20,
+    )
+    assert flags["total_rows"] == 1
+    assert flags["status_counts"]["missing_schedule_b_rows"] == 1
+    assert flags["rows"][0]["candidate_id"] == "H2IL08888"
+    assert flags["rows"][0]["flag_status"] == "missing_schedule_b_rows"
+    assert flags["rows"][0]["reported_total_disbursements"] == 5000.0
+    assert flags["rows"][0]["schedule_total_amount"] == 1200.0
+
+    conn.close()
+
+
+def test_backfill_fec_schedule_e(tmp_path: Path):
+    db_path = str(tmp_path / "fec_schedule_e.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-se-1",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-05",
+            "05",
+            "Democratic",
+            "DEM",
+            "Primary",
+            "Candidate IE",
+            "CANDIDATE IE",
+            0,
+            0,
+            "seed.csv",
+            2,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle,
+            fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-se-1",
+            "Candidate IE",
+            "U.S. House",
+            "H",
+            "IL-05",
+            "05",
+            "Democratic",
+            "DEM",
+            "Primary",
+            2026,
+            "H2IL05555",
+            "IE, CANDIDATE",
+            "H",
+            "IL",
+            "05",
+            "DEM",
+            "matched",
+            95.0,
+            "test",
+        ),
+    )
+    conn.commit()
+
+    class ScheduleEClient:
+        base_url = "https://api.open.fec.gov/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint: str, params: dict):
+            self.calls.append((endpoint, dict(params)))
+            assert endpoint == "/schedules/schedule_e/"
+            if params.get("candidate_id") != "H2IL05555":
+                return {
+                    "pagination": {"count": 0, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+
+            if params.get("last_index") == "se-token-1":
+                return {
+                    "pagination": {"count": 1, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+
+            return {
+                "pagination": {
+                    "count": 1,
+                    "pages": 1,
+                    "per_page": params.get("per_page", 100),
+                    "last_indexes": {
+                        "last_index": "se-token-1",
+                        "last_expenditure_date": "2025-12-15",
+                    },
+                },
+                "results": [
+                    {
+                        "sub_id": "sub-e-new-1",
+                        "candidate_id": "H2IL05555",
+                        "candidate_name": "IE, CANDIDATE",
+                        "committee_id": "C00555555",
+                        "committee_name": "IE COMMITTEE",
+                        "payee_name": "COMMUNICATIONS VENDOR LLC",
+                        "payee_city": "CHICAGO",
+                        "payee_state": "IL",
+                        "payee_zip": "60605",
+                        "support_oppose_indicator": "S",
+                        "category_code": "001",
+                        "category_code_full": "Communications",
+                        "expenditure_description": "Digital media buy",
+                        "expenditure_amount": 980.25,
+                        "expenditure_date": "2025-12-31",
+                        "filing_date": "2026-01-02",
+                        "report_type": "48H3",
+                        "line_number": "24A",
+                        "image_number": "img-e-new",
+                        "load_date": "2026-02-13T12:00:00",
+                    }
+                ],
+            }
+
+    client = ScheduleEClient()
+
+    run_one = backfill_fec_schedule_e(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_candidate=1,
+        include_completed=False,
+        refresh_cache=True,
+        client=client,
+    )
+    assert run_one["api_calls_made"] == 1
+    assert run_one["expenditures_upserted"] == 1
+    assert run_one["candidates_processed"] >= 1
+
+    inserted = conn.execute(
+        """
+        SELECT
+            candidate_id,
+            committee_id,
+            payee_name,
+            support_oppose_indicator,
+            expenditure_amount,
+            expenditure_date
+        FROM fec_schedule_e_independent_expenditures
+        WHERE sub_id = 'sub-e-new-1'
+        """
+    ).fetchone()
+    assert inserted is not None
+    assert inserted["candidate_id"] == "H2IL05555"
+    assert inserted["committee_id"] == "C00555555"
+    assert inserted["payee_name"] == "COMMUNICATIONS VENDOR LLC"
+    assert inserted["support_oppose_indicator"] == "S"
+    assert inserted["expenditure_amount"] == 980.25
+    assert inserted["expenditure_date"] == "2025-12-31"
+
+    state_one = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_e_backfill_state
+        WHERE candidate_id = 'H2IL05555' AND cycle = 2026
+        """
+    ).fetchone()
+    assert state_one is not None
+    assert state_one["next_last_index"] == "se-token-1"
+    assert state_one["completed"] == 0
+
+    run_two = backfill_fec_schedule_e(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_candidate=1,
+        include_completed=False,
+        refresh_cache=True,
+        client=client,
+    )
+    assert run_two["api_calls_made"] == 1
+
+    state_two = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_e_backfill_state
+        WHERE candidate_id = 'H2IL05555' AND cycle = 2026
+        """
+    ).fetchone()
+    assert state_two is not None
+    assert state_two["next_last_index"] is None
+    assert state_two["completed"] == 1
+
+    detail = get_federal_candidate_detail(conn, candidate_id="H2IL05555", cycle=2026)
+    assert detail is not None
+    assert detail["summary"]["schedule_e_total_amount"] == 980.25
+    assert detail["summary"]["schedule_e_expenditure_count"] == 1
+    assert detail["total_schedule_e_expenditures"] == 1
 
     conn.close()
 

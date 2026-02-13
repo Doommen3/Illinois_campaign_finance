@@ -141,6 +141,8 @@ class TestWebApp:
         assert b'Live Donation Feed' in response.data
         assert b'Local Candidate Donations' in response.data
         assert b'Federal Candidate Donations' in response.data
+        assert b'Federal Committee Disbursements (Schedule B)' in response.data
+        assert b'Federal Independent Expenditures (Schedule E)' in response.data
 
     def test_candidate_finance_page_loads_without_bulk_table(self, client):
         """Test candidate finance page renders guidance when bulk table is missing."""
@@ -504,16 +506,17 @@ class TestWebApp:
         conn.executemany(
             """
             INSERT INTO fec_candidate_cycle_totals (
-                candidate_id, cycle, receipts, contributions, individual_contributions,
+                candidate_id, cycle, receipts, disbursements, contributions, individual_contributions,
                 coverage_start_date, coverage_end_date, transaction_coverage_date, last_report_year,
                 last_report_type_full, last_cash_on_hand_end_period, source_payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     'H2IL01349',
                     2026,
                     1200.0,
+                    900.0,
                     1200.0,
                     1100.0,
                     '2026-01-01',
@@ -528,6 +531,7 @@ class TestWebApp:
                     'H2IL09999',
                     2026,
                     900.0,
+                    450.0,
                     900.0,
                     900.0,
                     '2026-01-01',
@@ -537,6 +541,83 @@ class TestWebApp:
                     'Q1',
                     3500.0,
                     '{"source":"test"}',
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO fec_schedule_b_disbursements (
+                sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+                recipient_name, recipient_city, recipient_state, recipient_zip,
+                disbursement_type_desc, category_code_full, disbursement_amount, disbursement_date,
+                api_source_identifier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    'sb-1',
+                    2026,
+                    'H2IL01349',
+                    'JACKSON, JONATHAN',
+                    'C00011111',
+                    'JONATHAN JACKSON FOR CONGRESS',
+                    'MEDIA BUY VENDOR',
+                    'Chicago',
+                    'IL',
+                    '60601',
+                    'Operating Expenditure',
+                    'Advertising Expenses',
+                    350.0,
+                    '2026-01-20',
+                    'src-sb-1',
+                ),
+                (
+                    'sb-2',
+                    2026,
+                    'H2IL01349',
+                    'JACKSON, JONATHAN',
+                    'C00011111',
+                    'JONATHAN JACKSON FOR CONGRESS',
+                    'PRINT SHOP',
+                    'Chicago',
+                    'IL',
+                    '60607',
+                    'Operating Expenditure',
+                    'Printing',
+                    275.0,
+                    '2026-01-18',
+                    'src-sb-2',
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO fec_schedule_e_independent_expenditures (
+                sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+                payee_name, payee_city, payee_state, payee_zip,
+                support_oppose_indicator, category_code_full, expenditure_amount, expenditure_date,
+                report_type, line_number, api_source_identifier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    'se-1',
+                    2026,
+                    'H2IL01349',
+                    'JACKSON, JONATHAN',
+                    'C000IE111',
+                    'INDEPENDENT EXPENDITURE PAC',
+                    'AD CREATIVE STUDIO',
+                    'Chicago',
+                    'IL',
+                    '60602',
+                    'S',
+                    'Communications',
+                    625.0,
+                    '2026-01-22',
+                    '48H3',
+                    '24A',
+                    'src-se-1',
                 ),
             ],
         )
@@ -675,9 +756,19 @@ class TestWebApp:
         assert b'Top Donors' in detail.data
         assert b'Jane Donor' in detail.data
         assert b'Recent Contributions' in detail.data
+        assert b'Recent Disbursements (Schedule B)' in detail.data
+        assert b'Independent Expenditures (Schedule E)' in detail.data
+        assert b'Reported Disbursements:' in detail.data
         assert b'/federal-finance/donors/' in detail.data
         assert b'Total Source:' in detail.data
         assert b'FEC candidate totals endpoint' in detail.data
+
+        live_feed = client.get('/live-feed?local_limit=20&federal_limit=20&schedule_b_limit=20&schedule_e_limit=20')
+        assert live_feed.status_code == 200
+        assert b'Federal Committee Disbursements (Schedule B)' in live_feed.data
+        assert b'Federal Independent Expenditures (Schedule E)' in live_feed.data
+        assert b'MEDIA BUY VENDOR' in live_feed.data
+        assert b'AD CREATIVE STUDIO' in live_feed.data
 
         donor_key = None
         conn = get_db(app.config['DATABASE_PATH'])
@@ -1838,6 +1929,12 @@ class TestWebApp:
         assert response.status_code == 302
         assert '/auth/login' in response.headers.get('Location', '')
 
+    def test_admin_federal_disbursement_audit_requires_login(self, client):
+        """Federal disbursement audit route should require login."""
+        response = client.get('/admin/federal-disbursement-audit')
+        assert response.status_code == 302
+        assert '/auth/login' in response.headers.get('Location', '')
+
     def test_admin_donor_merge_queue_loads(self, app, client):
         """Admin donor merge queue should render review entities."""
         conn = get_db(app.config['DATABASE_PATH'])
@@ -2143,6 +2240,123 @@ class TestWebApp:
         assert b'Federal Receipt Audit' in response.data
         assert b'AUDIT, CANDIDATE' in response.data
         assert b'missing_schedule_rows' in response.data
+
+    def test_admin_federal_disbursement_audit_loads(self, app, client):
+        """Federal disbursement audit page should render internal mismatch flags."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            """
+            INSERT INTO fec_il_candidate_seed (
+                candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+                party, party_code, election_stage, candidate_name, normalized_candidate_name,
+                write_in, already_listed_general, source_file, source_row_number
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'seed-admin-disb-audit',
+                '2026-02-07',
+                2026,
+                'U.S. House',
+                'H',
+                'IL-10',
+                '10',
+                'Democratic',
+                'DEM',
+                'Primary',
+                'Candidate Admin Disbursement',
+                'CANDIDATE ADMIN DISBURSEMENT',
+                0,
+                0,
+                'seed.csv',
+                2,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_candidate_match (
+                seed_candidate_key, candidate_name, office, office_code, district, district_code,
+                party, party_code, election_stage, cycle,
+                fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+                match_status, match_score, match_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'seed-admin-disb-audit',
+                'Candidate Admin Disbursement',
+                'U.S. House',
+                'H',
+                'IL-10',
+                '10',
+                'Democratic',
+                'DEM',
+                'Primary',
+                2026,
+                'H2IL10000',
+                'DISB AUDIT, CANDIDATE',
+                'H',
+                'IL',
+                '10',
+                'DEM',
+                'matched',
+                93.0,
+                'test',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_candidate_cycle_totals (
+                candidate_id, cycle, receipts, disbursements, contributions, individual_contributions,
+                coverage_start_date, coverage_end_date, transaction_coverage_date,
+                last_report_year, last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'H2IL10000',
+                2026,
+                5000.0,
+                4200.0,
+                5000.0,
+                4500.0,
+                '2026-01-01',
+                '2026-03-31',
+                '2026-03-31',
+                2026,
+                'Q1',
+                9000.0,
+                '{"source":"test"}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_schedule_b_disbursements (
+                sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+                recipient_name, disbursement_amount, disbursement_date, api_source_identifier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'sub-admin-disb-audit',
+                2026,
+                'H2IL10000',
+                'DISB AUDIT, CANDIDATE',
+                'C01000000',
+                'DISB AUDIT COMMITTEE',
+                'Vendor One',
+                1000.0,
+                '2026-01-09',
+                'src-admin-disb-audit',
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        login = _login_manual_user(client, next_url="/admin/federal-disbursement-audit")
+        assert login.status_code == 302
+
+        response = client.get('/admin/federal-disbursement-audit?cycle=2026&status=flagged&min_abs_diff=1')
+        assert response.status_code == 200
+        assert b'Federal Disbursement Audit' in response.data
+        assert b'DISB AUDIT, CANDIDATE' in response.data
+        assert b'missing_schedule_b_rows' in response.data
 
     def test_api_stats(self, client):
         """Test that the API stats endpoint works."""

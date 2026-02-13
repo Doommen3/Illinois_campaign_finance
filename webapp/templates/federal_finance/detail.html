@@ -27,138 +27,263 @@
     <p><strong>Latest FEC Report Coverage:</strong> {{ detail.summary.transaction_coverage_date if detail.summary.transaction_coverage_date else (detail.summary.coverage_end_date if detail.summary.coverage_end_date else '-') }}</p>
     <p class="stat-detail"><strong>Synced row subtotal (Schedule A rows in app):</strong> {{ format_currency(detail.summary.schedule_total_amount) }}</p>
     {% endif %}
+    {% if detail.summary.uses_reported_total_disbursements %}
+    <p><strong>Reported Disbursements:</strong> {{ format_currency(detail.summary.reported_total_disbursements) }}</p>
+    <p class="stat-detail"><strong>Synced Schedule B subtotal:</strong> {{ format_currency(detail.summary.schedule_b_total_amount) }}</p>
+    <p class="stat-detail">
+        <strong>Schedule B gap:</strong>
+        {% if detail.summary.disbursement_gap_amount is not none %}
+        {{ format_currency(detail.summary.disbursement_gap_amount) }}
+        {% if detail.summary.disbursement_gap_ratio is not none %}
+        ({{ (detail.summary.disbursement_gap_ratio * 100)|round(2) }}%)
+        {% endif %}
+        {% else %}
+        -
+        {% endif %}
+    </p>
+    {% endif %}
     <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }}</p>
+    <p><strong>Schedule B Date Range:</strong> {{ detail.summary.earliest_disbursement_date if detail.summary.earliest_disbursement_date else '-' }} to {{ detail.summary.latest_disbursement_date if detail.summary.latest_disbursement_date else '-' }}</p>
+    <p><strong>Schedule E Date Range:</strong> {{ detail.summary.earliest_expenditure_date if detail.summary.earliest_expenditure_date else '-' }} to {{ detail.summary.latest_expenditure_date if detail.summary.latest_expenditure_date else '-' }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
 </div>
 
 <div class="status-section">
     <h2>Committees</h2>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Committee ID</th>
-                <th>Committee Name</th>
-                <th>Designation</th>
-                <th>Type</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for committee in detail.committees %}
-            <tr>
-                <td>{{ committee.committee_id }}</td>
-                <td>{{ committee.committee_name if committee.committee_name else '-' }}</td>
-                <td>
-                    {{ committee.committee_designation if committee.committee_designation else '-' }}
-                    {% if committee.committee_designation_full %}
-                    <br><small>{{ committee.committee_designation_full }}</small>
-                    {% endif %}
-                </td>
-                <td>{{ committee.committee_type if committee.committee_type else '-' }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="4">No committee rows found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Committee ID</th>
+                    <th>Committee Name</th>
+                    <th>Designation</th>
+                    <th>Type</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for committee in detail.committees %}
+                <tr>
+                    <td>{{ committee.committee_id }}</td>
+                    <td>{{ committee.committee_name if committee.committee_name else '-' }}</td>
+                    <td>
+                        {{ committee.committee_designation if committee.committee_designation else '-' }}
+                        {% if committee.committee_designation_full %}
+                        <br><small>{{ committee.committee_designation_full }}</small>
+                        {% endif %}
+                    </td>
+                    <td>{{ committee.committee_type if committee.committee_type else '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">No committee rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <div class="status-section">
     <h2>Top Donors</h2>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Donor</th>
-                <th>Location</th>
-                <th>Employer</th>
-                <th>Occupation</th>
-                <th>Count</th>
-                <th>Total</th>
-                <th>Latest Date</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in detail.top_donors %}
-            <tr>
-                <td>
-                    {% if row.donor_entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Location</th>
+                    <th>Employer</th>
+                    <th>Occupation</th>
+                    <th>Count</th>
+                    <th>Total</th>
+                    <th>Latest Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.top_donors %}
+                <tr>
+                    <td>
+                        {% if row.donor_entity_key %}
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">
+                            {{ row.donor_name if row.donor_name else '-' }}
+                        </a>
+                        {% else %}
                         {{ row.donor_name if row.donor_name else '-' }}
-                    </a>
-                    {% else %}
-                    {{ row.donor_name if row.donor_name else '-' }}
-                    {% endif %}
-                    {% if row.donor_entity_method_label %}
-                    <br><small>{{ row.donor_entity_method_label }}</small>
-                    {% endif %}
-                </td>
-                <td>
-                    {{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}
-                </td>
-                <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
-                <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
-                <td>{{ row.contribution_count }}</td>
-                <td>{{ format_currency(row.total_amount) }}</td>
-                <td>{{ row.latest_date if row.latest_date else '-' }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="7">No donor rows found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                        {% endif %}
+                        {% if row.donor_entity_method_label %}
+                        <br><small>{{ row.donor_entity_method_label }}</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}
+                    </td>
+                    <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
+                    <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
+                    <td>{{ row.contribution_count }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.latest_date if row.latest_date else '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7">No donor rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <div class="status-section">
     <h2>Recent Contributions</h2>
     <p class="subtitle">Showing {{ detail.contributions|length }} of {{ contribution_total }} rows</p>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Date</th>
-                <th>Donor</th>
-                <th>Location</th>
-                <th>Employer</th>
-                <th>Occupation</th>
-                <th>Committee</th>
-                <th>Amount</th>
-                <th>Type</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in detail.contributions %}
-            <tr>
-                <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
-                <td>
-                    {% if row.donor_entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Donor</th>
+                    <th>Location</th>
+                    <th>Employer</th>
+                    <th>Occupation</th>
+                    <th>Committee</th>
+                    <th>Amount</th>
+                    <th>Type</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.contributions %}
+                <tr>
+                    <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
+                    <td>
+                        {% if row.donor_entity_key %}
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">
+                            {{ row.contributor_name if row.contributor_name else '-' }}
+                        </a>
+                        {% else %}
                         {{ row.contributor_name if row.contributor_name else '-' }}
-                    </a>
-                    {% else %}
-                    {{ row.contributor_name if row.contributor_name else '-' }}
-                    {% endif %}
-                </td>
-                <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
-                <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
-                <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
-                <td>{{ row.committee_name if row.committee_name else '-' }}</td>
-                <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
-                <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="8">No contribution rows found.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                        {% endif %}
+                    </td>
+                    <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
+                    <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
+                    <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
+                    <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8">No contribution rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 
     {% if contribution_pages > 1 %}
     <nav class="pagination">
         {% if contribution_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page-1) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page-1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ contribution_page }} of {{ contribution_pages }}</span>
 
         {% if contribution_page < contribution_pages %}
-        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page+1) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page+1, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page) }}">Next &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Recent Disbursements (Schedule B)</h2>
+    <p class="subtitle">Showing {{ detail.schedule_b_disbursements|length }} of {{ schedule_b_total }} rows</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Committee</th>
+                    <th>Recipient</th>
+                    <th>Location</th>
+                    <th>Recipient Candidate</th>
+                    <th>Type</th>
+                    <th>Category</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.schedule_b_disbursements %}
+                <tr>
+                    <td>{{ row.disbursement_date if row.disbursement_date else '-' }}</td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.recipient_name if row.recipient_name else '-' }}</td>
+                    <td>{{ row.recipient_city if row.recipient_city else '' }}{% if row.recipient_city and row.recipient_state %}, {% endif %}{{ row.recipient_state if row.recipient_state else '' }} {{ row.recipient_zip if row.recipient_zip else '' }}</td>
+                    <td>{{ row.recipient_candidate_name if row.recipient_candidate_name else (row.recipient_candidate_id if row.recipient_candidate_id else '-') }}</td>
+                    <td>{{ row.disbursement_type_desc if row.disbursement_type_desc else (row.disbursement_type if row.disbursement_type else '-') }}</td>
+                    <td>{{ row.category_code_full if row.category_code_full else (row.category_code if row.category_code else '-') }}</td>
+                    <td>{{ format_currency(row.disbursement_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8">No Schedule B rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if schedule_b_pages > 1 %}
+    <nav class="pagination">
+        {% if schedule_b_page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page-1, schedule_e_page=schedule_e_page) }}">&laquo; Previous</a>
+        {% endif %}
+
+        <span class="page-info">Page {{ schedule_b_page }} of {{ schedule_b_pages }}</span>
+
+        {% if schedule_b_page < schedule_b_pages %}
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page+1, schedule_e_page=schedule_e_page) }}">Next &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Independent Expenditures (Schedule E)</h2>
+    <p class="subtitle">Showing {{ detail.schedule_e_independent_expenditures|length }} of {{ schedule_e_total }} rows</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Support/Oppose</th>
+                    <th>Committee</th>
+                    <th>Payee</th>
+                    <th>Location</th>
+                    <th>Category</th>
+                    <th>Report/Line</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.schedule_e_independent_expenditures %}
+                <tr>
+                    <td>{{ row.expenditure_date if row.expenditure_date else '-' }}</td>
+                    <td>{{ row.support_oppose_indicator if row.support_oppose_indicator else '-' }}</td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.payee_name if row.payee_name else '-' }}</td>
+                    <td>{{ row.payee_city if row.payee_city else '' }}{% if row.payee_city and row.payee_state %}, {% endif %}{{ row.payee_state if row.payee_state else '' }} {{ row.payee_zip if row.payee_zip else '' }}</td>
+                    <td>{{ row.category_code_full if row.category_code_full else (row.category_code if row.category_code else '-') }}</td>
+                    <td>{{ row.report_type if row.report_type else '-' }}{% if row.line_number %} / {{ row.line_number }}{% endif %}</td>
+                    <td>{{ format_currency(row.expenditure_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8">No Schedule E rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if schedule_e_pages > 1 %}
+    <nav class="pagination">
+        {% if schedule_e_page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page-1) }}">&laquo; Previous</a>
+        {% endif %}
+
+        <span class="page-info">Page {{ schedule_e_page }} of {{ schedule_e_pages }}</span>
+
+        {% if schedule_e_page < schedule_e_pages %}
+        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=candidate_id, cycle=cycle, contribution_page=contribution_page, schedule_b_page=schedule_b_page, schedule_e_page=schedule_e_page+1) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}

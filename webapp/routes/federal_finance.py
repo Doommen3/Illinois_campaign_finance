@@ -764,8 +764,14 @@ def federal_candidate_detail(candidate_id: str):
 
     cycle = request.args.get('cycle', 2026, type=int)
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
+    schedule_b_page = max(request.args.get('schedule_b_page', 1, type=int), 1)
+    schedule_e_page = max(request.args.get('schedule_e_page', 1, type=int), 1)
     contribution_per_page = 100
+    schedule_b_per_page = 100
+    schedule_e_per_page = 100
     contribution_offset = (contribution_page - 1) * contribution_per_page
+    schedule_b_offset = (schedule_b_page - 1) * schedule_b_per_page
+    schedule_e_offset = (schedule_e_page - 1) * schedule_e_per_page
 
     detail = get_federal_candidate_detail(
         conn,
@@ -774,10 +780,18 @@ def federal_candidate_detail(candidate_id: str):
         top_donor_limit=25,
         contribution_limit=contribution_per_page,
         contribution_offset=contribution_offset,
+        schedule_b_limit=schedule_b_per_page,
+        schedule_b_offset=schedule_b_offset,
+        schedule_e_limit=schedule_e_per_page,
+        schedule_e_offset=schedule_e_offset,
     )
 
     contribution_total = detail['total_contributions'] if detail else 0
     contribution_pages = (contribution_total + contribution_per_page - 1) // contribution_per_page if detail else 0
+    schedule_b_total = detail['total_schedule_b_disbursements'] if detail else 0
+    schedule_b_pages = (schedule_b_total + schedule_b_per_page - 1) // schedule_b_per_page if detail else 0
+    schedule_e_total = detail['total_schedule_e_expenditures'] if detail else 0
+    schedule_e_pages = (schedule_e_total + schedule_e_per_page - 1) // schedule_e_per_page if detail else 0
 
     return render_template(
         'federal_finance/detail.html',
@@ -787,4 +801,10 @@ def federal_candidate_detail(candidate_id: str):
         contribution_page=contribution_page,
         contribution_total=contribution_total,
         contribution_pages=contribution_pages,
+        schedule_b_page=schedule_b_page,
+        schedule_b_total=schedule_b_total,
+        schedule_b_pages=schedule_b_pages,
+        schedule_e_page=schedule_e_page,
+        schedule_e_total=schedule_e_total,
+        schedule_e_pages=schedule_e_pages,
     )

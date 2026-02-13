@@ -1,7 +1,10 @@
 """Admin routes for local donor merge review and approvals."""
 from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for, flash
 
-from database.federal_fec import get_federal_receipt_mismatch_flags
+from database.federal_fec import (
+    get_federal_disbursement_mismatch_flags,
+    get_federal_receipt_mismatch_flags,
+)
 from database.models import Donor
 from webapp.auth import login_required
 
@@ -49,6 +52,58 @@ def federal_receipt_audit():
 
     return render_template(
         "admin/federal_receipt_audit.html",
+        rows=audit.get("rows", []),
+        status_counts=audit.get("status_counts", {}),
+        cycle=cycle,
+        status=audit.get("status", status),
+        min_abs_diff=float(audit.get("min_abs_diff") or 0.0),
+        tolerance=float(audit.get("tolerance") or 0.0),
+        page=page,
+        total_rows=total_rows,
+        total_pages=total_pages,
+    )
+
+
+@admin_bp.route("/federal-disbursement-audit")
+@login_required
+def federal_disbursement_audit():
+    """Internal audit view for FEC reported disbursements vs synced Schedule B subtotals."""
+    conn = current_app.get_database()
+
+    cycle_raw = (request.args.get("cycle") or "").strip()
+    cycle = 2026
+    if cycle_raw:
+        try:
+            parsed_cycle = int(cycle_raw)
+            if 1970 <= parsed_cycle <= 2100:
+                cycle = parsed_cycle
+        except ValueError:
+            cycle = 2026
+
+    status = (_clean_text(request.args.get("status")) or "flagged").lower()
+    min_abs_diff = request.args.get("min_abs_diff", 1000.0, type=float)
+    tolerance = request.args.get("tolerance", 0.01, type=float)
+
+    page = request.args.get("page", 1, type=int)
+    if page < 1:
+        page = 1
+    per_page = 100
+    offset = (page - 1) * per_page
+
+    audit = get_federal_disbursement_mismatch_flags(
+        conn,
+        cycle=cycle,
+        status=status,
+        min_abs_diff=max(0.0, float(min_abs_diff or 0.0)),
+        tolerance=max(0.0, float(tolerance or 0.0)),
+        limit=per_page,
+        offset=offset,
+    )
+    total_rows = int(audit.get("total_rows") or 0)
+    total_pages = (total_rows + per_page - 1) // per_page if total_rows else 0
+
+    return render_template(
+        "admin/federal_disbursement_audit.html",
         rows=audit.get("rows", []),
         status_counts=audit.get("status_counts", {}),
         cycle=cycle,

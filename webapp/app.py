@@ -147,12 +147,24 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
             )
 
     federal_receipt_date = None
+    federal_disbursement_date = None
+    federal_independent_expenditure_date = None
     federal_sync_updated_at = None
     federal_latest_coverage_date = None
     if _table_exists(conn, "fec_schedule_a_contributions"):
         federal_receipt_date = _scalar(
             conn,
             "SELECT MAX(contribution_receipt_date) AS max_date FROM fec_schedule_a_contributions",
+        )
+    if _table_exists(conn, "fec_schedule_b_disbursements"):
+        federal_disbursement_date = _scalar(
+            conn,
+            "SELECT MAX(disbursement_date) AS max_date FROM fec_schedule_b_disbursements",
+        )
+    if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        federal_independent_expenditure_date = _scalar(
+            conn,
+            "SELECT MAX(expenditure_date) AS max_date FROM fec_schedule_e_independent_expenditures",
         )
     if _table_exists(conn, "fec_candidate_cycle_totals"):
         federal_sync_updated_at = _scalar(
@@ -173,6 +185,8 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
             SELECT MAX(updated_at) AS max_updated_at
             FROM raw_extractions
             WHERE source_type = 'fec_api:schedules_schedule_a'
+               OR source_type = 'fec_api:schedules_schedule_b'
+               OR source_type = 'fec_api:schedules_schedule_e'
                OR source_type LIKE 'fec_api:candidate_%_totals'
             """,
         )
@@ -181,23 +195,46 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
             conn,
             "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_a_contributions",
         )
+    if not federal_sync_updated_at and _table_exists(conn, "fec_schedule_b_disbursements"):
+        federal_sync_updated_at = _scalar(
+            conn,
+            "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_b_disbursements",
+        )
+    if not federal_sync_updated_at and _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        federal_sync_updated_at = _scalar(
+            conn,
+            "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_e_independent_expenditures",
+        )
 
     local_age_days = _age_days(local_receipt_date)
     federal_age_days = _age_days(federal_sync_updated_at)
     federal_receipt_age_days = _age_days(federal_receipt_date)
+    federal_disbursement_age_days = _age_days(federal_disbursement_date)
+    federal_independent_expenditure_age_days = _age_days(federal_independent_expenditure_date)
 
     local_is_stale = local_age_days is not None and local_age_days > max(0, int(local_stale_days))
     federal_is_stale = federal_age_days is not None and federal_age_days > max(0, int(federal_stale_days))
 
-    has_any_data = bool(local_receipt_date or federal_receipt_date or federal_sync_updated_at or federal_latest_coverage_date)
+    has_any_data = bool(
+        local_receipt_date
+        or federal_receipt_date
+        or federal_disbursement_date
+        or federal_independent_expenditure_date
+        or federal_sync_updated_at
+        or federal_latest_coverage_date
+    )
     return {
         "local_receipt_date": local_receipt_date,
         "federal_receipt_date": federal_receipt_date,
+        "federal_disbursement_date": federal_disbursement_date,
+        "federal_independent_expenditure_date": federal_independent_expenditure_date,
         "federal_sync_updated_at": federal_sync_updated_at,
         "federal_latest_coverage_date": federal_latest_coverage_date,
         "local_age_days": local_age_days,
         "federal_age_days": federal_age_days,
         "federal_receipt_age_days": federal_receipt_age_days,
+        "federal_disbursement_age_days": federal_disbursement_age_days,
+        "federal_independent_expenditure_age_days": federal_independent_expenditure_age_days,
         "local_is_stale": local_is_stale,
         "federal_is_stale": federal_is_stale,
         "is_any_stale": local_is_stale or federal_is_stale,

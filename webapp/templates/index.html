@@ -56,81 +56,87 @@
 <div class="status-section">
     <h2>Data Freshness</h2>
     <p><strong>Latest local receipt date:</strong> {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}</p>
-    <p><strong>Latest federal receipt date:</strong> {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}</p>
     <p><strong>Latest federal sync update:</strong> {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}</p>
+    <p><strong>Latest federal Schedule A receipt date:</strong> {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}</p>
+    <p><strong>Latest federal Schedule B disbursement date:</strong> {{ freshness.federal_disbursement_date if freshness.federal_disbursement_date else 'Not loaded' }}</p>
+    <p><strong>Latest federal Schedule E expenditure date:</strong> {{ freshness.federal_independent_expenditure_date if freshness.federal_independent_expenditure_date else 'Not loaded' }}</p>
 </div>
 
 <div class="two-column">
     <div class="column">
         <h2>Launch Paths</h2>
-        <table class="data-table dashboard-launch-paths-table">
-            <thead>
-                <tr>
-                    <th>Page</th>
-                    <th>Purpose</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><a href="{{ url_for('main.candidates') }}">Candidates</a></td>
-                    <td>State (ISBE) and federal (FEC) candidate finance — totals, drilldowns, and race-level metrics.</td>
-                </tr>
-                <tr>
-                    <td><a href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a></td>
-                    <td>Donor-candidate trend views and overlap analysis for matched donors.</td>
-                </tr>
-                <tr>
-                    <td><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></td>
-                    <td>Network, concentration, risk, and geography intelligence across local finance data.</td>
-                </tr>
-                <tr>
-                    <td><a href="{{ url_for('donors.list_donors') }}">Donors Directory</a></td>
-                    <td>Cross-committee donor summaries and donor-to-committee breakdowns.</td>
-                </tr>
-            </tbody>
-        </table>
+        <div class="table-scroll">
+            <table class="data-table dashboard-launch-paths-table">
+                <thead>
+                    <tr>
+                        <th>Page</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><a href="{{ url_for('main.candidates') }}">Candidates</a></td>
+                        <td>State (ISBE) and federal (FEC) candidate finance — totals, drilldowns, and race-level metrics.</td>
+                    </tr>
+                    <tr>
+                        <td><a href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a></td>
+                        <td>Donor-candidate trend views and overlap analysis for matched donors.</td>
+                    </tr>
+                    <tr>
+                        <td><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></td>
+                        <td>Network, concentration, risk, and geography intelligence across local finance data.</td>
+                    </tr>
+                    <tr>
+                        <td><a href="{{ url_for('donors.list_donors') }}">Donors Directory</a></td>
+                        <td>Cross-committee donor summaries and donor-to-committee breakdowns.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <div class="column">
         <h2>Top Donors</h2>
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Total</th>
-                    <th>Count</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for donor in top_donors %}
-                <tr>
-                    <td>
-                        {% if donor.entity_id %}
-                        <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=donor.entity_id, source=donor.source if donor.source else 'bulk_receipts') }}">
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Total</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for donor in top_donors %}
+                    <tr>
+                        <td>
+                            {% if donor.entity_id %}
+                            <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=donor.entity_id, source=donor.source if donor.source else 'bulk_receipts') }}">
+                                {{ donor.name|truncate(28) }}
+                            </a>
+                            {% elif donor.id %}
+                            <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
+                                {{ donor.name|truncate(28) }}
+                            </a>
+                            {% elif donor.donor_key %}
+                            <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts') }}">
+                                {{ donor.name|truncate(28) }}
+                            </a>
+                            {% else %}
                             {{ donor.name|truncate(28) }}
-                        </a>
-                        {% elif donor.id %}
-                        <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
-                            {{ donor.name|truncate(28) }}
-                        </a>
-                        {% elif donor.donor_key %}
-                        <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts') }}">
-                            {{ donor.name|truncate(28) }}
-                        </a>
-                        {% else %}
-                        {{ donor.name|truncate(28) }}
-                        {% endif %}
-                    </td>
-                    <td>{{ format_currency(donor.total_amount) }}</td>
-                    <td>{{ donor.contribution_count }}</td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="3">No donor data yet.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+                            {% endif %}
+                        </td>
+                        <td>{{ format_currency(donor.total_amount) }}</td>
+                        <td>{{ donor.contribution_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="3">No donor data yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
         <p><a href="{{ url_for('donors.list_donors') }}">View all donors</a></p>
     </div>
 </div>

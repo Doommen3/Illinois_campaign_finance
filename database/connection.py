@@ -128,6 +128,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'contributions', 'raw_employer', 'raw_employer TEXT')
     _ensure_column(conn, 'fec_schedule_a_contributions', 'donor_entity_key', 'donor_entity_key TEXT')
     _ensure_column(conn, 'fec_schedule_a_contributions', 'donor_entity_method', 'donor_entity_method TEXT')
+    _ensure_column(conn, 'fec_candidate_cycle_totals', 'disbursements', 'disbursements REAL NOT NULL DEFAULT 0')
     _ensure_column(conn, 'analytics_donor_committee_agg', 'occupation', 'occupation TEXT')
     _ensure_column(conn, 'analytics_donor_committee_agg', 'employer', 'employer TEXT')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_version', 'materialization_version INTEGER NOT NULL DEFAULT 1')

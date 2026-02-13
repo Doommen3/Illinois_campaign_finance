@@ -532,12 +532,55 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_date
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_recipient
     ON fec_schedule_b_disbursements(recipient_name);
 
+CREATE TABLE IF NOT EXISTS fec_schedule_e_independent_expenditures (
+    sub_id TEXT PRIMARY KEY,
+    cycle INTEGER NOT NULL,
+    candidate_id TEXT,
+    candidate_name TEXT,
+    candidate_office TEXT,
+    candidate_office_state TEXT,
+    candidate_office_district TEXT,
+    support_oppose_indicator TEXT,
+    committee_id TEXT,
+    committee_name TEXT,
+    payee_name TEXT,
+    payee_city TEXT,
+    payee_state TEXT,
+    payee_zip TEXT,
+    category_code TEXT,
+    category_code_full TEXT,
+    election_type TEXT,
+    election_type_full TEXT,
+    expenditure_description TEXT,
+    memo_text TEXT,
+    expenditure_amount REAL,
+    expenditure_date TEXT,
+    filing_date TEXT,
+    report_type TEXT,
+    line_number TEXT,
+    image_number TEXT,
+    load_date TEXT,
+    api_source_identifier TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_candidate
+    ON fec_schedule_e_independent_expenditures(candidate_id, cycle);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_committee
+    ON fec_schedule_e_independent_expenditures(committee_id, cycle);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_date
+    ON fec_schedule_e_independent_expenditures(expenditure_date);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_support_oppose
+    ON fec_schedule_e_independent_expenditures(support_oppose_indicator);
+
 CREATE TABLE IF NOT EXISTS fec_candidate_cycle_totals (
     candidate_id TEXT NOT NULL,
     cycle INTEGER NOT NULL,
     receipts REAL NOT NULL DEFAULT 0,
     contributions REAL NOT NULL DEFAULT 0,
     individual_contributions REAL NOT NULL DEFAULT 0,
+    disbursements REAL NOT NULL DEFAULT 0,
     coverage_start_date TEXT,
     coverage_end_date TEXT,
     transaction_coverage_date TEXT,
@@ -595,6 +638,26 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_backfill_cycle_completed
     ON fec_schedule_b_backfill_state(cycle, completed, updated_at);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_backfill_candidate
     ON fec_schedule_b_backfill_state(candidate_id, cycle);
+
+CREATE TABLE IF NOT EXISTS fec_schedule_e_backfill_state (
+    candidate_id TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    candidate_name TEXT,
+    next_last_index TEXT,
+    next_last_expenditure_date TEXT,
+    completed INTEGER NOT NULL DEFAULT 0,
+    pages_processed_total INTEGER NOT NULL DEFAULT 0,
+    expenditures_upserted_total INTEGER NOT NULL DEFAULT 0,
+    api_calls_total INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (candidate_id, cycle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_backfill_cycle_completed
+    ON fec_schedule_e_backfill_state(cycle, completed, updated_at);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_backfill_candidate
+    ON fec_schedule_e_backfill_state(candidate_id, cycle);
 
 CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
     federal_donor_entity_key TEXT NOT NULL,

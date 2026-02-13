@@ -64,12 +64,20 @@
 
         <div class="candidate-source-meta">
             <p class="stat-detail">
-                <strong>Latest receipt date:</strong>
+                <strong>Latest Schedule A receipt date:</strong>
                 {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}
             </p>
             <p class="stat-detail">
                 <strong>Last sync update:</strong>
                 {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}
+            </p>
+            <p class="stat-detail">
+                <strong>Latest Schedule B disbursement date:</strong>
+                {{ freshness.federal_disbursement_date if freshness.federal_disbursement_date else 'Not loaded' }}
+            </p>
+            <p class="stat-detail">
+                <strong>Latest Schedule E expenditure date:</strong>
+                {{ freshness.federal_independent_expenditure_date if freshness.federal_independent_expenditure_date else 'Not loaded' }}
             </p>
         </div>
 

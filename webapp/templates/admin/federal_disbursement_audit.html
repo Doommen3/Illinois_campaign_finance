@@ -1,28 +1,28 @@
 {% extends "base.html" %}
 
-{% block title %}Federal Receipt Audit - Admin{% endblock %}
+{% block title %}Federal Disbursement Audit - Admin{% endblock %}
 
 {% block content %}
-<h1>Federal Receipt Audit</h1>
-<p class="subtitle">Internal flag view: FEC reported receipts vs synced Schedule A subtotal in this app.</p>
+<h1>Federal Disbursement Audit</h1>
+<p class="subtitle">Internal flag view: FEC reported disbursements vs synced Schedule B subtotal in this app.</p>
 
 <div class="status-section">
     <p><strong>Total flagged rows:</strong> {{ total_rows }}</p>
     <p>
         <strong>Status counts:</strong>
-        Missing schedule rows: {{ status_counts.get('missing_schedule_rows', 0) }} |
-        Schedule exceeds reported: {{ status_counts.get('schedule_exceeds_reported', 0) }} |
+        Missing schedule rows: {{ status_counts.get('missing_schedule_b_rows', 0) }} |
+        Schedule exceeds reported: {{ status_counts.get('schedule_b_exceeds_reported', 0) }} |
         Missing reported total: {{ status_counts.get('missing_reported_total', 0) }} |
         Matched: {{ status_counts.get('matched', 0) }}
     </p>
 </div>
 
-<form class="search-form" method="get" action="{{ url_for('admin.federal_receipt_audit') }}">
+<form class="search-form" method="get" action="{{ url_for('admin.federal_disbursement_audit') }}">
     <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle (e.g., 2026)">
     <select name="status">
         <option value="flagged" {% if status == 'flagged' %}selected{% endif %}>Flagged only</option>
-        <option value="missing_schedule_rows" {% if status == 'missing_schedule_rows' %}selected{% endif %}>Missing schedule rows</option>
-        <option value="schedule_exceeds_reported" {% if status == 'schedule_exceeds_reported' %}selected{% endif %}>Schedule exceeds reported</option>
+        <option value="missing_schedule_b_rows" {% if status == 'missing_schedule_b_rows' %}selected{% endif %}>Missing schedule rows</option>
+        <option value="schedule_b_exceeds_reported" {% if status == 'schedule_b_exceeds_reported' %}selected{% endif %}>Schedule exceeds reported</option>
         <option value="missing_reported_total" {% if status == 'missing_reported_total' %}selected{% endif %}>Missing reported total</option>
         <option value="matched" {% if status == 'matched' %}selected{% endif %}>Matched only</option>
         <option value="all" {% if status == 'all' %}selected{% endif %}>All statuses</option>
@@ -30,7 +30,7 @@
     <input type="text" name="min_abs_diff" value="{{ min_abs_diff }}" placeholder="Minimum gap amount">
     <input type="text" name="tolerance" value="{{ tolerance }}" placeholder="Match tolerance">
     <button type="submit">Apply</button>
-    <a class="btn btn-small" href="{{ url_for('admin.federal_receipt_audit') }}">Reset</a>
+    <a class="btn btn-small" href="{{ url_for('admin.federal_disbursement_audit') }}">Reset</a>
 </form>
 
 <div class="status-section">
@@ -41,10 +41,10 @@
                     <th>Candidate</th>
                     <th>Status</th>
                     <th>FEC Reported</th>
-                    <th>Schedule A Synced</th>
+                    <th>Schedule B Synced</th>
                     <th>Gap</th>
                     <th>Gap %</th>
-                    <th>Contrib Rows</th>
+                    <th>Rows</th>
                     <th>Backfill Progress</th>
                     <th>Coverage</th>
                 </tr>
@@ -63,11 +63,11 @@
                         <br><small>{{ row.candidate_id }} · {{ row.cycle }}</small>
                     </td>
                     <td>{{ row.flag_status }}</td>
-                    <td>{{ format_currency(row.reported_total_receipts) if row.reported_total_receipts is not none else '-' }}</td>
+                    <td>{{ format_currency(row.reported_total_disbursements) if row.reported_total_disbursements is not none else '-' }}</td>
                     <td>{{ format_currency(row.schedule_total_amount) }}</td>
                     <td>{{ format_currency(row.mismatch_amount) if row.mismatch_amount is not none else '-' }}</td>
                     <td>{% if row.mismatch_ratio is not none %}{{ (row.mismatch_ratio * 100)|round(2) }}%{% else %}-{% endif %}</td>
-                    <td>{{ row.schedule_contribution_count }}</td>
+                    <td>{{ row.schedule_disbursement_count }}</td>
                     <td>
                         {{ row.completed_committees }} / {{ row.tracked_committees }}
                         {% if row.backfill_updated_at %}
@@ -76,8 +76,8 @@
                     </td>
                     <td>
                         {% if row.transaction_coverage_date %}{{ row.transaction_coverage_date }}{% elif row.coverage_end_date %}{{ row.coverage_end_date }}{% else %}-{% endif %}
-                        {% if row.latest_contribution_date %}
-                        <br><small>latest synced row {{ row.latest_contribution_date }}</small>
+                        {% if row.latest_disbursement_date %}
+                        <br><small>latest synced row {{ row.latest_disbursement_date }}</small>
                         {% endif %}
                     </td>
                 </tr>
@@ -93,13 +93,13 @@
     {% if total_pages > 1 %}
     <nav class="pagination">
         {% if page > 1 %}
-        <a href="{{ url_for('admin.federal_receipt_audit', cycle=cycle, status=status, min_abs_diff=min_abs_diff, tolerance=tolerance, page=page-1) }}">&laquo; Previous</a>
+        <a href="{{ url_for('admin.federal_disbursement_audit', cycle=cycle, status=status, min_abs_diff=min_abs_diff, tolerance=tolerance, page=page-1) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
 
         {% if page < total_pages %}
-        <a href="{{ url_for('admin.federal_receipt_audit', cycle=cycle, status=status, min_abs_diff=min_abs_diff, tolerance=tolerance, page=page+1) }}">Next &raquo;</a>
+        <a href="{{ url_for('admin.federal_disbursement_audit', cycle=cycle, status=status, min_abs_diff=min_abs_diff, tolerance=tolerance, page=page+1) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}

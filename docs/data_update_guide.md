@@ -137,6 +137,28 @@ Schedule B wrapper script:
 bash scripts/fec-schedule-b-catchup.sh
 ```
 
+### Schedule E Catch-Up for Independent Expenditures
+
+Use this command to fill missing federal independent expenditure rows (Schedule E) with resumable pagination.
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-e \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-candidate 25 \
+  --refresh-cache
+```
+
+Schedule E wrapper script:
+
+```bash
+bash scripts/fec-schedule-e-catchup.sh
+```
+
 Schedule A wrapper script:
 
 ```bash
