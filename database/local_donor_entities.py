@@ -44,6 +44,7 @@ _WEAK_EMPLOYER_ANCHORS = {
     "self",
     "owner",
     "business",
+    "small",
     "retired",
     "none",
     "unknown",
@@ -56,8 +57,32 @@ _WEAK_EMPLOYER_ANCHORS = {
     "campaign",
     "democratic",
     "republican",
+    "president",
+    "ceo",
+    "chief",
+    "executive",
+    "officer",
+    "founder",
+    "chairman",
+    "chairwoman",
+    "partner",
+    "manager",
+    "director",
+    "principal",
+    "member",
+    "investor",
+    "attorney",
+    "lawyer",
+    "doctor",
+    "engineer",
+    "analyst",
+    "consultant",
+    "treasurer",
+    "secretary",
+    "trustee",
 }
 _BRIDGE_MIN_TOTAL_AMOUNT = 1_000_000.0
+_BRIDGE_CROSS_STATE_MIN_TOTAL_AMOUNT = 5_000_000.0
 _ORG_KEYWORDS = {
     "llc",
     "inc",
@@ -256,6 +281,21 @@ def _normalize_tokens(value: str | None, stop_words: set[str]) -> tuple[str, ...
     return tuple(token for token in _clean_text(value).split() if token and token not in stop_words)
 
 
+def _normalize_company_tokens(employer: str | None, occupation: str | None) -> tuple[str, ...]:
+    employer_tokens = list(_normalize_tokens(employer, _EMPLOYER_STOP_WORDS))
+    occupation_tokens = list(
+        _normalize_tokens(occupation, _OCCUPATION_STOP_WORDS | _WEAK_EMPLOYER_ANCHORS)
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in employer_tokens + occupation_tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
 def _jaccard(left: tuple[str, ...], right: tuple[str, ...]) -> float:
     if not left or not right:
         return 0.0
@@ -287,7 +327,9 @@ class _DonorRecord:
     address_tokens: tuple[str, ...]
     employer_tokens: tuple[str, ...]
     occupation_tokens: tuple[str, ...]
+    company_tokens: tuple[str, ...]
     employer_anchor: str
+    company_anchor: str
     address_anchor: str
     total_amount: float
     contribution_count: int
@@ -310,6 +352,8 @@ class _PairScore:
     address_similarity: float
     employer_similarity: float
     occupation_similarity: float
+    company_similarity: float
+    cross_field_company_match: bool
     multi_home_bonus: bool
     bridge_rule: bool
 
@@ -355,6 +399,8 @@ def _candidate_pairs(records: list[_DonorRecord]) -> list[tuple[int, int]]:
             buckets[("city_state_employer", city_state, record.employer_anchor)].append(idx)
         if city_state and record.address_anchor:
             buckets[("city_state_address", city_state, record.address_anchor)].append(idx)
+        if record.company_anchor and record.company_anchor not in _WEAK_EMPLOYER_ANCHORS:
+            buckets[("company_anchor", record.company_anchor)].append(idx)
 
     pair_set: set[tuple[int, int]] = set()
     for idxs in buckets.values():
@@ -383,37 +429,56 @@ def _score_pair(
     address_similarity = _jaccard(left.address_tokens, right.address_tokens)
     employer_similarity = _jaccard(left.employer_tokens, right.employer_tokens)
     occupation_similarity = _jaccard(left.occupation_tokens, right.occupation_tokens)
+    company_similarity = _jaccard(left.company_tokens, right.company_tokens)
 
     multi_home_bonus = city_state_match and employer_similarity >= 0.85 and address_similarity < 0.30
-    bridge_rule = (
-        bool(left.full_name_normalized)
-        and left.full_name_normalized == right.full_name_normalized
-        and bool(left.donor_state)
-        and left.donor_state == right.donor_state
-        and bool(left.employer_anchor)
-        and left.employer_anchor == right.employer_anchor
-        and left.employer_anchor not in _WEAK_EMPLOYER_ANCHORS
-        and len(left.employer_anchor) >= 4
-        and employer_similarity >= 0.40
+    cross_field_company_match = bool(
+        (set(left.occupation_tokens) & set(right.employer_tokens))
+        or (set(right.occupation_tokens) & set(left.employer_tokens))
+    )
+    full_name_match = bool(left.full_name_normalized) and left.full_name_normalized == right.full_name_normalized
+    same_state_match = bool(left.donor_state) and left.donor_state == right.donor_state
+    cross_state_match = bool(left.donor_state) and bool(right.donor_state) and left.donor_state != right.donor_state
+    strong_company_anchor_match = (
+        bool(left.company_anchor)
+        and left.company_anchor == right.company_anchor
+        and left.company_anchor not in _WEAK_EMPLOYER_ANCHORS
+        and len(left.company_anchor) >= 4
+    )
+    bridge_same_state = (
+        full_name_match
+        and same_state_match
+        and strong_company_anchor_match
+        and company_similarity >= 0.40
         and max(left.total_amount, right.total_amount) >= _BRIDGE_MIN_TOTAL_AMOUNT
     )
+    bridge_cross_state = (
+        full_name_match
+        and cross_state_match
+        and strong_company_anchor_match
+        and company_similarity >= 0.40
+        and cross_field_company_match
+        and max(left.total_amount, right.total_amount) >= _BRIDGE_CROSS_STATE_MIN_TOTAL_AMOUNT
+    )
+    bridge_rule = bridge_same_state or bridge_cross_state
     signal_present = (
         zip_match
         or address_similarity >= 0.40
         or employer_similarity >= 0.60
         or occupation_similarity >= 0.60
+        or company_similarity >= 0.60
         or multi_home_bonus
         or bridge_rule
     )
 
     score = 0.32
 
-    if left.full_name_normalized and left.full_name_normalized == right.full_name_normalized:
+    if full_name_match:
         score += 0.10
 
     if city_state_match:
         score += 0.16
-    elif left.donor_state and right.donor_state and left.donor_state != right.donor_state:
+    elif cross_state_match:
         score -= 0.25
 
     if zip_match:
@@ -443,6 +508,17 @@ def _score_pair(
             score += 0.04
         elif occupation_similarity >= 0.40:
             score += 0.02
+
+    if left.company_tokens and right.company_tokens:
+        if company_similarity >= 0.85:
+            score += 0.10
+        elif company_similarity >= 0.60:
+            score += 0.06
+        elif company_similarity >= 0.40:
+            score += 0.03
+
+    if cross_field_company_match:
+        score += 0.05
 
     if multi_home_bonus:
         # Allows same-name/same-city/same-employer records with different homes
@@ -474,6 +550,8 @@ def _score_pair(
         address_similarity=address_similarity,
         employer_similarity=employer_similarity,
         occupation_similarity=occupation_similarity,
+        company_similarity=company_similarity,
+        cross_field_company_match=cross_field_company_match,
         multi_home_bonus=multi_home_bonus,
         bridge_rule=bridge_rule,
     )
@@ -943,6 +1021,8 @@ def rebuild_local_donor_entities(
                         "address_similarity": round(float(edge.address_similarity), 4),
                         "employer_similarity": round(float(edge.employer_similarity), 4),
                         "occupation_similarity": round(float(edge.occupation_similarity), 4),
+                        "company_similarity": round(float(edge.company_similarity), 4),
+                        "cross_field_company_match": bool(edge.cross_field_company_match),
                         "multi_home_bonus": bool(edge.multi_home_bonus),
                         "bridge_rule": bool(edge.bridge_rule),
                     }
@@ -1026,6 +1106,7 @@ def rebuild_local_donor_entities(
             address_tokens = _normalize_addr_tokens(addr_line_1, addr_line_2, row["donor_address"])
             employer_tokens = _normalize_tokens(row["employer"], _EMPLOYER_STOP_WORDS)
             occupation_tokens = _normalize_tokens(row["occupation"], _OCCUPATION_STOP_WORDS)
+            company_tokens = _normalize_company_tokens(row["employer"], row["occupation"])
 
             current_records.append(
                 _DonorRecord(
@@ -1039,7 +1120,9 @@ def rebuild_local_donor_entities(
                     address_tokens=address_tokens,
                     employer_tokens=employer_tokens,
                     occupation_tokens=occupation_tokens,
+                    company_tokens=company_tokens,
                     employer_anchor=employer_tokens[0] if employer_tokens else "",
+                    company_anchor=company_tokens[0] if company_tokens else "",
                     address_anchor=address_tokens[0] if address_tokens else "",
                     total_amount=float(row["total_amount"] or 0.0),
                     contribution_count=int(row["contribution_count"] or 0),

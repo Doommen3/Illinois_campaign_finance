@@ -474,3 +474,130 @@ def test_rebuild_local_donor_entities_bridge_rule_survives_large_group_penalty(t
     assert float(rows[1]["confidence_score"]) >= 0.70
 
     conn.close()
+
+
+def test_rebuild_local_donor_entities_bridge_rule_links_cross_state_company_from_occupation(tmp_path: Path):
+    db_path = str(tmp_path / "local_entities_bridge_rule_cross_state.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|po box 52||lake bluff|il|60044",
+        donor_name="Richard Uihlein",
+        donor_address="PO Box 52, Lake Bluff, IL, 60044",
+        donor_city="Lake Bluff",
+        donor_state="IL",
+        occupation="Uline",
+        employer="Uline Shipping",
+        total_amount=48_177_202.51,
+        contribution_count=524,
+        committee_count=280,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|12575 uline drive||pleasant prairie|wi|53158",
+        donor_name="Richard Uihlein",
+        donor_address="12575 Uline Drive, Pleasant Prairie, WI, 53158",
+        donor_city="Pleasant Prairie",
+        donor_state="WI",
+        occupation="President",
+        employer="Uline Corp",
+        total_amount=5_182_000.0,
+        contribution_count=16,
+        committee_count=8,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="richard|uihlein|77 state st||madison|wi|53703",
+        donor_name="Richard Uihlein",
+        donor_address="77 State St, Madison, WI, 53703",
+        donor_city="Madison",
+        donor_state="WI",
+        occupation="Investor",
+        employer="Another Company",
+        total_amount=900.0,
+        contribution_count=1,
+        committee_count=1,
+    )
+    conn.commit()
+
+    rebuild_local_donor_entities(conn, source="bulk_receipts", dry_run=False)
+
+    rows = conn.execute(
+        """
+        SELECT donor_key, entity_id, merge_action, confidence_score, reasons_json
+        FROM donor_entity_local_member
+        WHERE source = 'bulk_receipts'
+          AND donor_key IN (
+            'richard|uihlein|po box 52||lake bluff|il|60044',
+            'richard|uihlein|12575 uline drive||pleasant prairie|wi|53158'
+          )
+        ORDER BY donor_key
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["entity_id"] == rows[1]["entity_id"]
+    assert rows[0]["merge_action"] == "review"
+    assert float(rows[0]["confidence_score"]) >= 0.70
+    assert float(rows[1]["confidence_score"]) >= 0.70
+
+    signal0 = json.loads(rows[0]["reasons_json"])["signals"]
+    signal1 = json.loads(rows[1]["reasons_json"])["signals"]
+    assert signal0["bridge_rule"] is True
+    assert signal1["bridge_rule"] is True
+    assert signal0["cross_field_company_match"] is True
+    assert signal1["cross_field_company_match"] is True
+
+    conn.close()
+
+
+def test_rebuild_local_donor_entities_cross_state_company_without_cross_field_stays_separate(tmp_path: Path):
+    db_path = str(tmp_path / "local_entities_bridge_rule_cross_state_safety.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    _insert_summary_row(
+        conn,
+        donor_key="john|doe|10 main st||chicago|il|60601",
+        donor_name="John Doe",
+        donor_address="10 Main St, Chicago, IL, 60601",
+        donor_city="Chicago",
+        donor_state="IL",
+        occupation="Engineer",
+        employer="Acme Corp",
+        total_amount=8_000_000.0,
+        contribution_count=12,
+        committee_count=7,
+    )
+    _insert_summary_row(
+        conn,
+        donor_key="john|doe|200 market st||milwaukee|wi|53202",
+        donor_name="John Doe",
+        donor_address="200 Market St, Milwaukee, WI, 53202",
+        donor_city="Milwaukee",
+        donor_state="WI",
+        occupation="President",
+        employer="Acme Corporation",
+        total_amount=7_500_000.0,
+        contribution_count=9,
+        committee_count=5,
+    )
+    conn.commit()
+
+    rebuild_local_donor_entities(conn, source="bulk_receipts", dry_run=False)
+
+    rows = conn.execute(
+        """
+        SELECT donor_key, entity_id, merge_action
+        FROM donor_entity_local_member
+        WHERE source = 'bulk_receipts'
+        ORDER BY donor_key
+        """
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["entity_id"] != rows[1]["entity_id"]
+    assert rows[0]["merge_action"] == "singleton"
+    assert rows[1]["merge_action"] == "singleton"
+
+    conn.close()
