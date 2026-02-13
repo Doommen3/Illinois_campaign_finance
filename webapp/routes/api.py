@@ -4,8 +4,13 @@ from flask import Blueprint, jsonify, request, current_app
 from database.analytics import (
     get_analytics_data_sources,
     get_anomaly_flags,
+    get_candidate_competition_networks,
+    get_committee_similarity_network,
     get_donor_concentration,
+    get_donor_cogiving_network,
     get_geo_summary,
+    get_irs527_ecosystem_graph,
+    get_lobbying_influence_graph,
     get_network_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
@@ -334,4 +339,91 @@ def analytics_reconciliation():
             'data': get_reconciliation_outliers(conn, limit=limit, min_abs_diff=min_abs_diff),
             'sources': get_analytics_data_sources(conn),
         }
+    )
+
+
+@api_bp.route('/analytics/donor-cogiving')
+def analytics_donor_cogiving():
+    """Get donor co-giving network."""
+    conn = current_app.get_database()
+    donor_limit = min(max(request.args.get('donor_limit', 800, type=int), 50), 5000)
+    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    min_shared_amount = max(request.args.get('min_shared_amount', 5000.0, type=float), 0.0)
+    min_shared_targets = max(request.args.get('min_shared_targets', 2, type=int), 1)
+    return jsonify(
+        get_donor_cogiving_network(
+            conn,
+            donor_limit=donor_limit,
+            edge_limit=edge_limit,
+            min_shared_amount=min_shared_amount,
+            min_shared_targets=min_shared_targets,
+        )
+    )
+
+
+@api_bp.route('/analytics/committee-similarity')
+def analytics_committee_similarity():
+    """Get committee similarity network."""
+    conn = current_app.get_database()
+    committee_limit = min(max(request.args.get('committee_limit', 500, type=int), 50), 5000)
+    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    min_shared_donors = max(request.args.get('min_shared_donors', 3, type=int), 1)
+    min_shared_amount = max(request.args.get('min_shared_amount', 10000.0, type=float), 0.0)
+    return jsonify(
+        get_committee_similarity_network(
+            conn,
+            committee_limit=committee_limit,
+            edge_limit=edge_limit,
+            min_shared_donors=min_shared_donors,
+            min_shared_amount=min_shared_amount,
+        )
+    )
+
+
+@api_bp.route('/analytics/candidate-competition')
+def analytics_candidate_competition():
+    """Get state/federal/combined candidate competition networks."""
+    conn = current_app.get_database()
+    candidate_limit = min(max(request.args.get('candidate_limit', 250, type=int), 50), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 1200, type=int), 50), 10000)
+    min_shared_donors = max(request.args.get('min_shared_donors', 2, type=int), 1)
+    min_shared_amount = max(request.args.get('min_shared_amount', 2500.0, type=float), 0.0)
+    return jsonify(
+        get_candidate_competition_networks(
+            conn,
+            candidate_limit=candidate_limit,
+            edge_limit=edge_limit,
+            min_shared_donors=min_shared_donors,
+            min_shared_amount=min_shared_amount,
+        )
+    )
+
+
+@api_bp.route('/analytics/lobbying-influence')
+def analytics_lobbying_influence():
+    """Get lobbying influence graph."""
+    conn = current_app.get_database()
+    client_limit = min(max(request.args.get('client_limit', 120, type=int), 20), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 1500, type=int), 50), 10000)
+    return jsonify(
+        get_lobbying_influence_graph(
+            conn,
+            client_limit=client_limit,
+            edge_limit=edge_limit,
+        )
+    )
+
+
+@api_bp.route('/analytics/irs527-ecosystem')
+def analytics_irs527_ecosystem():
+    """Get IRS 527 ecosystem graph."""
+    conn = current_app.get_database()
+    org_limit = min(max(request.args.get('org_limit', 150, type=int), 20), 2000)
+    edge_limit = min(max(request.args.get('edge_limit', 1800, type=int), 50), 10000)
+    return jsonify(
+        get_irs527_ecosystem_graph(
+            conn,
+            org_limit=org_limit,
+            edge_limit=edge_limit,
+        )
     )

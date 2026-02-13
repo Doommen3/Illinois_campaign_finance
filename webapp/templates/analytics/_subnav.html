@@ -19,4 +19,8 @@
         class="analytics-subnav-link {% if active_page == 'geography' %}active{% endif %}"
         href="{{ url_for('analytics.geography', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
     >Geography</a>
+    <a
+        class="analytics-subnav-link {% if active_page == 'relationships' %}active{% endif %}"
+        href="{{ url_for('analytics.relationships', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+    >Relationships</a>
 </nav>

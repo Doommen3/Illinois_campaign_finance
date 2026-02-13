@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Relationships - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Analytics: Relationships</h1>
+<p class="subtitle">Co-giving, committee similarity, candidate competition, lobbying influence, and 527 ecosystem networks.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<form class="search-form analytics-form" method="get" action="{{ url_for('analytics.relationships') }}">
+    <input type="hidden" name="load_mode" value="{{ load_mode }}">
+    <input type="hidden" name="date_from" value="{{ date_from }}">
+    <input type="hidden" name="date_to" value="{{ date_to }}">
+    <label>
+        Donor limit
+        <input type="number" name="donor_limit" min="50" max="5000" value="{{ donor_limit }}">
+    </label>
+    <label>
+        Committee limit
+        <input type="number" name="committee_limit" min="50" max="5000" value="{{ committee_limit }}">
+    </label>
+    <label>
+        Candidate limit
+        <input type="number" name="candidate_limit" min="50" max="2000" value="{{ candidate_limit }}">
+    </label>
+    <label>
+        Edge limit
+        <input type="number" name="edge_limit" min="50" max="10000" value="{{ edge_limit }}">
+    </label>
+    <label>
+        Min shared amount
+        <input type="number" name="min_shared_amount" min="0" step="100" value="{{ min_shared_amount }}">
+    </label>
+    <label>
+        Min shared donors
+        <input type="number" name="min_shared_donors" min="1" step="1" value="{{ min_shared_donors }}">
+    </label>
+    <label>
+        Min shared targets
+        <input type="number" name="min_shared_targets" min="1" step="1" value="{{ min_shared_targets }}">
+    </label>
+    <label>
+        Lobbying clients
+        <input type="number" name="client_limit" min="20" max="2000" value="{{ client_limit }}">
+    </label>
+    <label>
+        527 orgs
+        <input type="number" name="org_limit" min="20" max="2000" value="{{ org_limit }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+<div class="status-section">
+    <h2>Donor Co-Giving Network</h2>
+    <p class="subtitle">
+        Nodes: <strong>{{ donor_cogiving.summary.node_count }}</strong> |
+        Edges: <strong>{{ donor_cogiving.summary.edge_count }}</strong> |
+        Donor pool: <strong>{{ donor_cogiving.summary.donor_pool_size }}</strong> |
+        Source: <strong>{{ donor_cogiving.summary.source }}</strong>
+    </p>
+    <p class="help-text">
+        Edge weight is shared dollar overlap across common committee and candidate targets.
+        Shared committee/candidate counts are shown per edge.
+    </p>
+    <div class="network-svg-wrap">
+        <svg id="donor-cogiving-svg" viewBox="0 0 1000 480" role="img" aria-label="Donor co-giving network graph"></svg>
+    </div>
+    <p id="donor-cogiving-summary" class="subtitle"></p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Donor A</th>
+                <th>Donor B</th>
+                <th>Shared Amount</th>
+                <th>Shared Targets</th>
+                <th>Shared Committees</th>
+                <th>Shared Candidates</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in donor_cogiving.edges[:80] %}
+            <tr>
+                <td>{{ edge.source_label }}</td>
+                <td>{{ edge.target_label }}</td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.shared_targets }}</td>
+                <td>{{ edge.shared_committees }}</td>
+                <td>{{ edge.shared_candidates }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No donor co-giving edges for current thresholds.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Committee Similarity Network</h2>
+    <p class="subtitle">
+        Nodes: <strong>{{ committee_similarity.summary.node_count }}</strong> |
+        Edges: <strong>{{ committee_similarity.summary.edge_count }}</strong> |
+        Committee pool: <strong>{{ committee_similarity.summary.committee_pool_size }}</strong> |
+        Source: <strong>{{ committee_similarity.summary.source }}</strong>
+    </p>
+    <p class="help-text">
+        Jaccard uses shared donor sets. Dollar overlap ratio is shared amount divided by the smaller committee total.
+    </p>
+    <div class="network-svg-wrap">
+        <svg id="committee-similarity-svg" viewBox="0 0 1000 480" role="img" aria-label="Committee similarity network graph"></svg>
+    </div>
+    <p id="committee-similarity-summary" class="subtitle"></p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee A</th>
+                <th>Committee B</th>
+                <th>Shared Amount</th>
+                <th>Shared Donors</th>
+                <th>Jaccard</th>
+                <th>Dollar Overlap</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in committee_similarity.edges[:80] %}
+            <tr>
+                <td>{{ edge.source_label }}</td>
+                <td>{{ edge.target_label }}</td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.shared_donor_count }}</td>
+                <td>{{ edge.jaccard }}</td>
+                <td>{{ edge.dollar_overlap_ratio }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No committee similarity edges for current thresholds.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Candidate Competition Networks</h2>
+    <p class="subtitle">
+        State edges: <strong>{{ candidate_competition.state.summary.edge_count }}</strong> |
+        Federal edges: <strong>{{ candidate_competition.federal.summary.edge_count }}</strong> |
+        Combined edges: <strong>{{ candidate_competition.combined.summary.edge_count }}</strong> |
+        Bridge matches: <strong>{{ candidate_competition.combined.summary.bridge_match_count }}</strong>
+    </p>
+
+    <h3>State Candidate Competition</h3>
+    <div class="network-svg-wrap">
+        <svg id="candidate-state-svg" viewBox="0 0 1000 440" role="img" aria-label="State candidate competition network"></svg>
+    </div>
+    <p id="candidate-state-summary" class="subtitle"></p>
+
+    <h3>Federal Candidate Competition</h3>
+    <div class="network-svg-wrap">
+        <svg id="candidate-federal-svg" viewBox="0 0 1000 440" role="img" aria-label="Federal candidate competition network"></svg>
+    </div>
+    <p id="candidate-federal-summary" class="subtitle"></p>
+
+    <h3>Combined Candidate Competition</h3>
+    <div class="network-svg-wrap">
+        <svg id="candidate-combined-svg" viewBox="0 0 1000 440" role="img" aria-label="Combined candidate competition network"></svg>
+    </div>
+    <p id="candidate-combined-summary" class="subtitle"></p>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Candidate A</th>
+                <th>Candidate B</th>
+                <th>Shared Amount</th>
+                <th>Shared Donors</th>
+                <th>System Mix</th>
+                <th>State Share</th>
+                <th>Federal Share</th>
+                <th>Cross Share</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in candidate_competition.combined.edges[:80] %}
+            <tr>
+                <td>{{ edge.source_label }}</td>
+                <td>{{ edge.target_label }}</td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.shared_donor_count }}</td>
+                <td>{{ edge.system_mix }}</td>
+                <td>{{ format_currency(edge.shared_state_amount) }}</td>
+                <td>{{ format_currency(edge.shared_federal_amount) }}</td>
+                <td>{{ format_currency(edge.shared_cross_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">No candidate competition edges for current thresholds.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Lobbying Influence Graph</h2>
+    <p class="subtitle">
+        Nodes: <strong>{{ lobbying_influence.summary.node_count }}</strong> |
+        Edges: <strong>{{ lobbying_influence.summary.edge_count }}</strong> |
+        Client pool: <strong>{{ lobbying_influence.summary.client_pool_size if lobbying_influence.summary.client_pool_size is defined else 0 }}</strong>
+    </p>
+    <p class="help-text">
+        Graph links lobbying clients to entities, matched donors/payees, then to committees where donor/payee links exist.
+    </p>
+    <div class="network-svg-wrap">
+        <svg id="lobbying-influence-svg" viewBox="0 0 1000 480" role="img" aria-label="Lobbying influence network graph"></svg>
+    </div>
+    <p id="lobbying-influence-summary" class="subtitle"></p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Source</th>
+                <th>Target</th>
+                <th>Edge Type</th>
+                <th>Weight</th>
+                <th>Rows</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in lobbying_influence.edges[:80] %}
+            <tr>
+                <td>{{ edge.source_label }}</td>
+                <td>{{ edge.target_label }}</td>
+                <td>{{ edge.edge_type }}</td>
+                <td>{{ edge.weight }}</td>
+                <td>{{ edge.row_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">Lobbying graph has no edges yet. Load lobbying + matching tables to populate this section.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>527 Ecosystem Graph</h2>
+    <p class="subtitle">
+        Nodes: <strong>{{ ecosystem_527.summary.node_count }}</strong> |
+        Edges: <strong>{{ ecosystem_527.summary.edge_count }}</strong> |
+        Org pool: <strong>{{ ecosystem_527.summary.org_pool_size if ecosystem_527.summary.org_pool_size is defined else 0 }}</strong>
+    </p>
+    <p class="help-text">
+        Graph combines 527->committee matches, recipient matches, director->donor matches, and donor->committee flows when available.
+    </p>
+    <div class="network-svg-wrap">
+        <svg id="ecosystem-527-svg" viewBox="0 0 1000 480" role="img" aria-label="IRS 527 ecosystem network graph"></svg>
+    </div>
+    <p id="ecosystem-527-summary" class="subtitle"></p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Source</th>
+                <th>Target</th>
+                <th>Edge Type</th>
+                <th>Weight</th>
+                <th>Rows</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for edge in ecosystem_527.edges[:80] %}
+            <tr>
+                <td>{{ edge.source_label }}</td>
+                <td>{{ edge.target_label }}</td>
+                <td>{{ edge.edge_type }}</td>
+                <td>{{ edge.weight }}</td>
+                <td>{{ edge.row_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">527 ecosystem graph has no edges yet. Load 527 + cross-match tables to populate this section.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script id="donor-cogiving-data" type="application/json">{{ donor_cogiving|tojson }}</script>
+<script id="committee-similarity-data" type="application/json">{{ committee_similarity|tojson }}</script>
+<script id="candidate-state-data" type="application/json">{{ candidate_competition.state|tojson }}</script>
+<script id="candidate-federal-data" type="application/json">{{ candidate_competition.federal|tojson }}</script>
+<script id="candidate-combined-data" type="application/json">{{ candidate_competition.combined|tojson }}</script>
+<script id="lobbying-influence-data" type="application/json">{{ lobbying_influence|tojson }}</script>
+<script id="ecosystem-527-data" type="application/json">{{ ecosystem_527|tojson }}</script>
+<script src="{{ url_for('static', filename='js/relationship_graphs.js') }}"></script>
+{% endblock %}

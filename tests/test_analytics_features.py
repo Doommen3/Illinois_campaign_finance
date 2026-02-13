@@ -5,11 +5,16 @@ import pytest
 
 from database.analytics import (
     build_dashboard_full_snapshot,
+    get_candidate_competition_networks,
     get_analytics_data_sources,
     get_anomaly_flags,
+    get_committee_similarity_network,
     get_dashboard_snapshot,
+    get_donor_cogiving_network,
     get_donor_concentration,
     get_geo_summary,
+    get_irs527_ecosystem_graph,
+    get_lobbying_influence_graph,
     get_network_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
@@ -304,6 +309,202 @@ def test_analytics_service_outputs(analytics_conn):
     assert sources["reconciliation_rows"] >= 1
 
 
+def test_relationship_graph_services(analytics_conn):
+    donor_cogiving = get_donor_cogiving_network(
+        analytics_conn,
+        donor_limit=50,
+        edge_limit=100,
+        min_shared_amount=10.0,
+        min_shared_targets=1,
+    )
+    assert "nodes" in donor_cogiving
+    assert "edges" in donor_cogiving
+    assert donor_cogiving["summary"]["source"] in {"bulk_receipts", "contributions"}
+
+    committee_similarity = get_committee_similarity_network(
+        analytics_conn,
+        committee_limit=50,
+        edge_limit=100,
+        min_shared_donors=1,
+        min_shared_amount=1.0,
+    )
+    assert "nodes" in committee_similarity
+    assert "edges" in committee_similarity
+    assert committee_similarity["summary"]["source"] in {"bulk_receipts", "contributions"}
+
+    analytics_conn.execute("DELETE FROM analytics_donor_committee_agg")
+    analytics_conn.execute("DELETE FROM fec_schedule_a_contributions")
+    analytics_conn.execute("DELETE FROM fec_local_donor_matches")
+    analytics_conn.execute("DELETE FROM lobbying_clients")
+    analytics_conn.execute("DELETE FROM lobbying_entities")
+    analytics_conn.execute("DELETE FROM lobbying_entity_clients")
+    analytics_conn.execute("DELETE FROM lobbying_donor_matches")
+    analytics_conn.execute("DELETE FROM lobbying_expenditure_matches")
+    analytics_conn.execute("DELETE FROM irs527_organizations")
+    analytics_conn.execute("DELETE FROM irs527_committee_matches")
+    analytics_conn.execute("DELETE FROM irs527_expenditure_recipient_matches")
+    analytics_conn.execute("DELETE FROM irs527_director_donor_matches")
+
+    analytics_conn.execute("DROP TABLE IF EXISTS bulk_cmte_candidate_links_clean")
+    analytics_conn.execute(
+        """
+        CREATE TABLE bulk_cmte_candidate_links_clean (
+            committee_id_sbe INTEGER,
+            candidate_id INTEGER,
+            candidate_full_name TEXT
+        )
+        """
+    )
+
+    analytics_conn.executemany(
+        """
+        INSERT INTO analytics_donor_committee_agg (
+            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            occupation, employer, committee_id, committee_name, total_amount, contribution_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("bulk_receipts", "d1", "Donor One", "A", "Chicago", "IL", None, None, 10, "Committee Ten", 1000.0, 2),
+            ("bulk_receipts", "d1", "Donor One", "A", "Chicago", "IL", None, None, 11, "Committee Eleven", 500.0, 1),
+            ("bulk_receipts", "d2", "Donor Two", "B", "Chicago", "IL", None, None, 10, "Committee Ten", 700.0, 1),
+            ("bulk_receipts", "d2", "Donor Two", "B", "Chicago", "IL", None, None, 11, "Committee Eleven", 900.0, 2),
+        ],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO bulk_cmte_candidate_links_clean (committee_id_sbe, candidate_id, candidate_full_name)
+        VALUES (?, ?, ?)
+        """,
+        [
+            (10, 1001, "State Candidate A"),
+            (11, 1002, "State Candidate B"),
+        ],
+    )
+
+    analytics_conn.executemany(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contribution_receipt_amount, donor_key, donor_entity_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("fa1", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1", "Fed Donor One", 1000.0, "fd1", "fd1"),
+            ("fa2", 2026, "F1002", "Federal Candidate B", "C2", "Federal Committee 2", "Fed Donor One", 600.0, "fd1", "fd1"),
+            ("fa3", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1", "Fed Donor Two", 700.0, "fd2", "fd2"),
+            ("fa4", 2026, "F1002", "Federal Candidate B", "C2", "Federal Committee 2", "Fed Donor Two", 500.0, "fd2", "fd2"),
+        ],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO fec_local_donor_matches (
+            federal_donor_entity_key, local_donor_key, match_method, confidence_score
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [
+            ("fd1", "d1", "name_state_zip", 0.95),
+            ("fd2", "d2", "name_state_zip", 0.95),
+        ],
+    )
+
+    analytics_conn.executemany(
+        """
+        INSERT INTO lobbying_clients (client_id, client_name)
+        VALUES (?, ?)
+        """,
+        [(1, "Client One")],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO lobbying_entities (entity_id, entity_name, reg_year)
+        VALUES (?, ?, ?)
+        """,
+        [(101, "Entity One", 2026)],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO lobbying_entity_clients (entity_id, client_id, reg_year)
+        VALUES (?, ?, ?)
+        """,
+        [(101, 1, 2026)],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO lobbying_donor_matches (client_id, donor_key, client_name, donor_name, score, method)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [(1, "d1", "Client One", "Donor One", 0.91, "name_state_zip")],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO lobbying_expenditure_matches (
+            source_type, source_id, source_name, payee_name, committee_id_sbe, score
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [("client", 1, "Client One", "Vendor One", 10, 0.88)],
+    )
+
+    analytics_conn.executemany(
+        """
+        INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, state)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [("EIN1", 1, 1, "Org One", "IL")],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO irs527_committee_matches (
+            ein, org_name, committee_id_sbe, committee_name, score, method
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [("EIN1", "Org One", 10, "Committee Ten", 0.9, "name_state_zip")],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO irs527_expenditure_recipient_matches (
+            ein, org_name, recipient_name, matched_type, matched_id, matched_name, score
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [("EIN1", "Org One", "Vendor One", "committee", "10", "Committee Ten", 0.8)],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO irs527_director_donor_matches (
+            ein, org_name, director_name, donor_key, donor_name, score
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [("EIN1", "Org One", "Director One", "d1", "Donor One", 0.87)],
+    )
+    analytics_conn.commit()
+
+    candidate_networks = get_candidate_competition_networks(
+        analytics_conn,
+        candidate_limit=200,
+        edge_limit=200,
+        min_shared_donors=1,
+        min_shared_amount=1.0,
+    )
+    assert candidate_networks["state"]["summary"]["edge_count"] > 0
+    assert candidate_networks["federal"]["summary"]["edge_count"] > 0
+    assert candidate_networks["combined"]["summary"]["edge_count"] > 0
+
+    lobbying_graph = get_lobbying_influence_graph(
+        analytics_conn,
+        client_limit=50,
+        edge_limit=200,
+    )
+    assert lobbying_graph["summary"]["edge_count"] > 0
+    assert any(edge["edge_type"] == "client_donor_match" for edge in lobbying_graph["edges"])
+
+    ecosystem_graph = get_irs527_ecosystem_graph(
+        analytics_conn,
+        org_limit=50,
+        edge_limit=200,
+    )
+    assert ecosystem_graph["summary"]["edge_count"] > 0
+    assert any(edge["edge_type"] == "org_committee_match" for edge in ecosystem_graph["edges"])
+
+
 def test_analytics_date_range_filters(analytics_conn):
     filtered_series = get_time_series(
         analytics_conn,
@@ -509,6 +710,11 @@ def test_analytics_dashboard_route_loads(analytics_client):
             b"Analytics: Geography",
             b"Skipped in quick mode. Switch to Full mode to compute state-level geo summaries.",
         ),
+        (
+            "/analytics/relationships",
+            b"Analytics: Relationships",
+            b"Donor Co-Giving Network",
+        ),
     ]
     for path, title, marker in pages:
         page_response = analytics_client.get(path)
@@ -621,3 +827,38 @@ def test_analytics_api_endpoints(analytics_client):
     assert "data" in reconciliation_data
     assert "sources" in reconciliation_data
     assert "donor_flow_source" in reconciliation_data["sources"]
+
+    donor_cogiving = analytics_client.get("/api/analytics/donor-cogiving?edge_limit=100")
+    assert donor_cogiving.status_code == 200
+    donor_cogiving_data = donor_cogiving.get_json()
+    assert "nodes" in donor_cogiving_data
+    assert "edges" in donor_cogiving_data
+    assert "summary" in donor_cogiving_data
+
+    committee_similarity = analytics_client.get("/api/analytics/committee-similarity?edge_limit=100")
+    assert committee_similarity.status_code == 200
+    committee_similarity_data = committee_similarity.get_json()
+    assert "nodes" in committee_similarity_data
+    assert "edges" in committee_similarity_data
+    assert "summary" in committee_similarity_data
+
+    candidate_competition = analytics_client.get("/api/analytics/candidate-competition?edge_limit=100")
+    assert candidate_competition.status_code == 200
+    candidate_competition_data = candidate_competition.get_json()
+    assert "state" in candidate_competition_data
+    assert "federal" in candidate_competition_data
+    assert "combined" in candidate_competition_data
+
+    lobbying_influence = analytics_client.get("/api/analytics/lobbying-influence?edge_limit=100")
+    assert lobbying_influence.status_code == 200
+    lobbying_influence_data = lobbying_influence.get_json()
+    assert "nodes" in lobbying_influence_data
+    assert "edges" in lobbying_influence_data
+    assert "summary" in lobbying_influence_data
+
+    ecosystem_527 = analytics_client.get("/api/analytics/irs527-ecosystem?edge_limit=100")
+    assert ecosystem_527.status_code == 200
+    ecosystem_527_data = ecosystem_527.get_json()
+    assert "nodes" in ecosystem_527_data
+    assert "edges" in ecosystem_527_data
+    assert "summary" in ecosystem_527_data

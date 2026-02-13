@@ -6,8 +6,13 @@ from flask import Blueprint, current_app, render_template, request
 
 from database.analytics import (
     build_dashboard_full_snapshot,
+    get_candidate_competition_networks,
     get_analytics_data_sources,
+    get_committee_similarity_network,
+    get_donor_cogiving_network,
     get_dashboard_snapshot,
+    get_irs527_ecosystem_graph,
+    get_lobbying_influence_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
     get_time_series,
@@ -410,4 +415,76 @@ def geography():
         **_base_context("geography", filters, snapshot_state),
         geo_summary=geo_summary,
         time_series=time_series,
+    )
+
+
+@analytics_bp.route("/relationships")
+def relationships():
+    """Render relationship network graphs (co-giving/similarity/competition/lobbying/527)."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+
+    donor_limit = min(max(request.args.get("donor_limit", 800, type=int) or 800, 50), 5000)
+    committee_limit = min(max(request.args.get("committee_limit", 500, type=int) or 500, 50), 5000)
+    candidate_limit = min(max(request.args.get("candidate_limit", 250, type=int) or 250, 50), 2000)
+    client_limit = min(max(request.args.get("client_limit", 120, type=int) or 120, 20), 2000)
+    org_limit = min(max(request.args.get("org_limit", 150, type=int) or 150, 20), 2000)
+    edge_limit = min(max(request.args.get("edge_limit", 1200, type=int) or 1200, 50), 10000)
+
+    min_shared_amount = max(request.args.get("min_shared_amount", 5000.0, type=float) or 5000.0, 0.0)
+    min_shared_targets = max(request.args.get("min_shared_targets", 2, type=int) or 2, 1)
+    min_shared_donors = max(request.args.get("min_shared_donors", 2, type=int) or 2, 1)
+
+    donor_cogiving = get_donor_cogiving_network(
+        conn,
+        donor_limit=donor_limit,
+        edge_limit=edge_limit,
+        min_shared_amount=min_shared_amount,
+        min_shared_targets=min_shared_targets,
+    )
+    committee_similarity = get_committee_similarity_network(
+        conn,
+        committee_limit=committee_limit,
+        edge_limit=edge_limit,
+        min_shared_donors=min_shared_donors,
+        min_shared_amount=min_shared_amount,
+    )
+    candidate_competition = get_candidate_competition_networks(
+        conn,
+        candidate_limit=candidate_limit,
+        edge_limit=edge_limit,
+        min_shared_donors=min_shared_donors,
+        min_shared_amount=min_shared_amount,
+    )
+    lobbying_influence = get_lobbying_influence_graph(
+        conn,
+        client_limit=client_limit,
+        edge_limit=edge_limit,
+    )
+    ecosystem_527 = get_irs527_ecosystem_graph(
+        conn,
+        org_limit=org_limit,
+        edge_limit=edge_limit,
+    )
+
+    return render_template(
+        "analytics/relationships.html",
+        active_page="relationships",
+        load_mode=filters["load_mode"],
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        donor_limit=donor_limit,
+        committee_limit=committee_limit,
+        candidate_limit=candidate_limit,
+        client_limit=client_limit,
+        org_limit=org_limit,
+        edge_limit=edge_limit,
+        min_shared_amount=min_shared_amount,
+        min_shared_targets=min_shared_targets,
+        min_shared_donors=min_shared_donors,
+        donor_cogiving=donor_cogiving,
+        committee_similarity=committee_similarity,
+        candidate_competition=candidate_competition,
+        lobbying_influence=lobbying_influence,
+        ecosystem_527=ecosystem_527,
     )

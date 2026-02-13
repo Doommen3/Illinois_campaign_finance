@@ -301,6 +301,35 @@ h2 {
     color: #4a5568;
 }
 
+.data-table th.js-sortable-header,
+.info-table th.js-sortable-header,
+.info-table td.js-sortable-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.data-table th.js-sortable-header::after,
+.info-table th.js-sortable-header::after,
+.info-table td.js-sortable-header::after {
+    content: " \21C5";
+    color: #94a3b8;
+    font-size: 0.8em;
+}
+
+.data-table th.js-sortable-header[data-sort-dir="asc"]::after,
+.info-table th.js-sortable-header[data-sort-dir="asc"]::after,
+.info-table td.js-sortable-header[data-sort-dir="asc"]::after {
+    content: " \2191";
+    color: #1d4ed8;
+}
+
+.data-table th.js-sortable-header[data-sort-dir="desc"]::after,
+.info-table th.js-sortable-header[data-sort-dir="desc"]::after,
+.info-table td.js-sortable-header[data-sort-dir="desc"]::after {
+    content: " \2193";
+    color: #1d4ed8;
+}
+
 .data-table th a {
     color: inherit;
     text-decoration: none;

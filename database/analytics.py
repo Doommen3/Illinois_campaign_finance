@@ -2262,3 +2262,1661 @@ def get_nlp_spending_summary(conn: sqlite3.Connection, limit: int = 20) -> list[
 
     output.sort(key=lambda row: row["total_amount"], reverse=True)
     return output[: max(1, int(limit))]
+
+
+def _compute_graph_centrality(nodes: list[dict], edges: list[dict], limit: int = 120) -> list[dict]:
+    weighted_degree: dict[str, float] = defaultdict(float)
+    edge_degree: dict[str, int] = defaultdict(int)
+    node_map = {str(node.get("id")): node for node in nodes if node.get("id")}
+
+    for edge in edges:
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source not in node_map or target not in node_map:
+            continue
+        weight = float(edge.get("weight") or 0.0)
+        weighted_degree[source] += weight
+        weighted_degree[target] += weight
+        edge_degree[source] += 1
+        edge_degree[target] += 1
+
+    output: list[dict] = []
+    for node_id, node in node_map.items():
+        output.append(
+            {
+                "node_id": node_id,
+                "label": node.get("label") or node_id,
+                "node_type": node.get("node_type") or "node",
+                "system": node.get("system"),
+                "weighted_degree": round(weighted_degree.get(node_id, 0.0), 2),
+                "degree": int(edge_degree.get(node_id, 0)),
+            }
+        )
+
+    output.sort(key=lambda row: (row["weighted_degree"], row["degree"], row["label"]), reverse=True)
+    return output[: max(1, int(limit))]
+
+
+def _empty_relationship_graph(**summary_fields) -> dict:
+    summary = {"node_count": 0, "edge_count": 0, **summary_fields}
+    return {
+        "nodes": [],
+        "edges": [],
+        "centrality": [],
+        "summary": summary,
+    }
+
+
+def get_donor_cogiving_network(
+    conn: sqlite3.Connection,
+    donor_limit: int = 800,
+    edge_limit: int = 1200,
+    min_shared_amount: float = 5000.0,
+    min_shared_targets: int = 2,
+) -> dict:
+    """Build donor-to-donor co-giving network from shared committee/candidate targets."""
+    donor_limit = max(50, min(int(donor_limit), 5000))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+    min_shared_amount = max(0.0, float(min_shared_amount))
+    min_shared_targets = max(1, int(min_shared_targets))
+
+    source = _donor_flow_source(conn)
+    if source == "bulk_receipts" and _table_exists(conn, "analytics_donor_committee_agg"):
+        donor_rows = []
+        if _table_exists(conn, "analytics_donor_summary"):
+            donor_rows = conn.execute(
+                """
+                SELECT donor_key, donor_name, donor_city, donor_state, total_amount, committee_count
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts'
+                ORDER BY total_amount DESC
+                LIMIT ?
+                """,
+                (donor_limit,),
+            ).fetchall()
+
+        if not donor_rows:
+            donor_rows = conn.execute(
+                """
+                SELECT
+                    donor_key,
+                    MAX(donor_name) AS donor_name,
+                    MAX(donor_city) AS donor_city,
+                    MAX(donor_state) AS donor_state,
+                    COALESCE(SUM(total_amount), 0) AS total_amount,
+                    COUNT(DISTINCT committee_id) AS committee_count
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                GROUP BY donor_key
+                ORDER BY total_amount DESC
+                LIMIT ?
+                """,
+                (donor_limit,),
+            ).fetchall()
+
+        donor_keys = [row["donor_key"] for row in donor_rows if row["donor_key"]]
+        if not donor_keys:
+            return _empty_relationship_graph(
+                donor_pool_size=0,
+                source=source,
+                min_shared_amount=min_shared_amount,
+                min_shared_targets=min_shared_targets,
+                candidate_component_available=False,
+            )
+
+        donor_lookup = {
+            row["donor_key"]: {
+                "donor_name": row["donor_name"] or row["donor_key"],
+                "donor_city": row["donor_city"] or "",
+                "donor_state": row["donor_state"] or "",
+                "total_amount": float(row["total_amount"] or 0.0),
+                "committee_count": int(row["committee_count"] or 0),
+            }
+            for row in donor_rows
+        }
+
+        placeholders = ",".join(["?"] * len(donor_keys))
+
+        committee_pairs = conn.execute(
+            f"""
+            WITH donor_edges AS (
+                SELECT donor_key, committee_id AS target_id, COALESCE(total_amount, 0) AS donor_amount
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                  AND committee_id IS NOT NULL
+                  AND donor_key IN ({placeholders})
+            )
+            SELECT
+                e1.donor_key AS donor_a,
+                e2.donor_key AS donor_b,
+                COUNT(*) AS shared_count,
+                COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+            FROM donor_edges e1
+            JOIN donor_edges e2
+              ON e1.target_id = e2.target_id
+             AND e1.donor_key < e2.donor_key
+            GROUP BY e1.donor_key, e2.donor_key
+            HAVING COUNT(*) >= ?
+               AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+            ORDER BY shared_amount DESC, shared_count DESC
+            LIMIT ?
+            """,
+            [*donor_keys, min_shared_targets, min_shared_amount, edge_limit * 4],
+        ).fetchall()
+
+        candidate_pairs = []
+        candidate_component_available = _table_exists(conn, "bulk_cmte_candidate_links_clean")
+        if candidate_component_available:
+            candidate_pairs = conn.execute(
+                f"""
+                WITH committee_candidate_counts AS (
+                    SELECT committee_id_sbe, COUNT(DISTINCT candidate_id) AS candidate_count
+                    FROM bulk_cmte_candidate_links_clean
+                    WHERE candidate_id IS NOT NULL
+                    GROUP BY committee_id_sbe
+                ),
+                donor_candidate_edges AS (
+                    SELECT
+                        a.donor_key,
+                        l.candidate_id AS target_id,
+                        COALESCE(
+                            SUM(
+                                COALESCE(a.total_amount, 0)
+                                / CASE
+                                      WHEN COALESCE(cc.candidate_count, 0) > 0 THEN cc.candidate_count
+                                      ELSE 1
+                                  END
+                            ),
+                            0
+                        ) AS donor_amount
+                    FROM analytics_donor_committee_agg a
+                    JOIN bulk_cmte_candidate_links_clean l
+                      ON l.committee_id_sbe = a.committee_id
+                    LEFT JOIN committee_candidate_counts cc
+                      ON cc.committee_id_sbe = l.committee_id_sbe
+                    WHERE a.source = 'bulk_receipts'
+                      AND a.donor_key IN ({placeholders})
+                      AND l.candidate_id IS NOT NULL
+                    GROUP BY a.donor_key, l.candidate_id
+                )
+                SELECT
+                    e1.donor_key AS donor_a,
+                    e2.donor_key AS donor_b,
+                    COUNT(*) AS shared_count,
+                    COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+                FROM donor_candidate_edges e1
+                JOIN donor_candidate_edges e2
+                  ON e1.target_id = e2.target_id
+                 AND e1.donor_key < e2.donor_key
+                GROUP BY e1.donor_key, e2.donor_key
+                HAVING COUNT(*) >= ?
+                   AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+                ORDER BY shared_amount DESC, shared_count DESC
+                LIMIT ?
+                """,
+                [*donor_keys, min_shared_targets, min_shared_amount, edge_limit * 4],
+            ).fetchall()
+
+        merged: dict[tuple[str, str], dict] = {}
+        for row in committee_pairs:
+            key = (row["donor_a"], row["donor_b"])
+            merged[key] = {
+                "donor_a": row["donor_a"],
+                "donor_b": row["donor_b"],
+                "shared_targets": int(row["shared_count"] or 0),
+                "shared_committees": int(row["shared_count"] or 0),
+                "shared_candidates": 0,
+                "shared_amount": float(row["shared_amount"] or 0.0),
+            }
+
+        for row in candidate_pairs:
+            key = (row["donor_a"], row["donor_b"])
+            bucket = merged.setdefault(
+                key,
+                {
+                    "donor_a": row["donor_a"],
+                    "donor_b": row["donor_b"],
+                    "shared_targets": 0,
+                    "shared_committees": 0,
+                    "shared_candidates": 0,
+                    "shared_amount": 0.0,
+                },
+            )
+            bucket["shared_targets"] += int(row["shared_count"] or 0)
+            bucket["shared_candidates"] += int(row["shared_count"] or 0)
+            bucket["shared_amount"] += float(row["shared_amount"] or 0.0)
+
+        ranked = sorted(
+            merged.values(),
+            key=lambda row: (row["shared_amount"], row["shared_targets"]),
+            reverse=True,
+        )[:edge_limit]
+
+        nodes: dict[str, dict] = {}
+        edges: list[dict] = []
+        for row in ranked:
+            donor_a = row["donor_a"]
+            donor_b = row["donor_b"]
+            donor_a_node = f"donor:{donor_a}"
+            donor_b_node = f"donor:{donor_b}"
+            donor_a_meta = donor_lookup.get(donor_a, {})
+            donor_b_meta = donor_lookup.get(donor_b, {})
+
+            nodes.setdefault(
+                donor_a_node,
+                {
+                    "id": donor_a_node,
+                    "label": donor_a_meta.get("donor_name") or donor_a,
+                    "node_type": "donor",
+                    "city": donor_a_meta.get("donor_city") or None,
+                    "state": donor_a_meta.get("donor_state") or None,
+                    "total_amount": round(float(donor_a_meta.get("total_amount") or 0.0), 2),
+                    "committee_count": int(donor_a_meta.get("committee_count") or 0),
+                },
+            )
+            nodes.setdefault(
+                donor_b_node,
+                {
+                    "id": donor_b_node,
+                    "label": donor_b_meta.get("donor_name") or donor_b,
+                    "node_type": "donor",
+                    "city": donor_b_meta.get("donor_city") or None,
+                    "state": donor_b_meta.get("donor_state") or None,
+                    "total_amount": round(float(donor_b_meta.get("total_amount") or 0.0), 2),
+                    "committee_count": int(donor_b_meta.get("committee_count") or 0),
+                },
+            )
+            edges.append(
+                {
+                    "source": donor_a_node,
+                    "target": donor_b_node,
+                    "edge_type": "donor_cogiving",
+                    "weight": round(float(row["shared_amount"] or 0.0), 2),
+                    "shared_targets": int(row["shared_targets"] or 0),
+                    "shared_committees": int(row["shared_committees"] or 0),
+                    "shared_candidates": int(row["shared_candidates"] or 0),
+                    "source_label": donor_a_meta.get("donor_name") or donor_a,
+                    "target_label": donor_b_meta.get("donor_name") or donor_b,
+                }
+            )
+
+        centrality = _compute_graph_centrality(list(nodes.values()), edges, limit=150)
+        return {
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "centrality": centrality,
+            "summary": {
+                "node_count": len(nodes),
+                "edge_count": len(edges),
+                "source": source,
+                "donor_pool_size": len(donor_keys),
+                "min_shared_amount": min_shared_amount,
+                "min_shared_targets": min_shared_targets,
+                "candidate_component_available": candidate_component_available,
+            },
+        }
+
+    # Legacy fallback (donor->committee only from scraped contributions).
+    donor_rows = conn.execute(
+        """
+        WITH donor_totals AS (
+            SELECT
+                d.id AS donor_id,
+                d.name AS donor_name,
+                d.address AS donor_address,
+                COALESCE(SUM(ct.amount), 0) AS total_amount
+            FROM contributions ct
+            JOIN donors d ON d.id = ct.donor_id
+            GROUP BY d.id, d.name, d.address
+            ORDER BY total_amount DESC
+            LIMIT ?
+        )
+        SELECT * FROM donor_totals
+        """,
+        (donor_limit,),
+    ).fetchall()
+    donor_ids = [row["donor_id"] for row in donor_rows]
+    if not donor_ids:
+        return _empty_relationship_graph(
+            donor_pool_size=0,
+            source=source,
+            min_shared_amount=min_shared_amount,
+            min_shared_targets=min_shared_targets,
+            candidate_component_available=False,
+        )
+
+    donor_lookup = {
+        int(row["donor_id"]): {
+            "donor_name": row["donor_name"] or f"Donor {row['donor_id']}",
+            "donor_address": row["donor_address"] or "",
+            "total_amount": float(row["total_amount"] or 0.0),
+        }
+        for row in donor_rows
+    }
+    placeholders = ",".join(["?"] * len(donor_ids))
+    pair_rows = conn.execute(
+        f"""
+        WITH donor_edges AS (
+            SELECT
+                ct.donor_id,
+                r.committee_id AS target_id,
+                COALESCE(SUM(ct.amount), 0) AS donor_amount
+            FROM contributions ct
+            JOIN reports r ON r.id = ct.report_id
+            WHERE ct.donor_id IN ({placeholders})
+            GROUP BY ct.donor_id, r.committee_id
+        )
+        SELECT
+            e1.donor_id AS donor_a,
+            e2.donor_id AS donor_b,
+            COUNT(*) AS shared_count,
+            COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+        FROM donor_edges e1
+        JOIN donor_edges e2
+          ON e1.target_id = e2.target_id
+         AND e1.donor_id < e2.donor_id
+        GROUP BY e1.donor_id, e2.donor_id
+        HAVING COUNT(*) >= ?
+           AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+        ORDER BY shared_amount DESC, shared_count DESC
+        LIMIT ?
+        """,
+        [*donor_ids, min_shared_targets, min_shared_amount, edge_limit],
+    ).fetchall()
+
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    for row in pair_rows:
+        donor_a = int(row["donor_a"])
+        donor_b = int(row["donor_b"])
+        donor_a_node = f"donor:{donor_a}"
+        donor_b_node = f"donor:{donor_b}"
+        donor_a_meta = donor_lookup.get(donor_a, {})
+        donor_b_meta = donor_lookup.get(donor_b, {})
+        nodes.setdefault(
+            donor_a_node,
+            {
+                "id": donor_a_node,
+                "label": donor_a_meta.get("donor_name") or f"Donor {donor_a}",
+                "node_type": "donor",
+                "total_amount": round(float(donor_a_meta.get("total_amount") or 0.0), 2),
+            },
+        )
+        nodes.setdefault(
+            donor_b_node,
+            {
+                "id": donor_b_node,
+                "label": donor_b_meta.get("donor_name") or f"Donor {donor_b}",
+                "node_type": "donor",
+                "total_amount": round(float(donor_b_meta.get("total_amount") or 0.0), 2),
+            },
+        )
+        edges.append(
+            {
+                "source": donor_a_node,
+                "target": donor_b_node,
+                "edge_type": "donor_cogiving",
+                "weight": round(float(row["shared_amount"] or 0.0), 2),
+                "shared_targets": int(row["shared_count"] or 0),
+                "shared_committees": int(row["shared_count"] or 0),
+                "shared_candidates": 0,
+                "source_label": donor_a_meta.get("donor_name") or f"Donor {donor_a}",
+                "target_label": donor_b_meta.get("donor_name") or f"Donor {donor_b}",
+            }
+        )
+
+    centrality = _compute_graph_centrality(list(nodes.values()), edges, limit=150)
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "source": source,
+            "donor_pool_size": len(donor_ids),
+            "min_shared_amount": min_shared_amount,
+            "min_shared_targets": min_shared_targets,
+            "candidate_component_available": False,
+        },
+    }
+
+
+def get_committee_similarity_network(
+    conn: sqlite3.Connection,
+    committee_limit: int = 500,
+    edge_limit: int = 1200,
+    min_shared_donors: int = 3,
+    min_shared_amount: float = 10000.0,
+) -> dict:
+    """Build committee-to-committee similarity network from shared donors."""
+    committee_limit = max(50, min(int(committee_limit), 5000))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+    min_shared_donors = max(1, int(min_shared_donors))
+    min_shared_amount = max(0.0, float(min_shared_amount))
+    source = _donor_flow_source(conn)
+
+    if source == "bulk_receipts" and _table_exists(conn, "analytics_donor_committee_agg"):
+        committee_rows = conn.execute(
+            """
+            SELECT
+                committee_id,
+                MAX(committee_name) AS committee_name,
+                COALESCE(SUM(total_amount), 0) AS total_amount,
+                COUNT(DISTINCT donor_key) AS donor_count
+            FROM analytics_donor_committee_agg
+            WHERE source = 'bulk_receipts'
+              AND committee_id IS NOT NULL
+            GROUP BY committee_id
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            (committee_limit,),
+        ).fetchall()
+        committee_ids = [row["committee_id"] for row in committee_rows]
+        if not committee_ids:
+            return _empty_relationship_graph(
+                source=source,
+                committee_pool_size=0,
+                min_shared_donors=min_shared_donors,
+                min_shared_amount=min_shared_amount,
+            )
+
+        committee_lookup = {
+            row["committee_id"]: {
+                "committee_name": row["committee_name"] or f"Committee {row['committee_id']}",
+                "total_amount": float(row["total_amount"] or 0.0),
+                "donor_count": int(row["donor_count"] or 0),
+            }
+            for row in committee_rows
+        }
+        placeholders = ",".join(["?"] * len(committee_ids))
+        pair_rows = conn.execute(
+            f"""
+            WITH donor_edges AS (
+                SELECT donor_key, committee_id, COALESCE(total_amount, 0) AS donor_amount
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                  AND committee_id IN ({placeholders})
+            )
+            SELECT
+                e1.committee_id AS committee_a,
+                e2.committee_id AS committee_b,
+                COUNT(*) AS shared_donor_count,
+                COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+            FROM donor_edges e1
+            JOIN donor_edges e2
+              ON e1.donor_key = e2.donor_key
+             AND e1.committee_id < e2.committee_id
+            GROUP BY e1.committee_id, e2.committee_id
+            HAVING COUNT(*) >= ?
+               AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+            ORDER BY shared_amount DESC, shared_donor_count DESC
+            LIMIT ?
+            """,
+            [*committee_ids, min_shared_donors, min_shared_amount, edge_limit],
+        ).fetchall()
+
+        nodes: dict[str, dict] = {}
+        edges: list[dict] = []
+        for row in pair_rows:
+            committee_a = row["committee_a"]
+            committee_b = row["committee_b"]
+            committee_a_node = f"committee:{committee_a}"
+            committee_b_node = f"committee:{committee_b}"
+            committee_a_meta = committee_lookup.get(committee_a, {})
+            committee_b_meta = committee_lookup.get(committee_b, {})
+            donor_a = int(committee_a_meta.get("donor_count") or 0)
+            donor_b = int(committee_b_meta.get("donor_count") or 0)
+            shared_donor_count = int(row["shared_donor_count"] or 0)
+            denominator = donor_a + donor_b - shared_donor_count
+            jaccard = (shared_donor_count / denominator) if denominator > 0 else 0.0
+            min_total = min(
+                float(committee_a_meta.get("total_amount") or 0.0),
+                float(committee_b_meta.get("total_amount") or 0.0),
+            )
+            shared_amount = float(row["shared_amount"] or 0.0)
+            dollar_overlap = (shared_amount / min_total) if min_total > 0 else 0.0
+
+            nodes.setdefault(
+                committee_a_node,
+                {
+                    "id": committee_a_node,
+                    "label": committee_a_meta.get("committee_name") or f"Committee {committee_a}",
+                    "node_type": "committee",
+                    "total_amount": round(float(committee_a_meta.get("total_amount") or 0.0), 2),
+                    "donor_count": donor_a,
+                },
+            )
+            nodes.setdefault(
+                committee_b_node,
+                {
+                    "id": committee_b_node,
+                    "label": committee_b_meta.get("committee_name") or f"Committee {committee_b}",
+                    "node_type": "committee",
+                    "total_amount": round(float(committee_b_meta.get("total_amount") or 0.0), 2),
+                    "donor_count": donor_b,
+                },
+            )
+            edges.append(
+                {
+                    "source": committee_a_node,
+                    "target": committee_b_node,
+                    "edge_type": "committee_similarity",
+                    "weight": round(shared_amount, 2),
+                    "shared_donor_count": shared_donor_count,
+                    "jaccard": round(jaccard, 4),
+                    "dollar_overlap_ratio": round(dollar_overlap, 4),
+                    "source_label": committee_a_meta.get("committee_name") or f"Committee {committee_a}",
+                    "target_label": committee_b_meta.get("committee_name") or f"Committee {committee_b}",
+                }
+            )
+
+        centrality = _compute_graph_centrality(list(nodes.values()), edges, limit=150)
+        return {
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "centrality": centrality,
+            "summary": {
+                "node_count": len(nodes),
+                "edge_count": len(edges),
+                "source": source,
+                "committee_pool_size": len(committee_ids),
+                "min_shared_donors": min_shared_donors,
+                "min_shared_amount": min_shared_amount,
+            },
+        }
+
+    # Legacy fallback from scraped contributions.
+    committee_rows = conn.execute(
+        """
+        SELECT
+            c.id AS committee_id,
+            c.name AS committee_name,
+            COALESCE(SUM(ct.amount), 0) AS total_amount,
+            COUNT(DISTINCT ct.donor_id) AS donor_count
+        FROM contributions ct
+        JOIN reports r ON r.id = ct.report_id
+        JOIN committees c ON c.id = r.committee_id
+        GROUP BY c.id, c.name
+        ORDER BY total_amount DESC
+        LIMIT ?
+        """,
+        (committee_limit,),
+    ).fetchall()
+    committee_ids = [row["committee_id"] for row in committee_rows]
+    if not committee_ids:
+        return _empty_relationship_graph(
+            source=source,
+            committee_pool_size=0,
+            min_shared_donors=min_shared_donors,
+            min_shared_amount=min_shared_amount,
+        )
+
+    committee_lookup = {
+        int(row["committee_id"]): {
+            "committee_name": row["committee_name"] or f"Committee {row['committee_id']}",
+            "total_amount": float(row["total_amount"] or 0.0),
+            "donor_count": int(row["donor_count"] or 0),
+        }
+        for row in committee_rows
+    }
+    placeholders = ",".join(["?"] * len(committee_ids))
+    pair_rows = conn.execute(
+        f"""
+        WITH donor_edges AS (
+            SELECT
+                ct.donor_id,
+                r.committee_id,
+                COALESCE(SUM(ct.amount), 0) AS donor_amount
+            FROM contributions ct
+            JOIN reports r ON r.id = ct.report_id
+            WHERE r.committee_id IN ({placeholders})
+            GROUP BY ct.donor_id, r.committee_id
+        )
+        SELECT
+            e1.committee_id AS committee_a,
+            e2.committee_id AS committee_b,
+            COUNT(*) AS shared_donor_count,
+            COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+        FROM donor_edges e1
+        JOIN donor_edges e2
+          ON e1.donor_id = e2.donor_id
+         AND e1.committee_id < e2.committee_id
+        GROUP BY e1.committee_id, e2.committee_id
+        HAVING COUNT(*) >= ?
+           AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+        ORDER BY shared_amount DESC, shared_donor_count DESC
+        LIMIT ?
+        """,
+        [*committee_ids, min_shared_donors, min_shared_amount, edge_limit],
+    ).fetchall()
+
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    for row in pair_rows:
+        committee_a = int(row["committee_a"])
+        committee_b = int(row["committee_b"])
+        committee_a_node = f"committee:{committee_a}"
+        committee_b_node = f"committee:{committee_b}"
+        committee_a_meta = committee_lookup.get(committee_a, {})
+        committee_b_meta = committee_lookup.get(committee_b, {})
+        donor_a = int(committee_a_meta.get("donor_count") or 0)
+        donor_b = int(committee_b_meta.get("donor_count") or 0)
+        shared_donor_count = int(row["shared_donor_count"] or 0)
+        denominator = donor_a + donor_b - shared_donor_count
+        jaccard = (shared_donor_count / denominator) if denominator > 0 else 0.0
+        min_total = min(
+            float(committee_a_meta.get("total_amount") or 0.0),
+            float(committee_b_meta.get("total_amount") or 0.0),
+        )
+        shared_amount = float(row["shared_amount"] or 0.0)
+        dollar_overlap = (shared_amount / min_total) if min_total > 0 else 0.0
+
+        nodes.setdefault(
+            committee_a_node,
+            {
+                "id": committee_a_node,
+                "label": committee_a_meta.get("committee_name") or f"Committee {committee_a}",
+                "node_type": "committee",
+                "total_amount": round(float(committee_a_meta.get("total_amount") or 0.0), 2),
+                "donor_count": donor_a,
+            },
+        )
+        nodes.setdefault(
+            committee_b_node,
+            {
+                "id": committee_b_node,
+                "label": committee_b_meta.get("committee_name") or f"Committee {committee_b}",
+                "node_type": "committee",
+                "total_amount": round(float(committee_b_meta.get("total_amount") or 0.0), 2),
+                "donor_count": donor_b,
+            },
+        )
+        edges.append(
+            {
+                "source": committee_a_node,
+                "target": committee_b_node,
+                "edge_type": "committee_similarity",
+                "weight": round(shared_amount, 2),
+                "shared_donor_count": shared_donor_count,
+                "jaccard": round(jaccard, 4),
+                "dollar_overlap_ratio": round(dollar_overlap, 4),
+                "source_label": committee_a_meta.get("committee_name") or f"Committee {committee_a}",
+                "target_label": committee_b_meta.get("committee_name") or f"Committee {committee_b}",
+            }
+        )
+
+    centrality = _compute_graph_centrality(list(nodes.values()), edges, limit=150)
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "source": source,
+            "committee_pool_size": len(committee_ids),
+            "min_shared_donors": min_shared_donors,
+            "min_shared_amount": min_shared_amount,
+        },
+    }
+
+
+def _candidate_competition_from_rows(
+    rows: list[dict],
+    edge_limit: int,
+    min_shared_donors: int,
+    min_shared_amount: float,
+    max_candidates_per_donor: int = 20,
+) -> dict:
+    if not rows:
+        return _empty_relationship_graph(
+            min_shared_donors=min_shared_donors,
+            min_shared_amount=min_shared_amount,
+        )
+
+    donor_targets: dict[str, list[dict]] = defaultdict(list)
+    nodes: dict[str, dict] = {}
+    for row in rows:
+        donor_key = str(row.get("donor_key") or "").strip()
+        candidate_id = str(row.get("candidate_node_id") or "").strip()
+        if not donor_key or not candidate_id:
+            continue
+        amount = float(row.get("donor_amount") or 0.0)
+        if amount <= 0:
+            continue
+
+        donor_targets[donor_key].append(
+            {
+                "candidate_node_id": candidate_id,
+                "candidate_label": row.get("candidate_label") or candidate_id,
+                "system": row.get("system") or "unknown",
+                "donor_amount": amount,
+            }
+        )
+        node = nodes.setdefault(
+            candidate_id,
+            {
+                "id": candidate_id,
+                "label": row.get("candidate_label") or candidate_id,
+                "node_type": "candidate",
+                "system": row.get("system") or "unknown",
+                "total_amount": 0.0,
+                "donor_count": 0,
+                "_donors": set(),
+            },
+        )
+        node["total_amount"] += amount
+        node["_donors"].add(donor_key)
+
+    pair_map: dict[tuple[str, str], dict] = {}
+    for targets in donor_targets.values():
+        dedup: dict[str, dict] = {}
+        for row in targets:
+            existing = dedup.get(row["candidate_node_id"])
+            if not existing or float(row["donor_amount"]) > float(existing["donor_amount"]):
+                dedup[row["candidate_node_id"]] = row
+        ranked = sorted(
+            dedup.values(),
+            key=lambda row: float(row["donor_amount"]),
+            reverse=True,
+        )[: max(2, int(max_candidates_per_donor))]
+        for idx, left in enumerate(ranked):
+            for right in ranked[idx + 1:]:
+                left_id = left["candidate_node_id"]
+                right_id = right["candidate_node_id"]
+                if left_id == right_id:
+                    continue
+                source = min(left_id, right_id)
+                target = max(left_id, right_id)
+                shared_amount = min(float(left["donor_amount"]), float(right["donor_amount"]))
+                key = (source, target)
+                bucket = pair_map.setdefault(
+                    key,
+                    {
+                        "source": source,
+                        "target": target,
+                        "edge_type": "candidate_competition",
+                        "weight": 0.0,
+                        "shared_donor_count": 0,
+                        "shared_state_amount": 0.0,
+                        "shared_federal_amount": 0.0,
+                        "shared_cross_amount": 0.0,
+                    },
+                )
+                bucket["weight"] += shared_amount
+                bucket["shared_donor_count"] += 1
+                systems = {left.get("system"), right.get("system")}
+                if systems == {"state"}:
+                    bucket["shared_state_amount"] += shared_amount
+                elif systems == {"federal"}:
+                    bucket["shared_federal_amount"] += shared_amount
+                else:
+                    bucket["shared_cross_amount"] += shared_amount
+
+    edges: list[dict] = []
+    for row in pair_map.values():
+        if int(row["shared_donor_count"]) < min_shared_donors:
+            continue
+        if float(row["weight"]) < min_shared_amount:
+            continue
+        source_node = nodes.get(row["source"], {})
+        target_node = nodes.get(row["target"], {})
+        source_system = source_node.get("system")
+        target_system = target_node.get("system")
+        if source_system == target_system:
+            system_mix = source_system
+        else:
+            system_mix = "cross_system"
+        edges.append(
+            {
+                **row,
+                "weight": round(float(row["weight"] or 0.0), 2),
+                "shared_state_amount": round(float(row["shared_state_amount"] or 0.0), 2),
+                "shared_federal_amount": round(float(row["shared_federal_amount"] or 0.0), 2),
+                "shared_cross_amount": round(float(row["shared_cross_amount"] or 0.0), 2),
+                "source_label": source_node.get("label") or row["source"],
+                "target_label": target_node.get("label") or row["target"],
+                "system_mix": system_mix,
+            }
+        )
+    edges.sort(
+        key=lambda row: (
+            float(row["weight"]),
+            int(row["shared_donor_count"]),
+            row.get("source_label") or "",
+        ),
+        reverse=True,
+    )
+    edges = edges[: max(1, int(edge_limit))]
+
+    used_nodes: dict[str, dict] = {}
+    for edge in edges:
+        for node_id in (edge["source"], edge["target"]):
+            node = nodes.get(node_id)
+            if not node:
+                continue
+            used_nodes[node_id] = node
+
+    final_nodes: list[dict] = []
+    for node in used_nodes.values():
+        final_nodes.append(
+            {
+                "id": node["id"],
+                "label": node["label"],
+                "node_type": "candidate",
+                "system": node.get("system"),
+                "total_amount": round(float(node.get("total_amount") or 0.0), 2),
+                "donor_count": len(node.get("_donors") or []),
+            }
+        )
+    final_nodes.sort(key=lambda row: (row["total_amount"], row["donor_count"]), reverse=True)
+
+    centrality = _compute_graph_centrality(final_nodes, edges, limit=150)
+    return {
+        "nodes": final_nodes,
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(final_nodes),
+            "edge_count": len(edges),
+            "candidate_pool_size": len(nodes),
+            "donor_pool_size": len(donor_targets),
+            "min_shared_donors": min_shared_donors,
+            "min_shared_amount": min_shared_amount,
+        },
+    }
+
+
+def get_candidate_competition_networks(
+    conn: sqlite3.Connection,
+    candidate_limit: int = 250,
+    edge_limit: int = 1200,
+    min_shared_donors: int = 2,
+    min_shared_amount: float = 2500.0,
+) -> dict:
+    """Build state, federal, and combined candidate competition networks."""
+    candidate_limit = max(50, min(int(candidate_limit), 2000))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+    min_shared_donors = max(1, int(min_shared_donors))
+    min_shared_amount = max(0.0, float(min_shared_amount))
+
+    state_rows: list[dict] = []
+    state_available = _table_exists(conn, "analytics_donor_committee_agg") and _table_exists(
+        conn, "bulk_cmte_candidate_links_clean"
+    )
+    if state_available:
+        state_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                WITH committee_candidate_counts AS (
+                    SELECT committee_id_sbe, COUNT(DISTINCT candidate_id) AS candidate_count
+                    FROM bulk_cmte_candidate_links_clean
+                    WHERE candidate_id IS NOT NULL
+                    GROUP BY committee_id_sbe
+                ),
+                donor_candidate AS (
+                    SELECT
+                        l.candidate_id,
+                        COALESCE(MAX(l.candidate_full_name), 'Candidate ' || l.candidate_id) AS candidate_name,
+                        a.donor_key,
+                        COALESCE(
+                            SUM(
+                                COALESCE(a.total_amount, 0)
+                                / CASE
+                                      WHEN COALESCE(cc.candidate_count, 0) > 0 THEN cc.candidate_count
+                                      ELSE 1
+                                  END
+                            ),
+                            0
+                        ) AS donor_amount
+                    FROM analytics_donor_committee_agg a
+                    JOIN bulk_cmte_candidate_links_clean l
+                      ON l.committee_id_sbe = a.committee_id
+                    LEFT JOIN committee_candidate_counts cc
+                      ON cc.committee_id_sbe = l.committee_id_sbe
+                    WHERE a.source = 'bulk_receipts'
+                      AND l.candidate_id IS NOT NULL
+                    GROUP BY l.candidate_id, a.donor_key
+                ),
+                top_candidates AS (
+                    SELECT candidate_id
+                    FROM donor_candidate
+                    GROUP BY candidate_id
+                    ORDER BY SUM(donor_amount) DESC
+                    LIMIT ?
+                )
+                SELECT
+                    dc.candidate_id,
+                    dc.candidate_name,
+                    dc.donor_key,
+                    dc.donor_amount
+                FROM donor_candidate dc
+                JOIN top_candidates tc ON tc.candidate_id = dc.candidate_id
+                WHERE dc.donor_amount > 0
+                """,
+                (candidate_limit,),
+            ).fetchall()
+        ]
+    for row in state_rows:
+        row["candidate_node_id"] = f"state:{row['candidate_id']}"
+        row["candidate_label"] = f"{row.get('candidate_name') or row['candidate_id']} (State)"
+        row["system"] = "state"
+
+    federal_rows: list[dict] = []
+    federal_available = _table_exists(conn, "fec_schedule_a_contributions")
+    if federal_available:
+        federal_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                WITH donor_candidate AS (
+                    SELECT
+                        COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_key,
+                        sa.candidate_id AS candidate_id,
+                        COALESCE(MAX(sa.candidate_name), 'Candidate ' || sa.candidate_id) AS candidate_name,
+                        COALESCE(SUM(sa.contribution_receipt_amount), 0) AS donor_amount
+                    FROM fec_schedule_a_contributions sa
+                    WHERE sa.candidate_id IS NOT NULL
+                    GROUP BY donor_key, sa.candidate_id
+                ),
+                top_candidates AS (
+                    SELECT candidate_id
+                    FROM donor_candidate
+                    GROUP BY candidate_id
+                    ORDER BY SUM(donor_amount) DESC
+                    LIMIT ?
+                )
+                SELECT
+                    dc.candidate_id,
+                    dc.candidate_name,
+                    dc.donor_key,
+                    dc.donor_amount
+                FROM donor_candidate dc
+                JOIN top_candidates tc ON tc.candidate_id = dc.candidate_id
+                WHERE dc.donor_amount > 0
+                """,
+                (candidate_limit,),
+            ).fetchall()
+        ]
+    for row in federal_rows:
+        row["candidate_node_id"] = f"federal:{row['candidate_id']}"
+        row["candidate_label"] = f"{row.get('candidate_name') or row['candidate_id']} (Federal)"
+        row["system"] = "federal"
+
+    state_network = _candidate_competition_from_rows(
+        state_rows,
+        edge_limit=edge_limit,
+        min_shared_donors=min_shared_donors,
+        min_shared_amount=min_shared_amount,
+    )
+    state_network["summary"]["available"] = state_available
+    state_network["summary"]["candidate_rows"] = len(state_rows)
+
+    federal_network = _candidate_competition_from_rows(
+        federal_rows,
+        edge_limit=edge_limit,
+        min_shared_donors=min_shared_donors,
+        min_shared_amount=min_shared_amount,
+    )
+    federal_network["summary"]["available"] = federal_available
+    federal_network["summary"]["candidate_rows"] = len(federal_rows)
+
+    local_to_federal: dict[str, str] = {}
+    if _table_exists(conn, "fec_local_donor_matches"):
+        match_rows = conn.execute(
+            """
+            SELECT local_donor_key, federal_donor_entity_key, MAX(confidence_score) AS confidence_score
+            FROM fec_local_donor_matches
+            WHERE local_donor_key IS NOT NULL
+              AND federal_donor_entity_key IS NOT NULL
+            GROUP BY local_donor_key, federal_donor_entity_key
+            ORDER BY confidence_score DESC
+            """
+        ).fetchall()
+        for row in match_rows:
+            local_key = (row["local_donor_key"] or "").strip()
+            federal_key = (row["federal_donor_entity_key"] or "").strip()
+            if local_key and federal_key and local_key not in local_to_federal:
+                local_to_federal[local_key] = federal_key
+
+    combined_rows: list[dict] = []
+    for row in state_rows:
+        local_key = (row.get("donor_key") or "").strip()
+        if not local_key:
+            continue
+        mapped_federal = local_to_federal.get(local_key)
+        bridge_key = f"federal:{mapped_federal}" if mapped_federal else f"local:{local_key}"
+        combined_rows.append(
+            {
+                "candidate_node_id": row["candidate_node_id"],
+                "candidate_label": row["candidate_label"],
+                "donor_key": bridge_key,
+                "donor_amount": row.get("donor_amount"),
+                "system": "state",
+            }
+        )
+    for row in federal_rows:
+        donor_key = (row.get("donor_key") or "").strip()
+        if not donor_key:
+            continue
+        combined_rows.append(
+            {
+                "candidate_node_id": row["candidate_node_id"],
+                "candidate_label": row["candidate_label"],
+                "donor_key": f"federal:{donor_key}",
+                "donor_amount": row.get("donor_amount"),
+                "system": "federal",
+            }
+        )
+
+    combined_network = _candidate_competition_from_rows(
+        combined_rows,
+        edge_limit=edge_limit,
+        min_shared_donors=min_shared_donors,
+        min_shared_amount=min_shared_amount,
+    )
+    combined_network["summary"]["available"] = bool(state_rows or federal_rows)
+    combined_network["summary"]["bridge_match_count"] = len(local_to_federal)
+    combined_network["summary"]["candidate_rows"] = len(combined_rows)
+
+    return {
+        "state": state_network,
+        "federal": federal_network,
+        "combined": combined_network,
+        "summary": {
+            "candidate_limit": candidate_limit,
+            "edge_limit": edge_limit,
+            "min_shared_donors": min_shared_donors,
+            "min_shared_amount": min_shared_amount,
+            "state_available": state_available,
+            "federal_available": federal_available,
+            "bridge_match_count": len(local_to_federal),
+        },
+    }
+
+
+def get_lobbying_influence_graph(
+    conn: sqlite3.Connection,
+    client_limit: int = 120,
+    edge_limit: int = 1500,
+) -> dict:
+    """Build lobbying client/entity/donor/payee/committee influence graph."""
+    client_limit = max(20, min(int(client_limit), 2000))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+    required = {
+        "lobbying_clients": _table_exists(conn, "lobbying_clients"),
+        "lobbying_entities": _table_exists(conn, "lobbying_entities"),
+        "lobbying_entity_clients": _table_exists(conn, "lobbying_entity_clients"),
+    }
+    if not all(required.values()):
+        return _empty_relationship_graph(
+            required_tables=required,
+            has_donor_matches=_table_exists(conn, "lobbying_donor_matches"),
+            has_payee_matches=_table_exists(conn, "lobbying_expenditure_matches"),
+            has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
+        )
+
+    client_rows = conn.execute(
+        """
+        WITH donor_match_counts AS (
+            SELECT client_id, COUNT(*) AS donor_match_count
+            FROM lobbying_donor_matches
+            GROUP BY client_id
+        )
+        SELECT
+            c.client_id,
+            c.client_name,
+            COUNT(DISTINCT ec.entity_id) AS entity_count,
+            COALESCE(MAX(dmc.donor_match_count), 0) AS donor_match_count
+        FROM lobbying_clients c
+        LEFT JOIN lobbying_entity_clients ec ON ec.client_id = c.client_id
+        LEFT JOIN donor_match_counts dmc ON dmc.client_id = c.client_id
+        GROUP BY c.client_id, c.client_name
+        ORDER BY donor_match_count DESC, entity_count DESC, c.client_name ASC
+        LIMIT ?
+        """,
+        (client_limit,),
+    ).fetchall()
+    client_ids = [row["client_id"] for row in client_rows]
+    if not client_ids:
+        return _empty_relationship_graph(
+            required_tables=required,
+            has_donor_matches=_table_exists(conn, "lobbying_donor_matches"),
+            has_payee_matches=_table_exists(conn, "lobbying_expenditure_matches"),
+            has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
+            client_pool_size=0,
+        )
+
+    client_placeholders = ",".join(["?"] * len(client_ids))
+    entity_rows = conn.execute(
+        f"""
+        SELECT
+            ec.client_id,
+            ec.entity_id,
+            e.entity_name,
+            COUNT(*) AS reg_year_count
+        FROM lobbying_entity_clients ec
+        JOIN lobbying_entities e ON e.entity_id = ec.entity_id
+        WHERE ec.client_id IN ({client_placeholders})
+        GROUP BY ec.client_id, ec.entity_id, e.entity_name
+        ORDER BY reg_year_count DESC, e.entity_name ASC
+        """,
+        client_ids,
+    ).fetchall()
+    entity_ids = sorted({row["entity_id"] for row in entity_rows})
+
+    donor_match_rows = []
+    has_donor_matches = _table_exists(conn, "lobbying_donor_matches")
+    if has_donor_matches:
+        donor_match_rows = conn.execute(
+            f"""
+            SELECT
+                client_id,
+                donor_key,
+                donor_name,
+                score
+            FROM lobbying_donor_matches
+            WHERE client_id IN ({client_placeholders})
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            [*client_ids, edge_limit * 2],
+        ).fetchall()
+
+    has_payee_matches = _table_exists(conn, "lobbying_expenditure_matches")
+    expenditure_rows = []
+    if has_payee_matches:
+        query = f"""
+            SELECT
+                source_type,
+                source_id,
+                source_name,
+                payee_name,
+                committee_id_sbe,
+                score
+            FROM lobbying_expenditure_matches
+            WHERE (
+                source_type = 'client' AND source_id IN ({client_placeholders})
+            )
+        """
+        params: list[object] = [*client_ids]
+        if entity_ids:
+            entity_placeholders = ",".join(["?"] * len(entity_ids))
+            query += f" OR (source_type = 'entity' AND source_id IN ({entity_placeholders}))"
+            params.extend(entity_ids)
+        query += " ORDER BY score DESC LIMIT ?"
+        params.append(edge_limit * 2)
+        expenditure_rows = conn.execute(query, params).fetchall()
+
+    donor_committee_rows = []
+    donor_keys = sorted({(row["donor_key"] or "").strip() for row in donor_match_rows if row["donor_key"]})
+    has_donor_committee_edges = _table_exists(conn, "analytics_donor_committee_agg")
+    if donor_keys and has_donor_committee_edges:
+        donor_placeholders = ",".join(["?"] * len(donor_keys))
+        donor_committee_rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    donor_key,
+                    committee_id,
+                    committee_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY donor_key
+                        ORDER BY total_amount DESC, committee_name ASC
+                    ) AS rn
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                  AND donor_key IN ({donor_placeholders})
+            )
+            SELECT donor_key, committee_id, committee_name, total_amount
+            FROM ranked
+            WHERE rn <= 5
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            [*donor_keys, edge_limit * 2],
+        ).fetchall()
+
+    nodes: dict[str, dict] = {}
+    edge_map: dict[tuple[str, str, str], dict] = {}
+
+    def add_node(node_id: str, label: str, node_type: str) -> None:
+        if not node_id:
+            return
+        nodes.setdefault(
+            node_id,
+            {
+                "id": node_id,
+                "label": label or node_id,
+                "node_type": node_type,
+            },
+        )
+
+    def add_edge(source: str, target: str, edge_type: str, weight: float, source_label: str, target_label: str) -> None:
+        if not source or not target or source == target:
+            return
+        key = (source, target, edge_type)
+        bucket = edge_map.setdefault(
+            key,
+            {
+                "source": source,
+                "target": target,
+                "edge_type": edge_type,
+                "weight": 0.0,
+                "row_count": 0,
+                "source_label": source_label,
+                "target_label": target_label,
+            },
+        )
+        bucket["weight"] += float(weight or 0.0)
+        bucket["row_count"] += 1
+
+    client_label = {row["client_id"]: row["client_name"] or f"Client {row['client_id']}" for row in client_rows}
+    entity_label = {row["entity_id"]: row["entity_name"] or f"Entity {row['entity_id']}" for row in entity_rows}
+
+    for row in client_rows:
+        add_node(f"client:{row['client_id']}", client_label[row["client_id"]], "lobbying_client")
+
+    for row in entity_rows:
+        client_node = f"client:{row['client_id']}"
+        entity_node = f"entity:{row['entity_id']}"
+        add_node(entity_node, entity_label[row["entity_id"]], "lobbying_entity")
+        add_edge(
+            client_node,
+            entity_node,
+            "client_entity",
+            float(row["reg_year_count"] or 1.0),
+            client_label.get(row["client_id"], client_node),
+            entity_label.get(row["entity_id"], entity_node),
+        )
+
+    for row in donor_match_rows:
+        client_node = f"client:{row['client_id']}"
+        donor_key = (row["donor_key"] or "").strip()
+        if not donor_key:
+            continue
+        donor_node = f"donor:{donor_key}"
+        donor_label = row["donor_name"] or donor_key
+        add_node(donor_node, donor_label, "matched_donor")
+        add_edge(
+            client_node,
+            donor_node,
+            "client_donor_match",
+            float(row["score"] or 0.0),
+            client_label.get(row["client_id"], client_node),
+            donor_label,
+        )
+
+    for row in expenditure_rows:
+        source_type = (row["source_type"] or "").strip().lower()
+        source_id = row["source_id"]
+        payee_name = (row["payee_name"] or "").strip()
+        if not payee_name:
+            continue
+        payee_node = f"payee:{_stable_entity_key(payee_name)}"
+        add_node(payee_node, payee_name, "matched_payee")
+
+        if source_type == "client":
+            source_node = f"client:{source_id}"
+            source_label = client_label.get(source_id, source_node)
+            edge_type = "client_payee_match"
+        else:
+            source_node = f"entity:{source_id}"
+            source_label = entity_label.get(source_id, source_node)
+            edge_type = "entity_payee_match"
+        add_edge(
+            source_node,
+            payee_node,
+            edge_type,
+            float(row["score"] or 0.0),
+            source_label,
+            payee_name,
+        )
+
+        committee_id = row["committee_id_sbe"]
+        if committee_id is not None:
+            committee_node = f"committee:{committee_id}"
+            committee_label = f"Committee {committee_id}"
+            add_node(committee_node, committee_label, "committee")
+            add_edge(
+                payee_node,
+                committee_node,
+                "payee_committee_match",
+                float(row["score"] or 0.0),
+                payee_name,
+                committee_label,
+            )
+
+    for row in donor_committee_rows:
+        donor_key = (row["donor_key"] or "").strip()
+        committee_id = row["committee_id"]
+        if not donor_key or committee_id is None:
+            continue
+        donor_node = f"donor:{donor_key}"
+        committee_node = f"committee:{committee_id}"
+        donor_label_value = nodes.get(donor_node, {}).get("label") or donor_key
+        committee_label_value = row["committee_name"] or f"Committee {committee_id}"
+        add_node(donor_node, donor_label_value, "matched_donor")
+        add_node(committee_node, committee_label_value, "committee")
+        add_edge(
+            donor_node,
+            committee_node,
+            "donor_committee_flow",
+            float(row["total_amount"] or 0.0),
+            donor_label_value,
+            committee_label_value,
+        )
+
+    edges = sorted(
+        edge_map.values(),
+        key=lambda row: (float(row["weight"] or 0.0), int(row["row_count"] or 0)),
+        reverse=True,
+    )[:edge_limit]
+
+    used_node_ids = {edge["source"] for edge in edges} | {edge["target"] for edge in edges}
+    final_nodes = [node for node_id, node in nodes.items() if node_id in used_node_ids]
+    centrality = _compute_graph_centrality(final_nodes, edges, limit=150)
+
+    return {
+        "nodes": final_nodes,
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(final_nodes),
+            "edge_count": len(edges),
+            "required_tables": required,
+            "has_donor_matches": has_donor_matches,
+            "has_payee_matches": has_payee_matches,
+            "has_donor_committee_edges": has_donor_committee_edges,
+            "client_pool_size": len(client_ids),
+        },
+    }
+
+
+def get_irs527_ecosystem_graph(
+    conn: sqlite3.Connection,
+    org_limit: int = 150,
+    edge_limit: int = 1800,
+) -> dict:
+    """Build 527 ecosystem graph across org/committee/recipient/director/donor links."""
+    org_limit = max(20, min(int(org_limit), 2000))
+    edge_limit = max(50, min(int(edge_limit), 10000))
+
+    required = {"irs527_organizations": _table_exists(conn, "irs527_organizations")}
+    if not required["irs527_organizations"]:
+        return _empty_relationship_graph(
+            required_tables=required,
+            has_committee_matches=_table_exists(conn, "irs527_committee_matches"),
+            has_recipient_matches=_table_exists(conn, "irs527_expenditure_recipient_matches"),
+            has_director_donor_matches=_table_exists(conn, "irs527_director_donor_matches"),
+            has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
+        )
+
+    has_committee_matches = _table_exists(conn, "irs527_committee_matches")
+    has_recipient_matches = _table_exists(conn, "irs527_expenditure_recipient_matches")
+    has_director_donor_matches = _table_exists(conn, "irs527_director_donor_matches")
+
+    committee_rows = []
+    if has_committee_matches:
+        committee_rows = conn.execute(
+            """
+            SELECT ein, org_name, committee_id_sbe, committee_name, score
+            FROM irs527_committee_matches
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (edge_limit * 2,),
+        ).fetchall()
+
+    recipient_rows = []
+    if has_recipient_matches:
+        recipient_rows = conn.execute(
+            """
+            SELECT ein, org_name, recipient_name, matched_type, matched_id, matched_name, score
+            FROM irs527_expenditure_recipient_matches
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (edge_limit * 2,),
+        ).fetchall()
+
+    director_rows = []
+    if has_director_donor_matches:
+        director_rows = conn.execute(
+            """
+            SELECT ein, org_name, director_name, donor_key, donor_name, score
+            FROM irs527_director_donor_matches
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (edge_limit * 2,),
+        ).fetchall()
+
+    org_scores: dict[str, float] = defaultdict(float)
+    for row in committee_rows:
+        org_scores[(row["ein"] or "").strip()] += float(row["score"] or 0.0)
+    for row in recipient_rows:
+        org_scores[(row["ein"] or "").strip()] += float(row["score"] or 0.0)
+    for row in director_rows:
+        org_scores[(row["ein"] or "").strip()] += float(row["score"] or 0.0)
+
+    ranked_orgs = sorted(org_scores.items(), key=lambda item: item[1], reverse=True)[:org_limit]
+    keep_eins = {ein for ein, _score in ranked_orgs if ein}
+    if not keep_eins:
+        org_rows = conn.execute(
+            """
+            SELECT ein, MAX(org_name) AS org_name
+            FROM irs527_organizations
+            GROUP BY ein
+            ORDER BY org_name ASC
+            LIMIT ?
+            """,
+            (org_limit,),
+        ).fetchall()
+        keep_eins = {(row["ein"] or "").strip() for row in org_rows if row["ein"]}
+
+    committee_rows = [row for row in committee_rows if (row["ein"] or "").strip() in keep_eins]
+    recipient_rows = [row for row in recipient_rows if (row["ein"] or "").strip() in keep_eins]
+    director_rows = [row for row in director_rows if (row["ein"] or "").strip() in keep_eins]
+
+    nodes: dict[str, dict] = {}
+    edge_map: dict[tuple[str, str, str], dict] = {}
+
+    def add_node(node_id: str, label: str, node_type: str) -> None:
+        if not node_id:
+            return
+        nodes.setdefault(
+            node_id,
+            {
+                "id": node_id,
+                "label": label or node_id,
+                "node_type": node_type,
+            },
+        )
+
+    def add_edge(source: str, target: str, edge_type: str, weight: float, source_label: str, target_label: str) -> None:
+        if not source or not target or source == target:
+            return
+        key = (source, target, edge_type)
+        bucket = edge_map.setdefault(
+            key,
+            {
+                "source": source,
+                "target": target,
+                "edge_type": edge_type,
+                "weight": 0.0,
+                "row_count": 0,
+                "source_label": source_label,
+                "target_label": target_label,
+            },
+        )
+        bucket["weight"] += float(weight or 0.0)
+        bucket["row_count"] += 1
+
+    for ein in keep_eins:
+        if not ein:
+            continue
+        org_label_row = conn.execute(
+            """
+            SELECT MAX(org_name) AS org_name
+            FROM irs527_organizations
+            WHERE ein = ?
+            """,
+            (ein,),
+        ).fetchone()
+        org_label = (org_label_row["org_name"] if org_label_row else None) or f"527 {ein}"
+        add_node(f"org:{ein}", org_label, "irs527_org")
+
+    for row in committee_rows:
+        ein = (row["ein"] or "").strip()
+        if not ein:
+            continue
+        org_node = f"org:{ein}"
+        org_label = nodes.get(org_node, {}).get("label") or row["org_name"] or f"527 {ein}"
+        committee_id = row["committee_id_sbe"]
+        committee_node = f"committee:{committee_id}"
+        committee_label = row["committee_name"] or f"Committee {committee_id}"
+        add_node(committee_node, committee_label, "committee")
+        add_edge(
+            org_node,
+            committee_node,
+            "org_committee_match",
+            float(row["score"] or 0.0),
+            org_label,
+            committee_label,
+        )
+
+    for row in recipient_rows:
+        ein = (row["ein"] or "").strip()
+        if not ein:
+            continue
+        org_node = f"org:{ein}"
+        org_label = nodes.get(org_node, {}).get("label") or row["org_name"] or f"527 {ein}"
+        target_name = (row["matched_name"] or "").strip() or (row["recipient_name"] or "").strip()
+        matched_type = (row["matched_type"] or "").strip().lower() or "target"
+        matched_id = (row["matched_id"] or "").strip()
+        if matched_type == "committee" and matched_id:
+            target_node = f"committee:{matched_id}"
+            target_type = "committee"
+        else:
+            stable = _stable_entity_key(target_name, matched_type, matched_id)
+            target_node = f"recipient_target:{stable}"
+            target_type = "recipient_target"
+        target_label = target_name or target_node
+        add_node(target_node, target_label, target_type)
+        add_edge(
+            org_node,
+            target_node,
+            "org_recipient_match",
+            float(row["score"] or 0.0),
+            org_label,
+            target_label,
+        )
+
+    donor_keys: set[str] = set()
+    for row in director_rows:
+        ein = (row["ein"] or "").strip()
+        if not ein:
+            continue
+        org_node = f"org:{ein}"
+        org_label = nodes.get(org_node, {}).get("label") or row["org_name"] or f"527 {ein}"
+        director_name = (row["director_name"] or "").strip() or "Unknown Director"
+        director_node = f"director:{_stable_entity_key(director_name, ein)}"
+        add_node(director_node, director_name, "director")
+        add_edge(
+            org_node,
+            director_node,
+            "org_director",
+            float(row["score"] or 0.0),
+            org_label,
+            director_name,
+        )
+        donor_key = (row["donor_key"] or "").strip()
+        donor_name = (row["donor_name"] or "").strip() or donor_key
+        if donor_key:
+            donor_node = f"donor:{donor_key}"
+            add_node(donor_node, donor_name or donor_key, "matched_donor")
+            add_edge(
+                director_node,
+                donor_node,
+                "director_donor_match",
+                float(row["score"] or 0.0),
+                director_name,
+                donor_name or donor_key,
+            )
+            donor_keys.add(donor_key)
+
+    has_donor_committee_edges = _table_exists(conn, "analytics_donor_committee_agg")
+    if donor_keys and has_donor_committee_edges:
+        donor_placeholders = ",".join(["?"] * len(donor_keys))
+        donor_committee_rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    donor_key,
+                    committee_id,
+                    committee_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY donor_key
+                        ORDER BY total_amount DESC, committee_name ASC
+                    ) AS rn
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                  AND donor_key IN ({donor_placeholders})
+            )
+            SELECT donor_key, committee_id, committee_name, total_amount
+            FROM ranked
+            WHERE rn <= 4
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            [*sorted(donor_keys), edge_limit * 2],
+        ).fetchall()
+        for row in donor_committee_rows:
+            donor_key = (row["donor_key"] or "").strip()
+            committee_id = row["committee_id"]
+            if not donor_key or committee_id is None:
+                continue
+            donor_node = f"donor:{donor_key}"
+            committee_node = f"committee:{committee_id}"
+            donor_label = nodes.get(donor_node, {}).get("label") or donor_key
+            committee_label = row["committee_name"] or f"Committee {committee_id}"
+            add_node(committee_node, committee_label, "committee")
+            add_edge(
+                donor_node,
+                committee_node,
+                "donor_committee_flow",
+                float(row["total_amount"] or 0.0),
+                donor_label,
+                committee_label,
+            )
+
+    edges = sorted(
+        edge_map.values(),
+        key=lambda row: (float(row["weight"] or 0.0), int(row["row_count"] or 0)),
+        reverse=True,
+    )[:edge_limit]
+    used_node_ids = {edge["source"] for edge in edges} | {edge["target"] for edge in edges}
+    final_nodes = [node for node_id, node in nodes.items() if node_id in used_node_ids]
+    centrality = _compute_graph_centrality(final_nodes, edges, limit=150)
+
+    return {
+        "nodes": final_nodes,
+        "edges": edges,
+        "centrality": centrality,
+        "summary": {
+            "node_count": len(final_nodes),
+            "edge_count": len(edges),
+            "required_tables": required,
+            "has_committee_matches": has_committee_matches,
+            "has_recipient_matches": has_recipient_matches,
+            "has_director_donor_matches": has_director_donor_matches,
+            "has_donor_committee_edges": has_donor_committee_edges,
+            "org_pool_size": len(keep_eins),
+        },
+    }
