@@ -414,6 +414,17 @@ h2 {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+.status-section,
+.column,
+.entry-form,
+.report-info,
+.contributions-list,
+.committee-summary,
+.donor-summary,
+.report-summary {
+    overflow-x: auto;
+}
+
 .status-section h2 {
     margin-top: 0;
 }

@@ -167,6 +167,31 @@ def _get_candidate_stats(conn):
                 default=0,
             )
         )
+    if _table_exists(conn, "fec_candidate_cycle_totals"):
+        totals_rows = int(
+            _scalar(
+                conn,
+                "SELECT COUNT(*) AS count FROM fec_candidate_cycle_totals",
+                default=0,
+            )
+        )
+        if totals_rows > 0:
+            stats['federal_total_amount'] = float(
+                _scalar(
+                    conn,
+                    "SELECT COALESCE(SUM(receipts), 0) AS total FROM fec_candidate_cycle_totals",
+                    default=0.0,
+                )
+            )
+        elif _table_exists(conn, "fec_schedule_a_contributions"):
+            stats['federal_total_amount'] = float(
+                _scalar(
+                    conn,
+                    "SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions",
+                    default=0.0,
+                )
+            )
+    elif _table_exists(conn, "fec_schedule_a_contributions"):
         stats['federal_total_amount'] = float(
             _scalar(
                 conn,
@@ -204,6 +229,24 @@ def _get_candidate_stats(conn):
             "SELECT MAX(contribution_receipt_date) AS max_date FROM fec_schedule_a_contributions",
             default=None,
         )
+    if _table_exists(conn, "fec_candidate_cycle_totals"):
+        freshness['federal_sync_updated_at'] = _scalar(
+            conn,
+            "SELECT MAX(updated_at) AS max_updated_at FROM fec_candidate_cycle_totals",
+            default=None,
+        )
+    if not freshness['federal_sync_updated_at'] and _table_exists(conn, "raw_extractions"):
+        freshness['federal_sync_updated_at'] = _scalar(
+            conn,
+            """
+            SELECT MAX(updated_at) AS max_updated_at
+            FROM raw_extractions
+            WHERE source_type = 'fec_api:schedules_schedule_a'
+               OR source_type LIKE 'fec_api:candidate_%_totals'
+            """,
+            default=None,
+        )
+    if not freshness['federal_sync_updated_at'] and _table_exists(conn, "fec_schedule_a_contributions"):
         freshness['federal_sync_updated_at'] = _scalar(
             conn,
             "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_a_contributions",
@@ -1045,6 +1088,130 @@ def _build_overlap(left_profile: dict | None, right_profile: dict | None) -> dic
     }
 
 
+def _recent_local_candidate_donations(conn, limit: int = 75) -> list[dict]:
+    required_tables = {"bulk_receipts_clean", "bulk_committee_candidate_links"}
+    if not all(_table_exists(conn, table_name) for table_name in required_tables):
+        return []
+
+    has_candidates = _table_exists(conn, "bulk_candidates_clean")
+    has_committees = _table_exists(conn, "bulk_committees_clean")
+    has_receipt_id = _column_exists(conn, "bulk_receipts_clean", "receipt_record_id")
+    has_city = _column_exists(conn, "bulk_receipts_clean", "city")
+    has_state = _column_exists(conn, "bulk_receipts_clean", "state")
+    has_filed_doc = _column_exists(conn, "bulk_receipts_clean", "filed_doc_id")
+
+    receipt_id_expr = "r.receipt_record_id" if has_receipt_id else "NULL"
+    donor_city_expr = "r.city" if has_city else "NULL"
+    donor_state_expr = "r.state" if has_state else "NULL"
+    filed_doc_expr = "r.filed_doc_id" if has_filed_doc else "NULL"
+    candidate_name_expr = (
+        "COALESCE(cand.candidate_full_name, 'Candidate ' || link.candidate_id)"
+        if has_candidates
+        else "'Candidate ' || link.candidate_id"
+    )
+    committee_name_expr = (
+        "COALESCE(cm.committee_name, 'Committee ' || r.committee_id_sbe)"
+        if has_committees
+        else "'Committee ' || r.committee_id_sbe"
+    )
+    join_candidates = (
+        "LEFT JOIN bulk_candidates_clean cand ON cand.candidate_id = link.candidate_id"
+        if has_candidates
+        else ""
+    )
+    join_committees = (
+        "LEFT JOIN bulk_committees_clean cm ON cm.committee_id_sbe = r.committee_id_sbe"
+        if has_committees
+        else ""
+    )
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            {receipt_id_expr} AS row_id,
+            r.received_date,
+            link.candidate_id,
+            {candidate_name_expr} AS candidate_name,
+            r.committee_id_sbe,
+            {committee_name_expr} AS committee_name,
+            {_bulk_donor_name_sql(alias='r')} AS donor_name,
+            {donor_city_expr} AS donor_city,
+            {donor_state_expr} AS donor_state,
+            {filed_doc_expr} AS filed_doc_id,
+            COALESCE(r.amount, 0) AS amount
+        FROM bulk_receipts_clean r
+        JOIN bulk_committee_candidate_links link ON link.committee_id_sbe = r.committee_id_sbe
+        {join_candidates}
+        {join_committees}
+        WHERE {_bulk_receipts_base_filter(conn, alias='r')}
+        ORDER BY r.received_date DESC, row_id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+
+    output = []
+    for row in rows:
+        output.append(
+            {
+                "received_date": row["received_date"],
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"],
+                "committee_id_sbe": row["committee_id_sbe"],
+                "committee_name": row["committee_name"],
+                "donor_name": row["donor_name"] or "Unknown Donor",
+                "donor_city": row["donor_city"],
+                "donor_state": row["donor_state"],
+                "filed_doc_id": row["filed_doc_id"],
+                "amount": float(row["amount"] or 0.0),
+            }
+        )
+    return output
+
+
+def _recent_federal_candidate_donations(conn, limit: int = 75) -> list[dict]:
+    if not _table_exists(conn, "fec_schedule_a_contributions"):
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            sub_id,
+            cycle,
+            contribution_receipt_date,
+            candidate_id,
+            candidate_name,
+            committee_name,
+            contributor_name,
+            contributor_city,
+            contributor_state,
+            contribution_receipt_amount
+        FROM fec_schedule_a_contributions
+        WHERE COALESCE(contribution_receipt_amount, 0) > 0
+        ORDER BY contribution_receipt_date DESC, updated_at DESC, sub_id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    ).fetchall()
+
+    output = []
+    for row in rows:
+        output.append(
+            {
+                "contribution_receipt_date": row["contribution_receipt_date"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or row["candidate_id"] or "Unknown Candidate",
+                "committee_name": row["committee_name"],
+                "donor_name": row["contributor_name"] or "Unknown Donor",
+                "donor_city": row["contributor_city"],
+                "donor_state": row["contributor_state"],
+                "amount": float(row["contribution_receipt_amount"] or 0.0),
+            }
+        )
+    return output
+
+
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
@@ -1223,6 +1390,42 @@ def search():
         )
 
     return render_template('search.html', **results)
+
+
+@main_bp.route('/live-feed')
+def live_feed():
+    """Recent donation feed for local and federal candidate contributions."""
+    conn = current_app.get_database()
+
+    local_limit = min(max(request.args.get('local_limit', 75, type=int), 10), 300)
+    federal_limit = min(max(request.args.get('federal_limit', 75, type=int), 10), 300)
+
+    local_rows = _recent_local_candidate_donations(conn, limit=local_limit)
+    federal_rows = _recent_federal_candidate_donations(conn, limit=federal_limit)
+
+    local_latest_date = local_rows[0]["received_date"] if local_rows else None
+    federal_latest_date = federal_rows[0]["contribution_receipt_date"] if federal_rows else None
+    federal_latest_coverage_date = None
+    if _table_exists(conn, "fec_candidate_cycle_totals"):
+        federal_latest_coverage_date = _scalar(
+            conn,
+            """
+            SELECT MAX(COALESCE(transaction_coverage_date, coverage_end_date)) AS max_coverage
+            FROM fec_candidate_cycle_totals
+            """,
+            default=None,
+        )
+
+    return render_template(
+        'live_feed.html',
+        local_rows=local_rows,
+        federal_rows=federal_rows,
+        local_limit=local_limit,
+        federal_limit=federal_limit,
+        local_latest_date=local_latest_date,
+        federal_latest_date=federal_latest_date,
+        federal_latest_coverage_date=federal_latest_coverage_date,
+    )
 
 
 @main_bp.route('/compare')

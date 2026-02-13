@@ -22,6 +22,11 @@
     <p><strong>Contributions:</strong> {{ detail.summary.contribution_count }}</p>
     <p><strong>Donors:</strong> {{ detail.summary.donor_count }}</p>
     <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }}</p>
+    {% if detail.summary.uses_reported_total_receipts %}
+    <p><strong>Total Source:</strong> FEC candidate totals endpoint (reported receipts)</p>
+    <p><strong>Latest FEC Report Coverage:</strong> {{ detail.summary.transaction_coverage_date if detail.summary.transaction_coverage_date else (detail.summary.coverage_end_date if detail.summary.coverage_end_date else '-') }}</p>
+    <p class="stat-detail"><strong>Synced row subtotal (Schedule A rows in app):</strong> {{ format_currency(detail.summary.schedule_total_amount) }}</p>
+    {% endif %}
     <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
 </div>

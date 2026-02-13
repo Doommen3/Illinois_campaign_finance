@@ -132,6 +132,32 @@ class FakeFecClient:
                 ],
             }
 
+        if endpoint.startswith("/candidate/") and endpoint.endswith("/totals/"):
+            candidate_id = endpoint.split("/")[2]
+            if candidate_id != "H2IL01349":
+                return {
+                    "pagination": {"count": 0, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+            return {
+                "pagination": {"count": 1, "pages": 1, "per_page": params.get("per_page", 100)},
+                "results": [
+                    {
+                        "candidate_id": candidate_id,
+                        "cycle": int(params.get("cycle") or 2026),
+                        "receipts": 1250.0,
+                        "contributions": 1250.0,
+                        "individual_contributions": 1250.0,
+                        "coverage_start_date": "2025-01-01",
+                        "coverage_end_date": "2026-03-31",
+                        "transaction_coverage_date": "2026-03-31",
+                        "last_report_year": 2026,
+                        "last_report_type_full": "Quarterly Report",
+                        "last_cash_on_hand_end_period": 1000.0,
+                    }
+                ],
+            }
+
         raise AssertionError(f"Unexpected endpoint call: {endpoint} params={params}")
 
 
@@ -182,13 +208,16 @@ def test_sync_il_federal_fec_and_queries(tmp_path: Path):
     jackson = next(row for row in rows if row["candidate_name"] == "Jonathan Jackson")
     assert jackson["fec_candidate_id"] == "H2IL01349"
     assert jackson["contribution_count"] == 1
-    assert jackson["total_amount"] == 250.0
+    assert jackson["total_amount"] == 1250.0
 
     detail = get_federal_candidate_detail(conn, candidate_id="H2IL01349", cycle=2026)
     assert detail is not None
     assert detail["summary"]["committee_count"] == 1
     assert detail["summary"]["contribution_count"] == 1
-    assert detail["summary"]["total_amount"] == 250.0
+    assert detail["summary"]["total_amount"] == 1250.0
+    assert detail["summary"]["reported_total_receipts"] == 1250.0
+    assert detail["summary"]["schedule_total_amount"] == 250.0
+    assert detail["summary"]["uses_reported_total_receipts"] is True
     assert detail["top_donors"][0]["donor_name"] == "Jane Donor"
     assert detail["top_donors"][0]["donor_entity_key"]
     assert detail["top_donors"][0]["donor_entity_method"] == "name_state_zip"

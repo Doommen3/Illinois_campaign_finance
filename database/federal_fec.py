@@ -1003,6 +1003,91 @@ def _upsert_candidate_committees(
     return count
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _upsert_candidate_cycle_total(
+    conn: sqlite3.Connection,
+    *,
+    candidate_id: str,
+    cycle: int,
+    payload: dict,
+) -> int:
+    if not _table_exists(conn, "fec_candidate_cycle_totals"):
+        return 0
+
+    receipts = _safe_float(payload.get("receipts"))
+    contributions = _safe_float(payload.get("contributions"))
+    individual_contributions = _safe_float(payload.get("individual_contributions"))
+    coverage_start_date = _clean_text(payload.get("coverage_start_date")) or None
+    coverage_end_date = _clean_text(payload.get("coverage_end_date")) or None
+    transaction_coverage_date = _clean_text(payload.get("transaction_coverage_date")) or None
+    last_report_year = _safe_int(payload.get("last_report_year"))
+    last_report_type_full = _clean_text(payload.get("last_report_type_full")) or None
+    last_cash_on_hand_end_period = _safe_float(payload.get("last_cash_on_hand_end_period"))
+
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_cycle_totals (
+            candidate_id,
+            cycle,
+            receipts,
+            contributions,
+            individual_contributions,
+            coverage_start_date,
+            coverage_end_date,
+            transaction_coverage_date,
+            last_report_year,
+            last_report_type_full,
+            last_cash_on_hand_end_period,
+            source_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_id, cycle) DO UPDATE SET
+            receipts = excluded.receipts,
+            contributions = excluded.contributions,
+            individual_contributions = excluded.individual_contributions,
+            coverage_start_date = excluded.coverage_start_date,
+            coverage_end_date = excluded.coverage_end_date,
+            transaction_coverage_date = excluded.transaction_coverage_date,
+            last_report_year = excluded.last_report_year,
+            last_report_type_full = excluded.last_report_type_full,
+            last_cash_on_hand_end_period = excluded.last_cash_on_hand_end_period,
+            source_payload_json = excluded.source_payload_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            candidate_id,
+            cycle,
+            receipts,
+            contributions,
+            individual_contributions,
+            coverage_start_date,
+            coverage_end_date,
+            transaction_coverage_date,
+            last_report_year,
+            last_report_type_full,
+            last_cash_on_hand_end_period,
+            json.dumps(payload, ensure_ascii=True),
+        ),
+    )
+    return 1
+
+
 def _build_donor_key(
     contributor_name: str | None,
     contributor_state: str | None,
@@ -1433,6 +1518,37 @@ def _fetch_all_committees_for_candidate(
     return output, api_calls_made
 
 
+def _fetch_candidate_cycle_totals(
+    conn: sqlite3.Connection,
+    client: FecApiClient,
+    candidate_id: str,
+    cycle: int,
+    use_cache: bool,
+    max_calls: int,
+    api_calls_made: int,
+) -> tuple[list[dict], int]:
+    if api_calls_made > max_calls:
+        return [], api_calls_made
+
+    payload, _source_id, from_cache = _request_with_cache(
+        conn,
+        client,
+        endpoint=f"/candidate/{candidate_id}/totals/",
+        params={
+            "cycle": cycle,
+            "per_page": 100,
+        },
+        use_cache=use_cache,
+    )
+    if not from_cache:
+        api_calls_made += 1
+
+    if api_calls_made > max_calls:
+        return [], api_calls_made
+
+    return payload.get("results") or [], api_calls_made
+
+
 def sync_il_federal_fec(
     conn: sqlite3.Connection,
     candidates_csv: Path,
@@ -1502,6 +1618,7 @@ def sync_il_federal_fec(
     ambiguous_rows = 0
     unmatched_rows = 0
     committees_upserted = 0
+    candidate_totals_upserted = 0
     contributions_upserted = 0
     schedule_pages_processed = 0
     call_budget_reached = False
@@ -1569,6 +1686,71 @@ def sync_il_federal_fec(
         """,
         (effective_cycle,),
     ).fetchall()
+
+    for row in matched_candidates:
+        if api_calls_made > max_calls:
+            call_budget_reached = True
+            break
+
+        candidate_id = _clean_text(row["fec_candidate_id"])
+        if not candidate_id:
+            continue
+
+        totals_rows, api_calls_made = _fetch_candidate_cycle_totals(
+            conn,
+            api_client,
+            candidate_id=candidate_id,
+            cycle=effective_cycle,
+            use_cache=use_cache,
+            max_calls=max_calls,
+            api_calls_made=api_calls_made,
+        )
+        if api_calls_made > max_calls:
+            call_budget_reached = True
+            break
+
+        selected_total = None
+        for totals_row in totals_rows:
+            if int(totals_row.get("cycle") or 0) == int(effective_cycle):
+                selected_total = totals_row
+                break
+        if selected_total is None and totals_rows:
+            selected_total = totals_rows[0]
+
+        if selected_total:
+            candidate_totals_upserted += _upsert_candidate_cycle_total(
+                conn,
+                candidate_id=candidate_id,
+                cycle=effective_cycle,
+                payload=selected_total,
+            )
+
+    conn.commit()
+
+    if call_budget_reached:
+        local_match_stats: dict[str, Any] = {
+            "rows_written": 0,
+            "materialized_matches": 0,
+        }
+        if refresh_local_matches:
+            local_match_stats = refresh_fec_local_donor_matches(conn, cycle=effective_cycle)
+
+        return {
+            "seed_rows_loaded": len(seed_rows),
+            "candidate_universe_rows": len(candidate_universe_rows),
+            "candidate_universe_pages": candidate_universe_pages,
+            "matched_rows": matched_rows,
+            "ambiguous_rows": ambiguous_rows,
+            "unmatched_rows": unmatched_rows,
+            "candidate_totals_upserted": candidate_totals_upserted,
+            "committees_upserted": committees_upserted,
+            "schedule_pages_processed": schedule_pages_processed,
+            "contributions_upserted": contributions_upserted,
+            "api_calls_made": api_calls_made,
+            "call_budget_reached": call_budget_reached,
+            "federal_local_pairs_written": int(local_match_stats.get("rows_written") or 0),
+            "federal_local_matches_written": int(local_match_stats.get("materialized_matches") or 0),
+        }
 
     for row in matched_candidates:
         candidate_id = _clean_text(row["fec_candidate_id"])
@@ -1754,6 +1936,7 @@ def sync_il_federal_fec(
         "matched_rows": matched_rows,
         "ambiguous_rows": ambiguous_rows,
         "unmatched_rows": unmatched_rows,
+        "candidate_totals_upserted": candidate_totals_upserted,
         "committees_upserted": committees_upserted,
         "schedule_pages_processed": schedule_pages_processed,
         "contributions_upserted": contributions_upserted,
@@ -1901,38 +2084,47 @@ def list_federal_candidates(
             m.fec_party,
             m.match_status,
             m.match_score,
-            COUNT(DISTINCT cc.committee_id) AS committee_count,
-            COUNT(DISTINCT sa.sub_id) AS contribution_count,
-            COUNT(
-                DISTINCT COALESCE(
-                    NULLIF(sa.donor_entity_key, ''),
-                    NULLIF(sa.donor_key, ''),
-                    sa.sub_id
-                )
-            ) AS donor_count,
-            COALESCE(SUM(sa.contribution_receipt_amount), 0) AS total_amount,
-            MAX(sa.contribution_receipt_date) AS latest_contribution_date
+            COALESCE(cc.committee_count, 0) AS committee_count,
+            COALESCE(sa.contribution_count, 0) AS contribution_count,
+            COALESCE(sa.donor_count, 0) AS donor_count,
+            COALESCE(ft.receipts, COALESCE(sa.schedule_total_amount, 0)) AS total_amount,
+            COALESCE(sa.latest_contribution_date, ft.transaction_coverage_date, ft.coverage_end_date)
+                AS latest_contribution_date,
+            ft.updated_at AS totals_updated_at
         FROM fec_candidate_match m
-        LEFT JOIN fec_candidate_committees cc
+        LEFT JOIN (
+            SELECT
+                candidate_id,
+                cycle,
+                COUNT(DISTINCT committee_id) AS committee_count
+            FROM fec_candidate_committees
+            GROUP BY candidate_id, cycle
+        ) cc
           ON cc.candidate_id = m.fec_candidate_id
          AND cc.cycle = m.cycle
-        LEFT JOIN fec_schedule_a_contributions sa
+        LEFT JOIN (
+            SELECT
+                candidate_id,
+                cycle,
+                COUNT(DISTINCT sub_id) AS contribution_count,
+                COUNT(
+                    DISTINCT COALESCE(
+                        NULLIF(donor_entity_key, ''),
+                        NULLIF(donor_key, ''),
+                        sub_id
+                    )
+                ) AS donor_count,
+                COALESCE(SUM(contribution_receipt_amount), 0) AS schedule_total_amount,
+                MAX(contribution_receipt_date) AS latest_contribution_date
+            FROM fec_schedule_a_contributions
+            GROUP BY candidate_id, cycle
+        ) sa
           ON sa.candidate_id = m.fec_candidate_id
          AND sa.cycle = m.cycle
+        LEFT JOIN fec_candidate_cycle_totals ft
+          ON ft.candidate_id = m.fec_candidate_id
+         AND ft.cycle = m.cycle
         {where_sql}
-        GROUP BY
-            m.seed_candidate_key,
-            m.candidate_name,
-            m.office,
-            m.district,
-            m.party,
-            m.election_stage,
-            m.cycle,
-            m.fec_candidate_id,
-            m.fec_name,
-            m.fec_party,
-            m.match_status,
-            m.match_score
         ORDER BY {order_by} {direction}, m.candidate_name ASC
         LIMIT ? OFFSET ?
     """
@@ -1960,6 +2152,7 @@ def list_federal_candidates(
                 "donor_count": int(row["donor_count"] or 0),
                 "total_amount": float(row["total_amount"] or 0.0),
                 "latest_contribution_date": row["latest_contribution_date"],
+                "totals_updated_at": row["totals_updated_at"],
             }
         )
     return output
@@ -1994,38 +2187,53 @@ def get_federal_candidate_detail(
             m.match_status,
             m.match_score,
             m.cycle,
-            COUNT(DISTINCT cc.committee_id) AS committee_count,
-            COUNT(DISTINCT sa.sub_id) AS contribution_count,
-            COUNT(
-                DISTINCT COALESCE(
-                    NULLIF(sa.donor_entity_key, ''),
-                    NULLIF(sa.donor_key, ''),
-                    sa.sub_id
-                )
-            ) AS donor_count,
-            COALESCE(SUM(sa.contribution_receipt_amount), 0) AS total_amount,
-            MAX(sa.contribution_receipt_date) AS latest_contribution_date,
-            MIN(sa.contribution_receipt_date) AS earliest_contribution_date
+            COALESCE(cc.committee_count, 0) AS committee_count,
+            COALESCE(sa.contribution_count, 0) AS contribution_count,
+            COALESCE(sa.donor_count, 0) AS donor_count,
+            COALESCE(ft.receipts, COALESCE(sa.schedule_total_amount, 0)) AS total_amount,
+            ft.receipts AS reported_total_receipts,
+            COALESCE(sa.schedule_total_amount, 0) AS schedule_total_amount,
+            sa.latest_contribution_date AS latest_contribution_date,
+            sa.earliest_contribution_date AS earliest_contribution_date,
+            ft.coverage_end_date AS coverage_end_date,
+            ft.transaction_coverage_date AS transaction_coverage_date,
+            ft.updated_at AS totals_updated_at
         FROM fec_candidate_match m
-        LEFT JOIN fec_candidate_committees cc
+        LEFT JOIN (
+            SELECT
+                candidate_id,
+                cycle,
+                COUNT(DISTINCT committee_id) AS committee_count
+            FROM fec_candidate_committees
+            GROUP BY candidate_id, cycle
+        ) cc
           ON cc.candidate_id = m.fec_candidate_id
          AND cc.cycle = m.cycle
-        LEFT JOIN fec_schedule_a_contributions sa
+        LEFT JOIN (
+            SELECT
+                candidate_id,
+                cycle,
+                COUNT(DISTINCT sub_id) AS contribution_count,
+                COUNT(
+                    DISTINCT COALESCE(
+                        NULLIF(donor_entity_key, ''),
+                        NULLIF(donor_key, ''),
+                        sub_id
+                    )
+                ) AS donor_count,
+                COALESCE(SUM(contribution_receipt_amount), 0) AS schedule_total_amount,
+                MAX(contribution_receipt_date) AS latest_contribution_date,
+                MIN(contribution_receipt_date) AS earliest_contribution_date
+            FROM fec_schedule_a_contributions
+            GROUP BY candidate_id, cycle
+        ) sa
           ON sa.candidate_id = m.fec_candidate_id
          AND sa.cycle = m.cycle
+        LEFT JOIN fec_candidate_cycle_totals ft
+          ON ft.candidate_id = m.fec_candidate_id
+         AND ft.cycle = m.cycle
         WHERE m.fec_candidate_id = ?
         {where_cycle}
-        GROUP BY
-            m.fec_candidate_id,
-            m.fec_name,
-            m.candidate_name,
-            m.office,
-            m.district,
-            m.party,
-            m.election_stage,
-            m.match_status,
-            m.match_score,
-            m.cycle
         LIMIT 1
         """,
         params,
@@ -2129,8 +2337,18 @@ def get_federal_candidate_detail(
             "contribution_count": int(summary["contribution_count"] or 0),
             "donor_count": int(summary["donor_count"] or 0),
             "total_amount": float(summary["total_amount"] or 0.0),
+            "reported_total_receipts": (
+                float(summary["reported_total_receipts"] or 0.0)
+                if summary["reported_total_receipts"] is not None
+                else None
+            ),
+            "schedule_total_amount": float(summary["schedule_total_amount"] or 0.0),
+            "uses_reported_total_receipts": summary["reported_total_receipts"] is not None,
             "latest_contribution_date": summary["latest_contribution_date"],
             "earliest_contribution_date": summary["earliest_contribution_date"],
+            "coverage_end_date": summary["coverage_end_date"],
+            "transaction_coverage_date": summary["transaction_coverage_date"],
+            "totals_updated_at": summary["totals_updated_at"],
         },
         "top_donors": [
             {

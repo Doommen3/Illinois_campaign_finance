@@ -488,6 +488,28 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_date ON fec_schedule_a_contributions
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_key ON fec_schedule_a_contributions(donor_key);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_entity_key ON fec_schedule_a_contributions(donor_entity_key);
 
+CREATE TABLE IF NOT EXISTS fec_candidate_cycle_totals (
+    candidate_id TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    receipts REAL NOT NULL DEFAULT 0,
+    contributions REAL NOT NULL DEFAULT 0,
+    individual_contributions REAL NOT NULL DEFAULT 0,
+    coverage_start_date TEXT,
+    coverage_end_date TEXT,
+    transaction_coverage_date TEXT,
+    last_report_year INTEGER,
+    last_report_type_full TEXT,
+    last_cash_on_hand_end_period REAL,
+    source_payload_json TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (candidate_id, cycle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_candidate_cycle_totals_cycle
+    ON fec_candidate_cycle_totals(cycle, receipts DESC);
+CREATE INDEX IF NOT EXISTS idx_fec_candidate_cycle_totals_updated
+    ON fec_candidate_cycle_totals(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
     federal_donor_entity_key TEXT NOT NULL,
     local_donor_key TEXT NOT NULL,

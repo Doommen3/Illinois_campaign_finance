@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Live Donation Feed - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Live Donation Feed</h1>
+<p class="subtitle">Most recent synced donation rows for local and federal candidates.</p>
+
+<div class="status-section">
+    <p><strong>Local feed latest date:</strong> {{ local_latest_date if local_latest_date else 'No rows synced' }}</p>
+    <p><strong>Federal feed latest date:</strong> {{ federal_latest_date if federal_latest_date else 'No rows synced' }}</p>
+    <p><strong>Federal latest report coverage:</strong> {{ federal_latest_coverage_date if federal_latest_coverage_date else 'Not available' }}</p>
+    <p class="stat-detail">Federal receipt rows can lag coverage windows when filings are quarterly; candidate detail totals use FEC reported receipts.</p>
+    <p class="stat-detail">Adjust limits via query params: <code>?local_limit=100&federal_limit=100</code>.</p>
+</div>
+
+<div class="status-section">
+    <h2>Local Candidate Donations ({{ local_rows|length }})</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Candidate</th>
+                <th>Committee</th>
+                <th>Donor</th>
+                <th>Location</th>
+                <th>Amount</th>
+                <th>Filed Doc</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in local_rows %}
+            <tr>
+                <td>{{ row.received_date if row.received_date else '-' }}</td>
+                <td>
+                    <a href="{{ url_for('candidate_finance.list_candidate_finance', q=row.candidate_name) }}">
+                        {{ row.candidate_name if row.candidate_name else ('Candidate ' ~ row.candidate_id) }}
+                    </a>
+                </td>
+                <td>{{ row.committee_name if row.committee_name else ('Committee ' ~ row.committee_id_sbe) }}</td>
+                <td>{{ row.donor_name if row.donor_name else '-' }}</td>
+                <td>{{ row.donor_city if row.donor_city else '' }}{% if row.donor_city and row.donor_state %}, {% endif %}{{ row.donor_state if row.donor_state else '' }}</td>
+                <td>{{ format_currency(row.amount) }}</td>
+                <td>
+                    {% if row.filed_doc_id %}
+                    <a href="{{ url_for('d2_receipts_recon.list_d2_receipts_recon', q=row.filed_doc_id) }}">{{ row.filed_doc_id }}</a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">No local candidate donation rows are available yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Federal Candidate Donations ({{ federal_rows|length }})</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Candidate</th>
+                <th>Committee</th>
+                <th>Donor</th>
+                <th>Location</th>
+                <th>Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in federal_rows %}
+            <tr>
+                <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
+                <td>
+                    {% if row.candidate_id %}
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=row.cycle) }}">
+                        {{ row.candidate_name }}
+                    </a>
+                    {% else %}
+                    {{ row.candidate_name }}
+                    {% endif %}
+                </td>
+                <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                <td>{{ row.donor_name if row.donor_name else '-' }}</td>
+                <td>{{ row.donor_city if row.donor_city else '' }}{% if row.donor_city and row.donor_state %}, {% endif %}{{ row.donor_state if row.donor_state else '' }}</td>
+                <td>{{ format_currency(row.amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No federal candidate donation rows are available yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

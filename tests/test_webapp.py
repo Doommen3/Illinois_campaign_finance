@@ -134,6 +134,14 @@ class TestWebApp:
         assert b'Enter at least 2 characters' in response.data
         assert b'Search runtime' in response.data
 
+    def test_live_feed_page_loads(self, client):
+        """Live feed page should render both local and federal sections."""
+        response = client.get('/live-feed')
+        assert response.status_code == 200
+        assert b'Live Donation Feed' in response.data
+        assert b'Local Candidate Donations' in response.data
+        assert b'Federal Candidate Donations' in response.data
+
     def test_candidate_finance_page_loads_without_bulk_table(self, client):
         """Test candidate finance page renders guidance when bulk table is missing."""
         response = client.get('/candidate-finance/')
@@ -493,6 +501,45 @@ class TestWebApp:
                 ),
             ],
         )
+        conn.executemany(
+            """
+            INSERT INTO fec_candidate_cycle_totals (
+                candidate_id, cycle, receipts, contributions, individual_contributions,
+                coverage_start_date, coverage_end_date, transaction_coverage_date, last_report_year,
+                last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    'H2IL01349',
+                    2026,
+                    1200.0,
+                    1200.0,
+                    1100.0,
+                    '2026-01-01',
+                    '2026-03-31',
+                    '2026-03-31',
+                    2026,
+                    'Q1',
+                    5000.0,
+                    '{"source":"test"}',
+                ),
+                (
+                    'H2IL09999',
+                    2026,
+                    900.0,
+                    900.0,
+                    900.0,
+                    '2026-01-01',
+                    '2026-03-31',
+                    '2026-03-31',
+                    2026,
+                    'Q1',
+                    3500.0,
+                    '{"source":"test"}',
+                ),
+            ],
+        )
         conn.execute(
             """
             INSERT INTO analytics_donor_summary (
@@ -581,7 +628,7 @@ class TestWebApp:
         assert b'Federal Candidates' in candidates.data
         assert b'Jonathan Jackson' in candidates.data
         assert b'H2IL01349' in candidates.data
-        assert b'$350.00' in candidates.data
+        assert b'$1,200.00' in candidates.data
 
         networks = client.get('/federal-finance/networks?cycle=2026&network_min_edge_amount=0')
         assert networks.status_code == 200
@@ -629,6 +676,8 @@ class TestWebApp:
         assert b'Jane Donor' in detail.data
         assert b'Recent Contributions' in detail.data
         assert b'/federal-finance/donors/' in detail.data
+        assert b'Total Source:' in detail.data
+        assert b'FEC candidate totals endpoint' in detail.data
 
         donor_key = None
         conn = get_db(app.config['DATABASE_PATH'])
