@@ -1002,7 +1002,8 @@ def runserver_command(host, port, debug):
 
     app = create_app({
         'SECRET_KEY': config.FLASK_SECRET_KEY,
-        'DATABASE_PATH': config.DATABASE_PATH
+        'DATABASE_PATH': config.DATABASE_PATH,
+        'PUBLIC_CONTACT_EMAIL': config.PUBLIC_CONTACT_EMAIL,
     })
 
     click.echo(f'Starting server at http://{host}:{port}')

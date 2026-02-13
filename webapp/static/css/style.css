@@ -128,9 +128,34 @@ a:hover {
 .footer {
     background-color: #2d3748;
     color: #a0aec0;
-    text-align: center;
-    padding: 1rem;
+    padding: 1rem 1.25rem;
     font-size: 0.875rem;
+}
+
+.footer-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    text-align: left;
+}
+
+.footer-contact strong {
+    color: #e2e8f0;
+}
+
+.footer a {
+    color: #90cdf4;
+}
+
+.footer a:hover {
+    color: #bee3f8;
+}
+
+.footer-disclaimer {
+    color: #cbd5e0;
+    font-size: 0.8rem;
 }
 
 /* Flash messages */

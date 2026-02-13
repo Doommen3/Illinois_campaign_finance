@@ -21,6 +21,7 @@ RATE_LIMIT_MAX_BACKOFF = float(os.environ.get('RATE_LIMIT_MAX_BACKOFF', 60.0))
 # Flask
 FLASK_SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+PUBLIC_CONTACT_EMAIL = os.environ.get('PUBLIC_CONTACT_EMAIL', '').strip()
 
 # Scraping
 DEFAULT_START_PAGE = 1

@@ -1,4 +1,6 @@
 """Flask application factory for Illinois Campaign Finance tracker."""
+import os
+
 from flask import Flask, g
 
 from database.connection import get_db, close_db
@@ -19,6 +21,7 @@ def create_app(config=None):
     # Default configuration
     app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
     app.config['DATABASE_PATH'] = None  # Use default from connection.py
+    app.config['PUBLIC_CONTACT_EMAIL'] = os.environ.get('PUBLIC_CONTACT_EMAIL', '').strip()
 
     # Apply custom config if provided
     if config:
@@ -77,6 +80,7 @@ def create_app(config=None):
         return dict(
             format_currency=format_currency,
             current_manual_user=get_current_user(),
+            public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
         )
 
     return app

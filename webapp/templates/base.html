@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Illinois Campaign Finance Tracker{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260213-7') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260213-8') }}">
 </head>
 <body>
     <nav class="navbar">
@@ -82,7 +82,21 @@
     </main>
 
     <footer class="footer">
-        <p>Illinois Campaign Finance Tracker - Data from Illinois State Board of Elections</p>
+        <div class="footer-content">
+            <p class="footer-contact">
+                <strong>Contact:</strong>
+                {% if public_contact_email %}
+                <a href="mailto:{{ public_contact_email }}">{{ public_contact_email }}</a>
+                {% else %}
+                Please contact the site maintainer for questions, corrections, or data issues.
+                {% endif %}
+            </p>
+            <p class="footer-disclaimer">
+                Disclaimer: This site is provided for informational purposes only. I am not liable for errors, omissions,
+                or decisions made based on this data. Data is sourced from the U.S. Federal Election Commission (FEC) and
+                the Illinois State Board of Elections (ISBE). All data should be independently cross-checked against official filings.
+            </p>
+        </div>
     </footer>
 </body>
 </html>
