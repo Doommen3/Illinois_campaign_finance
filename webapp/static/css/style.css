@@ -253,6 +253,7 @@ h2 {
     padding: 1.25rem;
     border-radius: 8px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    min-width: 0;
 }
 
 .column h2 {
@@ -306,6 +307,22 @@ h2 {
 
 .data-table small {
     color: #718096;
+}
+
+/* Dashboard launch table has long purpose text; keep it inside its card. */
+.dashboard-launch-paths-table {
+    table-layout: fixed;
+}
+
+.dashboard-launch-paths-table th:first-child,
+.dashboard-launch-paths-table td:first-child {
+    width: 200px;
+}
+
+.dashboard-launch-paths-table th:last-child,
+.dashboard-launch-paths-table td:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Info tables (key-value) */
