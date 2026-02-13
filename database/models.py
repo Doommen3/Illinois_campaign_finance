@@ -1302,10 +1302,12 @@ class CandidateCommitteeFinanceAgg:
     def _build_filter_sql(
         cls,
         available_columns: set[str],
+        has_bulk_receipts_table: bool = False,
         search: Optional[str] = None,
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        start_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -1343,6 +1345,29 @@ class CandidateCommitteeFinanceAgg:
             clauses.append("COALESCE(committee_party_affiliation, '') LIKE ?")
             params.append(f"%{committee_party_term}%")
 
+        start_date_term = (start_date or "").strip()
+        if start_date_term:
+            if "period_end_date" in available_columns:
+                clauses.append("DATE(period_end_date) >= DATE(?)")
+                params.append(start_date_term)
+            elif "period_year" in available_columns and len(start_date_term) >= 4:
+                try:
+                    clauses.append("period_year >= ?")
+                    params.append(int(start_date_term[:4]))
+                except ValueError:
+                    pass
+            elif has_bulk_receipts_table:
+                clauses.append(
+                    """
+                    committee_id_sbe IN (
+                        SELECT DISTINCT committee_id_sbe
+                        FROM bulk_receipts_clean
+                        WHERE DATE(received_date) >= DATE(?)
+                    )
+                    """
+                )
+                params.append(start_date_term)
+
         if year is not None and "period_year" in available_columns:
             clauses.append("period_year = ?")
             params.append(int(year))
@@ -1371,6 +1396,7 @@ class CandidateCommitteeFinanceAgg:
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        start_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -1381,12 +1407,17 @@ class CandidateCommitteeFinanceAgg:
             return 0
 
         available_columns = cls._column_names(conn)
+        has_bulk_receipts_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bulk_receipts_clean'"
+        ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             available_columns=available_columns,
+            has_bulk_receipts_table=has_bulk_receipts_table,
             search=search,
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            start_date=start_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -1409,6 +1440,7 @@ class CandidateCommitteeFinanceAgg:
         office: Optional[str] = None,
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
+        start_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -1419,6 +1451,9 @@ class CandidateCommitteeFinanceAgg:
             return []
 
         available_columns = cls._column_names(conn)
+        has_bulk_receipts_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bulk_receipts_clean'"
+        ).fetchone() is not None
         sort_map = {
             "candidate_id": "candidate_id",
             "candidate_full_name": "candidate_full_name",
@@ -1466,10 +1501,12 @@ class CandidateCommitteeFinanceAgg:
         """
         where_sql, params = cls._build_filter_sql(
             available_columns=available_columns,
+            has_bulk_receipts_table=has_bulk_receipts_table,
             search=search,
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            start_date=start_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,

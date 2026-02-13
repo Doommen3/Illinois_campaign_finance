@@ -9,6 +9,7 @@
     office=office,
     candidate_party=candidate_party,
     committee_party=committee_party,
+    start_date=start_date,
     year=year,
     cycle=cycle,
     min_receipts=min_receipts,
@@ -35,6 +36,7 @@
     <input type="text" name="q" value="{{ query }}" placeholder="Search candidate, committee, or office">
     <input type="text" name="office" value="{{ office }}" placeholder="Office contains...">
     <input type="text" name="candidate_party" value="{{ candidate_party }}" placeholder="Candidate party contains...">
+    <input type="date" name="start_date" value="{{ start_date }}" placeholder="Start date">
     <select name="year">
         <option value="">All years</option>
         {% for option in available_years %}
@@ -63,6 +65,7 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        start_date=start_date,
         year=year,
         cycle=cycle,
         min_receipts=min_receipts,
@@ -77,6 +80,7 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        start_date=start_date,
         year=year,
         cycle=cycle,
         min_receipts=min_receipts,
@@ -155,6 +159,7 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        start_date=start_date,
         year=year,
         cycle=cycle,
         min_receipts=min_receipts,
@@ -174,6 +179,7 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        start_date=start_date,
         year=year,
         cycle=cycle,
         min_receipts=min_receipts,

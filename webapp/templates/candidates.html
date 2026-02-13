@@ -6,8 +6,8 @@
 <h1>Candidates</h1>
 <p class="subtitle">Explore Illinois campaign finance data from state (ISBE) and federal (FEC) sources.</p>
 
-<div class="two-column">
-    <div class="column">
+<div class="two-column candidates-columns">
+    <div class="column candidate-source-column">
         <h2>State Candidates (ISBE)</h2>
         <p>Illinois State Board of Elections bulk data covering candidate committees, receipts, and expenditures for state and local races.</p>
 
@@ -35,12 +35,12 @@
             {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}
         </p>
 
-        <p>
+        <p class="candidate-source-action">
             <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Explore State Candidates</a>
         </p>
     </div>
 
-    <div class="column">
+    <div class="column candidate-source-column">
         <h2>Federal Candidates (FEC)</h2>
         <p>FEC Schedule A contribution data for Illinois federal candidates — U.S. House, Senate, and Presidential races.</p>
 
@@ -64,8 +64,12 @@
             <strong>Latest receipt date:</strong>
             {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}
         </p>
+        <p class="stat-detail">
+            <strong>Last sync update:</strong>
+            {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}
+        </p>
 
-        <p>
+        <p class="candidate-source-action">
             <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance') }}">Explore Federal Candidates</a>
         </p>
     </div>

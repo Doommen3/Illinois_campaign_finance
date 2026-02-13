@@ -56,6 +56,7 @@
     <h2>Data Freshness</h2>
     <p><strong>Latest local receipt date:</strong> {{ freshness.local_receipt_date if freshness.local_receipt_date else 'Not loaded' }}</p>
     <p><strong>Latest federal receipt date:</strong> {{ freshness.federal_receipt_date if freshness.federal_receipt_date else 'Not loaded' }}</p>
+    <p><strong>Latest federal sync update:</strong> {{ freshness.federal_sync_updated_at if freshness.federal_sync_updated_at else 'Not loaded' }}</p>
 </div>
 
 <div class="two-column">

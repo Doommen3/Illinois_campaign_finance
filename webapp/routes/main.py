@@ -125,6 +125,7 @@ def _get_candidate_stats(conn):
     freshness = {
         'local_receipt_date': None,
         'federal_receipt_date': None,
+        'federal_sync_updated_at': None,
     }
     if _table_exists(conn, "bulk_receipts_clean"):
         freshness['local_receipt_date'] = _scalar(
@@ -136,6 +137,11 @@ def _get_candidate_stats(conn):
         freshness['federal_receipt_date'] = _scalar(
             conn,
             "SELECT MAX(contribution_receipt_date) AS max_date FROM fec_schedule_a_contributions",
+            default=None,
+        )
+        freshness['federal_sync_updated_at'] = _scalar(
+            conn,
+            "SELECT MAX(updated_at) AS max_updated_at FROM fec_schedule_a_contributions",
             default=None,
         )
 

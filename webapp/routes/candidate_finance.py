@@ -1,5 +1,6 @@
 """Candidate/committee aggregate finance routes."""
 import csv
+from datetime import date
 from io import StringIO
 
 from flask import Blueprint, Response, render_template, request, current_app
@@ -29,6 +30,16 @@ def _parse_int(value: str) -> int | None:
         return None
 
 
+def _parse_iso_date(value: str) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return None
+
+
 @candidate_finance_bp.route('/')
 def list_candidate_finance():
     """List candidate-committee aggregate finance rows from bulk imports."""
@@ -44,11 +55,13 @@ def list_candidate_finance():
     office = request.args.get('office', '').strip()
     candidate_party = request.args.get('candidate_party', '').strip()
     committee_party = request.args.get('committee_party', '').strip()
+    start_date_raw = request.args.get('start_date', '').strip()
     year_raw = request.args.get('year', '').strip()
     cycle_raw = request.args.get('cycle', '').strip()
     min_receipts_raw = request.args.get('min_receipts', '').strip()
     min_expenditures_raw = request.args.get('min_expenditures', '').strip()
 
+    start_date = _parse_iso_date(start_date_raw)
     year = _parse_int(year_raw)
     cycle = _parse_int(cycle_raw)
     min_receipts = _parse_float(min_receipts_raw)
@@ -73,6 +86,7 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            start_date=start_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -84,6 +98,7 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            start_date=start_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -105,6 +120,7 @@ def list_candidate_finance():
             office=office,
             candidate_party=candidate_party,
             committee_party=committee_party,
+            start_date=start_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -172,6 +188,7 @@ def list_candidate_finance():
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
+        start_date=start_date_raw,
         year=year_raw,
         cycle=cycle_raw,
         available_years=period_values["years"],
