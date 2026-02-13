@@ -1832,6 +1832,12 @@ class TestWebApp:
         assert response.status_code == 302
         assert '/auth/login' in response.headers.get('Location', '')
 
+    def test_admin_federal_receipt_audit_requires_login(self, client):
+        """Federal receipt audit route should require login."""
+        response = client.get('/admin/federal-receipt-audit')
+        assert response.status_code == 302
+        assert '/auth/login' in response.headers.get('Location', '')
+
     def test_admin_donor_merge_queue_loads(self, app, client):
         """Admin donor merge queue should render review entities."""
         conn = get_db(app.config['DATABASE_PATH'])
@@ -2000,6 +2006,143 @@ class TestWebApp:
         ).fetchall()
         conn.close()
         assert [row["review_status"] for row in statuses] == ["rejected", "rejected"]
+
+    def test_admin_federal_receipt_audit_loads(self, app, client):
+        """Federal receipt audit page should render internal mismatch flags."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            """
+            INSERT INTO fec_il_candidate_seed (
+                candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+                party, party_code, election_stage, candidate_name, normalized_candidate_name,
+                write_in, already_listed_general, source_file, source_row_number
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'seed-admin-audit',
+                '2026-02-07',
+                2026,
+                'U.S. House',
+                'H',
+                'IL-03',
+                '03',
+                'Democratic',
+                'DEM',
+                'Primary',
+                'Candidate Admin Audit',
+                'CANDIDATE ADMIN AUDIT',
+                0,
+                0,
+                'seed.csv',
+                2,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_candidate_match (
+                seed_candidate_key, candidate_name, office, office_code, district, district_code,
+                party, party_code, election_stage, cycle,
+                fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+                match_status, match_score, match_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'seed-admin-audit',
+                'Candidate Admin Audit',
+                'U.S. House',
+                'H',
+                'IL-03',
+                '03',
+                'Democratic',
+                'DEM',
+                'Primary',
+                2026,
+                'H2IL03333',
+                'AUDIT, CANDIDATE',
+                'H',
+                'IL',
+                '03',
+                'DEM',
+                'matched',
+                93.0,
+                'test',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_candidate_cycle_totals (
+                candidate_id, cycle, receipts, contributions, individual_contributions,
+                coverage_start_date, coverage_end_date, transaction_coverage_date,
+                last_report_year, last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'H2IL03333',
+                2026,
+                5000.0,
+                5000.0,
+                4500.0,
+                '2026-01-01',
+                '2026-03-31',
+                '2026-03-31',
+                2026,
+                'Q1',
+                10000.0,
+                '{"source":"test"}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_schedule_a_contributions (
+                sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+                contributor_name, contributor_city, contributor_state, contributor_zip,
+                contributor_employer, contributor_occupation, contributor_id, is_individual,
+                line_number, receipt_type, receipt_type_desc, memo_text,
+                contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+                donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'sub-admin-audit',
+                2026,
+                'H2IL03333',
+                'AUDIT, CANDIDATE',
+                'C00333333',
+                'AUDIT COMMITTEE',
+                'Test Donor',
+                'Chicago',
+                'IL',
+                '60603',
+                'ACME',
+                'Engineer',
+                None,
+                1,
+                '11AI',
+                'IND',
+                'Individual contribution',
+                '',
+                2500.0,
+                '2026-01-10',
+                2026,
+                'donor-audit-key',
+                'donor_audit_il_60603',
+                'name_state_zip',
+                '2026-01-11',
+                'img-admin-audit',
+                'src-admin-audit',
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        login = _login_manual_user(client, next_url="/admin/federal-receipt-audit")
+        assert login.status_code == 302
+
+        response = client.get('/admin/federal-receipt-audit?cycle=2026&status=flagged&min_abs_diff=1')
+        assert response.status_code == 200
+        assert b'Federal Receipt Audit' in response.data
+        assert b'AUDIT, CANDIDATE' in response.data
+        assert b'missing_schedule_rows' in response.data
 
     def test_api_stats(self, client):
         """Test that the API stats endpoint works."""

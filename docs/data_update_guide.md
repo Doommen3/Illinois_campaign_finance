@@ -74,7 +74,7 @@ Run the same steps by hand from the project root on the server:
 
 ```bash
 cd /srv/illinois_campaign_finance/app
-PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
 source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
 
 $PYTHON run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
@@ -89,6 +89,71 @@ bash scripts/sync-fec.sh
 ```
 
 **Note:** When running commands manually, you must `export` env vars after sourcing `.env` for Python to see them. The `sync-fec.sh` script does this automatically.
+
+### Hourly Schedule A Catch-Up for Missing Receipts
+
+When candidate reported totals exceed synced Schedule A subtotal, run catch-up backfills under an hourly call budget.
+
+Manual run:
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-a \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-committee 25 \
+  --min-abs-gap 500 \
+  --refresh-cache
+```
+
+Wrapper script:
+
+```bash
+bash scripts/fec-schedule-a-catchup.sh
+```
+
+Suggested systemd units:
+
+**`/etc/systemd/system/il-campaign-fec-catchup.service`**
+
+```ini
+[Unit]
+Description=Illinois Campaign Finance - FEC Schedule A catch-up
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=app
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/srv/illinois_campaign_finance/app/scripts/fec-schedule-a-catchup.sh
+EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
+```
+
+**`/etc/systemd/system/il-campaign-fec-catchup.timer`**
+
+```ini
+[Unit]
+Description=Run FEC Schedule A catch-up hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now il-campaign-fec-catchup.timer
+systemctl list-timers il-campaign-fec-catchup.timer
+journalctl -u il-campaign-fec-catchup.service --since today
+```
 
 ---
 
@@ -107,7 +172,7 @@ The most reliable method. Download bulk data files from the ISBE website, transf
    ```
 3. Run the bulk import:
    ```bash
-   PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+   PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
    $PYTHON run.py import-bulk-download --directory /srv/illinois_campaign_finance/shared/downloads/
    $PYTHON run.py refresh-analytics --with-snapshot
    ```

@@ -3,8 +3,10 @@ from pathlib import Path
 
 from database.connection import get_db, init_db
 from database.federal_fec import (
+    backfill_fec_missing_schedule_a,
     count_federal_candidates,
     federal_data_available,
+    get_federal_receipt_mismatch_flags,
     get_federal_candidate_detail,
     get_federal_donor_detail,
     get_federal_donor_network_clusters,
@@ -238,6 +240,284 @@ def test_sync_il_federal_fec_and_queries(tmp_path: Path):
         "SELECT COUNT(*) AS count FROM raw_extractions WHERE source_type LIKE 'fec_api:%'"
     ).fetchone()["count"]
     assert raw_count >= 2
+
+    conn.close()
+
+
+def test_federal_receipt_mismatch_flags_and_backfill(tmp_path: Path):
+    db_path = str(tmp_path / "fec_backfill.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-backfill-1",
+            "2026-02-07",
+            2026,
+            "U.S. House",
+            "H",
+            "IL-07",
+            "07",
+            "Democratic",
+            "DEM",
+            "Primary",
+            "Candidate Gap",
+            "CANDIDATE GAP",
+            0,
+            0,
+            "seed.csv",
+            2,
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle,
+            fec_candidate_id, fec_name, fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "seed-backfill-1",
+            "Candidate Gap",
+            "U.S. House",
+            "H",
+            "IL-07",
+            "07",
+            "Democratic",
+            "DEM",
+            "Primary",
+            2026,
+            "H2IL77777",
+            "GAP, CANDIDATE",
+            "H",
+            "IL",
+            "07",
+            "DEM",
+            "matched",
+            95.0,
+            "test",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_committees (
+            candidate_id, committee_id, cycle, committee_name, committee_type,
+            committee_designation, committee_designation_full, filing_frequency,
+            committee_party, committee_city, committee_state, committee_zip, is_principal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "H2IL77777",
+            "C00999999",
+            2026,
+            "CANDIDATE GAP COMMITTEE",
+            "H",
+            "P",
+            "Principal campaign committee",
+            "Q",
+            "DEM",
+            "CHICAGO",
+            "IL",
+            "60601",
+            1,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_candidate_cycle_totals (
+            candidate_id, cycle, receipts, contributions, individual_contributions,
+            coverage_start_date, coverage_end_date, transaction_coverage_date, last_report_year,
+            last_report_type_full, last_cash_on_hand_end_period, source_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "H2IL77777",
+            2026,
+            1000.0,
+            1000.0,
+            900.0,
+            "2026-01-01",
+            "2026-03-31",
+            "2026-03-31",
+            2026,
+            "Q1",
+            2500.0,
+            '{"source":"test"}',
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id,
+            is_individual, line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "sub-gap-existing",
+            2026,
+            "H2IL77777",
+            "GAP, CANDIDATE",
+            "C00999999",
+            "CANDIDATE GAP COMMITTEE",
+            "Existing Donor",
+            "Chicago",
+            "IL",
+            "60601",
+            "ACME",
+            "Engineer",
+            None,
+            1,
+            "11AI",
+            "IND",
+            "Individual contribution",
+            "",
+            100.0,
+            "2026-01-15",
+            2026,
+            "existing-donor-key",
+            "existing_donor_il_60601",
+            "name_state_zip",
+            "2026-01-16",
+            "img-existing",
+            "src-existing",
+        ),
+    )
+    conn.commit()
+
+    flags = get_federal_receipt_mismatch_flags(
+        conn,
+        cycle=2026,
+        status="missing_schedule_rows",
+        min_abs_diff=1.0,
+        tolerance=0.01,
+        limit=20,
+    )
+    assert flags["total_rows"] == 1
+    assert flags["rows"][0]["candidate_id"] == "H2IL77777"
+    assert flags["rows"][0]["flag_status"] == "missing_schedule_rows"
+    assert flags["rows"][0]["reported_total_receipts"] == 1000.0
+    assert flags["rows"][0]["schedule_total_amount"] == 100.0
+
+    class BackfillClient:
+        base_url = "https://api.open.fec.gov/v1"
+
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint: str, params: dict):
+            self.calls.append((endpoint, dict(params)))
+            assert endpoint == "/schedules/schedule_a/"
+            if params.get("committee_id") != "C00999999":
+                return {"pagination": {"count": 0, "pages": 1, "per_page": params.get("per_page", 100)}, "results": []}
+
+            if params.get("last_index") == "token-1":
+                return {
+                    "pagination": {"count": 1, "pages": 1, "per_page": params.get("per_page", 100)},
+                    "results": [],
+                }
+
+            return {
+                "pagination": {
+                    "count": 1,
+                    "pages": 1,
+                    "per_page": params.get("per_page", 100),
+                    "last_indexes": {
+                        "last_index": "token-1",
+                        "last_contribution_receipt_date": "2025-11-30",
+                    },
+                },
+                "results": [
+                    {
+                        "sub_id": "sub-gap-new-1",
+                        "committee_id": "C00999999",
+                        "committee_name": "CANDIDATE GAP COMMITTEE",
+                        "contribution_receipt_amount": 300.0,
+                        "contribution_receipt_date": "2025-12-01",
+                        "contributor_name": "Backfill Donor",
+                        "contributor_city": "Chicago",
+                        "contributor_state": "IL",
+                        "contributor_zip": "60602",
+                        "contributor_employer": "STATE",
+                        "contributor_occupation": "Attorney",
+                        "is_individual": True,
+                        "line_number": "11AI",
+                        "receipt_type": "IND",
+                        "receipt_type_desc": "Individual contribution",
+                        "memo_text": "",
+                        "two_year_transaction_period": 2026,
+                        "load_date": "2026-02-13T10:00:00",
+                        "image_number": "img-gap-new",
+                    }
+                ],
+            }
+
+    client = BackfillClient()
+
+    run_one = backfill_fec_missing_schedule_a(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_committee=1,
+        min_abs_gap=1.0,
+        tolerance=0.01,
+        include_completed=False,
+        refresh_cache=True,
+        client=client,
+    )
+    assert run_one["api_calls_made"] == 1
+    assert run_one["contributions_upserted"] == 1
+    assert run_one["committees_processed"] >= 1
+    state_row = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_a_backfill_state
+        WHERE committee_id = 'C00999999' AND cycle = 2026
+        """
+    ).fetchone()
+    assert state_row is not None
+    assert state_row["next_last_index"] == "token-1"
+    assert state_row["completed"] == 0
+
+    run_two = backfill_fec_missing_schedule_a(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=1,
+        per_page=100,
+        max_pages_per_committee=1,
+        min_abs_gap=1.0,
+        tolerance=0.01,
+        include_completed=False,
+        refresh_cache=True,
+        client=client,
+    )
+    assert run_two["api_calls_made"] == 1
+    final_state = conn.execute(
+        """
+        SELECT next_last_index, completed
+        FROM fec_schedule_a_backfill_state
+        WHERE committee_id = 'C00999999' AND cycle = 2026
+        """
+    ).fetchone()
+    assert final_state is not None
+    assert final_state["next_last_index"] is None
+    assert final_state["completed"] == 1
 
     conn.close()
 

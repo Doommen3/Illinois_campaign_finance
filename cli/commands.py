@@ -22,6 +22,7 @@ from database.analytics import (
     save_dashboard_snapshot,
 )
 from database.federal_fec import (
+    backfill_fec_missing_schedule_a,
     rebuild_fec_donor_identities,
     refresh_fec_local_donor_matches,
     sync_il_federal_fec,
@@ -970,6 +971,83 @@ def sync_fec_il_federal_command(
             click.echo(f'  {key}: {stats[key]}')
     except Exception as exc:
         click.echo(f'Error syncing FEC federal data: {exc}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('backfill-fec-schedule-a')
+@click.option('--api-key', default='', help='FEC API key (defaults to FEC_API_KEY env var)')
+@click.option('--cycle', default=2026, type=int, show_default=True, help='Two-year transaction period (e.g., 2026)')
+@click.option('--max-calls', default=1000, type=int, show_default=True, help='Max FEC API calls for this run')
+@click.option('--per-page', default=100, type=int, show_default=True, help='API per-page size (max 100)')
+@click.option(
+    '--max-pages-per-committee',
+    default=25,
+    type=int,
+    show_default=True,
+    help='Max schedule pages to request per committee during this run',
+)
+@click.option(
+    '--min-abs-gap',
+    default=500.0,
+    type=float,
+    show_default=True,
+    help='Only target candidates where reported-vs-synced gap exceeds this amount',
+)
+@click.option(
+    '--tolerance',
+    default=0.01,
+    type=float,
+    show_default=True,
+    help='Treat smaller differences as matched (for status classification)',
+)
+@click.option(
+    '--include-completed',
+    is_flag=True,
+    help='Also revisit committees already marked as completed in backfill state',
+)
+@click.option('--refresh-cache', is_flag=True, help='Ignore cached raw payloads and request fresh API pages')
+@click.option('--max-committees', type=int, default=None, help='Optional committee cap for this run')
+def backfill_fec_schedule_a_command(
+    api_key,
+    cycle,
+    max_calls,
+    per_page,
+    max_pages_per_committee,
+    min_abs_gap,
+    tolerance,
+    include_completed,
+    refresh_cache,
+    max_committees,
+):
+    """Backfill missing FEC Schedule A rows for candidates with receipt mismatches."""
+    resolved_api_key = (api_key or '').strip() or (config.FEC_API_KEY or '').strip()
+    if not resolved_api_key:
+        click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
+        sys.exit(1)
+
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Starting FEC Schedule A backfill run...')
+        stats = backfill_fec_missing_schedule_a(
+            conn,
+            api_key=resolved_api_key,
+            cycle=int(cycle),
+            max_calls=int(max_calls),
+            per_page=int(per_page),
+            max_pages_per_committee=int(max_pages_per_committee),
+            min_abs_gap=float(min_abs_gap),
+            tolerance=float(tolerance),
+            include_completed=bool(include_completed),
+            refresh_cache=bool(refresh_cache),
+            max_committees=max_committees,
+        )
+        click.echo('FEC Schedule A backfill completed:')
+        for key in sorted(stats.keys()):
+            click.echo(f'  {key}: {stats[key]}')
+    except Exception as exc:
+        click.echo(f'Error backfilling FEC Schedule A rows: {exc}', err=True)
         sys.exit(1)
     finally:
         conn.close()

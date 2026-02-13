@@ -212,13 +212,42 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 │   ├── data/
 │   │   └── campaign_finance.db SQLite database
 │   └── ...
-├── venv/                       Python virtual environment
-│   └── bin/python              Used by sync-fec.sh and systemd
 └── shared/                     Persistent data across deploys
+    ├── venv/                   Python virtual environment (used by systemd + CLI)
+    │   └── bin/python3
     ├── .env                    Environment variables (FEC_API_KEY, etc.)
     ├── logs/                   Sync and task logs
     │   └── sync-fec-*.log      Timestamped FEC sync logs
     └── downloads/              Staging area for ISBE bulk files
+```
+
+### Production Source of Truth (Important)
+
+Use these paths/services for production operations on the Hetzner host:
+
+- App code: `/srv/illinois_campaign_finance/app`
+- Runtime env: `/srv/illinois_campaign_finance/shared/.env`
+- Python: `/srv/illinois_campaign_finance/shared/venv/bin/python3`
+- Web service: `ilcf-web.service`
+- FEC sync service/timer: `il-campaign-fec-sync.service` + `il-campaign-fec-sync.timer`
+
+Do not use legacy paths/services unless intentionally migrating:
+
+- Legacy app path: `/srv/illinois/app`
+- Legacy web unit: `illinois-web.service`
+
+Quick verification:
+
+```bash
+systemctl status ilcf-web.service --no-pager
+systemctl cat ilcf-web.service
+systemctl status illinois-web.service --no-pager
+```
+
+If `illinois-web.service` exists, keep it disabled/inactive to avoid operator confusion:
+
+```bash
+systemctl disable --now illinois-web.service
 ```
 
 ### First-Time Server Setup
@@ -256,10 +285,10 @@ git pull origin main
 /srv/illinois_campaign_finance/shared/venv/bin/pip install -r requirements.txt
 
 # Restart the web application
-systemctl restart ilcf-web
+systemctl restart ilcf-web.service
 
 # Rebuild analytics materialized views + snapshot cache (recommended after UI/analytics changes)
-/srv/illinois_campaign_finance/shared/venv/bin/python run.py refresh-analytics --with-snapshot
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
 ```
 
 ### Key Web Routes
@@ -272,6 +301,7 @@ systemctl restart ilcf-web
 | `/candidates` | Unified candidates page — state (ISBE) and federal (FEC) |
 | `/candidate-finance` | State candidate finance detail (ISBE data) |
 | `/federal-finance` | Federal candidate finance detail (FEC data) |
+| `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
@@ -282,7 +312,7 @@ Use this to quickly validate mobile rendering across key routes and catch horizo
 
 ```bash
 cd /srv/illinois_campaign_finance/app
-/srv/illinois_campaign_finance/shared/venv/bin/python scripts/mobile_smoke_check.py --base-url http://127.0.0.1:5000
+/srv/illinois_campaign_finance/shared/venv/bin/python3 scripts/mobile_smoke_check.py --base-url http://127.0.0.1:5000
 ```
 
 Outputs:
@@ -312,12 +342,74 @@ bash scripts/sync-fec.sh
 Or run individual steps:
 
 ```bash
-PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
 source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
 
 $PYTHON run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
 $PYTHON run.py rebuild-fec-donor-identities
 $PYTHON run.py refresh-analytics --with-snapshot
+```
+
+### Hourly Schedule A Catch-Up (for receipt gaps)
+
+Use this when FEC reported candidate totals are higher than synced Schedule A subtotal and you need to backfill missing rows under hourly API limits.
+
+One-off run:
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py backfill-fec-schedule-a \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-committee 25 \
+  --min-abs-gap 500 \
+  --refresh-cache
+```
+
+Wrapper script (recommended for automation):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+bash scripts/fec-schedule-a-catchup.sh
+```
+
+Suggested systemd schedule while API limit is 1000/hour:
+
+```ini
+# /etc/systemd/system/il-campaign-fec-catchup.service
+[Unit]
+Description=Illinois Campaign Finance - FEC Schedule A catch-up
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=app
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/srv/illinois_campaign_finance/app/scripts/fec-schedule-a-catchup.sh
+EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
+```
+
+```ini
+# /etc/systemd/system/il-campaign-fec-catchup.timer
+[Unit]
+Description=Run FEC Schedule A catch-up hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now il-campaign-fec-catchup.timer
+systemctl list-timers il-campaign-fec-catchup.timer
+journalctl -u il-campaign-fec-catchup.service --since today
 ```
 
 **Note:** When sourcing `.env` manually, you must `export` variables for Python to see them. The `sync-fec.sh` script handles this automatically via `set -a`.
@@ -348,7 +440,7 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
 # Import and rebuild analytics
 cd /srv/illinois_campaign_finance/app
-PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
 $PYTHON run.py import-bulk-download --directory /srv/illinois_campaign_finance/shared/downloads/
 $PYTHON run.py refresh-analytics --with-snapshot
 ```

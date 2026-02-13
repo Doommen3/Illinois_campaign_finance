@@ -510,6 +510,27 @@ CREATE INDEX IF NOT EXISTS idx_fec_candidate_cycle_totals_cycle
 CREATE INDEX IF NOT EXISTS idx_fec_candidate_cycle_totals_updated
     ON fec_candidate_cycle_totals(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS fec_schedule_a_backfill_state (
+    committee_id TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    candidate_id TEXT,
+    candidate_name TEXT,
+    next_last_index TEXT,
+    next_last_receipt_date TEXT,
+    completed INTEGER NOT NULL DEFAULT 0,
+    pages_processed_total INTEGER NOT NULL DEFAULT 0,
+    contributions_upserted_total INTEGER NOT NULL DEFAULT 0,
+    api_calls_total INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (committee_id, cycle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_backfill_cycle_completed
+    ON fec_schedule_a_backfill_state(cycle, completed, updated_at);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_backfill_candidate
+    ON fec_schedule_a_backfill_state(candidate_id, cycle);
+
 CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
     federal_donor_entity_key TEXT NOT NULL,
     local_donor_key TEXT NOT NULL,

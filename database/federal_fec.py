@@ -1947,6 +1947,695 @@ def sync_il_federal_fec(
     }
 
 
+def _ensure_fec_schedule_a_backfill_state_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fec_schedule_a_backfill_state (
+            committee_id TEXT NOT NULL,
+            cycle INTEGER NOT NULL,
+            candidate_id TEXT,
+            candidate_name TEXT,
+            next_last_index TEXT,
+            next_last_receipt_date TEXT,
+            completed INTEGER NOT NULL DEFAULT 0,
+            pages_processed_total INTEGER NOT NULL DEFAULT 0,
+            contributions_upserted_total INTEGER NOT NULL DEFAULT 0,
+            api_calls_total INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (committee_id, cycle)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_schedule_backfill_cycle_completed
+        ON fec_schedule_a_backfill_state(cycle, completed, updated_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_schedule_backfill_candidate
+        ON fec_schedule_a_backfill_state(candidate_id, cycle)
+        """
+    )
+
+
+def get_federal_receipt_mismatch_flags(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    status: str = "flagged",
+    min_abs_diff: float = 1.0,
+    tolerance: float = 0.01,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """Return candidate-level FEC total vs synced Schedule A subtotal mismatch flags."""
+    if not _table_exists(conn, "fec_candidate_match"):
+        return {
+            "rows": [],
+            "status_counts": {},
+            "total_rows": 0,
+            "status": "empty",
+            "cycle": cycle,
+            "min_abs_diff": float(min_abs_diff),
+            "tolerance": float(tolerance),
+        }
+
+    _ensure_fec_schedule_a_backfill_state_table(conn)
+
+    status_value = _clean_text(status).lower() or "flagged"
+    valid_statuses = {
+        "flagged",
+        "all",
+        "matched",
+        "missing_schedule_rows",
+        "schedule_exceeds_reported",
+        "missing_reported_total",
+    }
+    if status_value not in valid_statuses:
+        status_value = "flagged"
+
+    cycle_value = int(cycle) if cycle is not None else None
+    tolerance_value = max(0.0, float(tolerance))
+    min_abs_diff_value = max(0.0, float(min_abs_diff))
+
+    schedule_source_sql = (
+        """
+        SELECT
+            candidate_id,
+            cycle,
+            COUNT(DISTINCT sub_id) AS contribution_count,
+            COUNT(
+                DISTINCT COALESCE(
+                    NULLIF(donor_entity_key, ''),
+                    NULLIF(donor_key, ''),
+                    sub_id
+                )
+            ) AS donor_count,
+            COUNT(DISTINCT committee_id) AS committee_count,
+            COALESCE(SUM(contribution_receipt_amount), 0) AS schedule_total_amount,
+            MIN(contribution_receipt_date) AS earliest_contribution_date,
+            MAX(contribution_receipt_date) AS latest_contribution_date
+        FROM fec_schedule_a_contributions
+        GROUP BY candidate_id, cycle
+        """
+        if _table_exists(conn, "fec_schedule_a_contributions")
+        else """
+        SELECT
+            NULL AS candidate_id,
+            NULL AS cycle,
+            0 AS contribution_count,
+            0 AS donor_count,
+            0 AS committee_count,
+            0.0 AS schedule_total_amount,
+            NULL AS earliest_contribution_date,
+            NULL AS latest_contribution_date
+        WHERE 1 = 0
+        """
+    )
+    totals_source_sql = (
+        """
+        SELECT
+            candidate_id,
+            cycle,
+            receipts,
+            coverage_end_date,
+            transaction_coverage_date,
+            updated_at
+        FROM fec_candidate_cycle_totals
+        """
+        if _table_exists(conn, "fec_candidate_cycle_totals")
+        else """
+        SELECT
+            NULL AS candidate_id,
+            NULL AS cycle,
+            NULL AS receipts,
+            NULL AS coverage_end_date,
+            NULL AS transaction_coverage_date,
+            NULL AS updated_at
+        WHERE 1 = 0
+        """
+    )
+
+    cte_sql = f"""
+        WITH candidate_meta AS (
+            SELECT
+                fec_candidate_id AS candidate_id,
+                cycle,
+                MAX(COALESCE(NULLIF(fec_name, ''), NULLIF(candidate_name, ''), fec_candidate_id)) AS candidate_name,
+                MAX(COALESCE(NULLIF(candidate_name, ''), NULLIF(fec_name, ''), fec_candidate_id)) AS seed_candidate_name,
+                MAX(office) AS office,
+                MAX(district) AS district,
+                MAX(party) AS party,
+                MAX(match_status) AS match_status
+            FROM fec_candidate_match
+            WHERE fec_candidate_id IS NOT NULL
+            GROUP BY fec_candidate_id, cycle
+        ),
+        schedule_totals AS (
+            {schedule_source_sql}
+        ),
+        reported_totals AS (
+            {totals_source_sql}
+        ),
+        backfill_progress AS (
+            SELECT
+                candidate_id,
+                cycle,
+                COUNT(*) AS tracked_committees,
+                SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) AS completed_committees,
+                MAX(updated_at) AS backfill_updated_at
+            FROM fec_schedule_a_backfill_state
+            GROUP BY candidate_id, cycle
+        ),
+        rollup AS (
+            SELECT
+                cm.candidate_id,
+                cm.cycle,
+                cm.candidate_name,
+                cm.seed_candidate_name,
+                cm.office,
+                cm.district,
+                cm.party,
+                cm.match_status,
+                rt.receipts AS reported_total_receipts,
+                COALESCE(st.schedule_total_amount, 0.0) AS schedule_total_amount,
+                CASE
+                    WHEN rt.receipts IS NULL THEN NULL
+                    ELSE rt.receipts - COALESCE(st.schedule_total_amount, 0.0)
+                END AS mismatch_amount,
+                CASE
+                    WHEN rt.receipts IS NULL OR ABS(rt.receipts) < 0.0000001 THEN NULL
+                    ELSE (rt.receipts - COALESCE(st.schedule_total_amount, 0.0)) / rt.receipts
+                END AS mismatch_ratio,
+                CASE
+                    WHEN rt.receipts IS NULL THEN 'missing_reported_total'
+                    WHEN ABS(rt.receipts - COALESCE(st.schedule_total_amount, 0.0)) <= ? THEN 'matched'
+                    WHEN rt.receipts > COALESCE(st.schedule_total_amount, 0.0) THEN 'missing_schedule_rows'
+                    ELSE 'schedule_exceeds_reported'
+                END AS flag_status,
+                COALESCE(st.committee_count, 0) AS schedule_committee_count,
+                COALESCE(st.contribution_count, 0) AS schedule_contribution_count,
+                COALESCE(st.donor_count, 0) AS schedule_donor_count,
+                st.earliest_contribution_date,
+                st.latest_contribution_date,
+                rt.coverage_end_date,
+                rt.transaction_coverage_date,
+                rt.updated_at AS totals_updated_at,
+                COALESCE(bp.tracked_committees, 0) AS tracked_committees,
+                COALESCE(bp.completed_committees, 0) AS completed_committees,
+                bp.backfill_updated_at
+            FROM candidate_meta cm
+            LEFT JOIN reported_totals rt
+              ON rt.candidate_id = cm.candidate_id
+             AND rt.cycle = cm.cycle
+            LEFT JOIN schedule_totals st
+              ON st.candidate_id = cm.candidate_id
+             AND st.cycle = cm.cycle
+            LEFT JOIN backfill_progress bp
+              ON bp.candidate_id = cm.candidate_id
+             AND bp.cycle = cm.cycle
+        )
+    """
+
+    filter_clauses = ["(? IS NULL OR cycle = ?)"]
+    filter_params: list[Any] = [cycle_value, cycle_value]
+
+    if status_value == "flagged":
+        filter_clauses.append(
+            "(flag_status != 'matched' AND (flag_status = 'missing_reported_total' OR ABS(COALESCE(mismatch_amount, 0.0)) >= ?))"
+        )
+        filter_params.append(min_abs_diff_value)
+    elif status_value == "all":
+        if min_abs_diff_value > 0:
+            filter_clauses.append("(flag_status = 'missing_reported_total' OR ABS(COALESCE(mismatch_amount, 0.0)) >= ?)")
+            filter_params.append(min_abs_diff_value)
+    elif status_value == "matched":
+        filter_clauses.append("flag_status = 'matched'")
+    else:
+        filter_clauses.append("flag_status = ?")
+        filter_params.append(status_value)
+        if status_value in {"missing_schedule_rows", "schedule_exceeds_reported"} and min_abs_diff_value > 0:
+            filter_clauses.append("ABS(COALESCE(mismatch_amount, 0.0)) >= ?")
+            filter_params.append(min_abs_diff_value)
+
+    where_sql = f"WHERE {' AND '.join(filter_clauses)}"
+
+    rows = conn.execute(
+        f"""
+        {cte_sql}
+        SELECT
+            candidate_id,
+            cycle,
+            candidate_name,
+            seed_candidate_name,
+            office,
+            district,
+            party,
+            match_status,
+            reported_total_receipts,
+            schedule_total_amount,
+            mismatch_amount,
+            mismatch_ratio,
+            flag_status,
+            schedule_committee_count,
+            schedule_contribution_count,
+            schedule_donor_count,
+            earliest_contribution_date,
+            latest_contribution_date,
+            coverage_end_date,
+            transaction_coverage_date,
+            totals_updated_at,
+            tracked_committees,
+            completed_committees,
+            backfill_updated_at
+        FROM rollup
+        {where_sql}
+        ORDER BY
+            CASE WHEN mismatch_amount IS NULL THEN -1 ELSE ABS(mismatch_amount) END DESC,
+            candidate_name ASC
+        LIMIT ? OFFSET ?
+        """,
+        [tolerance_value, *filter_params, max(1, int(limit)), max(0, int(offset))],
+    ).fetchall()
+
+    total_row = conn.execute(
+        f"""
+        {cte_sql}
+        SELECT COUNT(*) AS count
+        FROM rollup
+        {where_sql}
+        """,
+        [tolerance_value, *filter_params],
+    ).fetchone()
+    total_rows = int(total_row["count"] or 0) if total_row else 0
+
+    status_counts_rows = conn.execute(
+        f"""
+        {cte_sql}
+        SELECT
+            flag_status,
+            COUNT(*) AS count
+        FROM rollup
+        WHERE (? IS NULL OR cycle = ?)
+        GROUP BY flag_status
+        ORDER BY count DESC, flag_status ASC
+        """,
+        [tolerance_value, cycle_value, cycle_value],
+    ).fetchall()
+
+    status_counts = {row["flag_status"]: int(row["count"] or 0) for row in status_counts_rows}
+
+    output_rows: list[dict] = []
+    for row in rows:
+        output_rows.append(
+            {
+                "candidate_id": row["candidate_id"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_name": row["candidate_name"] or row["seed_candidate_name"] or row["candidate_id"],
+                "office": row["office"],
+                "district": row["district"],
+                "party": row["party"],
+                "match_status": row["match_status"],
+                "reported_total_receipts": (
+                    float(row["reported_total_receipts"]) if row["reported_total_receipts"] is not None else None
+                ),
+                "schedule_total_amount": float(row["schedule_total_amount"] or 0.0),
+                "mismatch_amount": float(row["mismatch_amount"]) if row["mismatch_amount"] is not None else None,
+                "mismatch_ratio": float(row["mismatch_ratio"]) if row["mismatch_ratio"] is not None else None,
+                "flag_status": row["flag_status"],
+                "schedule_committee_count": int(row["schedule_committee_count"] or 0),
+                "schedule_contribution_count": int(row["schedule_contribution_count"] or 0),
+                "schedule_donor_count": int(row["schedule_donor_count"] or 0),
+                "earliest_contribution_date": row["earliest_contribution_date"],
+                "latest_contribution_date": row["latest_contribution_date"],
+                "coverage_end_date": row["coverage_end_date"],
+                "transaction_coverage_date": row["transaction_coverage_date"],
+                "totals_updated_at": row["totals_updated_at"],
+                "tracked_committees": int(row["tracked_committees"] or 0),
+                "completed_committees": int(row["completed_committees"] or 0),
+                "backfill_updated_at": row["backfill_updated_at"],
+            }
+        )
+
+    return {
+        "rows": output_rows,
+        "status_counts": status_counts,
+        "total_rows": total_rows,
+        "status": status_value,
+        "cycle": cycle_value,
+        "min_abs_diff": min_abs_diff_value,
+        "tolerance": tolerance_value,
+    }
+
+
+def _upsert_schedule_a_backfill_state(
+    conn: sqlite3.Connection,
+    *,
+    committee_id: str,
+    cycle: int,
+    candidate_id: str | None,
+    candidate_name: str | None,
+    next_last_index: str | None,
+    next_last_receipt_date: str | None,
+    completed: bool,
+    pages_processed_delta: int,
+    contributions_upserted_delta: int,
+    api_calls_delta: int,
+    last_error: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_backfill_state (
+            committee_id,
+            cycle,
+            candidate_id,
+            candidate_name,
+            next_last_index,
+            next_last_receipt_date,
+            completed,
+            pages_processed_total,
+            contributions_upserted_total,
+            api_calls_total,
+            last_error,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(committee_id, cycle) DO UPDATE SET
+            candidate_id = excluded.candidate_id,
+            candidate_name = excluded.candidate_name,
+            next_last_index = excluded.next_last_index,
+            next_last_receipt_date = excluded.next_last_receipt_date,
+            completed = excluded.completed,
+            pages_processed_total = fec_schedule_a_backfill_state.pages_processed_total + excluded.pages_processed_total,
+            contributions_upserted_total = (
+                fec_schedule_a_backfill_state.contributions_upserted_total + excluded.contributions_upserted_total
+            ),
+            api_calls_total = fec_schedule_a_backfill_state.api_calls_total + excluded.api_calls_total,
+            last_error = excluded.last_error,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            committee_id,
+            int(cycle),
+            candidate_id,
+            candidate_name,
+            _clean_text(next_last_index) or None,
+            _clean_text(next_last_receipt_date) or None,
+            1 if completed else 0,
+            max(0, int(pages_processed_delta)),
+            max(0, int(contributions_upserted_delta)),
+            max(0, int(api_calls_delta)),
+            _clean_text(last_error)[:500] if last_error else None,
+        ),
+    )
+
+
+def backfill_fec_missing_schedule_a(
+    conn: sqlite3.Connection,
+    *,
+    api_key: str,
+    cycle: int,
+    max_calls: int = 1000,
+    per_page: int = 100,
+    max_pages_per_committee: int = 25,
+    min_abs_gap: float = 500.0,
+    tolerance: float = 0.01,
+    include_completed: bool = False,
+    refresh_cache: bool = False,
+    max_committees: int | None = None,
+    client: FecApiClient | None = None,
+) -> dict:
+    """Backfill Schedule A rows for candidates with reported-vs-synced receipt gaps.
+
+    Designed for hourly catch-up runs under API call budgets (for example, 1000 calls/hour).
+    """
+    if not api_key:
+        raise ValueError("FEC API key is required")
+    if not _table_exists(conn, "raw_extractions"):
+        raise RuntimeError("raw_extractions table is required for FEC backfill")
+    if not _table_exists(conn, "fec_candidate_committees"):
+        raise RuntimeError("fec_candidate_committees table is required for FEC backfill")
+
+    _ensure_fec_schedule_a_backfill_state_table(conn)
+    conn.commit()
+
+    effective_cycle = int(cycle)
+    call_budget = max(1, int(max_calls))
+    per_page_value = min(max(1, int(per_page)), 100)
+    pages_per_committee_cap = max(1, int(max_pages_per_committee))
+    min_gap_value = max(0.0, float(min_abs_gap))
+    tolerance_value = max(0.0, float(tolerance))
+
+    mismatch = get_federal_receipt_mismatch_flags(
+        conn,
+        cycle=effective_cycle,
+        status="missing_schedule_rows",
+        min_abs_diff=max(min_gap_value, tolerance_value),
+        tolerance=tolerance_value,
+        limit=10000,
+        offset=0,
+    )
+    candidate_rows = mismatch.get("rows") or []
+    candidate_ids = sorted({row["candidate_id"] for row in candidate_rows if _clean_text(row.get("candidate_id"))})
+
+    if not candidate_ids:
+        return {
+            "cycle": effective_cycle,
+            "candidate_gap_count": 0,
+            "committees_selected": 0,
+            "committees_processed": 0,
+            "committees_completed": 0,
+            "committees_remaining": 0,
+            "pages_processed": 0,
+            "contributions_upserted": 0,
+            "api_calls_made": 0,
+            "call_budget_reached": False,
+            "max_calls": call_budget,
+            "min_abs_gap": min_gap_value,
+            "tolerance": tolerance_value,
+            "include_completed": bool(include_completed),
+            "refresh_cache": bool(refresh_cache),
+        }
+
+    placeholders = ",".join(["?"] * len(candidate_ids))
+    committee_rows = conn.execute(
+        f"""
+        SELECT
+            c.candidate_id,
+            c.cycle,
+            c.committee_id,
+            c.committee_name,
+            COALESCE(m.fec_name, m.candidate_name, c.candidate_id) AS candidate_name,
+            COALESCE(bs.next_last_index, '') AS next_last_index,
+            COALESCE(bs.next_last_receipt_date, '') AS next_last_receipt_date,
+            COALESCE(bs.completed, 0) AS completed,
+            bs.updated_at AS backfill_updated_at
+        FROM fec_candidate_committees c
+        LEFT JOIN (
+            SELECT
+                fec_candidate_id AS candidate_id,
+                cycle,
+                MAX(fec_name) AS fec_name,
+                MAX(candidate_name) AS candidate_name
+            FROM fec_candidate_match
+            WHERE fec_candidate_id IS NOT NULL
+            GROUP BY fec_candidate_id, cycle
+        ) m
+          ON m.candidate_id = c.candidate_id
+         AND m.cycle = c.cycle
+        LEFT JOIN fec_schedule_a_backfill_state bs
+          ON bs.committee_id = c.committee_id
+         AND bs.cycle = c.cycle
+        WHERE c.cycle = ?
+          AND c.candidate_id IN ({placeholders})
+          AND c.committee_id IS NOT NULL
+        ORDER BY
+            COALESCE(bs.completed, 0) ASC,
+            CASE WHEN bs.updated_at IS NULL THEN 0 ELSE 1 END ASC,
+            bs.updated_at ASC,
+            c.candidate_id ASC,
+            c.committee_id ASC
+        """,
+        [effective_cycle, *candidate_ids],
+    ).fetchall()
+
+    queue = list(committee_rows)
+    if max_committees is not None:
+        queue = queue[: max(0, int(max_committees))]
+
+    api_client = client or FecApiClient(api_key=api_key)
+    use_cache = not bool(refresh_cache)
+
+    api_calls_made = 0
+    pages_processed = 0
+    contributions_upserted = 0
+    committees_processed = 0
+    committees_completed = 0
+    call_budget_reached = False
+
+    for committee in queue:
+        committee_id = _clean_text(committee["committee_id"])
+        candidate_id = _clean_text(committee["candidate_id"])
+        candidate_name = _clean_text(committee["candidate_name"]) or candidate_id
+        committee_name = _clean_text(committee["committee_name"]) or committee_id
+        if not committee_id or not candidate_id:
+            continue
+
+        already_completed = int(committee["completed"] or 0) == 1
+        if already_completed and not include_completed:
+            continue
+
+        committees_processed += 1
+        committee_pages = 0
+        committee_contributions = 0
+        committee_api_calls = 0
+        next_last_index = _clean_text(committee["next_last_index"])
+        next_last_receipt_date = _clean_text(committee["next_last_receipt_date"])
+        committee_completed = False
+        last_error = None
+        seen_tokens: set[str] = set()
+
+        while committee_pages < pages_per_committee_cap and api_calls_made < call_budget:
+            params: dict[str, Any] = {
+                "committee_id": committee_id,
+                "two_year_transaction_period": effective_cycle,
+                "per_page": per_page_value,
+                "sort": "-contribution_receipt_date",
+            }
+            if next_last_index:
+                params["last_index"] = next_last_index
+            if next_last_receipt_date:
+                params["last_contribution_receipt_date"] = next_last_receipt_date
+
+            try:
+                payload, source_identifier, from_cache = _request_with_cache(
+                    conn,
+                    api_client,
+                    endpoint="/schedules/schedule_a/",
+                    params=params,
+                    use_cache=use_cache,
+                )
+            except Exception as exc:  # noqa: BLE001 - retain per-committee errors and continue queue
+                last_error = str(exc)
+                break
+
+            if not from_cache:
+                api_calls_made += 1
+                committee_api_calls += 1
+
+            pages_processed += 1
+            committee_pages += 1
+
+            results = payload.get("results") or []
+            if not results:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+
+            upserted_rows = _upsert_schedule_rows(
+                conn,
+                rows=results,
+                cycle=effective_cycle,
+                candidate_id=candidate_id,
+                candidate_name=candidate_name,
+                committee_id=committee_id,
+                default_committee_name=committee_name,
+                api_source_identifier=source_identifier,
+            )
+            committee_contributions += upserted_rows
+            contributions_upserted += upserted_rows
+            conn.commit()
+
+            pagination = payload.get("pagination") or {}
+            last_indexes = pagination.get("last_indexes") or {}
+            fetched_last_index = _clean_text(last_indexes.get("last_index"))
+            fetched_last_receipt = _clean_text(last_indexes.get("last_contribution_receipt_date"))
+
+            if not fetched_last_index:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+
+            token = f"{fetched_last_index}|{fetched_last_receipt}"
+            if token in seen_tokens:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+            seen_tokens.add(token)
+
+            next_last_index = fetched_last_index
+            next_last_receipt_date = fetched_last_receipt
+
+            if api_calls_made >= call_budget:
+                call_budget_reached = True
+                break
+
+        _upsert_schedule_a_backfill_state(
+            conn,
+            committee_id=committee_id,
+            cycle=effective_cycle,
+            candidate_id=candidate_id,
+            candidate_name=candidate_name,
+            next_last_index=next_last_index if not committee_completed else None,
+            next_last_receipt_date=next_last_receipt_date if not committee_completed else None,
+            completed=committee_completed,
+            pages_processed_delta=committee_pages,
+            contributions_upserted_delta=committee_contributions,
+            api_calls_delta=committee_api_calls,
+            last_error=last_error,
+        )
+        conn.commit()
+
+        if committee_completed:
+            committees_completed += 1
+
+        if api_calls_made >= call_budget:
+            call_budget_reached = True
+            break
+
+    selected_committee_ids = [row["committee_id"] for row in queue if _clean_text(row["committee_id"])]
+    selected_unique = list(dict.fromkeys(selected_committee_ids))
+    completed_in_state = 0
+    if selected_unique:
+        selected_placeholders = ",".join(["?"] * len(selected_unique))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM fec_schedule_a_backfill_state
+            WHERE cycle = ?
+              AND committee_id IN ({selected_placeholders})
+              AND completed = 1
+            """,
+            [effective_cycle, *selected_unique],
+        ).fetchone()
+        completed_in_state = int(row["count"] or 0) if row else 0
+
+    committees_selected = len(selected_unique)
+    committees_remaining = max(0, committees_selected - completed_in_state)
+
+    return {
+        "cycle": effective_cycle,
+        "candidate_gap_count": len(candidate_ids),
+        "committees_selected": committees_selected,
+        "committees_processed": committees_processed,
+        "committees_completed": committees_completed,
+        "committees_remaining": committees_remaining,
+        "pages_processed": pages_processed,
+        "contributions_upserted": contributions_upserted,
+        "api_calls_made": api_calls_made,
+        "call_budget_reached": bool(call_budget_reached),
+        "max_calls": call_budget,
+        "min_abs_gap": min_gap_value,
+        "tolerance": tolerance_value,
+        "include_completed": bool(include_completed),
+        "refresh_cache": bool(refresh_cache),
+    }
+
+
 def federal_data_available(conn: sqlite3.Connection) -> bool:
     required = [
         "fec_il_candidate_seed",

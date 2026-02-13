@@ -58,6 +58,7 @@
                 <ul class="nav-links">
                     <li><a href="{{ url_for('manual_entry.queue') }}">Manual Entry</a></li>
                     <li><a href="{{ url_for('admin.donor_merge_queue') }}">Donor Merge Review</a></li>
+                    <li><a href="{{ url_for('admin.federal_receipt_audit') }}">Federal Receipt Audit</a></li>
                     {% if current_manual_user %}
                     <li><a href="{{ url_for('auth.logout') }}">Sign Out ({{ current_manual_user.username }})</a></li>
                     {% else %}
