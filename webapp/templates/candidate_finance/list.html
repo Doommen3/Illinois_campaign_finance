@@ -35,7 +35,6 @@
     <input type="text" name="q" value="{{ query }}" placeholder="Search candidate, committee, or office">
     <input type="text" name="office" value="{{ office }}" placeholder="Office contains...">
     <input type="text" name="candidate_party" value="{{ candidate_party }}" placeholder="Candidate party contains...">
-    <input type="text" name="committee_party" value="{{ committee_party }}" placeholder="Committee party contains...">
     <select name="year">
         <option value="">All years</option>
         {% for option in available_years %}
@@ -90,29 +89,24 @@
 <table class="data-table">
     <thead>
         <tr>
-            <th>{{ sort_link('candidate_id', 'Candidate ID') }}</th>
             <th>{{ sort_link('candidate_full_name', 'Candidate') }}</th>
             <th>{{ sort_link('office_sought', 'Office') }}</th>
             <th>{{ sort_link('district_type', 'District Type') }}</th>
             <th>{{ sort_link('district', 'District') }}</th>
             <th>{{ sort_link('candidate_party_affiliation', 'Candidate Party') }}</th>
-            <th>{{ sort_link('committee_id_sbe', 'Committee ID') }}</th>
             <th>{{ sort_link('committee_name', 'Committee') }}</th>
             <th>{{ sort_link('committee_type', 'Committee Type') }}</th>
-            <th>{{ sort_link('committee_party_affiliation', 'Committee Party') }}</th>
             <th>{{ sort_link('period_year', 'Year') }}</th>
             <th>{{ sort_link('election_cycle', 'Cycle') }}</th>
             <th>{{ sort_link('filing_count', 'Filings') }}</th>
             <th>{{ sort_link('sum_total_receipts', 'Total Receipts') }}</th>
             <th>{{ sort_link('sum_total_expenditures', 'Total Expenditures') }}</th>
             <th>{{ sort_link('max_ending_funds_available', 'Max Ending Funds') }}</th>
-            <th>{{ sort_link('archived_filing_count', 'Archived Filings') }}</th>
         </tr>
     </thead>
     <tbody>
         {% for row in rows %}
         <tr>
-            <td>{{ row.candidate_id if row.candidate_id is not none else '-' }}</td>
             <td>
                 {% if row.candidate_id is not none and row.committee_id_sbe is not none and row.candidate_full_name %}
                 <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
@@ -126,7 +120,6 @@
             <td>{{ row.district_type if row.district_type else '-' }}</td>
             <td>{{ row.district if row.district else '-' }}</td>
             <td>{{ row.candidate_party_affiliation if row.candidate_party_affiliation else '-' }}</td>
-            <td>{{ row.committee_id_sbe if row.committee_id_sbe is not none else '-' }}</td>
             <td>
                 {% if row.candidate_id is not none and row.committee_id_sbe is not none and row.committee_name %}
                 <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
@@ -137,18 +130,16 @@
                 {% endif %}
             </td>
             <td>{{ row.committee_type if row.committee_type else '-' }}</td>
-            <td>{{ row.committee_party_affiliation if row.committee_party_affiliation else '-' }}</td>
             <td>{{ row.period_year if row.period_year is not none else '-' }}</td>
             <td>{{ row.election_cycle if row.election_cycle is not none else '-' }}</td>
             <td>{{ row.filing_count }}</td>
             <td>{{ format_currency(row.sum_total_receipts) }}</td>
             <td>{{ format_currency(row.sum_total_expenditures) }}</td>
             <td>{{ format_currency(row.max_ending_funds_available) }}</td>
-            <td>{{ row.archived_filing_count }}</td>
         </tr>
         {% else %}
         <tr>
-            <td colspan="17">No rows found for this query.</td>
+            <td colspan="13">No rows found for this query.</td>
         </tr>
         {% endfor %}
     </tbody>
