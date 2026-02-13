@@ -108,7 +108,7 @@ The most reliable method. Download bulk data files from the ISBE website, transf
 3. Run the bulk import:
    ```bash
    PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
-   $PYTHON run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
+   $PYTHON run.py import-bulk-download --directory /srv/illinois_campaign_finance/shared/downloads/
    $PYTHON run.py refresh-analytics --with-snapshot
    ```
 
@@ -120,7 +120,10 @@ The most reliable method. Download bulk data files from the ISBE website, transf
 Use the existing Playwright-based scrapers to pull incremental updates automatically via cron.
 
 ```bash
+python run.py seed-committee-urls --batch-size 200
 python run.py scrape-main --resume
+python run.py scrape-committee-reports --filed-cutoff 2025-06-01
+python run.py scrape-d2-details --with-itemized
 python run.py refresh-analytics --with-snapshot
 ```
 

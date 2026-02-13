@@ -13,8 +13,11 @@ Usage:
     python run.py requeue-details --apply          # Requeue reports for detail scrape rebuild
     python run.py scrape-main --start-page 1 --end-page 40  # Scrape main list
     python run.py scrape-main --resume             # Resume interrupted scrape
+    python run.py seed-committee-urls --batch-size 200       # Resolve CommitteeDetail URLs from SBE committee IDs
     python run.py scrape-committee-reports --batch-size 20  # Scrape committee pages
+    python run.py scrape-committee-reports --committee-id-sbe 32451 --committee-id-sbe 40973
     python run.py scrape-d2-details --batch-size 20         # Scrape D-2 detail pages
+    python run.py scrape-d2-details --committee-id-sbe 32451 --with-itemized
     python run.py scrape-d2-itemized --batch-size 50        # Scrape pending D-2 itemized links
     python run.py scrape-details --batch-size 20   # Scrape detail pages
     python run.py scrape-status                    # Check scrape status

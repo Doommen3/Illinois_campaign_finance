@@ -117,6 +117,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # Backward-compatible column additions for existing installations.
     # This must happen before running schema.sql so CREATE INDEX statements
     # on these columns do not fail on older databases.
+    _ensure_column(conn, 'committees', 'committee_id_sbe', 'committee_id_sbe INTEGER')
     _ensure_column(conn, 'committees', 'detail_url', 'detail_url TEXT')
     _ensure_column(conn, 'committees', 'source_identifier', 'source_identifier TEXT')
     _ensure_column(conn, 'reports', 'source_identifier', 'source_identifier TEXT')

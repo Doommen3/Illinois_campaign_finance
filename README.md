@@ -82,12 +82,18 @@ python run.py rebuild-fec-donor-identities
 # Scrape ISBE main report list
 python run.py scrape-main --start-page 1 --end-page 40
 
+# Seed/refresh CommitteeDetail URLs from stored SBE committee IDs
+python run.py seed-committee-urls --batch-size 200
+
 # Scrape committee detail pages
 python run.py scrape-committee-reports --batch-size 20 --filed-cutoff 2025-06-01
+python run.py scrape-committee-reports --committee-id-sbe 32451 --committee-id-sbe 40973 --filed-cutoff 2025-06-01
 
 # Scrape D-2 details and itemized contributions
 python run.py scrape-d2-details --batch-size 20
 python run.py scrape-d2-itemized --batch-size 50
+python run.py scrape-d2-details --committee-id-sbe 32451 --with-itemized
+python run.py scrape-d2-itemized --committee-id-sbe 32451
 
 # Scrape A-1 contribution details
 python run.py scrape-details --batch-size 20
@@ -327,7 +333,7 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 # Import and rebuild analytics
 cd /srv/illinois_campaign_finance/app
 PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
-$PYTHON run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
+$PYTHON run.py import-bulk-download --directory /srv/illinois_campaign_finance/shared/downloads/
 $PYTHON run.py refresh-analytics --with-snapshot
 ```
 

@@ -17,6 +17,8 @@ from .state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
+COMMITTEE_SEARCH_URL = "https://www.elections.il.gov/CampaignDisclosure/CommitteeSearch.aspx"
+
 
 class CommitteeReportScraper:
     """Scrape each committee detail page and collect A-1 + D-2 report links."""
@@ -42,6 +44,7 @@ class CommitteeReportScraper:
     async def scrape_committees(
         self,
         committee_ids: Optional[List[int]] = None,
+        committee_ids_sbe: Optional[List[int]] = None,
         batch_size: int = 20,
         filed_cutoff: str = "2025-06-01",
         progress_callback: Callable[[int, int], None] = None,
@@ -56,7 +59,11 @@ class CommitteeReportScraper:
             "errors": [],
         }
 
-        committees = self._get_target_committees(committee_ids=committee_ids, batch_size=batch_size)
+        committees = self._get_target_committees(
+            committee_ids=committee_ids,
+            committee_ids_sbe=committee_ids_sbe,
+            batch_size=batch_size,
+        )
         if not committees:
             return results
 
@@ -97,34 +104,49 @@ class CommitteeReportScraper:
 
         return results
 
-    def _get_target_committees(self, committee_ids: Optional[List[int]], batch_size: int) -> List[Committee]:
+    def _get_target_committees(
+        self,
+        committee_ids: Optional[List[int]],
+        committee_ids_sbe: Optional[List[int]],
+        batch_size: int,
+    ) -> List[Committee]:
+        filters = []
+        params: List[object] = []
+
         if committee_ids:
             placeholders = ",".join(["?"] * len(committee_ids))
-            rows = self.conn.execute(
-                f"""
-                SELECT id, name, detail_url, source_identifier, created_at, updated_at
-                FROM committees
-                WHERE id IN ({placeholders})
-                ORDER BY id ASC
-                """,
-                committee_ids,
-            ).fetchall()
+            filters.append(f"id IN ({placeholders})")
+            params.extend(committee_ids)
+
+        if committee_ids_sbe:
+            placeholders = ",".join(["?"] * len(committee_ids_sbe))
+            filters.append(f"committee_id_sbe IN ({placeholders})")
+            params.extend(committee_ids_sbe)
+
+        if filters:
+            where_clause = "WHERE " + " OR ".join(filters)
+            limit_clause = ""
         else:
-            rows = self.conn.execute(
-                """
-                SELECT id, name, detail_url, source_identifier, created_at, updated_at
-                FROM committees
-                WHERE detail_url IS NOT NULL AND detail_url != ''
-                ORDER BY id ASC
-                LIMIT ?
-                """,
-                (batch_size,),
-            ).fetchall()
+            where_clause = "WHERE detail_url IS NOT NULL AND detail_url != ''"
+            limit_clause = "LIMIT ?"
+            params.append(batch_size)
+
+        rows = self.conn.execute(
+            f"""
+            SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+            FROM committees
+            {where_clause}
+            ORDER BY id ASC
+            {limit_clause}
+            """,
+            params,
+        ).fetchall()
 
         return [
             Committee(
                 id=row["id"],
                 name=row["name"],
+                committee_id_sbe=row["committee_id_sbe"] if "committee_id_sbe" in row.keys() else None,
                 detail_url=row["detail_url"],
                 source_identifier=row["source_identifier"],
                 created_at=row["created_at"],
@@ -597,6 +619,247 @@ class D2DetailScraper:
         return None
 
 
+class CommitteeUrlSeeder:
+    """Resolve committee detail URLs from CommitteeSearch.aspx using committee_id_sbe."""
+
+    def __init__(self, conn: sqlite3.Connection, rate_limiter: RateLimiter = None):
+        self.conn = conn
+        self.rate_limiter = rate_limiter or RateLimiter()
+        self._browser: Optional[Browser] = None
+        self._page: Optional[Page] = None
+
+    async def _init_browser(self) -> None:
+        playwright = await async_playwright().start()
+        self._browser = await playwright.chromium.launch(headless=True)
+        self._page = await self._browser.new_page()
+
+    async def _close_browser(self) -> None:
+        if self._page:
+            await self._page.close()
+        if self._browser:
+            await self._browser.close()
+
+    async def seed_urls(
+        self,
+        committee_ids_sbe: Optional[List[int]] = None,
+        batch_size: int = 200,
+        include_existing: bool = False,
+        progress_callback: Callable[[int, int], None] = None,
+    ) -> dict:
+        """Seed committee detail URLs by searching for SBE committee IDs."""
+        targets = self._get_target_committees(
+            committee_ids_sbe=committee_ids_sbe,
+            batch_size=batch_size,
+            include_existing=include_existing,
+        )
+        results = {
+            "committees_targeted": len(targets),
+            "urls_seeded": 0,
+            "urls_unchanged": 0,
+            "missing_results": 0,
+            "errors": [],
+        }
+        if not targets:
+            return results
+
+        try:
+            await self._init_browser()
+            for idx, committee in enumerate(targets, start=1):
+                if progress_callback:
+                    progress_callback(idx, len(targets))
+
+                try:
+                    detail_url, resolved_name = await self._resolve_committee_detail(committee.committee_id_sbe)
+                    if not detail_url:
+                        results["missing_results"] += 1
+                        continue
+
+                    normalized_url = normalize_source_url(detail_url)
+                    normalized_name = (resolved_name or committee.name or f"Committee {committee.committee_id_sbe}").strip()
+                    updated = Committee.get_or_create(
+                        self.conn,
+                        name=normalized_name,
+                        committee_id_sbe=committee.committee_id_sbe,
+                        detail_url=normalized_url,
+                        source_identifier=make_source_identifier(normalized_url, committee.committee_id_sbe),
+                    )
+                    if updated.detail_url == normalized_url and updated.id:
+                        if committee.detail_url != normalized_url:
+                            results["urls_seeded"] += 1
+                        else:
+                            results["urls_unchanged"] += 1
+
+                    self.rate_limiter.record_success()
+                except Exception as exc:  # pragma: no cover - network path
+                    msg = f"SBE committee {committee.committee_id_sbe} failed: {exc}"
+                    logger.exception(msg)
+                    results["errors"].append(msg)
+                    self.rate_limiter.record_error()
+        finally:
+            await self._close_browser()
+
+        return results
+
+    def _get_target_committees(
+        self,
+        committee_ids_sbe: Optional[List[int]],
+        batch_size: int,
+        include_existing: bool,
+    ) -> List[Committee]:
+        if committee_ids_sbe:
+            unique_sbe = list(dict.fromkeys(committee_ids_sbe))
+            placeholders = ",".join(["?"] * len(unique_sbe))
+            rows = self.conn.execute(
+                f"""
+                SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+                FROM committees
+                WHERE committee_id_sbe IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                unique_sbe,
+            ).fetchall()
+
+            seen = set()
+            committees: List[Committee] = []
+            for row in rows:
+                sbe_id = row["committee_id_sbe"]
+                if sbe_id in seen:
+                    continue
+                seen.add(sbe_id)
+                committees.append(Committee._from_row(row))
+
+            for sbe_id in unique_sbe:
+                if sbe_id in seen:
+                    continue
+                committees.append(
+                    Committee(
+                        id=None,
+                        name=f"Committee {sbe_id}",
+                        committee_id_sbe=sbe_id,
+                        detail_url=None,
+                        source_identifier=None,
+                        created_at=None,
+                        updated_at=None,
+                    )
+                )
+            return committees
+
+        detail_filter = "" if include_existing else "AND (detail_url IS NULL OR detail_url = '')"
+        rows = self.conn.execute(
+            f"""
+            SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+            FROM committees
+            WHERE committee_id_sbe IS NOT NULL
+              {detail_filter}
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (batch_size,),
+        ).fetchall()
+        committees = [Committee._from_row(row) for row in rows]
+
+        # Fallback: bootstrap targets from bulk committee registry when local
+        # committees table has not yet been populated with committee_id_sbe.
+        remaining = batch_size - len(committees)
+        if remaining > 0 and self._table_exists("bulk_committees_clean"):
+            existing_sbe = {c.committee_id_sbe for c in committees if c.committee_id_sbe is not None}
+            bulk_filter = "" if include_existing else "AND (c.detail_url IS NULL OR TRIM(c.detail_url) = '')"
+            bulk_rows = self.conn.execute(
+                f"""
+                SELECT
+                    c.id,
+                    COALESCE(c.name, b.committee_name) AS name,
+                    b.committee_id_sbe,
+                    c.detail_url,
+                    c.source_identifier,
+                    c.created_at,
+                    c.updated_at
+                FROM bulk_committees_clean b
+                LEFT JOIN committees c
+                  ON c.committee_id_sbe = b.committee_id_sbe
+                WHERE b.committee_id_sbe IS NOT NULL
+                  {bulk_filter}
+                ORDER BY b.committee_id_sbe ASC
+                LIMIT ?
+                """,
+                (remaining,),
+            ).fetchall()
+
+            for row in bulk_rows:
+                sbe_id = row["committee_id_sbe"]
+                if sbe_id in existing_sbe:
+                    continue
+                existing_sbe.add(sbe_id)
+                committees.append(
+                    Committee(
+                        id=row["id"],
+                        name=row["name"] or f"Committee {sbe_id}",
+                        committee_id_sbe=sbe_id,
+                        detail_url=row["detail_url"],
+                        source_identifier=row["source_identifier"],
+                        created_at=row["created_at"],
+                        updated_at=row["updated_at"],
+                    )
+                )
+
+        return committees
+
+    def _table_exists(self, table_name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    async def _resolve_committee_detail(self, committee_id_sbe: int | None) -> tuple[Optional[str], Optional[str]]:
+        if committee_id_sbe is None:
+            return None, None
+
+        self.rate_limiter.wait()
+        await self._page.goto(COMMITTEE_SEARCH_URL)
+        await self._page.wait_for_load_state("networkidle")
+
+        input_box = await self._page.query_selector(
+            'input[id*="txtCommitteeID"], input[name*="txtCommitteeID"], input[id*="CommitteeID"]'
+        )
+        if not input_box:
+            return None, None
+
+        await input_box.fill(str(committee_id_sbe))
+
+        search_button = await self._page.query_selector(
+            'input[type="submit"][id*="Search"], input[type="submit"][name*="Search"], '
+            'button[id*="Search"], button[name*="Search"], a[id*="btnSearch"]'
+        )
+        if search_button:
+            await search_button.click()
+        else:
+            await input_box.press("Enter")
+        await self._page.wait_for_load_state("networkidle")
+
+        current_url = normalize_source_url(self._page.url)
+        if current_url and "CommitteeDetail.aspx" in current_url:
+            return current_url, await _extract_committee_name(self._page)
+
+        result_link = await self._page.query_selector('a[href*="CommitteeDetail.aspx"]')
+        if not result_link:
+            return None, None
+
+        href = await result_link.get_attribute("href")
+        if href and "__doPostBack" in href:
+            target, argument = parse_postback_href(href)
+            if target:
+                await do_postback(self._page, target, argument or "")
+                await self._page.wait_for_load_state("networkidle")
+                postback_url = normalize_source_url(self._page.url)
+                if postback_url and "CommitteeDetail.aspx" in postback_url:
+                    return postback_url, await _extract_committee_name(self._page)
+
+        resolved_url = normalize_source_url(href)
+        resolved_name = (await result_link.inner_text()).strip()
+        return resolved_url, resolved_name or None
+
+
 async def _navigate_to_next_page(page: Page, current_page: int) -> Optional[int]:
     """Navigate to the next grid page, handling ASP.NET links and ellipsis sets."""
     link = await page.query_selector(f'a:text-is("{current_page + 1}")')
@@ -635,12 +898,38 @@ async def _navigate_to_next_page(page: Page, current_page: int) -> Optional[int]
 def _parse_date(value: str | None) -> Optional[date]:
     if not value:
         return None
-    value = value.strip()
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+    value = re.sub(r"\s+", " ", value).strip()
+
+    # Most filed-date cells include a date even when additional text exists
+    # (e.g., "02/13/2026 1:35 PM Filed electronically").
+    match = re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", value)
+    if not match:
+        match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", value)
+    candidate = match.group(0) if match else value
+
+    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%y %I:%M %p", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(value, fmt).date()
+            return datetime.strptime(candidate, fmt).date()
         except ValueError:
             continue
+    return None
+
+
+async def _extract_committee_name(page: Page) -> Optional[str]:
+    candidates = [
+        'h1',
+        'h2',
+        'span[id*="lblCommitteeName"]',
+        'span[id*="CommitteeName"]',
+        'td:has-text("Committee Name") + td',
+    ]
+    for selector in candidates:
+        element = await page.query_selector(selector)
+        if not element:
+            continue
+        text = (await element.inner_text()).strip()
+        if text:
+            return text
     return None
 
 

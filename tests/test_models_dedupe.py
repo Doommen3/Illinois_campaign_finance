@@ -75,6 +75,39 @@ def test_committee_get_or_create_updates_detail_url(tmp_path):
     conn.close()
 
 
+def test_committee_get_or_create_updates_and_reuses_sbe_id(tmp_path):
+    conn = _new_conn(tmp_path)
+
+    initial = Committee.get_or_create(conn, "Committee Seeded Later")
+    assert initial.committee_id_sbe is None
+
+    updated = Committee.get_or_create(
+        conn,
+        "Committee Seeded Later",
+        committee_id_sbe=32451,
+        detail_url="https://www.elections.il.gov/CampaignDisclosure/CommitteeDetail.aspx?ID=abc",
+    )
+    assert updated.id == initial.id
+
+    reused = Committee.get_or_create(
+        conn,
+        "Committee Renamed Source",
+        committee_id_sbe=32451,
+        source_identifier="committee:sbe:32451:new",
+    )
+    assert reused.id == initial.id
+
+    count = conn.execute("SELECT COUNT(*) AS count FROM committees").fetchone()["count"]
+    assert count == 1
+
+    fetched = Committee.get_by_sbe_id(conn, 32451)
+    assert fetched is not None
+    assert fetched.id == initial.id
+    assert fetched.detail_url is not None
+
+    conn.close()
+
+
 def test_d2_itemized_entry_dedupes_by_row_hash(tmp_path):
     conn = _new_conn(tmp_path)
 

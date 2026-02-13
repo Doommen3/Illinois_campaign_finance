@@ -17,6 +17,7 @@ class Committee:
 
     id: Optional[int] = None
     name: str = ""
+    committee_id_sbe: Optional[int] = None
     detail_url: Optional[str] = None
     source_identifier: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -30,6 +31,7 @@ class Committee:
         committee = cls(
             id=row["id"],
             name=row["name"],
+            committee_id_sbe=row["committee_id_sbe"] if "committee_id_sbe" in row.keys() else None,
             detail_url=row["detail_url"] if "detail_url" in row.keys() else None,
             source_identifier=row["source_identifier"] if "source_identifier" in row.keys() else None,
             created_at=row["created_at"],
@@ -46,16 +48,28 @@ class Committee:
         name: str,
         detail_url: str | None = None,
         source_identifier: str | None = None,
+        committee_id_sbe: int | None = None,
     ) -> "Committee":
         """Get committee by source identifier or name, or create it."""
         normalized_url = normalize_source_url(detail_url)
         source_identifier = source_identifier or make_source_identifier(normalized_url, name)
 
         row = None
-        if source_identifier:
+        if committee_id_sbe is not None:
             cursor = conn.execute(
                 """
-                SELECT id, name, detail_url, source_identifier, created_at, updated_at
+                SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+                FROM committees
+                WHERE committee_id_sbe = ?
+                """,
+                (committee_id_sbe,),
+            )
+            row = cursor.fetchone()
+
+        if not row and source_identifier:
+            cursor = conn.execute(
+                """
+                SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
                 FROM committees
                 WHERE source_identifier = ?
                 """,
@@ -63,10 +77,21 @@ class Committee:
             )
             row = cursor.fetchone()
 
+        if not row and normalized_url:
+            cursor = conn.execute(
+                """
+                SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+                FROM committees
+                WHERE detail_url = ?
+                """,
+                (normalized_url,),
+            )
+            row = cursor.fetchone()
+
         if not row:
             cursor = conn.execute(
                 """
-                SELECT id, name, detail_url, source_identifier, created_at, updated_at
+                SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
                 FROM committees
                 WHERE name = ?
                 """,
@@ -78,41 +103,67 @@ class Committee:
             committee = cls._from_row(row)
             updated_detail_url = normalized_url or committee.detail_url
             updated_source_id = committee.source_identifier or source_identifier
-            if updated_detail_url != committee.detail_url or updated_source_id != committee.source_identifier:
+            updated_committee_id_sbe = committee.committee_id_sbe
+            if committee_id_sbe is not None and committee.committee_id_sbe is None:
+                updated_committee_id_sbe = committee_id_sbe
+
+            if (
+                updated_detail_url != committee.detail_url
+                or updated_source_id != committee.source_identifier
+                or updated_committee_id_sbe != committee.committee_id_sbe
+            ):
                 conn.execute(
                     """
                     UPDATE committees
-                    SET detail_url = ?, source_identifier = ?, updated_at = CURRENT_TIMESTAMP
+                    SET committee_id_sbe = ?, detail_url = ?, source_identifier = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (updated_detail_url, updated_source_id, committee.id),
+                    (updated_committee_id_sbe, updated_detail_url, updated_source_id, committee.id),
                 )
                 conn.commit()
+                committee.committee_id_sbe = updated_committee_id_sbe
                 committee.detail_url = updated_detail_url
                 committee.source_identifier = updated_source_id
             return committee
 
         cursor = conn.execute(
             """
-            INSERT INTO committees (name, detail_url, source_identifier)
-            VALUES (?, ?, ?)
+            INSERT INTO committees (name, committee_id_sbe, detail_url, source_identifier)
+            VALUES (?, ?, ?, ?)
             """,
-            (name, normalized_url, source_identifier),
+            (name, committee_id_sbe, normalized_url, source_identifier),
         )
         conn.commit()
         return cls(
             id=cursor.lastrowid,
             name=name,
+            committee_id_sbe=committee_id_sbe,
             detail_url=normalized_url,
             source_identifier=source_identifier,
         )
+
+    @classmethod
+    def get_by_sbe_id(cls, conn: sqlite3.Connection, committee_id_sbe: int) -> Optional["Committee"]:
+        """Get a committee by Illinois SBE committee ID."""
+        cursor = conn.execute(
+            """
+            SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
+            FROM committees
+            WHERE committee_id_sbe = ?
+            """,
+            (committee_id_sbe,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return cls._from_row(row)
+        return None
 
     @classmethod
     def get_by_id(cls, conn: sqlite3.Connection, committee_id: int) -> Optional["Committee"]:
         """Get a committee by ID."""
         cursor = conn.execute(
             """
-            SELECT id, name, detail_url, source_identifier, created_at, updated_at
+            SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
             FROM committees
             WHERE id = ?
             """,
@@ -143,7 +194,7 @@ class Committee:
 
         cursor = conn.execute(
             f"""
-            SELECT c.id, c.name, c.detail_url, c.source_identifier, c.created_at, c.updated_at,
+            SELECT c.id, c.name, c.committee_id_sbe, c.detail_url, c.source_identifier, c.created_at, c.updated_at,
                    COALESCE(SUM(ct.amount), 0) AS total_contributions
             FROM committees c
             LEFT JOIN reports r ON r.committee_id = c.id
@@ -167,7 +218,7 @@ class Committee:
         """Search committees by name."""
         cursor = conn.execute(
             """
-            SELECT id, name, detail_url, source_identifier, created_at, updated_at
+            SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
             FROM committees
             WHERE name LIKE ?
             ORDER BY name

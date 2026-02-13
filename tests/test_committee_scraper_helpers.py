@@ -12,6 +12,8 @@ from scraper.committee_scraper import (
 def test_parse_date_supports_iso_and_us_formats():
     assert str(_parse_date("2025-06-01")) == "2025-06-01"
     assert str(_parse_date("06/01/2025")) == "2025-06-01"
+    assert str(_parse_date("02/13/2026 1:35 PM Filed electronically")) == "2026-02-13"
+    assert str(_parse_date("Filed: 02/13/2026\nElectronic filing")) == "2026-02-13"
     assert _parse_date("invalid") is None
 
 

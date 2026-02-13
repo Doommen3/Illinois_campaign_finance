@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS committees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    committee_id_sbe INTEGER,
     detail_url TEXT,
     source_identifier TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS committees (
 );
 
 CREATE INDEX IF NOT EXISTS idx_committees_name ON committees(name);
+CREATE INDEX IF NOT EXISTS idx_committees_committee_id_sbe ON committees(committee_id_sbe);
 CREATE INDEX IF NOT EXISTS idx_committees_source_identifier ON committees(source_identifier);
 
 -- Reports (individual filings from main list page)

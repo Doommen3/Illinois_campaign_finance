@@ -24,7 +24,7 @@ from database.analytics import (
 from database.federal_fec import rebuild_fec_donor_identities, sync_il_federal_fec
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
-from scraper.committee_scraper import CommitteeReportScraper, D2DetailScraper
+from scraper.committee_scraper import CommitteeReportScraper, D2DetailScraper, CommitteeUrlSeeder
 from scraper.rate_limiter import RateLimiter
 import config
 
@@ -34,6 +34,39 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe):
+    """Resolve internal committee IDs from optional internal + SBE ID filters."""
+    resolved = list(committee_ids or [])
+    unresolved_sbe = []
+
+    if committee_ids_sbe:
+        unique_sbe = list(dict.fromkeys(committee_ids_sbe))
+        placeholders = ",".join(["?"] * len(unique_sbe))
+        rows = conn.execute(
+            f"""
+            SELECT id, committee_id_sbe
+            FROM committees
+            WHERE committee_id_sbe IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            unique_sbe,
+        ).fetchall()
+
+        by_sbe = {}
+        for row in rows:
+            by_sbe.setdefault(row["committee_id_sbe"], []).append(row["id"])
+
+        for sbe_id in unique_sbe:
+            ids = by_sbe.get(sbe_id, [])
+            if ids:
+                resolved.extend(ids)
+            else:
+                unresolved_sbe.append(sbe_id)
+
+    deduped = list(dict.fromkeys(resolved))
+    return deduped or None, unresolved_sbe
 
 
 @click.group()
@@ -351,17 +384,78 @@ def scrape_status_command():
         conn.close()
 
 
+@cli.command('seed-committee-urls')
+@click.option('--committee-id-sbe', 'committee_ids_sbe', multiple=True, type=int,
+              help='Illinois SBE committee ID(s) to seed (repeat option for multiple)')
+@click.option('--batch-size', default=200, type=int,
+              help='Number of committees to process when SBE IDs are not provided')
+@click.option('--include-existing', is_flag=True,
+              help='Re-resolve committees even when detail_url already exists')
+def seed_committee_urls_command(committee_ids_sbe, batch_size, include_existing):
+    """Resolve and store CommitteeDetail URLs via CommitteeSearch.aspx using committee_id_sbe."""
+    committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
+    if committee_ids_sbe:
+        click.echo(f'Seeding committee detail URLs for SBE IDs: {committee_ids_sbe}')
+    else:
+        click.echo(f'Seeding committee detail URLs for up to {batch_size} committees...')
+
+    conn = get_db(config.DATABASE_PATH)
+    rate_limiter = RateLimiter(
+        requests_per_minute=config.RATE_LIMIT_RPM,
+        min_delay=config.RATE_LIMIT_MIN_DELAY,
+        max_delay=config.RATE_LIMIT_MAX_DELAY
+    )
+    scraper = CommitteeUrlSeeder(conn, rate_limiter)
+
+    def progress_callback(current, total):
+        click.echo(f'  Committee {current}/{total}')
+
+    try:
+        results = asyncio.run(scraper.seed_urls(
+            committee_ids_sbe=committee_ids_sbe,
+            batch_size=batch_size,
+            include_existing=include_existing,
+            progress_callback=progress_callback,
+        ))
+
+        click.echo('\nCommittee URL seed completed!')
+        click.echo(f'  Committees targeted: {results["committees_targeted"]}')
+        click.echo(f'  URLs seeded: {results["urls_seeded"]}')
+        click.echo(f'  URLs unchanged: {results["urls_unchanged"]}')
+        click.echo(f'  Missing search results: {results["missing_results"]}')
+        if results['errors']:
+            click.echo(f'  Errors: {len(results["errors"])}')
+            for error in results['errors'][:5]:
+                click.echo(f'    - {error}')
+
+    except Exception as e:
+        click.echo(f'Error during committee URL seeding: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 @cli.command('scrape-committee-reports')
 @click.option('--committee-id', 'committee_ids', multiple=True, type=int,
-              help='Committee ID(s) to scrape (repeat option for multiple)')
+              help='Internal committee ID(s) to scrape (repeat option for multiple)')
+@click.option('--committee-id-sbe', 'committee_ids_sbe', multiple=True, type=int,
+              help='Illinois SBE committee ID(s) to scrape (repeat option for multiple)')
 @click.option('--batch-size', default=20, type=int,
               help='Number of committees to scrape when committee IDs are not provided')
 @click.option('--filed-cutoff', default='2025-06-01',
               help='Stop per committee when filed date is older than this date (YYYY-MM-DD)')
-def scrape_committee_reports_command(committee_ids, batch_size, filed_cutoff):
+def scrape_committee_reports_command(committee_ids, committee_ids_sbe, batch_size, filed_cutoff):
     """Scrape committee pages and collect A-1 + D-2 reports."""
     committee_ids = list(committee_ids) if committee_ids else None
-    target_label = f"IDs {committee_ids}" if committee_ids else f"batch of {batch_size}"
+    committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
+    if committee_ids and committee_ids_sbe:
+        target_label = f"internal IDs {committee_ids} + SBE IDs {committee_ids_sbe}"
+    elif committee_ids:
+        target_label = f"internal IDs {committee_ids}"
+    elif committee_ids_sbe:
+        target_label = f"SBE IDs {committee_ids_sbe}"
+    else:
+        target_label = f"batch of {batch_size}"
     click.echo(f'Scraping committee reports for {target_label} until filed date cutoff {filed_cutoff}...')
 
     conn = get_db(config.DATABASE_PATH)
@@ -378,6 +472,7 @@ def scrape_committee_reports_command(committee_ids, batch_size, filed_cutoff):
     try:
         results = asyncio.run(scraper.scrape_committees(
             committee_ids=committee_ids,
+            committee_ids_sbe=committee_ids_sbe,
             batch_size=batch_size,
             filed_cutoff=filed_cutoff,
             progress_callback=progress_callback
@@ -402,17 +497,24 @@ def scrape_committee_reports_command(committee_ids, batch_size, filed_cutoff):
 
 @cli.command('scrape-d2-details')
 @click.option('--committee-id', 'committee_ids', multiple=True, type=int,
-              help='Committee ID(s) to target')
+              help='Internal committee ID(s) to target')
+@click.option('--committee-id-sbe', 'committee_ids_sbe', multiple=True, type=int,
+              help='Illinois SBE committee ID(s) to target')
 @click.option('--batch-size', default=20, type=int,
               help='Number of D-2 reports to process')
 @click.option('--with-itemized', is_flag=True,
               help='Immediately scrape itemized pages for links found on each D-2 detail page')
-def scrape_d2_details_command(committee_ids, batch_size, with_itemized):
+def scrape_d2_details_command(committee_ids, committee_ids_sbe, batch_size, with_itemized):
     """Scrape D-2 detail pages and discover itemized links."""
     committee_ids = list(committee_ids) if committee_ids else None
+    committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
     click.echo(f'Scraping up to {batch_size} D-2 detail pages...')
 
     conn = get_db(config.DATABASE_PATH)
+    committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
+    if unresolved_sbe:
+        click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
+
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
@@ -449,15 +551,22 @@ def scrape_d2_details_command(committee_ids, batch_size, with_itemized):
 
 @cli.command('scrape-d2-itemized')
 @click.option('--committee-id', 'committee_ids', multiple=True, type=int,
-              help='Committee ID(s) to target')
+              help='Internal committee ID(s) to target')
+@click.option('--committee-id-sbe', 'committee_ids_sbe', multiple=True, type=int,
+              help='Illinois SBE committee ID(s) to target')
 @click.option('--batch-size', default=50, type=int,
               help='Number of pending itemized links to scrape')
-def scrape_d2_itemized_command(committee_ids, batch_size):
+def scrape_d2_itemized_command(committee_ids, committee_ids_sbe, batch_size):
     """Scrape pending D-2 itemized links as a separate step."""
     committee_ids = list(committee_ids) if committee_ids else None
+    committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
     click.echo(f'Scraping up to {batch_size} D-2 itemized links...')
 
     conn = get_db(config.DATABASE_PATH)
+    committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
+    if unresolved_sbe:
+        click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
+
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
