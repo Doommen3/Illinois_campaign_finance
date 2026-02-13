@@ -807,6 +807,41 @@ h2 {
         width: 100%;
     }
 
+    .analytics-form {
+        align-items: stretch;
+    }
+
+    .analytics-form label,
+    .analytics-form button {
+        width: 100%;
+    }
+
+    .analytics-form input,
+    .analytics-form select {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .analytics-subnav {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.25rem;
+    }
+
+    .analytics-subnav-link {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+
+    .network-controls,
+    .chord-controls {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.25rem;
+    }
+
     .btn {
         display: inline-block;
         margin-bottom: 0.5rem;

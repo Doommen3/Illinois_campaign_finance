@@ -244,6 +244,22 @@ systemctl restart ilcf-web
 | `/analytics` | Network, anomaly, concentration, and geographic analytics |
 | `/donors` | Cross-committee donor directory |
 
+### Mobile Smoke Check
+
+Use this to quickly validate mobile rendering across key routes and catch horizontal overflow regressions.
+
+```bash
+cd /srv/illinois_campaign_finance/app
+/srv/illinois_campaign_finance/shared/venv/bin/python scripts/mobile_smoke_check.py --base-url http://127.0.0.1:5000
+```
+
+Outputs:
+- Screenshots in `output/mobile_smoke/*.png`
+- JSON report in `output/mobile_smoke/report.json`
+- Markdown summary in `output/mobile_smoke/report.md`
+
+Any non-zero exit means at least one route failed to load or exceeded horizontal overflow threshold.
+
 ## Updating Data on the Server
 
 See [`docs/data_update_guide.md`](docs/data_update_guide.md) for full details. Quick reference below.
