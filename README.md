@@ -48,6 +48,8 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Setup
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 
@@ -123,8 +125,8 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── bulk_download_loader Bulk TXT import and normalization
 │   └── federal_fec.py      FEC API integration and candidate matching
 ├── webapp/                 Flask web application
-│   ├── routes/             11 route modules (dashboard, analytics, API, etc.)
-│   └── templates/          34 Jinja2 templates
+│   ├── routes/             12 route modules (dashboard, analytics, API, etc.)
+│   └── templates/          35 Jinja2 templates
 ├── scripts/                Automation scripts
 │   └── sync-fec.sh         Weekly FEC data sync wrapper
 ├── tests/                  pytest suite (11 test modules)
@@ -184,11 +186,29 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 │   ├── data/
 │   │   └── campaign_finance.db SQLite database
 │   └── ...
+├── venv/                       Python virtual environment
+│   └── bin/python              Used by sync-fec.sh and systemd
 └── shared/                     Persistent data across deploys
     ├── .env                    Environment variables (FEC_API_KEY, etc.)
     ├── logs/                   Sync and task logs
     │   └── sync-fec-*.log      Timestamped FEC sync logs
     └── downloads/              Staging area for ISBE bulk files
+```
+
+### First-Time Server Setup
+
+```bash
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+# Create venv and install dependencies
+python3 -m venv /srv/illinois_campaign_finance/shared/venv
+/srv/illinois_campaign_finance/shared/venv/bin/pip install -r /srv/illinois_campaign_finance/app/requirements.txt
+
+# Configure environment (no spaces around '=')
+cat > /srv/illinois_campaign_finance/shared/.env << 'EOF'
+FEC_API_KEY=your_key_here
+FLASK_SECRET_KEY=change-me-in-production
+EOF
 ```
 
 ### Deploying Code Updates
@@ -205,6 +225,9 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 cd /srv/illinois_campaign_finance/app
 git config --global --add safe.directory /srv/illinois_campaign_finance/app  # first time only
 git pull origin main
+
+# Re-install deps if requirements.txt changed
+/srv/illinois_campaign_finance/shared/venv/bin/pip install -r requirements.txt
 
 # Restart the web application
 systemctl restart ilcf-web
@@ -241,10 +264,15 @@ bash scripts/sync-fec.sh
 Or run individual steps:
 
 ```bash
-python run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
-python run.py rebuild-fec-donor-identities
-python run.py refresh-analytics --with-snapshot
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
+$PYTHON run.py rebuild-fec-donor-identities
+$PYTHON run.py refresh-analytics --with-snapshot
 ```
+
+**Note:** When sourcing `.env` manually, you must `export` variables for Python to see them. The `sync-fec.sh` script handles this automatically via `set -a`.
 
 Check sync status:
 
@@ -272,8 +300,9 @@ ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 
 # Import and rebuild analytics
 cd /srv/illinois_campaign_finance/app
-python run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
-python run.py refresh-analytics --with-snapshot
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+$PYTHON run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
+$PYTHON run.py refresh-analytics --with-snapshot
 ```
 
 ### Setting Up the FEC Sync Timer (First Time)

@@ -70,19 +70,25 @@ journalctl -u il-campaign-fec-sync.service --since today
 
 #### Manual FEC Sync
 
-Run the same steps by hand from the project root:
+Run the same steps by hand from the project root on the server:
 
 ```bash
-python run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
-python run.py rebuild-fec-donor-identities
-python run.py refresh-analytics --with-snapshot
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+$PYTHON run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
+$PYTHON run.py rebuild-fec-donor-identities
+$PYTHON run.py refresh-analytics --with-snapshot
 ```
 
-Or use the wrapper script directly:
+Or use the wrapper script (handles venv and env sourcing automatically):
 
 ```bash
 bash scripts/sync-fec.sh
 ```
+
+**Note:** When running commands manually, you must `export` env vars after sourcing `.env` for Python to see them. The `sync-fec.sh` script does this automatically.
 
 ---
 
@@ -101,8 +107,9 @@ The most reliable method. Download bulk data files from the ISBE website, transf
    ```
 3. Run the bulk import:
    ```bash
-   python run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
-   python run.py refresh-analytics --with-snapshot
+   PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python
+   $PYTHON run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
+   $PYTHON run.py refresh-analytics --with-snapshot
    ```
 
 **Pros:** Most reliable, complete dataset, no scraping fragility.
