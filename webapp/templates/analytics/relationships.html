@@ -51,7 +51,7 @@
     <button type="submit">Apply</button>
 </form>
 
-<div class="status-section">
+<div class="status-section graph-section" data-graph-section="donor-cogiving">
     <h2>Donor Co-Giving Network</h2>
     <p class="subtitle">
         Nodes: <strong>{{ donor_cogiving.summary.node_count }}</strong> |
@@ -60,14 +60,27 @@
         Source: <strong>{{ donor_cogiving.summary.source }}</strong>
     </p>
     <p class="help-text">
-        Edge weight is shared dollar overlap across common committee and candidate targets.
-        Shared committee/candidate counts are shown per edge.
+        Focus-first mode is enabled: top edges only by default, labels hidden until selection/zoom.
+        Click a node to highlight neighbors. Shift-click a second node to show shared neighbors.
     </p>
-    <div class="network-svg-wrap">
-        <svg id="donor-cogiving-svg" viewBox="0 0 1000 480" role="img" aria-label="Donor co-giving network graph"></svg>
+    <div class="graph-controls" data-graph-controls="donor-cogiving">
+        <label>Max edges <input type="number" class="graph-max-edges" min="20" max="2000" value="{{ [edge_limit, 180]|min }}"></label>
+        <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="500" value="90"></label>
+        <label>Min shared amount <input type="number" class="graph-min-weight" min="0" step="100" value="{{ min_shared_amount }}"></label>
+        <label>Min shared count <input type="number" class="graph-min-shared" min="1" value="{{ min_shared_targets }}"></label>
+        <label>Node search <input type="search" class="graph-search-input" placeholder="Find donor"></label>
+        <button type="button" class="graph-search-btn">Find</button>
+        <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+        <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+    </div>
+    <div class="graph-stage">
+        <div class="network-svg-wrap">
+            <svg id="donor-cogiving-svg" viewBox="0 0 1000 480" role="img" aria-label="Donor co-giving network graph"></svg>
+        </div>
+        <aside id="donor-cogiving-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="donor-cogiving-summary" class="subtitle"></p>
-    <table class="data-table">
+    <table id="donor-cogiving-table" class="data-table">
         <thead>
             <tr>
                 <th>Donor A</th>
@@ -79,8 +92,13 @@
             </tr>
         </thead>
         <tbody>
-            {% for edge in donor_cogiving.edges[:80] %}
-            <tr>
+            {% for edge in donor_cogiving.edges[:120] %}
+            <tr
+                data-source-id="{{ edge.source }}"
+                data-target-id="{{ edge.target }}"
+                data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                data-weight="{{ edge.weight }}"
+            >
                 <td>{{ edge.source_label }}</td>
                 <td>{{ edge.target_label }}</td>
                 <td>{{ format_currency(edge.weight) }}</td>
@@ -95,7 +113,7 @@
     </table>
 </div>
 
-<div class="status-section">
+<div class="status-section graph-section" data-graph-section="committee-similarity">
     <h2>Committee Similarity Network</h2>
     <p class="subtitle">
         Nodes: <strong>{{ committee_similarity.summary.node_count }}</strong> |
@@ -104,13 +122,27 @@
         Source: <strong>{{ committee_similarity.summary.source }}</strong>
     </p>
     <p class="help-text">
-        Jaccard uses shared donor sets. Dollar overlap ratio is shared amount divided by the smaller committee total.
+        Clustered layout highlights coalition structure. Use “Collapse communities” to inspect inter-community links.
     </p>
-    <div class="network-svg-wrap">
-        <svg id="committee-similarity-svg" viewBox="0 0 1000 480" role="img" aria-label="Committee similarity network graph"></svg>
+    <div class="graph-controls" data-graph-controls="committee-similarity">
+        <label>Max edges <input type="number" class="graph-max-edges" min="20" max="2000" value="{{ [edge_limit, 180]|min }}"></label>
+        <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="500" value="110"></label>
+        <label>Min shared amount <input type="number" class="graph-min-weight" min="0" step="100" value="{{ min_shared_amount }}"></label>
+        <label>Min shared donors <input type="number" class="graph-min-shared" min="1" value="{{ min_shared_donors }}"></label>
+        <label>Node search <input type="search" class="graph-search-input" placeholder="Find committee"></label>
+        <button type="button" class="graph-search-btn">Find</button>
+        <label class="graph-check"><input type="checkbox" class="graph-collapse-communities"> Collapse communities</label>
+        <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+        <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+    </div>
+    <div class="graph-stage">
+        <div class="network-svg-wrap">
+            <svg id="committee-similarity-svg" viewBox="0 0 1000 480" role="img" aria-label="Committee similarity network graph"></svg>
+        </div>
+        <aside id="committee-similarity-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="committee-similarity-summary" class="subtitle"></p>
-    <table class="data-table">
+    <table id="committee-similarity-table" class="data-table">
         <thead>
             <tr>
                 <th>Committee A</th>
@@ -122,8 +154,13 @@
             </tr>
         </thead>
         <tbody>
-            {% for edge in committee_similarity.edges[:80] %}
-            <tr>
+            {% for edge in committee_similarity.edges[:120] %}
+            <tr
+                data-source-id="{{ edge.source }}"
+                data-target-id="{{ edge.target }}"
+                data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                data-weight="{{ edge.weight }}"
+            >
                 <td>{{ edge.source_label }}</td>
                 <td>{{ edge.target_label }}</td>
                 <td>{{ format_currency(edge.weight) }}</td>
@@ -138,7 +175,7 @@
     </table>
 </div>
 
-<div class="status-section">
+<div class="status-section graph-section" data-graph-section="candidate-competition">
     <h2>Candidate Competition Networks</h2>
     <p class="subtitle">
         State edges: <strong>{{ candidate_competition.state.summary.edge_count }}</strong> |
@@ -147,57 +184,175 @@
         Bridge matches: <strong>{{ candidate_competition.combined.summary.bridge_match_count }}</strong>
     </p>
 
-    <h3>State Candidate Competition</h3>
-    <div class="network-svg-wrap">
-        <svg id="candidate-state-svg" viewBox="0 0 1000 440" role="img" aria-label="State candidate competition network"></svg>
+    <div class="candidate-network-block">
+        <h3>State Candidate Competition</h3>
+        <div class="graph-controls" data-graph-controls="candidate-state">
+            <label>View <select class="graph-view-mode"><option value="network">Network</option><option value="matrix">Matrix</option></select></label>
+            <label>Max edges <input type="number" class="graph-max-edges" min="20" max="2000" value="{{ [edge_limit, 180]|min }}"></label>
+            <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="500" value="90"></label>
+            <label>Min shared amount <input type="number" class="graph-min-weight" min="0" step="100" value="{{ min_shared_amount }}"></label>
+            <label>Min shared donors <input type="number" class="graph-min-shared" min="1" value="{{ min_shared_donors }}"></label>
+            <label>Node search <input type="search" class="graph-search-input" placeholder="Find candidate"></label>
+            <button type="button" class="graph-search-btn">Find</button>
+            <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+            <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+        </div>
+        <div class="graph-stage">
+            <div class="network-svg-wrap graph-mode-network">
+                <svg id="candidate-state-svg" viewBox="0 0 1000 440" role="img" aria-label="State candidate competition network"></svg>
+            </div>
+            <div id="candidate-state-matrix" class="graph-mode-matrix"></div>
+            <aside id="candidate-state-panel" class="graph-selection-panel"></aside>
+        </div>
+        <p id="candidate-state-summary" class="subtitle"></p>
+        <div id="candidate-state-ranked" class="graph-ranked"></div>
+        <table id="candidate-state-table" class="data-table">
+            <thead>
+                <tr>
+                    <th>Candidate A</th>
+                    <th>Candidate B</th>
+                    <th>Shared Amount</th>
+                    <th>Shared Donors</th>
+                    <th>System Mix</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for edge in candidate_competition.state.edges[:100] %}
+                <tr
+                    data-source-id="{{ edge.source }}"
+                    data-target-id="{{ edge.target }}"
+                    data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                    data-weight="{{ edge.weight }}"
+                >
+                    <td>{{ edge.source_label }}</td>
+                    <td>{{ edge.target_label }}</td>
+                    <td>{{ format_currency(edge.weight) }}</td>
+                    <td>{{ edge.shared_donor_count }}</td>
+                    <td>{{ edge.system_mix }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No state candidate competition edges for current thresholds.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    <p id="candidate-state-summary" class="subtitle"></p>
 
-    <h3>Federal Candidate Competition</h3>
-    <div class="network-svg-wrap">
-        <svg id="candidate-federal-svg" viewBox="0 0 1000 440" role="img" aria-label="Federal candidate competition network"></svg>
+    <div class="candidate-network-block">
+        <h3>Federal Candidate Competition</h3>
+        <div class="graph-controls" data-graph-controls="candidate-federal">
+            <label>View <select class="graph-view-mode"><option value="network">Network</option><option value="matrix">Matrix</option></select></label>
+            <label>Max edges <input type="number" class="graph-max-edges" min="20" max="2000" value="{{ [edge_limit, 180]|min }}"></label>
+            <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="500" value="90"></label>
+            <label>Min shared amount <input type="number" class="graph-min-weight" min="0" step="100" value="{{ min_shared_amount }}"></label>
+            <label>Min shared donors <input type="number" class="graph-min-shared" min="1" value="{{ min_shared_donors }}"></label>
+            <label>Node search <input type="search" class="graph-search-input" placeholder="Find candidate"></label>
+            <button type="button" class="graph-search-btn">Find</button>
+            <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+            <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+        </div>
+        <div class="graph-stage">
+            <div class="network-svg-wrap graph-mode-network">
+                <svg id="candidate-federal-svg" viewBox="0 0 1000 440" role="img" aria-label="Federal candidate competition network"></svg>
+            </div>
+            <div id="candidate-federal-matrix" class="graph-mode-matrix"></div>
+            <aside id="candidate-federal-panel" class="graph-selection-panel"></aside>
+        </div>
+        <p id="candidate-federal-summary" class="subtitle"></p>
+        <div id="candidate-federal-ranked" class="graph-ranked"></div>
+        <table id="candidate-federal-table" class="data-table">
+            <thead>
+                <tr>
+                    <th>Candidate A</th>
+                    <th>Candidate B</th>
+                    <th>Shared Amount</th>
+                    <th>Shared Donors</th>
+                    <th>System Mix</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for edge in candidate_competition.federal.edges[:100] %}
+                <tr
+                    data-source-id="{{ edge.source }}"
+                    data-target-id="{{ edge.target }}"
+                    data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                    data-weight="{{ edge.weight }}"
+                >
+                    <td>{{ edge.source_label }}</td>
+                    <td>{{ edge.target_label }}</td>
+                    <td>{{ format_currency(edge.weight) }}</td>
+                    <td>{{ edge.shared_donor_count }}</td>
+                    <td>{{ edge.system_mix }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5">No federal candidate competition edges for current thresholds.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    <p id="candidate-federal-summary" class="subtitle"></p>
 
-    <h3>Combined Candidate Competition</h3>
-    <div class="network-svg-wrap">
-        <svg id="candidate-combined-svg" viewBox="0 0 1000 440" role="img" aria-label="Combined candidate competition network"></svg>
+    <div class="candidate-network-block">
+        <h3>Combined Candidate Competition</h3>
+        <div class="graph-controls" data-graph-controls="candidate-combined">
+            <label>View <select class="graph-view-mode"><option value="network">Network</option><option value="matrix">Matrix</option></select></label>
+            <label>Max edges <input type="number" class="graph-max-edges" min="20" max="2000" value="{{ [edge_limit, 180]|min }}"></label>
+            <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="500" value="95"></label>
+            <label>Min shared amount <input type="number" class="graph-min-weight" min="0" step="100" value="{{ min_shared_amount }}"></label>
+            <label>Min shared donors <input type="number" class="graph-min-shared" min="1" value="{{ min_shared_donors }}"></label>
+            <label>Node search <input type="search" class="graph-search-input" placeholder="Find candidate"></label>
+            <button type="button" class="graph-search-btn">Find</button>
+            <label class="graph-check"><input type="checkbox" class="graph-cross-only"> Show only cross-system edges</label>
+            <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+            <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+        </div>
+        <div class="graph-stage">
+            <div class="network-svg-wrap graph-mode-network">
+                <svg id="candidate-combined-svg" viewBox="0 0 1000 440" role="img" aria-label="Combined candidate competition network"></svg>
+            </div>
+            <div id="candidate-combined-matrix" class="graph-mode-matrix"></div>
+            <aside id="candidate-combined-panel" class="graph-selection-panel"></aside>
+        </div>
+        <p id="candidate-combined-summary" class="subtitle"></p>
+        <div id="candidate-combined-ranked" class="graph-ranked"></div>
+
+        <table id="candidate-combined-table" class="data-table">
+            <thead>
+                <tr>
+                    <th>Candidate A</th>
+                    <th>Candidate B</th>
+                    <th>Shared Amount</th>
+                    <th>Shared Donors</th>
+                    <th>System Mix</th>
+                    <th>State Share</th>
+                    <th>Federal Share</th>
+                    <th>Cross Share</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for edge in candidate_competition.combined.edges[:120] %}
+                <tr
+                    data-source-id="{{ edge.source }}"
+                    data-target-id="{{ edge.target }}"
+                    data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                    data-weight="{{ edge.weight }}"
+                >
+                    <td>{{ edge.source_label }}</td>
+                    <td>{{ edge.target_label }}</td>
+                    <td>{{ format_currency(edge.weight) }}</td>
+                    <td>{{ edge.shared_donor_count }}</td>
+                    <td>{{ edge.system_mix }}</td>
+                    <td>{{ format_currency(edge.shared_state_amount) }}</td>
+                    <td>{{ format_currency(edge.shared_federal_amount) }}</td>
+                    <td>{{ format_currency(edge.shared_cross_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8">No candidate competition edges for current thresholds.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    <p id="candidate-combined-summary" class="subtitle"></p>
-
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Candidate A</th>
-                <th>Candidate B</th>
-                <th>Shared Amount</th>
-                <th>Shared Donors</th>
-                <th>System Mix</th>
-                <th>State Share</th>
-                <th>Federal Share</th>
-                <th>Cross Share</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for edge in candidate_competition.combined.edges[:80] %}
-            <tr>
-                <td>{{ edge.source_label }}</td>
-                <td>{{ edge.target_label }}</td>
-                <td>{{ format_currency(edge.weight) }}</td>
-                <td>{{ edge.shared_donor_count }}</td>
-                <td>{{ edge.system_mix }}</td>
-                <td>{{ format_currency(edge.shared_state_amount) }}</td>
-                <td>{{ format_currency(edge.shared_federal_amount) }}</td>
-                <td>{{ format_currency(edge.shared_cross_amount) }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="8">No candidate competition edges for current thresholds.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
 </div>
 
-<div class="status-section">
+<div class="status-section graph-section" data-graph-section="lobbying-influence">
     <h2>Lobbying Influence Graph</h2>
     <p class="subtitle">
         Nodes: <strong>{{ lobbying_influence.summary.node_count }}</strong> |
@@ -205,13 +360,26 @@
         Client pool: <strong>{{ lobbying_influence.summary.client_pool_size if lobbying_influence.summary.client_pool_size is defined else 0 }}</strong>
     </p>
     <p class="help-text">
-        Graph links lobbying clients to entities, matched donors/payees, then to committees where donor/payee links exist.
+        Layered layout: client -> entity -> donor/payee -> committee.
     </p>
-    <div class="network-svg-wrap">
-        <svg id="lobbying-influence-svg" viewBox="0 0 1000 480" role="img" aria-label="Lobbying influence network graph"></svg>
+    <div class="graph-controls" data-graph-controls="lobbying-influence">
+        <label>Max edges <input type="number" class="graph-max-edges" min="20" max="3000" value="{{ [edge_limit, 220]|min }}"></label>
+        <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="800" value="140"></label>
+        <label>Min weight <input type="number" class="graph-min-weight" min="0" step="0.1" value="0"></label>
+        <label>Min shared count <input type="number" class="graph-min-shared" min="1" value="1"></label>
+        <label>Node search <input type="search" class="graph-search-input" placeholder="Find client/entity"></label>
+        <button type="button" class="graph-search-btn">Find</button>
+        <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+        <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+    </div>
+    <div class="graph-stage">
+        <div class="network-svg-wrap">
+            <svg id="lobbying-influence-svg" viewBox="0 0 1000 480" role="img" aria-label="Lobbying influence network graph"></svg>
+        </div>
+        <aside id="lobbying-influence-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="lobbying-influence-summary" class="subtitle"></p>
-    <table class="data-table">
+    <table id="lobbying-influence-table" class="data-table">
         <thead>
             <tr>
                 <th>Source</th>
@@ -222,8 +390,13 @@
             </tr>
         </thead>
         <tbody>
-            {% for edge in lobbying_influence.edges[:80] %}
-            <tr>
+            {% for edge in lobbying_influence.edges[:120] %}
+            <tr
+                data-source-id="{{ edge.source }}"
+                data-target-id="{{ edge.target }}"
+                data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                data-weight="{{ edge.weight }}"
+            >
                 <td>{{ edge.source_label }}</td>
                 <td>{{ edge.target_label }}</td>
                 <td>{{ edge.edge_type }}</td>
@@ -237,7 +410,7 @@
     </table>
 </div>
 
-<div class="status-section">
+<div class="status-section graph-section" data-graph-section="ecosystem-527">
     <h2>527 Ecosystem Graph</h2>
     <p class="subtitle">
         Nodes: <strong>{{ ecosystem_527.summary.node_count }}</strong> |
@@ -245,13 +418,26 @@
         Org pool: <strong>{{ ecosystem_527.summary.org_pool_size if ecosystem_527.summary.org_pool_size is defined else 0 }}</strong>
     </p>
     <p class="help-text">
-        Graph combines 527->committee matches, recipient matches, director->donor matches, and donor->committee flows when available.
+        Layered layout across 527 orgs, recipients, directors, donors, and committees.
     </p>
-    <div class="network-svg-wrap">
-        <svg id="ecosystem-527-svg" viewBox="0 0 1000 480" role="img" aria-label="IRS 527 ecosystem network graph"></svg>
+    <div class="graph-controls" data-graph-controls="ecosystem-527">
+        <label>Max edges <input type="number" class="graph-max-edges" min="20" max="3000" value="{{ [edge_limit, 220]|min }}"></label>
+        <label>Max nodes <input type="number" class="graph-max-nodes" min="20" max="800" value="150"></label>
+        <label>Min weight <input type="number" class="graph-min-weight" min="0" step="0.1" value="0"></label>
+        <label>Min shared count <input type="number" class="graph-min-shared" min="1" value="1"></label>
+        <label>Node search <input type="search" class="graph-search-input" placeholder="Find 527 org/director"></label>
+        <button type="button" class="graph-search-btn">Find</button>
+        <label class="graph-check"><input type="checkbox" class="graph-ego-mode"> Ego mode</label>
+        <label class="graph-check"><input type="checkbox" class="graph-show-labels"> Show labels</label>
+    </div>
+    <div class="graph-stage">
+        <div class="network-svg-wrap">
+            <svg id="ecosystem-527-svg" viewBox="0 0 1000 480" role="img" aria-label="IRS 527 ecosystem network graph"></svg>
+        </div>
+        <aside id="ecosystem-527-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="ecosystem-527-summary" class="subtitle"></p>
-    <table class="data-table">
+    <table id="ecosystem-527-table" class="data-table">
         <thead>
             <tr>
                 <th>Source</th>
@@ -262,8 +448,13 @@
             </tr>
         </thead>
         <tbody>
-            {% for edge in ecosystem_527.edges[:80] %}
-            <tr>
+            {% for edge in ecosystem_527.edges[:120] %}
+            <tr
+                data-source-id="{{ edge.source }}"
+                data-target-id="{{ edge.target }}"
+                data-edge-id="{{ edge.source }}|{{ edge.target }}|{{ edge.edge_type }}"
+                data-weight="{{ edge.weight }}"
+            >
                 <td>{{ edge.source_label }}</td>
                 <td>{{ edge.target_label }}</td>
                 <td>{{ edge.edge_type }}</td>

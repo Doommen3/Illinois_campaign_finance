@@ -6,6 +6,91 @@
 <h1>{{ entity.entity_name }}</h1>
 <p class="subtitle">Lobbying Entity ID: {{ entity.entity_id }} | Registration Year: {{ entity.reg_year or 'N/A' }}</p>
 
+<div class="status-badges">
+    <span class="badge badge-open">Matched donors: {{ donor_matches|length }}</span>
+    <span class="badge badge-high">High confidence: {{ donor_band_summary.high or 0 }}</span>
+    <span class="badge badge-medium">Medium confidence: {{ donor_band_summary.medium or 0 }}</span>
+    <span class="badge badge-low">Low confidence: {{ donor_band_summary.low or 0 }}</span>
+</div>
+
+<div class="status-section lobbying-money-card">
+    <h2>Money Destinations</h2>
+    <p class="subtitle">
+        Matched donor dollars: <strong>{{ format_currency(money_destinations.total_amount or 0) }}</strong> |
+        Contributions: <strong>{{ money_destinations.contribution_count or 0 }}</strong> |
+        First donation: <strong>{{ money_destinations.first_donation_date or '-' }}</strong> |
+        Last donation: <strong>{{ money_destinations.last_donation_date or '-' }}</strong>
+    </p>
+
+    {% if money_destinations.monthly_series %}
+    <div class="mini-timeline">
+        {% for point in money_destinations.monthly_series %}
+        <div class="mini-timeline-bar" title="{{ point.month }}: {{ format_currency(point.amount) }}">
+            <span
+                style="height: {{ ((point.amount / (money_destinations.max_monthly_amount or 1)) * 100)|round(0, 'ceil') }}%;"
+            ></span>
+            <small>{{ point.month[-2:] }}</small>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="help-text">No monthly donation timeline available for current matched donors.</p>
+    {% endif %}
+
+    <div class="two-column">
+        <div class="column">
+            <h3>Top Committees</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Committee</th>
+                        <th>Dollars</th>
+                        <th>Contrib.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in money_destinations.committee_destinations %}
+                    <tr>
+                        <td>
+                            <a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id) }}">
+                                {{ row.committee_name }}
+                            </a>
+                        </td>
+                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>{{ row.contribution_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="3">No committee destinations available.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="column">
+            <h3>Top Candidates</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Candidate</th>
+                        <th>Dollars</th>
+                        <th>Contrib.</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in money_destinations.candidate_destinations %}
+                    <tr>
+                        <td>{{ row.candidate_name }}</td>
+                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>{{ row.contribution_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="3">No candidate destinations available.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <h2>Clients ({{ clients|length }})</h2>
 <table class="data-table">
     <thead>
@@ -31,6 +116,64 @@
         {% endfor %}
     </tbody>
 </table>
+
+{% if donor_matches %}
+<h2>Matched Campaign Donors Across Clients</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Client</th>
+            <th>Donor Name</th>
+            <th>Confidence</th>
+            <th>Band</th>
+            <th>Method</th>
+            <th>Local Profile</th>
+            <th>Federal Profile</th>
+            <th>Bridge Profile</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for m in donor_matches %}
+        <tr>
+            <td>
+                {% if m.client_id %}
+                <a href="{{ url_for('lobbying.client_detail', client_id=m.client_id) }}">{{ m.client_name or m.client_id }}</a>
+                {% else %}
+                {{ m.client_name or '-' }}
+                {% endif %}
+            </td>
+            <td>{{ m.donor_name }}</td>
+            <td>{{ '%.2f'|format(m.score) }}</td>
+            <td><span class="badge badge-{{ m.confidence_band }}">{{ m.confidence_band|capitalize }}</span></td>
+            <td>{{ m.method or '-' }}</td>
+            <td>
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts') }}">
+                    Local
+                </a>
+            </td>
+            <td>
+                {% if m.has_federal_match %}
+                <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=m.federal_donor_entity_key, cycle=2026) }}">
+                    Federal
+                </a>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+            <td>
+                {% if m.has_federal_match %}
+                <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=m.federal_donor_entity_key, local_donor_key=m.donor_key, cycle=2026, local_source='bulk_receipts') }}">
+                    Matched
+                </a>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
 
 {% if expenditure_matches %}
 <h2>Matched Expenditure Payees</h2>

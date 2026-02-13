@@ -630,6 +630,259 @@ h2 {
     overflow-x: auto;
 }
 
+.network-svg-wrap svg {
+    width: 100%;
+    min-width: 760px;
+    height: 500px;
+    display: block;
+    cursor: grab;
+}
+
+.network-svg-wrap svg.is-dragging {
+    cursor: grabbing;
+}
+
+.graph-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: flex-end;
+    margin-bottom: 0.75rem;
+}
+
+.graph-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    font-size: 0.8rem;
+    color: #334155;
+    font-weight: 600;
+}
+
+.graph-controls input,
+.graph-controls select,
+.graph-controls button {
+    padding: 0.32rem 0.48rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    min-width: 82px;
+}
+
+.graph-controls button {
+    background: #0f766e;
+    color: #fff;
+    border-color: #0f766e;
+    cursor: pointer;
+}
+
+.graph-controls button:hover {
+    background: #115e59;
+}
+
+.graph-controls .graph-check {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.3rem;
+    font-weight: 500;
+    margin-top: 1.2rem;
+}
+
+.graph-controls .graph-check input {
+    min-width: 0;
+}
+
+.graph-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 0.75rem;
+    align-items: start;
+}
+
+.graph-selection-panel {
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 0.65rem;
+    min-height: 160px;
+    font-size: 0.83rem;
+    color: #334155;
+}
+
+.graph-selection-panel h4 {
+    margin: 0 0 0.4rem;
+    font-size: 0.92rem;
+    color: #0f172a;
+}
+
+.graph-selection-panel p {
+    margin: 0.2rem 0;
+}
+
+.graph-selection-panel ul {
+    margin: 0.25rem 0 0.25rem 1rem;
+    padding: 0;
+}
+
+.graph-mode-matrix {
+    display: none;
+    overflow-x: auto;
+}
+
+.graph-matrix-table {
+    border-collapse: collapse;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.graph-matrix-table th,
+.graph-matrix-table td {
+    border: 1px solid #e2e8f0;
+    padding: 0.3rem 0.38rem;
+    min-width: 52px;
+    text-align: center;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.graph-matrix-cell.is-clickable {
+    cursor: pointer;
+}
+
+.graph-matrix-cell.is-clickable:hover {
+    outline: 2px solid #1d4ed8;
+}
+
+.graph-ranked {
+    margin: 0.4rem 0 0.9rem;
+}
+
+.graph-ranked h4 {
+    margin: 0 0 0.4rem;
+}
+
+.graph-ranked-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+}
+
+.graph-ranked-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) 160px 80px;
+    gap: 0.4rem;
+    align-items: center;
+    font-size: 0.78rem;
+}
+
+.graph-ranked-label {
+    color: #0f172a;
+}
+
+.graph-ranked-spark {
+    display: flex;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #e2e8f0;
+}
+
+.graph-ranked-spark .seg {
+    display: block;
+    height: 100%;
+}
+
+.graph-ranked-spark .seg.state {
+    background: #0369a1;
+}
+
+.graph-ranked-spark .seg.federal {
+    background: #b91c1c;
+}
+
+.graph-ranked-spark .seg.cross {
+    background: #7c3aed;
+}
+
+.graph-ranked-value {
+    text-align: right;
+    color: #475569;
+    font-weight: 600;
+}
+
+.graph-row-highlight {
+    background: #dcfce7;
+}
+
+.candidate-network-block {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #e2e8f0;
+}
+
+.graph-node-shape {
+    cursor: pointer;
+}
+
+.badge-open {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.badge-high {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.badge-medium {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.badge-low {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.lobbying-money-card h3 {
+    margin-top: 0;
+}
+
+.mini-timeline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(22px, 1fr));
+    gap: 0.24rem;
+    align-items: end;
+    height: 120px;
+    margin: 0.45rem 0 1rem;
+    padding: 0.4rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+}
+
+.mini-timeline-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.16rem;
+}
+
+.mini-timeline-bar span {
+    width: 100%;
+    min-height: 3px;
+    border-radius: 4px 4px 0 0;
+    background: linear-gradient(180deg, #0ea5e9, #0369a1);
+}
+
+.mini-timeline-bar small {
+    font-size: 0.65rem;
+    color: #64748b;
+}
+
 #network-svg {
     width: 100%;
     min-width: 760px;
@@ -1074,6 +1327,31 @@ h2 {
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
         padding-bottom: 0.25rem;
+    }
+
+    .graph-controls {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.25rem;
+    }
+
+    .graph-controls label {
+        flex: 0 0 auto;
+        min-width: 140px;
+    }
+
+    .graph-stage {
+        grid-template-columns: 1fr;
+    }
+
+    .graph-selection-panel {
+        min-height: 120px;
+    }
+
+    .graph-ranked-row {
+        grid-template-columns: 1fr;
+        gap: 0.2rem;
     }
 
     .btn {
