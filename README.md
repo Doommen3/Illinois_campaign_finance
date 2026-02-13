@@ -95,6 +95,10 @@ python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/p
 python run.py run-cross-matching --only all
 ```
 
+Compute-heavy workflow recommendation:
+- For commands expected to take significant CPU time (for example `import-irs527` and `run-cross-matching --only all`), consider running on your local machine first.
+- Prefer uploading resulting files or derived outputs to the server, and use server-side execution for steps that must run directly against production data.
+
 ### Run Scrapers (Optional)
 ```bash
 # Scrape ISBE main report list
@@ -227,6 +231,18 @@ Environment variables (set in `.env` or export directly):
 ## Server Deployment
 
 The production site runs on a Hetzner VPS.
+
+### Compute-Heavy Tasks (Run Locally First)
+
+Default policy for expensive processing:
+- If a command is expected to run for a long time or heavily use CPU, consider the local-machine path first.
+- Run the compute-heavy step locally, validate outputs, then upload outputs/artifacts to production.
+- Use server compute for these jobs only when the step must run directly against production-only data.
+- For tasks that will run on the server, print an estimated runtime before execution (for example: expected duration range and whether it is CPU-heavy).
+
+Examples:
+- Often local-first: very large imports, full cross-matching (`run.py run-cross-matching --only all`), one-off backfills.
+- Usually server-side: lightweight deploy tasks (`git pull`, `systemctl restart ilcf-web.service`), quick targeted commands.
 
 ### SSH Access
 
