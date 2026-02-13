@@ -104,7 +104,11 @@
                 {% for donor in top_donors %}
                 <tr>
                     <td>
-                        {% if donor.id %}
+                        {% if donor.entity_id %}
+                        <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=donor.entity_id, source=donor.source if donor.source else 'bulk_receipts') }}">
+                            {{ donor.name|truncate(28) }}
+                        </a>
+                        {% elif donor.id %}
                         <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
                             {{ donor.name|truncate(28) }}
                         </a>

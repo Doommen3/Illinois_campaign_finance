@@ -131,6 +131,63 @@ def donor_detail_by_key(donor_key):
         committee_count=committee_count or 0,
         source=resolved_source,
         donor_key=donor.donor_key or donor_key,
+        entity_id=None,
+        detail_mode='key',
+        page=page,
+        total_pages=total_pages,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+
+
+@donors_bp.route('/entity/<path:entity_id>')
+def donor_detail_by_entity(entity_id):
+    """Donor detail page for merged local donor entities."""
+    conn = current_app.get_database()
+
+    source = (request.args.get('source') or '').strip() or None
+    donor = Donor.get_summary_by_entity(conn, entity_id, source=source)
+    if not donor:
+        abort(404)
+
+    resolved_source = donor.source or source or Donor.get_directory_source(conn)
+    if not resolved_source:
+        abort(404)
+
+    page = request.args.get('page', 1, type=int)
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    sort_by = request.args.get('sort', 'amount')
+    sort_dir = request.args.get('dir', 'desc')
+
+    committee_rows = Donor.get_committee_breakdown_by_entity(
+        conn,
+        donor.entity_id or entity_id,
+        resolved_source,
+        limit=per_page,
+        offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    committee_count = donor.committee_count
+    if committee_count is None:
+        committee_count = Donor.count_committee_breakdown_by_entity(
+            conn, donor.entity_id or entity_id, resolved_source
+        )
+    total_pages = (committee_count + per_page - 1) // per_page if committee_count else 0
+
+    return render_template(
+        'donors/detail_by_key.html',
+        donor=donor,
+        committee_rows=committee_rows,
+        total_amount=donor.total_amount or 0,
+        contribution_count=donor.contribution_count or 0,
+        committee_count=committee_count or 0,
+        source=resolved_source,
+        donor_key=donor.donor_key,
+        entity_id=donor.entity_id or entity_id,
+        detail_mode='entity',
         page=page,
         total_pages=total_pages,
         sort_by=sort_by,

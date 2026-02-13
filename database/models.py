@@ -554,9 +554,12 @@ class Donor:
     contribution_count: Optional[int] = None
     committee_count: Optional[int] = None
     donor_key: Optional[str] = None
+    entity_id: Optional[str] = None
     donor_city: Optional[str] = None
     donor_state: Optional[str] = None
     source: Optional[str] = None
+    merge_action: Optional[str] = None
+    entity_confidence_score: Optional[float] = None
     BULK_RECEIPTS_MATERIALIZATION_VERSION: ClassVar[int] = 2
 
     @classmethod
@@ -616,6 +619,25 @@ class Donor:
         except Exception:
             # Keep donor pages readable even if a rebuild cannot happen right now.
             return
+
+    @classmethod
+    def _local_entity_materialization_is_ready(cls, conn: sqlite3.Connection, source: str) -> bool:
+        if source != "bulk_receipts":
+            return False
+        if not cls._table_exists(conn, "donor_entity_local"):
+            return False
+        if not cls._table_exists(conn, "donor_entity_local_member"):
+            return False
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM donor_entity_local
+            WHERE source = ?
+            LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+        return row is not None
 
     @classmethod
     def get_directory_source(cls, conn: sqlite3.Connection) -> Optional[str]:
@@ -748,6 +770,115 @@ class Donor:
         """Get all donors with aggregated contribution totals."""
         source = cls.get_directory_source(conn)
         if source:
+            if cls._local_entity_materialization_is_ready(conn, source):
+                sort_map = {
+                    "source": "source",
+                    "name": "donor_name",
+                    "address": "donor_address",
+                    "occupation": "occupation",
+                    "employer": "employer",
+                    "total_amount": "total_amount",
+                    "contribution_count": "contribution_count",
+                    "committee_count": "committee_count",
+                    "city": "donor_city",
+                    "state": "donor_state",
+                    "created_at": "donor_name",
+                }
+                order_by = sort_map.get(sort_by, "total_amount")
+                direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+                rows = conn.execute(
+                    f"""
+                    WITH anchor_member AS (
+                        SELECT
+                            m.entity_id,
+                            m.donor_key,
+                            m.donor_name,
+                            m.donor_city,
+                            m.donor_state,
+                            m.total_amount,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY m.entity_id
+                                ORDER BY m.total_amount DESC, m.donor_key ASC
+                            ) AS rn
+                        FROM donor_entity_local_member m
+                        WHERE m.source = ?
+                    ),
+                    member_totals AS (
+                        SELECT
+                            m.entity_id,
+                            COALESCE(SUM(m.contribution_count), 0) AS contribution_count
+                        FROM donor_entity_local_member m
+                        WHERE m.source = ?
+                        GROUP BY m.entity_id
+                    ),
+                    committee_totals AS (
+                        SELECT
+                            m.entity_id,
+                            COUNT(DISTINCT a.committee_id) AS committee_count
+                        FROM donor_entity_local_member m
+                        LEFT JOIN analytics_donor_committee_agg a
+                            ON a.source = m.source
+                           AND a.donor_key = m.donor_key
+                        WHERE m.source = ?
+                        GROUP BY m.entity_id
+                    )
+                    SELECT
+                        e.source AS source,
+                        e.entity_id AS entity_id,
+                        COALESCE(NULLIF(e.display_name, ''), NULLIF(anchor.donor_name, ''), e.canonical_name) AS donor_name,
+                        COALESCE(summary.donor_address, '') AS donor_address,
+                        COALESCE(summary.occupation, '') AS occupation,
+                        COALESCE(summary.employer, '') AS employer,
+                        COALESCE(anchor.donor_city, '') AS donor_city,
+                        COALESCE(anchor.donor_state, '') AS donor_state,
+                        COALESCE(e.total_amount, 0) AS total_amount,
+                        COALESCE(mt.contribution_count, 0) AS contribution_count,
+                        COALESCE(ct.committee_count, 0) AS committee_count,
+                        COALESCE(anchor.donor_key, '') AS anchor_donor_key,
+                        e.merge_action AS merge_action,
+                        e.confidence_score AS confidence_score
+                    FROM donor_entity_local e
+                    LEFT JOIN anchor_member anchor
+                        ON anchor.entity_id = e.entity_id
+                       AND anchor.rn = 1
+                    LEFT JOIN analytics_donor_summary summary
+                        ON summary.source = e.source
+                       AND summary.donor_key = anchor.donor_key
+                    LEFT JOIN member_totals mt ON mt.entity_id = e.entity_id
+                    LEFT JOIN committee_totals ct ON ct.entity_id = e.entity_id
+                    WHERE e.source = ?
+                    ORDER BY {order_by} {direction}, donor_name ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (source, source, source, source, limit, offset),
+                ).fetchall()
+                donors = []
+                for row in rows:
+                    donor = cls(
+                        id=None,
+                        name=row["donor_name"] or "Unknown Donor",
+                        address=row["donor_address"] or None,
+                        occupation=row["occupation"] or None,
+                        employer=row["employer"] or None,
+                        normalized_name="",
+                        normalized_address=None,
+                        created_at=None,
+                    )
+                    donor.total_amount = float(row["total_amount"] or 0.0)
+                    donor.contribution_count = int(row["contribution_count"] or 0)
+                    donor.committee_count = int(row["committee_count"] or 0)
+                    donor.donor_key = row["anchor_donor_key"] or None
+                    donor.entity_id = row["entity_id"] or None
+                    donor.donor_city = row["donor_city"] or None
+                    donor.donor_state = row["donor_state"] or None
+                    donor.source = row["source"]
+                    donor.merge_action = row["merge_action"] or None
+                    donor.entity_confidence_score = (
+                        float(row["confidence_score"]) if row["confidence_score"] is not None else None
+                    )
+                    donors.append(donor)
+                return donors
+
             sort_map = {
                 "source": "source",
                 "name": "donor_name",
@@ -852,6 +983,17 @@ class Donor:
         """Get total count of donors."""
         source = cls.get_directory_source(conn)
         if source:
+            if cls._local_entity_materialization_is_ready(conn, source):
+                cursor = conn.execute(
+                    """
+                    SELECT COUNT(*) as count
+                    FROM donor_entity_local
+                    WHERE source = ?
+                    """,
+                    (source,),
+                )
+                return cursor.fetchone()["count"]
+
             cursor = conn.execute(
                 """
                 SELECT COUNT(*) as count
@@ -1054,6 +1196,206 @@ class Donor:
             WHERE source = ? AND donor_key = ?
             """,
             (source, donor_key),
+        ).fetchone()
+        return int(row["count"] or 0) if row else 0
+
+    @classmethod
+    def get_summary_by_entity(
+        cls,
+        conn: sqlite3.Connection,
+        entity_id: str,
+        source: Optional[str] = None,
+    ) -> Optional["Donor"]:
+        """Get donor summary row by local donor entity id."""
+        if (
+            not entity_id
+            or not cls._table_exists(conn, "donor_entity_local")
+            or not cls._table_exists(conn, "donor_entity_local_member")
+        ):
+            return None
+
+        resolved_source = source or cls.get_directory_source(conn) or "bulk_receipts"
+        row = conn.execute(
+            """
+            WITH anchor_member AS (
+                SELECT
+                    m.entity_id,
+                    m.donor_key,
+                    m.donor_name,
+                    m.donor_city,
+                    m.donor_state,
+                    m.total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY m.entity_id
+                        ORDER BY m.total_amount DESC, m.donor_key ASC
+                    ) AS rn
+                FROM donor_entity_local_member m
+                WHERE m.source = ?
+            ),
+            member_totals AS (
+                SELECT
+                    m.entity_id,
+                    COALESCE(SUM(m.contribution_count), 0) AS contribution_count
+                FROM donor_entity_local_member m
+                WHERE m.source = ?
+                GROUP BY m.entity_id
+            ),
+            committee_totals AS (
+                SELECT
+                    m.entity_id,
+                    COUNT(DISTINCT a.committee_id) AS committee_count
+                FROM donor_entity_local_member m
+                LEFT JOIN analytics_donor_committee_agg a
+                    ON a.source = m.source
+                   AND a.donor_key = m.donor_key
+                WHERE m.source = ?
+                GROUP BY m.entity_id
+            )
+            SELECT
+                e.source AS source,
+                e.entity_id AS entity_id,
+                COALESCE(NULLIF(e.display_name, ''), NULLIF(anchor.donor_name, ''), e.canonical_name) AS donor_name,
+                COALESCE(summary.donor_address, '') AS donor_address,
+                COALESCE(summary.occupation, '') AS occupation,
+                COALESCE(summary.employer, '') AS employer,
+                COALESCE(anchor.donor_city, '') AS donor_city,
+                COALESCE(anchor.donor_state, '') AS donor_state,
+                COALESCE(e.total_amount, 0) AS total_amount,
+                COALESCE(mt.contribution_count, 0) AS contribution_count,
+                COALESCE(ct.committee_count, 0) AS committee_count,
+                COALESCE(anchor.donor_key, '') AS anchor_donor_key,
+                e.merge_action AS merge_action,
+                e.confidence_score AS confidence_score
+            FROM donor_entity_local e
+            LEFT JOIN anchor_member anchor
+                ON anchor.entity_id = e.entity_id
+               AND anchor.rn = 1
+            LEFT JOIN analytics_donor_summary summary
+                ON summary.source = e.source
+               AND summary.donor_key = anchor.donor_key
+            LEFT JOIN member_totals mt ON mt.entity_id = e.entity_id
+            LEFT JOIN committee_totals ct ON ct.entity_id = e.entity_id
+            WHERE e.source = ?
+              AND e.entity_id = ?
+            LIMIT 1
+            """,
+            (resolved_source, resolved_source, resolved_source, resolved_source, entity_id),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        donor = cls(
+            id=None,
+            name=row["donor_name"] or "Unknown Donor",
+            address=row["donor_address"] or None,
+            occupation=row["occupation"] or None,
+            employer=row["employer"] or None,
+            normalized_name="",
+            normalized_address=None,
+            created_at=None,
+        )
+        donor.total_amount = float(row["total_amount"] or 0.0)
+        donor.contribution_count = int(row["contribution_count"] or 0)
+        donor.committee_count = int(row["committee_count"] or 0)
+        donor.donor_key = row["anchor_donor_key"] or None
+        donor.entity_id = row["entity_id"] or None
+        donor.donor_city = row["donor_city"] or None
+        donor.donor_state = row["donor_state"] or None
+        donor.source = row["source"] or resolved_source
+        donor.merge_action = row["merge_action"] or None
+        donor.entity_confidence_score = (
+            float(row["confidence_score"]) if row["confidence_score"] is not None else None
+        )
+        return donor
+
+    @classmethod
+    def get_committee_breakdown_by_entity(
+        cls,
+        conn: sqlite3.Connection,
+        entity_id: str,
+        source: str,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "amount",
+        sort_dir: str = "desc",
+    ) -> List[dict]:
+        """Get committee-level totals for a local donor entity."""
+        if (
+            not entity_id
+            or not source
+            or not cls._table_exists(conn, "donor_entity_local_member")
+            or not cls._table_exists(conn, "analytics_donor_committee_agg")
+        ):
+            return []
+
+        sort_map = {
+            "committee": "committee_name",
+            "amount": "total_amount",
+            "contribution_count": "contribution_count",
+        }
+        order_by = sort_map.get(sort_by, "total_amount")
+        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                a.committee_id AS committee_id,
+                a.committee_name AS committee_name,
+                COALESCE(SUM(a.total_amount), 0) AS total_amount,
+                COALESCE(SUM(a.contribution_count), 0) AS contribution_count
+            FROM donor_entity_local_member m
+            JOIN analytics_donor_committee_agg a
+              ON a.source = m.source
+             AND a.donor_key = m.donor_key
+            WHERE m.source = ?
+              AND m.entity_id = ?
+            GROUP BY a.committee_id, a.committee_name
+            ORDER BY {order_by} {direction}, committee_name ASC
+            LIMIT ? OFFSET ?
+            """,
+            (source, entity_id, limit, offset),
+        ).fetchall()
+        return [
+            {
+                "committee_id": row["committee_id"],
+                "committee_name": row["committee_name"],
+                "total_amount": float(row["total_amount"] or 0.0),
+                "contribution_count": int(row["contribution_count"] or 0),
+            }
+            for row in rows
+        ]
+
+    @classmethod
+    def count_committee_breakdown_by_entity(
+        cls,
+        conn: sqlite3.Connection,
+        entity_id: str,
+        source: str,
+    ) -> int:
+        """Count committee rows available for a donor entity."""
+        if (
+            not entity_id
+            or not source
+            or not cls._table_exists(conn, "donor_entity_local_member")
+            or not cls._table_exists(conn, "analytics_donor_committee_agg")
+        ):
+            return 0
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT a.committee_id
+                FROM donor_entity_local_member m
+                JOIN analytics_donor_committee_agg a
+                  ON a.source = m.source
+                 AND a.donor_key = m.donor_key
+                WHERE m.source = ?
+                  AND m.entity_id = ?
+                GROUP BY a.committee_id
+            )
+            """,
+            (source, entity_id),
         ).fetchone()
         return int(row["count"] or 0) if row else 0
 

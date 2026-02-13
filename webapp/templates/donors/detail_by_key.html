@@ -6,6 +6,9 @@
 <h1>{{ donor.name }}</h1>
 
 <div class="donor-summary">
+    {% if donor.entity_id %}
+    <p><strong>Entity ID:</strong> {{ donor.entity_id }}</p>
+    {% endif %}
     <p><strong>Source:</strong> {{ source }}</p>
     <p><strong>Address:</strong> {{ donor.address if donor.address else 'Not available' }}</p>
     <p><strong>City:</strong> {{ donor.donor_city if donor.donor_city else 'Not available' }}</p>
@@ -22,17 +25,29 @@
     <thead>
         <tr>
             <th>
+                {% if detail_mode == 'entity' %}
+                <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity_id, source=source, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc') }}">
+                {% else %}
                 <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc') }}">
+                {% endif %}
                     Committee{% if sort_by == 'committee' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
+                {% if detail_mode == 'entity' %}
+                <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity_id, source=source, sort='amount', dir='asc' if sort_by != 'amount' or sort_dir == 'desc' else 'desc') }}">
+                {% else %}
                 <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='amount', dir='asc' if sort_by != 'amount' or sort_dir == 'desc' else 'desc') }}">
+                {% endif %}
                     Total Amount{% if sort_by == 'amount' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
+                {% if detail_mode == 'entity' %}
+                <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity_id, source=source, sort='contribution_count', dir='asc' if sort_by != 'contribution_count' or sort_dir == 'desc' else 'desc') }}">
+                {% else %}
                 <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, sort='contribution_count', dir='asc' if sort_by != 'contribution_count' or sort_dir == 'desc' else 'desc') }}">
+                {% endif %}
                     Contributions{% if sort_by == 'contribution_count' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -56,13 +71,21 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
+    {% if detail_mode == 'entity' %}
+    <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity_id, source=source, page=page-1, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    {% else %}
     <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, page=page-1, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    {% endif %}
     {% endif %}
 
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
 
     {% if page < total_pages %}
+    {% if detail_mode == 'entity' %}
+    <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=entity_id, source=source, page=page+1, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    {% else %}
     <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor_key, source=source, page=page+1, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    {% endif %}
     {% endif %}
 </nav>
 {% endif %}

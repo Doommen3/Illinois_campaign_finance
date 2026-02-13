@@ -1176,6 +1176,248 @@ class TestWebApp:
         assert b'/donors/key/' in response.data
         assert b'source=bulk_receipts' in response.data
 
+    def test_donors_page_prefers_local_entity_rows_when_available(self, app, client):
+        """Test donors page uses merged local donor entities when materialized entities exist."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DELETE FROM donor_entity_local_member")
+        conn.execute("DELETE FROM donor_entity_local")
+        conn.execute("DELETE FROM analytics_donor_committee_agg")
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s dearborn st||chicago|il|60603-5517", None,
+                    "Kenneth Griffin", "131 S Dearborn St, Chicago, IL, 60603-5517",
+                    "Chicago", "IL", "Founder and CEO", "Citadel LLC", 55016400.0, 8, 3,
+                ),
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s. dearborn st||chicago|il|60603", None,
+                    "Kenneth Griffin", "131 S. Dearborn St, Chicago, IL, 60603",
+                    "Chicago", "IL", "CEO", "The Citadel, LLC", 53817500.0, 10, 6,
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_committee_agg (
+                source, donor_key, donor_name, donor_address, donor_city, donor_state,
+                occupation, employer, committee_id, committee_name, total_amount, contribution_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s dearborn st||chicago|il|60603-5517",
+                    "Kenneth Griffin", "131 S Dearborn St, Chicago, IL, 60603-5517",
+                    "Chicago", "IL", "Founder and CEO", "Citadel LLC",
+                    "100", "Committee A", 1000.0, 1,
+                ),
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s. dearborn st||chicago|il|60603",
+                    "Kenneth Griffin", "131 S. Dearborn St, Chicago, IL, 60603",
+                    "Chicago", "IL", "CEO", "The Citadel, LLC",
+                    "200", "Committee B", 2000.0, 2,
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO donor_entity_local (
+                entity_id, source, canonical_name, display_name, member_count, total_amount,
+                confidence_score, peak_confidence_score, confidence_tier, merge_action, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "entity:kenneth:1",
+                "bulk_receipts",
+                "kenneth griffin",
+                "Kenneth Griffin",
+                2,
+                108833900.0,
+                0.95,
+                0.95,
+                "high",
+                "review",
+                "test:v1",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local_member (
+                source, donor_key, entity_id, canonical_name, donor_name, donor_city, donor_state, donor_zip5,
+                confidence_score, confidence_tier, merge_action, total_amount, contribution_count, committee_count,
+                review_status, reasons_json, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s dearborn st||chicago|il|60603-5517", "entity:kenneth:1",
+                    "kenneth griffin", "Kenneth Griffin", "CHICAGO", "IL", "60603",
+                    0.95, "high", "review", 55016400.0, 8, 3, "pending", "{}", "test:v1",
+                ),
+                (
+                    "bulk_receipts", "kenneth|griffin|131 s. dearborn st||chicago|il|60603", "entity:kenneth:1",
+                    "kenneth griffin", "Kenneth Griffin", "CHICAGO", "IL", "60603",
+                    0.95, "high", "review", 53817500.0, 10, 6, "pending", "{}", "test:v1",
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO analytics_materialized_meta (
+                source, donor_row_count, monthly_row_count, large_row_count, large_threshold,
+                materialization_version, materialization_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                donor_row_count = excluded.donor_row_count,
+                monthly_row_count = excluded.monthly_row_count,
+                large_row_count = excluded.large_row_count,
+                large_threshold = excluded.large_threshold,
+                materialization_version = excluded.materialization_version,
+                materialization_notes = excluded.materialization_notes,
+                refreshed_at = CURRENT_TIMESTAMP
+            """,
+            ("bulk_receipts", 2, 0, 0, 5000.0, 2, "test-fixture"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/donors/?sort=total_amount&dir=desc')
+        assert response.status_code == 200
+        assert b'Kenneth Griffin' in response.data
+        assert response.data.count(b'Kenneth Griffin') >= 1
+        assert b'/donors/entity/entity' in response.data
+
+    def test_bulk_donor_detail_by_entity_loads_and_aggregates(self, app, client):
+        """Test donor detail route by entity aggregates committee totals across member donor keys."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DELETE FROM donor_entity_local_member")
+        conn.execute("DELETE FROM donor_entity_local")
+        conn.execute("DELETE FROM analytics_donor_committee_agg")
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:detail:key1", None, "Entity Detail Donor",
+                    "10 Main St, Springfield, IL 62701", "Springfield", "IL",
+                    "Teacher", "School District", 700.0, 3, 2,
+                ),
+                (
+                    "bulk_receipts", "entity:detail:key2", None, "Entity Detail Donor",
+                    "20 Main St, Springfield, IL 62701", "Springfield", "IL",
+                    "Teacher", "School District", 300.0, 1, 1,
+                ),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO analytics_donor_committee_agg (
+                source, donor_key, donor_name, donor_address, donor_city, donor_state,
+                occupation, employer, committee_id, committee_name, total_amount, contribution_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:detail:key1", "Entity Detail Donor",
+                    "10 Main St, Springfield, IL 62701", "Springfield", "IL",
+                    "Teacher", "School District", "100", "Committee A", 500.0, 2,
+                ),
+                (
+                    "bulk_receipts", "entity:detail:key1", "Entity Detail Donor",
+                    "10 Main St, Springfield, IL 62701", "Springfield", "IL",
+                    "Teacher", "School District", "200", "Committee Z", 200.0, 1,
+                ),
+                (
+                    "bulk_receipts", "entity:detail:key2", "Entity Detail Donor",
+                    "20 Main St, Springfield, IL 62701", "Springfield", "IL",
+                    "Teacher", "School District", "100", "Committee A", 300.0, 1,
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO donor_entity_local (
+                entity_id, source, canonical_name, display_name, member_count, total_amount,
+                confidence_score, peak_confidence_score, confidence_tier, merge_action, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "entity:detail:1",
+                "bulk_receipts",
+                "entity detail donor",
+                "Entity Detail Donor",
+                2,
+                1000.0,
+                0.9,
+                0.95,
+                "high",
+                "review",
+                "test:v1",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO donor_entity_local_member (
+                source, donor_key, entity_id, canonical_name, donor_name, donor_city, donor_state, donor_zip5,
+                confidence_score, confidence_tier, merge_action, total_amount, contribution_count, committee_count,
+                review_status, reasons_json, method_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "bulk_receipts", "entity:detail:key1", "entity:detail:1", "entity detail donor",
+                    "Entity Detail Donor", "SPRINGFIELD", "IL", "62701",
+                    0.9, "high", "review", 700.0, 3, 2, "pending", "{}", "test:v1",
+                ),
+                (
+                    "bulk_receipts", "entity:detail:key2", "entity:detail:1", "entity detail donor",
+                    "Entity Detail Donor", "SPRINGFIELD", "IL", "62701",
+                    0.82, "high", "review", 300.0, 1, 1, "pending", "{}", "test:v1",
+                ),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO analytics_materialized_meta (
+                source, donor_row_count, monthly_row_count, large_row_count, large_threshold,
+                materialization_version, materialization_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                donor_row_count = excluded.donor_row_count,
+                monthly_row_count = excluded.monthly_row_count,
+                large_row_count = excluded.large_row_count,
+                large_threshold = excluded.large_threshold,
+                materialization_version = excluded.materialization_version,
+                materialization_notes = excluded.materialization_notes,
+                refreshed_at = CURRENT_TIMESTAMP
+            """,
+            ("bulk_receipts", 2, 0, 0, 5000.0, 2, "test-fixture"),
+        )
+        conn.commit()
+        conn.close()
+
+        entity_id_url = quote("entity:detail:1", safe="")
+        response = client.get(f'/donors/entity/{entity_id_url}?source=bulk_receipts&sort=amount&dir=desc')
+        assert response.status_code == 200
+        assert b'Entity Detail Donor' in response.data
+        assert b'Who They Donated To' in response.data
+        assert b'Committees Supported:</strong> 2' in response.data
+        assert b'Entity ID:</strong> entity:detail:1' in response.data
+        assert response.data.find(b'Committee A') < response.data.find(b'Committee Z')
+
     def test_bulk_donor_detail_by_key_loads_and_sorts(self, app, client):
         """Test donor detail route by key shows committee breakdown for bulk donors."""
         conn = get_db(app.config['DATABASE_PATH'])
