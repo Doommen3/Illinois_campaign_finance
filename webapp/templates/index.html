@@ -10,8 +10,7 @@
     <h2>Start Here</h2>
     <p>Use these core views to explore current data and donor networks.</p>
     <p>
-        <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Local Candidate Finance</a>
-        <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance</a>
+        <a class="btn btn-primary" href="{{ url_for('main.candidates') }}">Candidates</a>
         <a class="btn btn-primary" href="{{ url_for('analytics.dashboard') }}">Analytics</a>
         <a class="btn btn-primary" href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a>
     </p>
@@ -71,12 +70,8 @@
             </thead>
             <tbody>
                 <tr>
-                    <td><a href="{{ url_for('candidate_finance.list_candidate_finance') }}">Candidate Finance</a></td>
-                    <td>Local candidate/committee totals with itemized drilldown and year/cycle filters.</td>
-                </tr>
-                <tr>
-                    <td><a href="{{ url_for('federal_finance.list_federal_finance') }}">Federal Finance</a></td>
-                    <td>Illinois federal candidates, donors, committees, and race-level metrics.</td>
+                    <td><a href="{{ url_for('main.candidates') }}">Candidates</a></td>
+                    <td>State (ISBE) and federal (FEC) candidate finance — totals, drilldowns, and race-level metrics.</td>
                 </tr>
                 <tr>
                     <td><a href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a></td>

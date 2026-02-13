@@ -125,8 +125,10 @@ Visit `http://localhost:5000` to access the dashboard.
 ├── webapp/                 Flask web application
 │   ├── routes/             11 route modules (dashboard, analytics, API, etc.)
 │   └── templates/          34 Jinja2 templates
+├── scripts/                Automation scripts
+│   └── sync-fec.sh         Weekly FEC data sync wrapper
 ├── tests/                  pytest suite (11 test modules)
-├── docs/                   Internal roadmaps and checklists
+├── docs/                   Data update guide, roadmaps, checklists
 ├── Bulk_download/          ISBE bulk export TXT files
 └── data/                   SQLite database
 ```
@@ -159,6 +161,158 @@ Environment variables (set in `.env` or export directly):
 | `FLASK_SECRET_KEY` | `dev-secret-key...` | Flask session secret |
 | `FLASK_DEBUG` | `false` | Enable Flask debug mode |
 | `RATE_LIMIT_RPM` | `30` | Scraper requests per minute |
+
+## Server Deployment
+
+The production site runs on a Hetzner VPS.
+
+### SSH Access
+
+```bash
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+```
+
+### Server File Paths
+
+```
+/srv/illinois_campaign_finance/
+├── current/                    Application code (git checkout)
+│   ├── run.py                  CLI entry point
+│   ├── webapp/                 Flask app
+│   ├── scripts/
+│   │   └── sync-fec.sh         FEC sync automation
+│   ├── data/
+│   │   └── campaign_finance.db SQLite database
+│   └── ...
+└── shared/                     Persistent data across deploys
+    ├── .env                    Environment variables (FEC_API_KEY, etc.)
+    ├── logs/                   Sync and task logs
+    │   └── sync-fec-*.log      Timestamped FEC sync logs
+    └── downloads/              Staging area for ISBE bulk files
+```
+
+### Deploying Code Updates
+
+Push changes locally, then pull on the server:
+
+```bash
+# Local: push to remote
+git push origin main
+
+# SSH into server and pull
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+cd /srv/illinois_campaign_finance/current
+git pull origin main
+
+# Restart the web application
+systemctl restart il-campaign-finance
+```
+
+### Key Web Routes
+
+| Route | Description |
+|-------|-------------|
+| `/` | Dashboard overview with stats, freshness, launch paths |
+| `/candidates` | Unified candidates page — state (ISBE) and federal (FEC) |
+| `/candidate-finance` | State candidate finance detail (ISBE data) |
+| `/federal-finance` | Federal candidate finance detail (FEC data) |
+| `/analytics` | Network, anomaly, concentration, and geographic analytics |
+| `/donors` | Cross-committee donor directory |
+
+## Updating Data on the Server
+
+See [`docs/data_update_guide.md`](docs/data_update_guide.md) for full details. Quick reference below.
+
+### FEC Data (Automated)
+
+A systemd timer runs `scripts/sync-fec.sh` weekly (Sundays 3 AM UTC). It syncs FEC contributions, rebuilds donor identities, and refreshes analytics.
+
+To run manually:
+
+```bash
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+cd /srv/illinois_campaign_finance/current
+bash scripts/sync-fec.sh
+```
+
+Or run individual steps:
+
+```bash
+python run.py sync-fec-il-federal --cycle 2026 --contributor-state IL --max-calls 900
+python run.py rebuild-fec-donor-identities
+python run.py refresh-analytics --with-snapshot
+```
+
+Check sync status:
+
+```bash
+# Timer status
+systemctl list-timers il-campaign-fec-sync.timer
+
+# Latest sync log
+journalctl -u il-campaign-fec-sync.service --since today
+
+# Or read log files directly
+ls -lt /srv/illinois_campaign_finance/shared/logs/sync-fec-*.log | head -5
+```
+
+### ISBE Data (Manual)
+
+ISBE has no public API. Download bulk files from the ISBE Campaign Disclosure website, then upload and import:
+
+```bash
+# From your local machine — upload bulk files to the server
+scp -i ~/.ssh/hetzner_ed25519 *.txt root@178.156.162.56:/srv/illinois_campaign_finance/shared/downloads/
+
+# SSH into the server
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+# Import and rebuild analytics
+cd /srv/illinois_campaign_finance/current
+python run.py import-bulk-download --input-dir /srv/illinois_campaign_finance/shared/downloads/
+python run.py refresh-analytics --with-snapshot
+```
+
+### Setting Up the FEC Sync Timer (First Time)
+
+Requires `FEC_API_KEY` in `/srv/illinois_campaign_finance/shared/.env`. Get a key at https://api.open.fec.gov/developers/.
+
+```bash
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+# Create the systemd service
+cat > /etc/systemd/system/il-campaign-fec-sync.service << 'EOF'
+[Unit]
+Description=Illinois Campaign Finance - FEC weekly sync
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/srv/illinois_campaign_finance/current
+ExecStart=/srv/illinois_campaign_finance/current/scripts/sync-fec.sh
+EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
+EOF
+
+# Create the timer
+cat > /etc/systemd/system/il-campaign-fec-sync.timer << 'EOF'
+[Unit]
+Description=Run FEC sync every Sunday at 3 AM UTC
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# Enable and start
+systemctl daemon-reload
+systemctl enable --now il-campaign-fec-sync.timer
+```
 
 ## License
 

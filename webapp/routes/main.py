@@ -28,11 +28,8 @@ def _scalar(conn, sql: str, params=(), default=0):
     return default if value is None else value
 
 
-@main_bp.route('/')
-def index():
-    """Bulk-first dashboard with local/federal finance entry points."""
-    conn = current_app.get_database()
-
+def _get_candidate_stats(conn):
+    """Return (stats_dict, freshness_dict) for state and federal candidate data."""
     stats = {
         'local_candidate_rows': 0,
         'local_candidates': 0,
@@ -44,9 +41,6 @@ def index():
         'federal_contributions': 0,
         'federal_total_amount': 0.0,
         'federal_matched_donors': 0,
-        'legacy_reports': Report.count(conn),
-        'legacy_committees': Committee.count(conn),
-        'legacy_donors': Donor.count(conn),
     }
 
     if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
@@ -145,12 +139,33 @@ def index():
             default=None,
         )
 
+    return stats, freshness
+
+
+@main_bp.route('/')
+def index():
+    """Bulk-first dashboard with local/federal finance entry points."""
+    conn = current_app.get_database()
+
+    stats, freshness = _get_candidate_stats(conn)
+    stats['legacy_reports'] = Report.count(conn)
+    stats['legacy_committees'] = Committee.count(conn)
+    stats['legacy_donors'] = Donor.count(conn)
+
     top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
     return render_template('index.html',
                            stats=stats,
                            top_donors=top_donors,
                            freshness=freshness)
+
+
+@main_bp.route('/candidates')
+def candidates():
+    """Unified candidates landing page — state and federal entry points."""
+    conn = current_app.get_database()
+    stats, freshness = _get_candidate_stats(conn)
+    return render_template('candidates.html', stats=stats, freshness=freshness)
 
 
 @main_bp.route('/legacy')
