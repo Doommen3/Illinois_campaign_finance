@@ -14,7 +14,42 @@
 {% if query %}
 <p class="help-text">Showing results for "<strong>{{ query }}</strong>" across all data sources.</p>
 
-{% if donors %}
+{% if donor_groups %}
+<h2>Campaign Donors ({{ donor_groups|length }} group{{ 's' if donor_groups|length != 1 else '' }}, {{ donors|length }} key{{ 's' if donors|length != 1 else '' }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Donor Name</th>
+            <th>Total Contributed</th>
+            <th>Contributions</th>
+            <th>Committees</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for g in donor_groups %}
+        <tr>
+            <td>
+                {% if g.has_multiple %}
+                <details>
+                    <summary>{{ g.donor_name }} <span class="stat-detail">({{ g.sub_rows|length }} keys)</span></summary>
+                    <ul style="margin:4px 0 0 16px;font-size:0.9em;">
+                    {% for sub in g.sub_rows %}
+                        <li>{{ sub.donor_name }} &mdash; {{ sub.donor_city or '-' }}, {{ sub.donor_state or '-' }} &mdash; {{ format_currency(sub.total_amount) }}</li>
+                    {% endfor %}
+                    </ul>
+                </details>
+                {% else %}
+                {{ g.donor_name }}
+                {% endif %}
+            </td>
+            <td>{{ format_currency(g.total_amount) }}</td>
+            <td>{{ g.contribution_count }}</td>
+            <td>{{ g.committee_count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% elif donors %}
 <h2>Campaign Donors ({{ donors|length }})</h2>
 <table class="data-table">
     <thead>

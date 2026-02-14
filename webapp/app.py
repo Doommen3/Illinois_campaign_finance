@@ -384,6 +384,21 @@ def create_app(config=None):
     def internal_error(error):
         return render_template("errors/500.html"), 500
 
+    # Confidence label filter for cross-match scores
+    def confidence_label(score):
+        """Return (label_text, css_class) for a cross-match score."""
+        if score is None:
+            return ("Unknown", "confidence-unknown")
+        if score >= 0.90:
+            return ("High confidence", "confidence-high")
+        if score >= 0.70:
+            return ("Likely match", "confidence-likely")
+        if score >= 0.50:
+            return ("Possible match", "confidence-possible")
+        return ("Review needed", "confidence-review")
+
+    app.jinja_env.filters['confidence_label'] = confidence_label
+
     # Context processors
     @app.context_processor
     def inject_helpers():
@@ -405,6 +420,7 @@ def create_app(config=None):
 
         return dict(
             format_currency=format_currency,
+            confidence_label=confidence_label,
             current_manual_user=get_current_user(),
             public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
             csrf_token=get_csrf_token,

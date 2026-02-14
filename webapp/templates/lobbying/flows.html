@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}Lobbying Money Flows - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Lobbying Money Flows</h1>
+<p class="subtitle">Matched lobbying clients to Illinois committees via donor overlaps.</p>
+<p class="help-text">This diagram attributes a matched donor's committee giving to the lobbying clients they match (score >= 0.80). Use the filter to focus on a single client name.</p>
+
+<form id="flow-filter" class="search-form">
+    <input type="text" name="client" placeholder="Filter by client (e.g. ComEd)" value="{{ client_filter }}">
+    <button type="submit">Update</button>
+</form>
+
+<div id="sankey-status" class="help-text"></div>
+<div id="sankey-container" style="width: 100%; overflow-x: auto;">
+    <svg id="sankey" width="960" height="520"></svg>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js"></script>
+<script>
+(function () {
+    function qs(selector) { return document.querySelector(selector); }
+    var form = qs('#flow-filter');
+    var status = qs('#sankey-status');
+    var svg = d3.select('#sankey');
+
+    function fetchData() {
+        var formData = new FormData(form);
+        var client = (formData.get('client') || '').toString().trim();
+        var url = '/lobbying/flows/data' + (client ? ('?client=' + encodeURIComponent(client)) : '');
+        status.textContent = 'Loading...';
+        return fetch(url).then(function (r) { return r.json(); });
+    }
+
+    function render(data) {
+        svg.selectAll('*').remove();
+
+        if (!data || !data.nodes || !data.links || data.nodes.length === 0) {
+            status.textContent = 'No flows found for this filter.';
+            return;
+        }
+        status.textContent = '';
+
+        var width = +svg.attr('width');
+        var height = +svg.attr('height');
+
+        var sankey = d3.sankey()
+            .nodeWidth(18)
+            .nodePadding(10)
+            .extent([[1, 1], [width - 1, height - 6]]);
+
+        var graph = sankey({
+            nodes: data.nodes.map(function (d) { return Object.assign({}, d); }),
+            links: data.links.map(function (d) { return Object.assign({}, d); })
+        });
+
+        svg.append('g')
+            .attr('fill', 'none')
+            .selectAll('path')
+            .data(graph.links)
+            .join('path')
+            .attr('d', d3.sankeyLinkHorizontal())
+            .attr('stroke', '#64748b')
+            .attr('stroke-width', function (d) { return Math.max(1, d.width); })
+            .attr('stroke-opacity', 0.35);
+
+        var node = svg.append('g')
+            .selectAll('g')
+            .data(graph.nodes)
+            .join('g');
+
+        node.append('rect')
+            .attr('x', function (d) { return d.x0; })
+            .attr('y', function (d) { return d.y0; })
+            .attr('height', function (d) { return d.y1 - d.y0; })
+            .attr('width', function (d) { return d.x1 - d.x0; })
+            .attr('fill', function (d) { return d.type === 'client' ? '#2563eb' : '#16a34a'; })
+            .attr('opacity', 0.85);
+
+        node.append('title')
+            .text(function (d) { return d.name; });
+
+        node.append('text')
+            .attr('x', function (d) { return d.x0 < width / 2 ? d.x1 + 6 : d.x0 - 6; })
+            .attr('y', function (d) { return (d.y0 + d.y1) / 2; })
+            .attr('dy', '0.35em')
+            .attr('text-anchor', function (d) { return d.x0 < width / 2 ? 'start' : 'end'; })
+            .attr('font-size', 12)
+            .text(function (d) { return d.name; });
+    }
+
+    function update() {
+        fetchData().then(render).catch(function () {
+            status.textContent = 'Failed to load flow data.';
+        });
+    }
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        update();
+    });
+
+    update();
+})();
+</script>
+{% endblock %}
+

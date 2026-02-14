@@ -18,6 +18,100 @@
     </p>
 </div>
 
+<div class="status-section">
+    <h2>Key Findings</h2>
+    <p class="help-text">Pre-computed story leads based on cross-matched datasets (donors, lobbying clients, and 527 filings).</p>
+
+    <div class="two-column">
+        <div class="column">
+            <h3>Donor-Dependent Committees</h3>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Committee</th>
+                            <th>Top Donor</th>
+                            <th>Share</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in insights.donor_dependent_committees %}
+                        <tr>
+                            <td><a href="{{ url_for('main.search', q=r.committee_name, type='committees') }}">{{ r.committee_name }}</a></td>
+                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts') }}">{{ r.donor_name }}</a></td>
+                            <td>{{ (r.pct_of_total * 100)|round(1) }}%</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3">No committee concentration results yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>527 Directors Who Are Also Candidates</h3>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Director</th>
+                            <th>Candidate</th>
+                            <th>Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in insights.director_candidates %}
+                        {% set label, cls = r.score|confidence_label %}
+                        <tr>
+                            <td><a href="{{ url_for('irs527.org_detail', ein=r.ein) }}">{{ r.director_name }}</a></td>
+                            <td>{{ r.candidate_name }}</td>
+                            <td><span class="{{ cls }}">{{ label }}</span></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3">No 527 director-candidate overlaps yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="column">
+            <h3>Lobbying Clients With Donor Matches</h3>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Client</th>
+                            <th>Donor</th>
+                            <th>Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in insights.lobbying_donor_overlap %}
+                        {% set label, cls = r.score|confidence_label %}
+                        <tr>
+                            <td><a href="{{ url_for('lobbying.client_detail', client_id=r.client_id) }}">{{ r.client_name }}</a></td>
+                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts') }}">{{ r.donor_name }}</a></td>
+                            <td><span class="{{ cls }}">{{ label }}</span></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3">No lobbying donor matches yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Matched Dark Money Expenditures</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h4>Matched Amount</h4>
+                    <p class="stat-value">{{ format_currency(insights.dark_money_totals.total_amount) }}</p>
+                    <p class="stat-detail">{{ insights.dark_money_totals.match_count }} matched records</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="stats-grid">
     <div class="stat-card">
         <h3>Local Candidate Rows</h3>

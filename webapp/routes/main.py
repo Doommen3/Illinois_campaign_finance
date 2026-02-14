@@ -1,5 +1,5 @@
 """Main routes for dashboard, search, and compare views."""
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import csv
 from datetime import datetime
 from io import StringIO
@@ -1410,10 +1410,86 @@ def index():
 
     top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
+    insights = {
+        "donor_dependent_committees": [],
+        "lobbying_donor_overlap": [],
+        "director_candidates": [],
+        "dark_money_totals": {"total_amount": 0.0, "match_count": 0},
+    }
+
+    if _table_exists(conn, "analytics_donor_committee_agg"):
+        insights["donor_dependent_committees"] = conn.execute(
+            """
+            WITH committee_totals AS (
+                SELECT committee_id, committee_name, SUM(total_amount) AS committee_total
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                GROUP BY committee_id, committee_name
+            ),
+            ranked AS (
+                SELECT a.committee_id, a.committee_name, a.donor_key, a.donor_name,
+                       a.total_amount AS donor_amount,
+                       t.committee_total,
+                       (a.total_amount * 1.0) / NULLIF(t.committee_total, 0) AS pct_of_total,
+                       ROW_NUMBER() OVER (PARTITION BY a.committee_id ORDER BY a.total_amount DESC) AS rn
+                FROM analytics_donor_committee_agg a
+                JOIN committee_totals t ON t.committee_id = a.committee_id
+                WHERE a.source = 'bulk_receipts'
+            )
+            SELECT committee_id, committee_name, donor_key, donor_name, donor_amount, committee_total, pct_of_total
+            FROM ranked
+            WHERE rn = 1 AND pct_of_total >= 0.30
+            ORDER BY pct_of_total DESC
+            LIMIT 5
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "lobbying_donor_matches") and _table_exists(conn, "analytics_donor_summary"):
+        insights["lobbying_donor_overlap"] = conn.execute(
+            """
+            SELECT ldm.client_id, ldm.client_name, ldm.donor_key, ldm.donor_name, ldm.score,
+                   ads.total_amount
+            FROM lobbying_donor_matches ldm
+            LEFT JOIN analytics_donor_summary ads
+              ON ads.donor_key = ldm.donor_key AND ads.source = 'bulk_receipts'
+            WHERE ldm.score >= 0.80
+            ORDER BY (ads.total_amount IS NULL) ASC, ads.total_amount DESC, ldm.score DESC
+            LIMIT 5
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "irs527_director_candidate_matches"):
+        insights["director_candidates"] = conn.execute(
+            """
+            SELECT ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            FROM irs527_director_candidate_matches
+            WHERE score >= 0.80
+            ORDER BY score DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "irs527_expenditures") and _table_exists(conn, "irs527_expenditure_recipient_matches"):
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(e.amount), 0) AS total_amount, COUNT(*) AS match_count
+            FROM irs527_expenditures e
+            JOIN irs527_expenditure_recipient_matches m
+              ON m.ein = e.ein AND m.recipient_name = e.recipient_name
+            WHERE m.score >= 0.80
+            """
+        ).fetchone()
+        if row:
+            insights["dark_money_totals"] = {
+                "total_amount": float(row["total_amount"] or 0.0),
+                "match_count": int(row["match_count"] or 0),
+            }
+
     return render_template('index.html',
                            stats=stats,
                            top_donors=top_donors,
-                           freshness=freshness)
+                           freshness=freshness,
+                           insights=insights)
 
 
 @main_bp.route('/candidates')
@@ -1584,9 +1660,25 @@ def person_intelligence():
     conn = current_app.get_database()
     query = request.args.get('q', '').strip()
 
+    def _donor_group_key(donor_name: str) -> str:
+        """Heuristic normalization for grouping near-identical donor names."""
+        if not donor_name:
+            return ""
+        s = " ".join(donor_name.replace(".", "").strip().upper().split())
+        if "," in s:
+            last, rest = s.split(",", 1)
+            rest = rest.strip()
+            parts = rest.split()
+            if len(parts) >= 2 and len(parts[-1]) == 1:
+                rest = " ".join(parts[:-1])
+            return f"{last.strip()}, {rest}".strip().lower()
+        parts = [p for p in s.split() if len(p) != 1]
+        return " ".join(parts).strip().lower()
+
     results = {
         'query': query,
         'donors': [],
+        'donor_groups': [],
         'candidates': [],
         'directors_527': [],
         'lobbying_entities': [],
@@ -1599,17 +1691,40 @@ def person_intelligence():
 
         # Donors
         if _table_exists(conn, "analytics_donor_summary"):
-            results['donors'] = conn.execute(
+            raw_donors = conn.execute(
                 """
                 SELECT donor_key, donor_name, donor_city, donor_state,
                        total_amount, contribution_count, committee_count
                 FROM analytics_donor_summary
                 WHERE source = 'bulk_receipts' AND donor_name LIKE ?
                 ORDER BY total_amount DESC
-                LIMIT 25
+                LIMIT 100
                 """,
                 (like_pattern,),
             ).fetchall()
+            results['donors'] = raw_donors
+
+            # Group by normalized name for dedup display
+            groups = OrderedDict()
+            for d in raw_donors:
+                key = _donor_group_key(d['donor_name'] or '')
+                if key not in groups:
+                    groups[key] = {
+                        'donor_name': d['donor_name'],
+                        'total_amount': 0.0,
+                        'contribution_count': 0,
+                        'committee_count': 0,
+                        'sub_rows': [],
+                    }
+                groups[key]['total_amount'] += float(d['total_amount'] or 0)
+                groups[key]['contribution_count'] += int(d['contribution_count'] or 0)
+                groups[key]['committee_count'] += int(d['committee_count'] or 0)
+                groups[key]['sub_rows'].append(d)
+
+            results['donor_groups'] = [
+                {**g, 'has_multiple': len(g['sub_rows']) > 1}
+                for g in groups.values()
+            ]
 
         # State candidates
         if _table_exists(conn, "bulk_candidates_clean"):

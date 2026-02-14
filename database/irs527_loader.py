@@ -365,6 +365,14 @@ def load_irs527_full_file(
                         ein = parsed[1]
                         if ein:
                             il_eins.add(ein)
+                elif record_type == "A":
+                    parsed = _parse_contribution(fields)
+                    if parsed:
+                        contributor_state = (parsed[7] or "").strip().upper()
+                        if contributor_state == "IL":
+                            ein = parsed[1]
+                            if ein:
+                                il_eins.add(ein)
         logger.info("Found %d Illinois-related EINs", len(il_eins))
 
     # Buffers for batch inserts

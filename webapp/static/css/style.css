@@ -1394,3 +1394,12 @@ h2 {
         font-size: 0.64rem;
     }
 }
+
+/* Cross-match confidence labels */
+.confidence-high { color: #166534; background: #dcfce7; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.confidence-likely { color: #1e40af; background: #dbeafe; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.confidence-possible { color: #854d0e; background: #fef9c3; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.confidence-review { color: #374151; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.confidence-unknown { color: #6b7280; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.confidence-filters { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.confidence-filters label { display: flex; align-items: center; gap: 4px; font-size: 0.9em; cursor: pointer; }

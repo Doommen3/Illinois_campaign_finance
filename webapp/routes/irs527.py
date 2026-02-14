@@ -210,6 +210,7 @@ def org_detail(ein):
 
     # Contributions to this org
     contributions = []
+    contribution_total = 0
     if _table_exists(conn, "irs527_contributions"):
         contributions = conn.execute(
             """
@@ -221,12 +222,16 @@ def org_detail(ein):
             """,
             (ein,),
         ).fetchall()
+        contribution_total = float(_scalar(
+            conn, "SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE ein = ?",
+            (ein,), default=0))
 
     return render_template('irs527/detail.html',
                            org=org, financial=financial,
                            directors=directors, related_orgs=related_orgs,
                            expenditures=expenditures,
                            contributions=contributions,
+                           contribution_total=contribution_total,
                            committee_matches=committee_matches,
                            director_donor_matches=director_donor_matches,
                            director_candidate_matches=director_candidate_matches)
@@ -239,7 +244,8 @@ def dark_money():
 
     if not _table_exists(conn, "irs527_expenditure_recipient_matches"):
         return render_template('irs527/dark_money.html', matches=[], total=0,
-                               page=1, total_pages=1)
+                               page=1, total_pages=1, sort='score', sort_dir='desc',
+                               contribution_stats={"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []})
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -272,6 +278,27 @@ def dark_money():
         (per_page, offset),
     ).fetchall()
 
+    # Contribution stats
+    contribution_stats = {"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []}
+    if _table_exists(conn, "irs527_contributions"):
+        contribution_stats["total_amount"] = float(_scalar(
+            conn, "SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions", default=0))
+        contribution_stats["unique_contributors"] = int(_scalar(
+            conn, "SELECT COUNT(DISTINCT contributor_name) FROM irs527_contributions", default=0))
+        contribution_stats["row_count"] = int(_scalar(
+            conn, "SELECT COUNT(*) FROM irs527_contributions", default=0))
+        contribution_stats["top_contributors"] = conn.execute(
+            """
+            SELECT contributor_name, SUM(amount) AS total_amount, COUNT(*) AS cnt
+            FROM irs527_contributions
+            WHERE contributor_name IS NOT NULL AND contributor_name != ''
+            GROUP BY contributor_name
+            ORDER BY total_amount DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
     return render_template('irs527/dark_money.html', matches=matches, total=total,
                            page=page, total_pages=total_pages,
-                           sort=sort, sort_dir=sort_dir)
+                           sort=sort, sort_dir=sort_dir,
+                           contribution_stats=contribution_stats)

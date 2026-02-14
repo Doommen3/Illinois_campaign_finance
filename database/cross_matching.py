@@ -46,6 +46,13 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
 def _format_duration(seconds: float) -> str:
     """Format seconds for concise log output."""
     if seconds < 60:
@@ -810,31 +817,44 @@ def match_527_directors_to_donors_by_address(
 
     from collections import defaultdict
     zip_index: dict[tuple[str, str], list] = defaultdict(list)
+    city_index: dict[tuple[str, str], list] = defaultdict(list)
     for dr in donor_rows:
         parts = dr["donor_key"].split("|")
-        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
-        if not zip5 or not zip5[0].isdigit():
-            continue
         norm_state = (dr["donor_state"] or "").strip().upper()
         if not norm_state:
             continue
-        zip_index[(norm_state, zip5)].append({
+        donor_zip5 = None
+        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
+        if zip5 and zip5[0].isdigit():
+            donor_zip5 = zip5
+        payload = {
             "donor_key": dr["donor_key"],
             "donor_name": dr["donor_name"],
             "donor_city": dr["donor_city"],
             "donor_state": dr["donor_state"],
-            "donor_zip5": zip5,
-        })
+            "donor_zip5": donor_zip5,
+        }
+        if donor_zip5:
+            zip_index[(norm_state, donor_zip5)].append(payload)
+        norm_city = _normalize_city(dr["donor_city"])
+        if norm_city:
+            city_index[(norm_state, norm_city)].append(payload)
 
-    donor_count = sum(len(v) for v in zip_index.values())
-    logger.info("527-director-address: %d donors with zip in %d zip+state buckets",
-                donor_count, len(zip_index))
+    donor_count = sum(len(v) for v in zip_index.values()) or sum(len(v) for v in city_index.values())
+    logger.info(
+        "527-director-address: %d donors indexed (zip_buckets=%d, city_buckets=%d)",
+        donor_count, len(zip_index), len(city_index)
+    )
     del donor_rows  # free memory
 
     # Pre-compute donor name tokens (avoids redundant tokenization across directors)
     for bucket in zip_index.values():
         for dr in bucket:
             dr["_tokens"] = _normalize_name_tokens(dr["donor_name"])
+    for bucket in city_index.values():
+        for dr in bucket:
+            if "_tokens" not in dr:
+                dr["_tokens"] = _normalize_name_tokens(dr["donor_name"])
 
     # Load directors with zip
     directors = conn.execute("""
@@ -863,44 +883,52 @@ def match_527_directors_to_donors_by_address(
         if not d_tokens:
             continue
 
-        bucket = zip_index.get((d["norm_state"], d["norm_zip5"]))
-        if not bucket:
+        bucket_zip = zip_index.get((d["norm_state"], d["norm_zip5"])) or []
+        norm_city = _normalize_city(d["city"])
+        bucket_city = city_index.get((d["norm_state"], norm_city)) if norm_city else []
+        if not bucket_zip and not bucket_city:
             continue
+        candidate_buckets = [bucket_zip, bucket_city] if bucket_city is not bucket_zip else [bucket_zip]
+        seen_donor_keys = set()
 
-        for dr in bucket:
-            candidates_scored += 1
-            donor_tokens = dr["_tokens"]
-            if not donor_tokens:
-                continue
+        for bucket in candidate_buckets:
+            for dr in bucket:
+                if dr["donor_key"] in seen_donor_keys:
+                    continue
+                seen_donor_keys.add(dr["donor_key"])
+                candidates_scored += 1
+                donor_tokens = dr["_tokens"]
+                if not donor_tokens:
+                    continue
 
-            name_score = _jaccard(d_tokens, donor_tokens)
-            if name_score < name_threshold:
-                continue
+                name_score = _jaccard(d_tokens, donor_tokens)
+                if name_score < name_threshold:
+                    continue
 
-            dedup_key = (d["ein"], d["person_name"], dr["donor_key"])
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
+                dedup_key = (d["ein"], d["person_name"], dr["donor_key"])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
 
-            address_score = _address_score(
-                d["city"], d["state"], d["zip"],
-                dr["donor_city"], dr["donor_state"], dr["donor_zip5"],
-            )
+                address_score = _address_score(
+                    d["city"], d["state"], d["zip"],
+                    dr["donor_city"], dr["donor_state"], dr["donor_zip5"],
+                )
 
-            batch.append((
-                d["ein"], d["org_name"], d["person_name"],
-                _normalize_city(d["city"]),
-                (d["state"] or "").strip().upper(),
-                _normalize_zip5(d["zip"]),
-                dr["donor_key"], dr["donor_name"],
-                _normalize_city(dr["donor_city"]),
-                (dr["donor_state"] or "").strip().upper(),
-                dr["donor_zip5"],
-                address_score, name_score,
-            ))
-            matches_found += 1
-            if len(batch) >= 50000:
-                _flush()
+                batch.append((
+                    d["ein"], d["org_name"], d["person_name"],
+                    _normalize_city(d["city"]),
+                    (d["state"] or "").strip().upper(),
+                    _normalize_zip5(d["zip"]),
+                    dr["donor_key"], dr["donor_name"],
+                    _normalize_city(dr["donor_city"]),
+                    (dr["donor_state"] or "").strip().upper(),
+                    dr["donor_zip5"],
+                    address_score, name_score,
+                ))
+                matches_found += 1
+                if len(batch) >= 50000:
+                    _flush()
 
     _flush()
     conn.commit()
@@ -926,7 +954,12 @@ def match_527_org_addresses(
     Checks org address, custodian address, contact address, business address.
     Stores results in irs527_org_address_matches.
     """
-    if not _table_exists(conn, "irs527_organizations") or not _table_exists(conn, "bulk_committees_clean"):
+    if not _table_exists(conn, "irs527_organizations"):
+        return {"matches": 0, "skipped": "missing_tables"}
+
+    can_match_committees = _table_exists(conn, "bulk_committees_clean")
+    can_match_donors = _table_exists(conn, "analytics_donor_summary")
+    if not can_match_committees and not can_match_donors:
         return {"matches": 0, "skipped": "missing_tables"}
 
     started = time.perf_counter()
@@ -999,58 +1032,155 @@ def match_527_org_addresses(
         total_matches += len(batch)
         batch.clear()
 
-    # JOIN on zip5+state, then filter by org_name/committee_name Jaccard
-    rows = conn.execute("""
-        SELECT o.ein, o.org_name, o.addr_type,
-               o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
-               c.committee_id_sbe, c.committee_name,
-               c.city AS c_city, c.state AS c_state, c.postal_code AS c_zip
-        FROM _tmp_527_org_addrs o
-        JOIN bulk_committees_clean c
-            ON o.norm_state = UPPER(TRIM(c.state))
-            AND o.norm_zip5 = SUBSTR(TRIM(c.postal_code), 1, 5)
-        WHERE c.state IS NOT NULL AND c.postal_code IS NOT NULL
-    """)
-
     seen = set()
-    for row in rows:
-        candidates_scored += 1
+    if can_match_committees:
+        zip_col = None
+        if _column_exists(conn, "bulk_committees_clean", "postal_code"):
+            zip_col = "postal_code"
+        elif _column_exists(conn, "bulk_committees_clean", "zip"):
+            zip_col = "zip"
 
-        # Name similarity filter
-        org_tokens = _normalize_name_tokens(row["org_name"])
-        if not org_tokens:
-            continue
-        cmte_tokens = _normalize_name_tokens(row["committee_name"])
-        if not cmte_tokens:
-            continue
-        name_score = _jaccard(org_tokens, cmte_tokens)
-        if name_score < name_threshold:
-            continue
+        if zip_col:
+            # JOIN on zip5+state, then filter by org_name/committee_name Jaccard
+            rows = conn.execute(
+                f"""
+                SELECT o.ein, o.org_name, o.addr_type,
+                       o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
+                       c.committee_id_sbe, c.committee_name,
+                       c.city AS c_city, c.state AS c_state, c.{zip_col} AS c_zip
+                FROM _tmp_527_org_addrs o
+                JOIN bulk_committees_clean c
+                    ON o.norm_state = UPPER(TRIM(c.state))
+                    AND o.norm_zip5 = SUBSTR(TRIM(c.{zip_col}), 1, 5)
+                WHERE c.state IS NOT NULL AND c.{zip_col} IS NOT NULL
+                """
+            )
 
-        # Deduplicate
-        dedup_key = (row["ein"], row["addr_type"], row["committee_id_sbe"])
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
+            for row in rows:
+                candidates_scored += 1
 
-        address_score = _address_score(
-            row["o_city"], row["o_state"], row["o_zip"],
-            row["c_city"], row["c_state"], row["c_zip"],
-        )
+                # Name similarity filter
+                org_tokens = _normalize_name_tokens(row["org_name"])
+                if not org_tokens:
+                    continue
+                cmte_tokens = _normalize_name_tokens(row["committee_name"])
+                if not cmte_tokens:
+                    continue
+                name_score = _jaccard(org_tokens, cmte_tokens)
+                if name_score < name_threshold:
+                    continue
 
-        batch.append((
-            row["ein"], row["org_name"], row["addr_type"],
-            _normalize_city(row["o_city"]),
-            (row["o_state"] or "").strip().upper(),
-            _normalize_zip5(row["o_zip"]),
-            "committee", str(row["committee_id_sbe"]), row["committee_name"],
-            _normalize_city(row["c_city"]),
-            (row["c_state"] or "").strip().upper(),
-            _normalize_zip5(row["c_zip"]),
-            address_score,
-        ))
-        if len(batch) >= 50000:
-            _flush()
+                # Deduplicate
+                dedup_key = (row["ein"], row["addr_type"], "committee", row["committee_id_sbe"])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                address_score = _address_score(
+                    row["o_city"], row["o_state"], row["o_zip"],
+                    row["c_city"], row["c_state"], row["c_zip"],
+                )
+
+                batch.append((
+                    row["ein"], row["org_name"], row["addr_type"],
+                    _normalize_city(row["o_city"]),
+                    (row["o_state"] or "").strip().upper(),
+                    _normalize_zip5(row["o_zip"]),
+                    "committee", str(row["committee_id_sbe"]), row["committee_name"],
+                    _normalize_city(row["c_city"]),
+                    (row["c_state"] or "").strip().upper(),
+                    _normalize_zip5(row["c_zip"]),
+                    address_score,
+                ))
+                if len(batch) >= 50000:
+                    _flush()
+
+    if can_match_donors:
+        donor_rows = conn.execute(
+            """
+            SELECT donor_key, donor_name, donor_city, donor_state
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+                AND donor_key IS NOT NULL
+                AND donor_name IS NOT NULL
+                AND donor_state IS NOT NULL
+                AND donor_city IS NOT NULL
+            """
+        ).fetchall()
+
+        from collections import defaultdict
+        donor_zip_index: dict[tuple[str, str], list] = defaultdict(list)
+        donor_city_index: dict[tuple[str, str], list] = defaultdict(list)
+        for dr in donor_rows:
+            norm_state = (dr["donor_state"] or "").strip().upper()
+            if not norm_state:
+                continue
+            donor_zip5 = None
+            parts = (dr["donor_key"] or "").split("|")
+            zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
+            if zip5 and zip5[0].isdigit():
+                donor_zip5 = zip5
+            payload = {
+                "donor_key": dr["donor_key"],
+                "donor_name": dr["donor_name"],
+                "donor_city": dr["donor_city"],
+                "donor_state": dr["donor_state"],
+                "donor_zip5": donor_zip5,
+            }
+            if donor_zip5:
+                donor_zip_index[(norm_state, donor_zip5)].append(payload)
+            norm_city = _normalize_city(dr["donor_city"])
+            if norm_city:
+                donor_city_index[(norm_state, norm_city)].append(payload)
+
+        org_rows = conn.execute(
+            """
+            SELECT ein, org_name, addr_type, city, state, zip, norm_state, norm_zip5
+            FROM _tmp_527_org_addrs
+            """
+        ).fetchall()
+
+        for o in org_rows:
+            norm_state = o["norm_state"]
+            norm_zip5 = o["norm_zip5"]
+            norm_city = _normalize_city(o["city"])
+            bucket_zip = donor_zip_index.get((norm_state, norm_zip5)) or []
+            bucket_city = donor_city_index.get((norm_state, norm_city)) if norm_city else []
+            if not bucket_zip and not bucket_city:
+                continue
+
+            seen_donors = set()
+            for bucket in (bucket_zip, bucket_city):
+                for dr in bucket:
+                    if dr["donor_key"] in seen_donors:
+                        continue
+                    seen_donors.add(dr["donor_key"])
+
+                    address_score = _address_score(
+                        o["city"], o["state"], o["zip"],
+                        dr["donor_city"], dr["donor_state"], dr["donor_zip5"],
+                    )
+                    if address_score < 0.5:
+                        continue
+
+                    dedup_key = (o["ein"], o["addr_type"], "donor", dr["donor_key"])
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+
+                    batch.append((
+                        o["ein"], o["org_name"], o["addr_type"],
+                        _normalize_city(o["city"]),
+                        (o["state"] or "").strip().upper(),
+                        _normalize_zip5(o["zip"]),
+                        "donor", str(dr["donor_key"]), dr["donor_name"],
+                        _normalize_city(dr["donor_city"]),
+                        (dr["donor_state"] or "").strip().upper(),
+                        _normalize_zip5(dr["donor_zip5"]),
+                        address_score,
+                    ))
+                    if len(batch) >= 50000:
+                        _flush()
 
     _flush()
     conn.commit()

@@ -23,6 +23,9 @@
     <p><strong>Total Contributions:</strong> {{ format_currency(financial.total_contributions) }}</p>
     <p><strong>Total Expenditures:</strong> {{ format_currency(financial.total_expenditures) }}</p>
     <p><strong>Period:</strong> {{ financial.earliest_period or 'N/A' }} to {{ financial.latest_period or 'N/A' }}</p>
+    {% if contribution_total %}
+    <p><strong>Contributions Received (Form 8872):</strong> {{ format_currency(contribution_total) }}</p>
+    {% endif %}
 </section>
 {% endif %}
 
@@ -72,7 +75,8 @@
             <td>
                 {% if director_donor_matches and d.person_name in director_donor_matches %}
                     {% for dm in director_donor_matches[d.person_name][:3] %}
-                    <span title="Score: {{ '%.2f'|format(dm.score) }}">{{ dm.donor_name }} ({{ dm.donor_key }})</span>{% if not loop.last %}<br>{% endif %}
+                    {% set label, cls = dm.score|confidence_label %}
+                    <span title="Score: {{ '%.2f'|format(dm.score) }}">{{ dm.donor_name }} ({{ dm.donor_key }}) <span class="{{ cls }}">{{ label }}</span></span>{% if not loop.last %}<br>{% endif %}
                     {% endfor %}
                 {% else %}
                     -
@@ -81,7 +85,8 @@
             <td>
                 {% if director_candidate_matches and d.person_name in director_candidate_matches %}
                     {% for cm in director_candidate_matches[d.person_name][:3] %}
-                    <span title="Score: {{ '%.2f'|format(cm.score) }}, Source: {{ cm.candidate_source }}">{{ cm.candidate_name }} ({{ cm.candidate_source }})</span>{% if not loop.last %}<br>{% endif %}
+                    {% set label, cls = cm.score|confidence_label %}
+                    <span title="Score: {{ '%.2f'|format(cm.score) }}, Source: {{ cm.candidate_source }}">{{ cm.candidate_name }} ({{ cm.candidate_source }}) <span class="{{ cls }}">{{ label }}</span></span>{% if not loop.last %}<br>{% endif %}
                     {% endfor %}
                 {% else %}
                     -

@@ -6,7 +6,7 @@ from datetime import datetime
 import hashlib
 import re
 
-from flask import Blueprint, render_template, request, current_app, abort
+from flask import Blueprint, render_template, request, current_app, abort, jsonify
 
 lobbying_bp = Blueprint('lobbying', __name__)
 
@@ -650,3 +650,71 @@ def client_detail(client_id):
                            money_destinations=money_destinations,
                            expenditure_matches=expenditure_matches,
                            org_527_matches=org_527_matches)
+
+
+@lobbying_bp.route('/flows')
+def flows():
+    """Sankey diagram page: lobbying client -> committee money flows via matched donors."""
+    client_filter = request.args.get('client', '').strip()
+    return render_template('lobbying/flows.html', client_filter=client_filter)
+
+
+@lobbying_bp.route('/flows/data')
+def flows_data():
+    """JSON for Sankey diagram."""
+    conn = current_app.get_database()
+
+    if not _table_exists(conn, "lobbying_donor_matches") or not _table_exists(conn, "analytics_donor_committee_agg"):
+        return jsonify({"nodes": [], "links": []})
+
+    client_filter = request.args.get('client', '').strip()
+    where = ["ldm.score >= 0.80", "a.source = 'bulk_receipts'"]
+    params = []
+    if client_filter:
+        where.append("ldm.client_name LIKE ?")
+        params.append(f"%{client_filter}%")
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            ldm.client_name AS client_name,
+            a.committee_name AS committee_name,
+            SUM(a.total_amount) AS flow_amount
+        FROM lobbying_donor_matches ldm
+        JOIN analytics_donor_committee_agg a
+          ON a.donor_key = ldm.donor_key
+        WHERE {" AND ".join(where)}
+        GROUP BY ldm.client_name, a.committee_name
+        HAVING flow_amount >= 1000
+        ORDER BY flow_amount DESC
+        LIMIT 100
+        """,
+        params,
+    ).fetchall()
+
+    if not rows:
+        return jsonify({"nodes": [], "links": []})
+
+    nodes = []
+    node_index = {}
+
+    def _ensure_node(name: str, node_type: str) -> int:
+        key = (node_type, name)
+        if key in node_index:
+            return node_index[key]
+        node_index[key] = len(nodes)
+        nodes.append({"name": name, "type": node_type})
+        return node_index[key]
+
+    links = []
+    for r in rows:
+        client_name = r["client_name"] or "Unknown Client"
+        committee_name = r["committee_name"] or "Unknown Committee"
+        value = float(r["flow_amount"] or 0.0)
+        if value <= 0:
+            continue
+        source = _ensure_node(client_name, "client")
+        target = _ensure_node(committee_name, "committee")
+        links.append({"source": source, "target": target, "value": value})
+
+    return jsonify({"nodes": nodes, "links": links})

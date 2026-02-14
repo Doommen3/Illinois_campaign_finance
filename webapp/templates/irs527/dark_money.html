@@ -6,7 +6,57 @@
 <h1>Dark Money Tracker</h1>
 <p class="subtitle">527 organization expenditures matched to IL committees and candidates ({{ total }} matches)</p>
 
-<table class="data-table">
+{% if contribution_stats and contribution_stats.row_count > 0 %}
+<section class="status-section">
+    <h2>527 Funding Sources</h2>
+    <p class="help-text">Contributions received by Illinois-connected 527 organizations from IRS Form 8872 filings.</p>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Total Contributed</h3>
+            <p class="stat-value">{{ format_currency(contribution_stats.total_amount) }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Unique Contributors</h3>
+            <p class="stat-value">{{ contribution_stats.unique_contributors }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Contribution Records</h3>
+            <p class="stat-value">{{ contribution_stats.row_count }}</p>
+        </div>
+    </div>
+    {% if contribution_stats.top_contributors %}
+    <h3>Top Contributors</h3>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Contributor</th>
+                <th>Total Amount</th>
+                <th>Contributions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in contribution_stats.top_contributors %}
+            <tr>
+                <td>{{ c.contributor_name or 'Unknown' }}</td>
+                <td>{{ format_currency(c.total_amount) }}</td>
+                <td>{{ c.cnt }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endif %}
+
+<div class="confidence-filters">
+    <strong>Filter by confidence:</strong>
+    <label><input type="checkbox" checked onchange="filterConfidence()" data-cls="confidence-high"> High</label>
+    <label><input type="checkbox" checked onchange="filterConfidence()" data-cls="confidence-likely"> Likely</label>
+    <label><input type="checkbox" checked onchange="filterConfidence()" data-cls="confidence-possible"> Possible</label>
+    <label><input type="checkbox" checked onchange="filterConfidence()" data-cls="confidence-review"> Review</label>
+</div>
+
+<table class="data-table" id="dark-money-table">
     <thead>
         <tr>
             <th>527 Organization</th>
@@ -23,7 +73,8 @@
     </thead>
     <tbody>
         {% for m in matches %}
-        <tr>
+        {% set label, cls = m.score|confidence_label %}
+        <tr data-confidence="{{ cls }}">
             <td>
                 <a href="{{ url_for('irs527.org_detail', ein=m.ein) }}">
                     {{ m.org_name or 'Unknown' }}
@@ -33,7 +84,7 @@
             <td>{{ m.recipient_name }}</td>
             <td>{{ m.matched_name }}</td>
             <td>{{ m.matched_type }}</td>
-            <td>{{ '%.2f'|format(m.score) }}</td>
+            <td><span class="{{ cls }}">{{ label }}</span> ({{ '%.2f'|format(m.score) }})</td>
         </tr>
         {% else %}
         <tr>
@@ -54,4 +105,17 @@
     {% endif %}
 </nav>
 {% endif %}
+
+<script>
+function filterConfidence() {
+    var boxes = document.querySelectorAll('.confidence-filters input[type=checkbox]');
+    var visible = {};
+    boxes.forEach(function(cb) { visible[cb.getAttribute('data-cls')] = cb.checked; });
+    var rows = document.querySelectorAll('#dark-money-table tbody tr[data-confidence]');
+    rows.forEach(function(row) {
+        var cls = row.getAttribute('data-confidence');
+        row.style.display = visible[cls] === false ? 'none' : '';
+    });
+}
+</script>
 {% endblock %}
