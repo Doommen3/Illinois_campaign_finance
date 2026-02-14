@@ -69,6 +69,27 @@
 </div>
 
 <div class="status-section">
+    <h2>Local vs Federal Overlap Bubble View</h2>
+    <p class="subtitle">Bridge view: x = local amount, y = federal amount, bubble size = combined amount.</p>
+    <div class="graph-controls">
+        <label>Color mode
+            <select id="match-overlap-bubble-color">
+                <option value="confidence">Confidence score</option>
+                <option value="method">Match method</option>
+            </select>
+        </label>
+        <label>Top rows
+            <input id="match-overlap-bubble-limit" type="number" min="20" max="1000" step="10" value="220">
+        </label>
+        <button id="match-overlap-bubble-render" type="button">Render</button>
+    </div>
+    <div class="network-svg-wrap">
+        <svg id="match-overlap-bubble-svg" viewBox="0 0 1000 500" role="img" aria-label="Local versus federal donor overlap bubble chart"></svg>
+    </div>
+    <p id="match-overlap-bubble-summary" class="subtitle"></p>
+</div>
+
+<div class="status-section">
     <h2>Matched Donor Rows</h2>
     <table class="data-table">
         <thead>
@@ -118,5 +139,231 @@
         </tbody>
     </table>
 </div>
+<script id="match-overlap-data" type="application/json">{{ local_matches|tojson }}</script>
+<script>
+(() => {
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const dataEl = document.getElementById("match-overlap-data");
+    const svg = document.getElementById("match-overlap-bubble-svg");
+    const summaryEl = document.getElementById("match-overlap-bubble-summary");
+    const colorSelect = document.getElementById("match-overlap-bubble-color");
+    const limitInput = document.getElementById("match-overlap-bubble-limit");
+    const renderBtn = document.getElementById("match-overlap-bubble-render");
+    if (!dataEl || !svg) return;
+
+    const payload = JSON.parse(dataEl.textContent || "{}");
+    const rows = Array.isArray(payload.matches) ? payload.matches : [];
+
+    const methodColors = {
+        name_state_zip: "#16a34a",
+        name_state: "#2563eb",
+        name_zip: "#d97706",
+    };
+
+    const clearSvg = () => {
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+    };
+
+    const createSvg = (tag, attrs = {}) => {
+        const el = document.createElementNS(SVG_NS, tag);
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        return el;
+    };
+
+    const viewBoxSize = () => {
+        const vb = (svg.getAttribute("viewBox") || "0 0 1000 500").split(/\s+/).map((v) => Number(v));
+        return {width: vb[2] || 1000, height: vb[3] || 500};
+    };
+
+    const drawEmpty = (msg) => {
+        clearSvg();
+        const {width, height} = viewBoxSize();
+        svg.appendChild(createSvg("rect", {
+            x: 24, y: 24, width: width - 48, height: height - 48, rx: 10,
+            fill: "#f8fafc", stroke: "#cbd5e1",
+        }));
+        const text = createSvg("text", {x: width / 2, y: height / 2, "text-anchor": "middle", fill: "#475569", "font-size": "12px"});
+        text.textContent = msg;
+        svg.appendChild(text);
+        if (summaryEl) summaryEl.textContent = msg;
+    };
+
+    const confidenceColor = (value) => {
+        const v = Math.max(0, Math.min(1, Number(value || 0)));
+        const hue = 10 + (v * 125);
+        return `hsl(${hue.toFixed(1)} 75% 42%)`;
+    };
+
+    const shortLabel = (value, max = 28) => {
+        const text = String(value || "").trim();
+        if (text.length <= max) return text;
+        return `${text.slice(0, max - 1)}...`;
+    };
+
+    const render = () => {
+        const prepared = rows
+            .map((row) => {
+                const local = Number(row.local_total_amount || 0);
+                const federal = Number(row.federal_total_amount || 0);
+                const confidence = Number(row.confidence_score || 0);
+                if (local <= 0 && federal <= 0) return null;
+                return {
+                    federal_donor_name: row.federal_donor_name || "Unknown Donor",
+                    local_donor_name: row.local_donor_name || "Unknown Donor",
+                    local,
+                    federal,
+                    confidence,
+                    match_method: String(row.match_method || "unknown"),
+                    combined: local + federal,
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.combined - a.combined);
+
+        const maxRows = Math.max(20, Math.min(1000, Number(limitInput?.value || 220)));
+        const selected = prepared.slice(0, maxRows);
+        if (!selected.length) {
+            drawEmpty("No match rows available for bubble view.");
+            return;
+        }
+
+        clearSvg();
+        const {width, height} = viewBoxSize();
+        const margin = {left: 88, right: 28, top: 24, bottom: 76};
+        const chartW = width - margin.left - margin.right;
+        const chartH = height - margin.top - margin.bottom;
+        const xMax = Math.max(...selected.map((row) => row.local), 1);
+        const yMax = Math.max(...selected.map((row) => row.federal), 1);
+        const combinedMax = Math.max(...selected.map((row) => row.combined), 1);
+        const colorMode = String(colorSelect?.value || "confidence");
+
+        const x = (value) => margin.left + ((value / xMax) * chartW);
+        const y = (value) => margin.top + chartH - ((value / yMax) * chartH);
+        const r = (value) => 4 + (Math.sqrt(value / combinedMax) * 22);
+
+        svg.appendChild(createSvg("rect", {
+            x: margin.left,
+            y: margin.top,
+            width: chartW,
+            height: chartH,
+            fill: "#f8fafc",
+            stroke: "#cbd5e1",
+        }));
+        svg.appendChild(createSvg("line", {
+            x1: margin.left,
+            y1: margin.top + chartH,
+            x2: margin.left + chartW,
+            y2: margin.top + chartH,
+            stroke: "#64748b",
+            "stroke-width": "1",
+        }));
+        svg.appendChild(createSvg("line", {
+            x1: margin.left,
+            y1: margin.top,
+            x2: margin.left,
+            y2: margin.top + chartH,
+            stroke: "#64748b",
+            "stroke-width": "1",
+        }));
+
+        for (let i = 0; i <= 5; i += 1) {
+            const frac = i / 5;
+            const gx = margin.left + (frac * chartW);
+            const gy = margin.top + chartH - (frac * chartH);
+            svg.appendChild(createSvg("line", {x1: gx, y1: margin.top, x2: gx, y2: margin.top + chartH, stroke: "#e2e8f0", "stroke-width": "1"}));
+            svg.appendChild(createSvg("line", {x1: margin.left, y1: gy, x2: margin.left + chartW, y2: gy, stroke: "#e2e8f0", "stroke-width": "1"}));
+            const xLabel = createSvg("text", {x: gx, y: margin.top + chartH + 18, "text-anchor": "middle", fill: "#475569", "font-size": "10px"});
+            xLabel.textContent = `$${Math.round(frac * xMax).toLocaleString()}`;
+            svg.appendChild(xLabel);
+            const yLabel = createSvg("text", {x: margin.left - 10, y: gy + 3, "text-anchor": "end", fill: "#475569", "font-size": "10px"});
+            yLabel.textContent = `$${Math.round(frac * yMax).toLocaleString()}`;
+            svg.appendChild(yLabel);
+        }
+
+        const xTitle = createSvg("text", {
+            x: margin.left + (chartW / 2),
+            y: height - 20,
+            "text-anchor": "middle",
+            fill: "#0f172a",
+            "font-size": "11px",
+            "font-weight": "600",
+        });
+        xTitle.textContent = "Local Total Amount";
+        svg.appendChild(xTitle);
+
+        const yTitle = createSvg("text", {
+            x: 20,
+            y: margin.top + (chartH / 2),
+            transform: `rotate(-90 20 ${margin.top + (chartH / 2)})`,
+            "text-anchor": "middle",
+            fill: "#0f172a",
+            "font-size": "11px",
+            "font-weight": "600",
+        });
+        yTitle.textContent = "Federal Total Amount";
+        svg.appendChild(yTitle);
+
+        selected.forEach((row) => {
+            const fill = colorMode === "method"
+                ? (methodColors[row.match_method] || "#64748b")
+                : confidenceColor(row.confidence);
+            const bubble = createSvg("circle", {
+                cx: x(row.local).toFixed(2),
+                cy: y(row.federal).toFixed(2),
+                r: r(row.combined).toFixed(2),
+                fill,
+                "fill-opacity": "0.55",
+                stroke: "#0f172a",
+                "stroke-opacity": "0.28",
+                "stroke-width": "1",
+            });
+            const title = createSvg("title");
+            title.textContent = `${shortLabel(row.federal_donor_name, 42)} | Local $${Math.round(row.local).toLocaleString()} | Federal $${Math.round(row.federal).toLocaleString()} | ${row.match_method} (${row.confidence.toFixed(2)})`;
+            bubble.appendChild(title);
+            svg.appendChild(bubble);
+        });
+
+        if (colorMode === "method") {
+            let lx = margin.left;
+            const ly = margin.top + chartH + 34;
+            Object.entries(methodColors).forEach(([method, color]) => {
+                svg.appendChild(createSvg("rect", {x: lx, y: ly, width: 12, height: 12, rx: 2, fill: color}));
+                const label = createSvg("text", {x: lx + 16, y: ly + 10, fill: "#334155", "font-size": "10px"});
+                label.textContent = method;
+                svg.appendChild(label);
+                lx += Math.max(130, 24 + (method.length * 8));
+            });
+        } else {
+            const lx = margin.left + chartW - 160;
+            const ly = margin.top + chartH + 32;
+            for (let i = 0; i < 10; i += 1) {
+                svg.appendChild(createSvg("rect", {
+                    x: lx + (i * 10),
+                    y: ly,
+                    width: 10,
+                    height: 10,
+                    fill: confidenceColor(i / 9),
+                }));
+            }
+            const low = createSvg("text", {x: lx - 6, y: ly + 9, fill: "#475569", "font-size": "9px", "text-anchor": "end"});
+            low.textContent = "Low";
+            svg.appendChild(low);
+            const high = createSvg("text", {x: lx + 110, y: ly + 9, fill: "#475569", "font-size": "9px"});
+            high.textContent = "High confidence";
+            svg.appendChild(high);
+        }
+
+        if (summaryEl) {
+            const totalCombined = selected.reduce((sum, row) => sum + row.combined, 0);
+            summaryEl.textContent = `Showing ${selected.length.toLocaleString()} of ${prepared.length.toLocaleString()} matched rows | Combined amount ${Math.round(totalCombined).toLocaleString()} | Color mode: ${colorMode}`;
+        }
+    };
+
+    renderBtn?.addEventListener("click", render);
+    colorSelect?.addEventListener("change", render);
+    limitInput?.addEventListener("change", render);
+    render();
+})();
+</script>
 {% endif %}
 {% endblock %}

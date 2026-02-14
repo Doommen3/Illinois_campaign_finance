@@ -19,7 +19,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Raw extraction staging for full audit trails
 
 ### Analytics
-- **Network Analysis** — 8 interactive network visualizations: force graph (click-to-lock), 3-column Sankey flow, donor-committee heatmap, vendor expenditure network, combined money flow (4-column), state-federal donor overlap, lobbying-campaign finance bridge, and 527 dark money pathway
+- **Network Analysis** — Interactive graph suite including force graph (click-to-lock), 3-column Sankey flow, donor-committee heatmap, vendor expenditure network, combined money flow (4-column), state-federal donor overlap, lobbying-campaign finance bridge, 527 dark money pathway, plus advanced relationship views (arc diagrams, local/federal overlap bubble scatter, community treemap/sunburst, and alluvial edge-type flow maps)
 - **Anomaly Detection** — Large contribution flags, monthly spike detection, high donor concentration risk (HHI-based)
 - **Risk Explainability** — Per-flag explainability payloads (rule, baseline, threshold, percentile context)
 - **Concentration Metrics** — Herfindahl-Hirschman Index (HHI), Gini coefficient, top-N donor share
@@ -392,16 +392,17 @@ Notes:
 | `/federal-finance/candidates` | Sortable federal candidate list with totals raised/spent |
 | `/federal-finance/networks` | Donor-candidate network graph with flow tables and trend matrix |
 | `/federal-finance/money-flow` | Multi-layer money flow (A/B/E) and cross-role organization analysis |
-| `/federal-finance/donor-intelligence` | Donor segmentation (K-Means/DBSCAN) and network clustering |
+| `/federal-finance/donor-intelligence` | Donor segmentation (K-Means/DBSCAN), network clustering, and community treemap/sunburst |
 | `/federal-finance/influence` | Influence scores for donors and candidates (PageRank, degree, weighted) |
 | `/federal-finance/follow-the-money` | Multi-hop donor path tracing with interactive SVG visualization |
 | `/federal-finance/geography` | Geographic concentration analysis (states, cities, HHI per race) |
-| `/federal-finance/matching` | Federal/local donor matching diagnostics and overlap analysis |
+| `/federal-finance/matching` | Federal/local donor matching diagnostics, overlap analysis, and local-vs-federal bubble scatter |
 | `/federal-finance/<candidate_id>` | Federal candidate detail with tabbed A/B/E drilldowns |
 | `/admin/` | Consolidated admin hub (requires login) — links to all data tools |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
 | `/analytics/` | Network, anomaly, concentration, and geographic analytics |
+| `/analytics/relationships` | Relationship-specific graph lab: co-giving and committee-similarity arc views, candidate competition, and alluvial lobbying/527 pathways |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
 | `/lobbying/` | IL lobbying entities list with client counts |

@@ -790,6 +790,8 @@ class TestWebApp:
         assert b'Federal Donor Intelligence' in intelligence.data
         assert b'Donor Segmentation' in intelligence.data
         assert b'Donor Network Clustering' in intelligence.data
+        assert b'Community Treemap / Sunburst' in intelligence.data
+        assert b'id="cluster-community-svg"' in intelligence.data
         # Influence and Follow the Money moved to their own pages
         assert b'Influence Scores - Donors' not in intelligence.data
         assert b'Follow the Money (Multi-Hop)' not in intelligence.data
@@ -798,6 +800,8 @@ class TestWebApp:
         assert matching.status_code == 200
         assert b'Federal/Local Donor Matching' in matching.data
         assert b'Match Method Tiers' in matching.data
+        assert b'Local vs Federal Overlap Bubble View' in matching.data
+        assert b'id="match-overlap-bubble-svg"' in matching.data
         assert b'View Combined' in matching.data
 
         detail = client.get('/federal-finance/H2IL01349?cycle=2026')

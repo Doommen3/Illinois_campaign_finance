@@ -320,6 +320,43 @@ class TestNetworkVisualizations:
         assert "summary" in result
         conn.close()
 
+
+class TestAdvancedGraphVisualizations:
+    def _read_file(self, *parts):
+        path = Path(__file__).resolve().parents[1].joinpath(*parts)
+        return path.read_text()
+
+    def test_relationships_template_has_arc_and_alluvial_controls(self):
+        content = self._read_file("webapp", "templates", "analytics", "relationships.html")
+        assert "Arc Diagram" in content
+        assert "Alluvial" in content
+        assert "data-graph-controls=\"donor-cogiving\"" in content
+        assert "data-graph-controls=\"committee-similarity\"" in content
+        assert "data-graph-controls=\"lobbying-influence\"" in content
+        assert "data-graph-controls=\"ecosystem-527\"" in content
+
+    def test_relationships_js_has_arc_and_alluvial_renderers(self):
+        content = self._read_file("webapp", "static", "js", "relationship_graphs.js")
+        assert "supportsArc" in content
+        assert "supportsAlluvial" in content
+        assert "drawArcGraph" in content
+        assert "drawAlluvialGraph" in content
+
+    def test_matching_template_has_overlap_bubble_view(self):
+        content = self._read_file("webapp", "templates", "federal_finance", "matching.html")
+        assert "match-overlap-bubble-svg" in content
+        assert "match-overlap-bubble-color" in content
+        assert "match-overlap-bubble-limit" in content
+        assert "match-overlap-data" in content
+
+    def test_donor_intelligence_template_has_community_treemap_sunburst(self):
+        content = self._read_file("webapp", "templates", "federal_finance", "donor_intelligence.html")
+        assert "Community Treemap / Sunburst" in content
+        assert "cluster-community-svg" in content
+        assert "cluster-community-mode" in content
+        assert "cluster-community-metric" in content
+        assert "cluster-community-data" in content
+
     def test_overlap_graph_db_function(self, app):
         from database.analytics import get_state_federal_overlap_graph
         from database.connection import get_db

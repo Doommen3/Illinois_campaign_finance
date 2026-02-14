@@ -127,5 +127,305 @@
         </tbody>
     </table>
 </div>
+<div class="status-section">
+    <h2>Community Treemap / Sunburst</h2>
+    <p class="subtitle">Visual summary of network communities by cluster weight and composition.</p>
+    <div class="graph-controls">
+        <label>View
+            <select id="cluster-community-mode">
+                <option value="treemap">Treemap</option>
+                <option value="sunburst">Sunburst</option>
+            </select>
+        </label>
+        <label>Metric
+            <select id="cluster-community-metric">
+                <option value="total_weight">Total weight</option>
+                <option value="edge_count">Edge count</option>
+                <option value="donor_count">Donor count</option>
+                <option value="candidate_count">Candidate count</option>
+            </select>
+        </label>
+        <button id="cluster-community-render" type="button">Render</button>
+    </div>
+    <div class="network-svg-wrap">
+        <svg id="cluster-community-svg" viewBox="0 0 1000 520" role="img" aria-label="Federal donor network community treemap and sunburst"></svg>
+    </div>
+    <p id="cluster-community-summary" class="subtitle"></p>
+</div>
+<script id="cluster-community-data" type="application/json">{{ donor_clusters|tojson }}</script>
+<script>
+(() => {
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    const dataEl = document.getElementById("cluster-community-data");
+    const svg = document.getElementById("cluster-community-svg");
+    const summaryEl = document.getElementById("cluster-community-summary");
+    const modeSelect = document.getElementById("cluster-community-mode");
+    const metricSelect = document.getElementById("cluster-community-metric");
+    const renderBtn = document.getElementById("cluster-community-render");
+    if (!dataEl || !svg) return;
+
+    const payload = JSON.parse(dataEl.textContent || "{}");
+    const clusters = Array.isArray(payload.clusters) ? payload.clusters : [];
+
+    const clearSvg = () => {
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+    };
+
+    const viewBoxSize = () => {
+        const vb = (svg.getAttribute("viewBox") || "0 0 1000 520").split(/\s+/).map((v) => Number(v));
+        return {width: vb[2] || 1000, height: vb[3] || 520};
+    };
+
+    const createSvg = (tag, attrs = {}) => {
+        const el = document.createElementNS(SVG_NS, tag);
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        return el;
+    };
+
+    const drawEmpty = (msg) => {
+        clearSvg();
+        const {width, height} = viewBoxSize();
+        svg.appendChild(createSvg("rect", {
+            x: 24, y: 24, width: width - 48, height: height - 48, rx: 10,
+            fill: "#f8fafc", stroke: "#cbd5e1",
+        }));
+        const text = createSvg("text", {x: width / 2, y: height / 2, "text-anchor": "middle", "font-size": "12px", fill: "#475569"});
+        text.textContent = msg;
+        svg.appendChild(text);
+        if (summaryEl) summaryEl.textContent = msg;
+    };
+
+    const toRows = (metricKey) => clusters
+        .map((row) => ({
+            ...row,
+            metric: Math.max(0, Number(row[metricKey] || 0)),
+        }))
+        .filter((row) => row.metric > 0)
+        .sort((a, b) => b.metric - a.metric);
+
+    const shortLabel = (value, max = 36) => {
+        const text = String(value || "").trim();
+        if (text.length <= max) return text;
+        return `${text.slice(0, max - 1)}...`;
+    };
+
+    const palette = [
+        "#1d4ed8", "#0f766e", "#be185d", "#7c3aed", "#0369a1",
+        "#b45309", "#15803d", "#9333ea", "#b91c1c", "#047857",
+    ];
+
+    const drawTreemap = (rows) => {
+        const {width, height} = viewBoxSize();
+        const margin = {left: 18, right: 18, top: 18, bottom: 18};
+        const root = {x: margin.left, y: margin.top, w: width - margin.left - margin.right, h: height - margin.top - margin.bottom};
+
+        const total = rows.reduce((sum, row) => sum + row.metric, 0) || 1;
+        const weightedRows = rows.map((row) => ({...row, share: row.metric / total}));
+        const out = [];
+
+        const splitLayout = (items, x, y, w, h, depth) => {
+            if (!items.length) return;
+            if (items.length === 1) {
+                out.push({row: items[0], x, y, w, h});
+                return;
+            }
+            const sum = items.reduce((s, item) => s + item.share, 0);
+            let running = 0;
+            let splitIdx = 0;
+            for (let i = 0; i < items.length; i += 1) {
+                running += items[i].share;
+                if (running >= (sum / 2)) {
+                    splitIdx = i + 1;
+                    break;
+                }
+            }
+            const left = items.slice(0, splitIdx);
+            const right = items.slice(splitIdx);
+            const leftShare = left.reduce((s, item) => s + item.share, 0) / Math.max(sum, 1e-9);
+            if (depth % 2 === 0) {
+                const w1 = w * leftShare;
+                splitLayout(left, x, y, w1, h, depth + 1);
+                splitLayout(right, x + w1, y, w - w1, h, depth + 1);
+            } else {
+                const h1 = h * leftShare;
+                splitLayout(left, x, y, w, h1, depth + 1);
+                splitLayout(right, x, y + h1, w, h - h1, depth + 1);
+            }
+        };
+
+        splitLayout(weightedRows, root.x, root.y, root.w, root.h, 0);
+        out.forEach((cell, idx) => {
+            const fill = palette[idx % palette.length];
+            svg.appendChild(createSvg("rect", {
+                x: cell.x.toFixed(2),
+                y: cell.y.toFixed(2),
+                width: Math.max(1, cell.w - 1).toFixed(2),
+                height: Math.max(1, cell.h - 1).toFixed(2),
+                fill,
+                "fill-opacity": "0.86",
+                stroke: "#ffffff",
+                "stroke-width": "1",
+            }));
+            const title = createSvg("title");
+            title.textContent = `${cell.row.cluster_label || cell.row.cluster_id}: ${Math.round(cell.row.metric).toLocaleString()} | donors ${cell.row.donor_count}, candidates ${cell.row.candidate_count}`;
+            svg.lastChild.appendChild(title);
+
+            if (cell.w > 110 && cell.h > 30) {
+                const label = createSvg("text", {
+                    x: (cell.x + 8).toFixed(2),
+                    y: (cell.y + 16).toFixed(2),
+                    fill: "#ffffff",
+                    "font-size": "11px",
+                    "font-weight": "600",
+                });
+                label.textContent = shortLabel(cell.row.cluster_label || cell.row.cluster_id, 34);
+                svg.appendChild(label);
+                const stat = createSvg("text", {
+                    x: (cell.x + 8).toFixed(2),
+                    y: (cell.y + 30).toFixed(2),
+                    fill: "#e2e8f0",
+                    "font-size": "10px",
+                });
+                stat.textContent = `${Math.round(cell.row.metric).toLocaleString()} | D ${cell.row.donor_count} C ${cell.row.candidate_count}`;
+                svg.appendChild(stat);
+            }
+        });
+    };
+
+    const arcPath = (cx, cy, r0, r1, start, end) => {
+        const largeArc = (end - start) > Math.PI ? 1 : 0;
+        const x1 = cx + (r1 * Math.cos(start));
+        const y1 = cy + (r1 * Math.sin(start));
+        const x2 = cx + (r1 * Math.cos(end));
+        const y2 = cy + (r1 * Math.sin(end));
+        const x3 = cx + (r0 * Math.cos(end));
+        const y3 = cy + (r0 * Math.sin(end));
+        const x4 = cx + (r0 * Math.cos(start));
+        const y4 = cy + (r0 * Math.sin(start));
+        return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r1} ${r1} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${x3.toFixed(2)} ${y3.toFixed(2)} A ${r0} ${r0} 0 ${largeArc} 0 ${x4.toFixed(2)} ${y4.toFixed(2)} Z`;
+    };
+
+    const drawSunburst = (rows) => {
+        const {width, height} = viewBoxSize();
+        const cx = width / 2;
+        const cy = height / 2;
+        const inner0 = 42;
+        const inner1 = 136;
+        const outer0 = 140;
+        const outer1 = 216;
+        const total = rows.reduce((sum, row) => sum + row.metric, 0) || 1;
+        let angle = -Math.PI / 2;
+
+        const center = createSvg("circle", {cx: cx.toFixed(2), cy: cy.toFixed(2), r: "36", fill: "#0f172a"});
+        svg.appendChild(center);
+        const centerLabel = createSvg("text", {
+            x: cx.toFixed(2),
+            y: (cy + 4).toFixed(2),
+            "text-anchor": "middle",
+            fill: "#f8fafc",
+            "font-size": "10px",
+            "font-weight": "600",
+        });
+        centerLabel.textContent = "Clusters";
+        svg.appendChild(centerLabel);
+
+        rows.forEach((row, idx) => {
+            const share = row.metric / total;
+            const delta = Math.max(0.0001, share * Math.PI * 2);
+            const start = angle;
+            const end = angle + delta;
+            angle = end;
+            const base = palette[idx % palette.length];
+
+            const clusterArc = createSvg("path", {
+                d: arcPath(cx, cy, inner0, inner1, start, end),
+                fill: base,
+                "fill-opacity": "0.88",
+                stroke: "#ffffff",
+                "stroke-width": "1",
+            });
+            const clusterTitle = createSvg("title");
+            clusterTitle.textContent = `${row.cluster_label || row.cluster_id}: ${Math.round(row.metric).toLocaleString()}`;
+            clusterArc.appendChild(clusterTitle);
+            svg.appendChild(clusterArc);
+
+            const memberTotal = Math.max(1, Number(row.donor_count || 0) + Number(row.candidate_count || 0));
+            const donorShare = Number(row.donor_count || 0) / memberTotal;
+            const donorEnd = start + (delta * donorShare);
+            const donorArc = createSvg("path", {
+                d: arcPath(cx, cy, outer0, outer1, start, donorEnd),
+                fill: "#1e40af",
+                "fill-opacity": "0.78",
+                stroke: "#ffffff",
+                "stroke-width": "1",
+            });
+            const donorTitle = createSvg("title");
+            donorTitle.textContent = `${row.cluster_label || row.cluster_id} donors: ${row.donor_count}`;
+            donorArc.appendChild(donorTitle);
+            svg.appendChild(donorArc);
+
+            const candidateArc = createSvg("path", {
+                d: arcPath(cx, cy, outer0, outer1, donorEnd, end),
+                fill: "#b91c1c",
+                "fill-opacity": "0.78",
+                stroke: "#ffffff",
+                "stroke-width": "1",
+            });
+            const candidateTitle = createSvg("title");
+            candidateTitle.textContent = `${row.cluster_label || row.cluster_id} candidates: ${row.candidate_count}`;
+            candidateArc.appendChild(candidateTitle);
+            svg.appendChild(candidateArc);
+
+            const mid = start + (delta / 2);
+            const lx = cx + ((inner0 + inner1) / 2) * Math.cos(mid);
+            const ly = cy + ((inner0 + inner1) / 2) * Math.sin(mid);
+            if (delta > 0.17) {
+                const label = createSvg("text", {
+                    x: lx.toFixed(2),
+                    y: (ly + 3).toFixed(2),
+                    "text-anchor": "middle",
+                    fill: "#f8fafc",
+                    "font-size": "9px",
+                    "font-weight": "600",
+                });
+                label.textContent = shortLabel(row.cluster_label || row.cluster_id, 18);
+                svg.appendChild(label);
+            }
+        });
+
+        const legendY = height - 20;
+        svg.appendChild(createSvg("rect", {x: 18, y: legendY - 10, width: 10, height: 10, fill: "#1e40af"}));
+        const dLabel = createSvg("text", {x: 33, y: legendY - 1, fill: "#334155", "font-size": "10px"});
+        dLabel.textContent = "Donors";
+        svg.appendChild(dLabel);
+        svg.appendChild(createSvg("rect", {x: 90, y: legendY - 10, width: 10, height: 10, fill: "#b91c1c"}));
+        const cLabel = createSvg("text", {x: 105, y: legendY - 1, fill: "#334155", "font-size": "10px"});
+        cLabel.textContent = "Candidates";
+        svg.appendChild(cLabel);
+    };
+
+    const render = () => {
+        const metric = String(metricSelect?.value || "total_weight");
+        const mode = String(modeSelect?.value || "treemap");
+        const rows = toRows(metric).slice(0, 20);
+        if (!rows.length) {
+            drawEmpty("No cluster rows available for community view.");
+            return;
+        }
+        clearSvg();
+        if (mode === "sunburst") drawSunburst(rows);
+        else drawTreemap(rows);
+        if (summaryEl) {
+            const totalMetric = rows.reduce((sum, row) => sum + row.metric, 0);
+            summaryEl.textContent = `${mode} | metric: ${metric} | clusters shown: ${rows.length.toLocaleString()} | total metric: ${Math.round(totalMetric).toLocaleString()}`;
+        }
+    };
+
+    modeSelect?.addEventListener("change", render);
+    metricSelect?.addEventListener("change", render);
+    renderBtn?.addEventListener("click", render);
+    render();
+})();
+</script>
 {% endif %}
 {% endblock %}

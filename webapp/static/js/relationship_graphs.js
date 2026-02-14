@@ -10,6 +10,7 @@
             panelId: "donor-cogiving-panel",
             tableId: "donor-cogiving-table",
             layout: "force",
+            supportsArc: true,
         },
         {
             key: "committee-similarity",
@@ -20,6 +21,7 @@
             tableId: "committee-similarity-table",
             layout: "clustered",
             supportsCommunityCollapse: true,
+            supportsArc: true,
         },
         {
             key: "candidate-state",
@@ -69,6 +71,7 @@
             panelId: "lobbying-influence-panel",
             tableId: "lobbying-influence-table",
             layout: "layered",
+            supportsAlluvial: true,
         },
         {
             key: "ecosystem-527",
@@ -78,6 +81,7 @@
             panelId: "ecosystem-527-panel",
             tableId: "ecosystem-527-table",
             layout: "layered",
+            supportsAlluvial: true,
         },
     ];
 
@@ -1013,6 +1017,24 @@
         svg.__panZoomHandlers = {onWheel, onMouseDown, onMouseMove, onMouseUp, onMouseLeave};
     };
 
+    const clearSvgInteractions = (svg) => {
+        if (!svg) return;
+        if (svg.__panZoomHandlers) {
+            const handlers = svg.__panZoomHandlers;
+            svg.removeEventListener("wheel", handlers.onWheel);
+            svg.removeEventListener("mousedown", handlers.onMouseDown);
+            svg.removeEventListener("mousemove", handlers.onMouseMove);
+            svg.removeEventListener("mouseup", handlers.onMouseUp);
+            svg.removeEventListener("mouseleave", handlers.onMouseLeave);
+            delete svg.__panZoomHandlers;
+        }
+        if (svg.__bgClickHandler) {
+            svg.removeEventListener("click", svg.__bgClickHandler);
+            delete svg.__bgClickHandler;
+        }
+        svg.classList.remove("is-dragging");
+    };
+
     const centerOnNode = (state, node, size) => {
         if (!node) return;
         state.panX = (size.width / 2) - (node.x * state.zoom);
@@ -1167,12 +1189,393 @@
         return {context, size, nodes, edges: edgeRows};
     };
 
+    const drawArcGraph = (spec, subset, state) => {
+        const svg = byId(spec.svgId);
+        if (!svg) return null;
+        clearElement(svg);
+        clearSvgInteractions(svg);
+        const size = viewBoxSize(svg);
+
+        if (!subset.nodes.length || !subset.edges.length) {
+            drawEmpty(svg, "Not enough nodes or edges for arc diagram.");
+            return {context: computeSelectionContext(subset, state), size};
+        }
+
+        const nodeTotals = new Map();
+        for (const edge of subset.edges) {
+            const weight = Math.max(0, weightValue(edge));
+            nodeTotals.set(edge.source, (nodeTotals.get(edge.source) || 0) + weight);
+            nodeTotals.set(edge.target, (nodeTotals.get(edge.target) || 0) + weight);
+        }
+
+        const nodes = subset.nodes
+            .map((node) => ({...node}))
+            .sort((a, b) => {
+                const left = Number(nodeTotals.get(a.id) || 0);
+                const right = Number(nodeTotals.get(b.id) || 0);
+                if (left !== right) return right - left;
+                return String(a.label || "").localeCompare(String(b.label || ""));
+            });
+
+        const margin = {left: 44, right: 44, top: 18, bottom: 40};
+        const baseline = size.height - margin.bottom;
+        const spanWidth = Math.max(1, size.width - margin.left - margin.right);
+        const step = nodes.length > 1 ? spanWidth / (nodes.length - 1) : 0;
+        nodes.forEach((node, idx) => {
+            node.x = margin.left + (idx * step);
+            node.y = baseline;
+            node.vx = 0;
+            node.vy = 0;
+        });
+
+        const nodeById = new Map(nodes.map((node) => [node.id, node]));
+        const edges = subset.edges
+            .map((edge) => ({
+                ...edge,
+                _id: edgeId(edge),
+                _source: nodeById.get(edge.source),
+                _target: nodeById.get(edge.target),
+            }))
+            .filter((edge) => edge._source && edge._target && edge._source.id !== edge._target.id);
+
+        if (!edges.length) {
+            drawEmpty(svg, "Not enough distinct node pairs for arc diagram.");
+            return {context: computeSelectionContext({nodes, edges: []}, state), size, nodes, edges: []};
+        }
+
+        const context = computeSelectionContext({nodes, edges}, state);
+        const hasActiveSelection = state.selectedNodes.length > 0 || Boolean(state.selectedEdgeId);
+        const maxWeight = Math.max(...edges.map((edge) => weightValue(edge)), 1);
+        const topLabelSet = new Set(nodes.slice(0, 12).map((node) => node.id));
+
+        const edgeGroup = createSvg("g", {class: "graph-edges graph-edges-arc"});
+        const nodeGroup = createSvg("g", {class: "graph-nodes graph-nodes-arc"});
+        const labelGroup = createSvg("g", {class: "graph-labels graph-labels-arc"});
+        const axis = createSvg("line", {
+            x1: margin.left,
+            y1: baseline,
+            x2: size.width - margin.right,
+            y2: baseline,
+            stroke: "#cbd5e1",
+            "stroke-width": "1",
+        });
+        svg.appendChild(axis);
+        svg.appendChild(edgeGroup);
+        svg.appendChild(nodeGroup);
+        svg.appendChild(labelGroup);
+
+        for (const edge of edges) {
+            const source = edge._source;
+            const target = edge._target;
+            const left = source.x <= target.x ? source : target;
+            const right = source.x <= target.x ? target : source;
+            const dx = Math.max(8, right.x - left.x);
+            const arcLift = Math.max(26, Math.min(size.height - margin.bottom - margin.top, dx * 0.58));
+            const controlY = baseline - arcLift;
+            const highlighted = hasActiveSelection && context.highlightEdges.has(edge._id);
+            const hiddenByEgo = state.egoMode && hasActiveSelection && !highlighted;
+            const path = createSvg("path", {
+                d: `M ${left.x.toFixed(2)} ${baseline.toFixed(2)} C ${left.x.toFixed(2)} ${controlY.toFixed(2)}, ${right.x.toFixed(2)} ${controlY.toFixed(2)}, ${right.x.toFixed(2)} ${baseline.toFixed(2)}`,
+                fill: "none",
+                stroke: edgeColor(edge),
+                "stroke-width": edgeWidth(edge, maxWeight).toFixed(2),
+                "stroke-opacity": hiddenByEgo ? "0.03" : highlighted ? "0.92" : "0.2",
+                "stroke-linecap": "round",
+                "data-edge-id": edge._id,
+            });
+            path.addEventListener("click", (event) => {
+                event.stopPropagation();
+                state.selectedEdgeId = edge._id;
+                state.selectedNodes = [];
+                renderSpec(spec.key);
+            });
+            edgeGroup.appendChild(path);
+        }
+
+        for (const node of nodes) {
+            const highlighted = hasActiveSelection && context.highlightNodes.has(node.id);
+            const hiddenByEgo = state.egoMode && hasActiveSelection && !highlighted;
+            const r = Math.max(4.5, Math.min(12, nodeRadius(node)));
+            const baseAttrs = {
+                cx: node.x.toFixed(2),
+                cy: baseline.toFixed(2),
+                r: r.toFixed(2),
+                fill: nodeColor(node),
+                "fill-opacity": hiddenByEgo ? "0.16" : highlighted ? "0.95" : "0.4",
+                stroke: highlighted ? "#0f172a" : "#ffffff",
+                "stroke-width": highlighted ? "1.4" : "1",
+                "data-node-id": node.id,
+            };
+            const shape = drawNodeShape(node, baseAttrs);
+            shape.classList.add("graph-node-shape");
+            shape.addEventListener("click", (event) => {
+                event.stopPropagation();
+                state.selectedEdgeId = null;
+                if (event.shiftKey && state.selectedNodes.length === 1 && state.selectedNodes[0] !== node.id) {
+                    state.selectedNodes = [state.selectedNodes[0], node.id];
+                } else if (!event.shiftKey && state.selectedNodes.length === 1 && state.selectedNodes[0] === node.id) {
+                    state.selectedNodes = [];
+                } else {
+                    state.selectedNodes = [node.id];
+                }
+                renderSpec(spec.key);
+            });
+            nodeGroup.appendChild(shape);
+
+            const label = createSvg("text", {
+                x: node.x.toFixed(2),
+                y: (baseline + r + 12).toFixed(2),
+                "text-anchor": "middle",
+                "font-size": "9px",
+                fill: "#0f172a",
+            });
+            label.textContent = shortLabel(node.label, 22);
+            const selected = state.selectedNodes.includes(node.id);
+            const showLabel = state.showLabels || topLabelSet.has(node.id) || highlighted || selected;
+            label.style.opacity = showLabel ? "0.92" : "0";
+            labelGroup.appendChild(label);
+        }
+
+        const onBackgroundClick = (event) => {
+            if (event.target !== svg) return;
+            state.selectedNodes = [];
+            state.selectedEdgeId = null;
+            renderSpec(spec.key);
+        };
+        svg.addEventListener("click", onBackgroundClick);
+        svg.__bgClickHandler = onBackgroundClick;
+        state.pendingCenterNode = null;
+        return {context, size, nodes, edges};
+    };
+
+    const drawAlluvialGraph = (spec, subset, state) => {
+        const svg = byId(spec.svgId);
+        if (!svg) return null;
+        clearElement(svg);
+        clearSvgInteractions(svg);
+        const size = viewBoxSize(svg);
+
+        if (!subset.nodes.length || !subset.edges.length) {
+            drawEmpty(svg, "Not enough nodes or edges for alluvial view.");
+            return {context: computeSelectionContext(subset, state), size};
+        }
+
+        const nodes = subset.nodes.map((node) => ({...node}));
+        const nodeById = new Map(nodes.map((node) => [node.id, node]));
+        const edges = subset.edges
+            .map((edge) => ({...edge, _id: edgeId(edge)}))
+            .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target) && edge.source !== edge.target && weightValue(edge) > 0);
+
+        if (!edges.length) {
+            drawEmpty(svg, "No weighted links to render in alluvial view.");
+            return {context: computeSelectionContext({nodes, edges: []}, state), size, nodes, edges: []};
+        }
+
+        const layerMap = {
+            lobbying_client: 0,
+            irs527_org: 0,
+            lobbying_entity: 1,
+            director: 1,
+            donor: 2,
+            matched_donor: 2,
+            matched_payee: 2,
+            recipient_target: 2,
+            committee: 3,
+            candidate: 4,
+        };
+        const layerNodes = new Map();
+        const nodeTotals = new Map();
+        const outgoing = new Map();
+        const incoming = new Map();
+
+        for (const edge of edges) {
+            const weight = Math.max(0, weightValue(edge));
+            outgoing.set(edge.source, (outgoing.get(edge.source) || 0) + weight);
+            incoming.set(edge.target, (incoming.get(edge.target) || 0) + weight);
+            nodeTotals.set(edge.source, (nodeTotals.get(edge.source) || 0) + weight);
+            nodeTotals.set(edge.target, (nodeTotals.get(edge.target) || 0) + weight);
+        }
+
+        for (const node of nodes) {
+            const layerIdx = layerMap[String(node.node_type || "").toLowerCase()] ?? 2;
+            if (!layerNodes.has(layerIdx)) layerNodes.set(layerIdx, []);
+            layerNodes.get(layerIdx).push(node);
+        }
+        const layers = Array.from(layerNodes.keys()).sort((a, b) => a - b);
+        if (layers.length < 2) {
+            drawEmpty(svg, "Alluvial view needs at least two node layers.");
+            return {context: computeSelectionContext({nodes, edges}, state), size, nodes, edges};
+        }
+
+        const margin = {left: 62, right: 62, top: 24, bottom: 24};
+        const availHeight = Math.max(120, size.height - margin.top - margin.bottom);
+        const layerCount = Math.max(1, layers.length - 1);
+        const layerLabelMap = {0: "Origin", 1: "Bridge", 2: "Linked", 3: "Committees", 4: "Candidates"};
+        const layoutById = new Map();
+        const nodeWidth = 12;
+
+        layers.forEach((layerIdx, layerPosition) => {
+            const bucket = layerNodes.get(layerIdx) || [];
+            bucket.sort((a, b) => (nodeTotals.get(b.id) || 0) - (nodeTotals.get(a.id) || 0));
+            const x = margin.left + (((size.width - margin.left - margin.right) * layerPosition) / layerCount);
+            const gap = 6;
+            const layerTotal = Math.max(
+                1,
+                bucket.reduce((sum, node) => sum + Math.max(0, Number(nodeTotals.get(node.id) || 0)), 0)
+            );
+            const usableHeight = Math.max(20, availHeight - Math.max(0, bucket.length - 1) * gap);
+            const rawHeights = bucket.map((node) => Math.max(4, (Math.max(0, Number(nodeTotals.get(node.id) || 0)) / layerTotal) * usableHeight));
+            const rawTotal = rawHeights.reduce((sum, value) => sum + value, 0) || 1;
+            const scale = Math.min(1, usableHeight / rawTotal);
+            const heights = rawHeights.map((value) => value * scale);
+            const totalHeight = heights.reduce((sum, value) => sum + value, 0) + Math.max(0, bucket.length - 1) * gap;
+            let y = margin.top + ((availHeight - totalHeight) / 2);
+            bucket.forEach((node, idx) => {
+                const h = heights[idx];
+                layoutById.set(node.id, {x, y, w: nodeWidth, h, layerIdx});
+                y += h + gap;
+            });
+
+            const title = createSvg("text", {
+                x: x.toFixed(2),
+                y: "14",
+                "text-anchor": "middle",
+                "font-size": "10px",
+                fill: "#334155",
+                "font-weight": "600",
+            });
+            title.textContent = layerLabelMap[layerIdx] || `Layer ${layerIdx + 1}`;
+            svg.appendChild(title);
+        });
+
+        const context = computeSelectionContext({nodes, edges}, state);
+        const hasActiveSelection = state.selectedNodes.length > 0 || Boolean(state.selectedEdgeId);
+
+        const flowGroup = createSvg("g", {class: "graph-edges graph-edges-alluvial"});
+        const nodeGroup = createSvg("g", {class: "graph-nodes graph-nodes-alluvial"});
+        const labelGroup = createSvg("g", {class: "graph-labels graph-labels-alluvial"});
+        svg.appendChild(flowGroup);
+        svg.appendChild(nodeGroup);
+        svg.appendChild(labelGroup);
+
+        const sourceOffsets = new Map();
+        const targetOffsets = new Map();
+        const topLabelSet = new Set(
+            nodes
+                .slice()
+                .sort((a, b) => Number(nodeTotals.get(b.id) || 0) - Number(nodeTotals.get(a.id) || 0))
+                .slice(0, 14)
+                .map((node) => node.id)
+        );
+
+        const edgeRows = edges.slice().sort((a, b) => weightValue(b) - weightValue(a));
+        for (const edge of edgeRows) {
+            const sourceBox = layoutById.get(edge.source);
+            const targetBox = layoutById.get(edge.target);
+            if (!sourceBox || !targetBox) continue;
+            const sourceTotal = Math.max(1, Number(outgoing.get(edge.source) || weightValue(edge)));
+            const targetTotal = Math.max(1, Number(incoming.get(edge.target) || weightValue(edge)));
+            const sourceSpan = Math.max(1.1, sourceBox.h * (weightValue(edge) / sourceTotal));
+            const targetSpan = Math.max(1.1, targetBox.h * (weightValue(edge) / targetTotal));
+            const span = Math.max(1.1, Math.min(sourceSpan, targetSpan));
+
+            const srcOffset = Number(sourceOffsets.get(edge.source) || 0);
+            const tgtOffset = Number(targetOffsets.get(edge.target) || 0);
+            const y1 = sourceBox.y + Math.min(sourceBox.h - (sourceSpan / 2), srcOffset + (sourceSpan / 2));
+            const y2 = targetBox.y + Math.min(targetBox.h - (targetSpan / 2), tgtOffset + (targetSpan / 2));
+            sourceOffsets.set(edge.source, Math.min(sourceBox.h, srcOffset + sourceSpan));
+            targetOffsets.set(edge.target, Math.min(targetBox.h, tgtOffset + targetSpan));
+
+            const sourceOnRight = sourceBox.x > targetBox.x;
+            const x1 = sourceOnRight ? sourceBox.x - (sourceBox.w / 2) : sourceBox.x + (sourceBox.w / 2);
+            const x2 = sourceOnRight ? targetBox.x + (targetBox.w / 2) : targetBox.x - (targetBox.w / 2);
+            const c1 = x1 + ((x2 - x1) * 0.5);
+            const c2 = x1 + ((x2 - x1) * 0.5);
+
+            const highlighted = hasActiveSelection && context.highlightEdges.has(edge._id);
+            const hiddenByEgo = state.egoMode && hasActiveSelection && !highlighted;
+            const path = createSvg("path", {
+                d: `M ${x1.toFixed(2)} ${y1.toFixed(2)} C ${c1.toFixed(2)} ${y1.toFixed(2)}, ${c2.toFixed(2)} ${y2.toFixed(2)}, ${x2.toFixed(2)} ${y2.toFixed(2)}`,
+                fill: "none",
+                stroke: edgeColor(edge),
+                "stroke-width": Math.max(1.1, Math.min(14, span)).toFixed(2),
+                "stroke-opacity": hiddenByEgo ? "0.03" : highlighted ? "0.94" : "0.26",
+                "stroke-linecap": "round",
+                "data-edge-id": edge._id,
+            });
+            path.addEventListener("click", (event) => {
+                event.stopPropagation();
+                state.selectedEdgeId = edge._id;
+                state.selectedNodes = [];
+                renderSpec(spec.key);
+            });
+            flowGroup.appendChild(path);
+        }
+
+        for (const node of nodes) {
+            const box = layoutById.get(node.id);
+            if (!box) continue;
+            const highlighted = hasActiveSelection && context.highlightNodes.has(node.id);
+            const hiddenByEgo = state.egoMode && hasActiveSelection && !highlighted;
+            const rect = createSvg("rect", {
+                x: (box.x - (box.w / 2)).toFixed(2),
+                y: box.y.toFixed(2),
+                width: box.w.toFixed(2),
+                height: Math.max(2, box.h).toFixed(2),
+                rx: "2",
+                fill: nodeColor(node),
+                "fill-opacity": hiddenByEgo ? "0.14" : highlighted ? "0.94" : "0.52",
+                stroke: highlighted ? "#0f172a" : "#ffffff",
+                "stroke-width": highlighted ? "1.4" : "1",
+                "data-node-id": node.id,
+            });
+            rect.classList.add("graph-node-shape");
+            rect.addEventListener("click", (event) => {
+                event.stopPropagation();
+                state.selectedEdgeId = null;
+                if (event.shiftKey && state.selectedNodes.length === 1 && state.selectedNodes[0] !== node.id) {
+                    state.selectedNodes = [state.selectedNodes[0], node.id];
+                } else if (!event.shiftKey && state.selectedNodes.length === 1 && state.selectedNodes[0] === node.id) {
+                    state.selectedNodes = [];
+                } else {
+                    state.selectedNodes = [node.id];
+                }
+                renderSpec(spec.key);
+            });
+            nodeGroup.appendChild(rect);
+
+            const showLabel = state.showLabels || highlighted || topLabelSet.has(node.id);
+            const label = createSvg("text", {
+                x: (box.x + (box.x < size.width / 2 ? 10 : -10)).toFixed(2),
+                y: (box.y + (box.h / 2) + 3).toFixed(2),
+                "text-anchor": box.x < size.width / 2 ? "start" : "end",
+                "font-size": "9px",
+                fill: "#0f172a",
+            });
+            label.textContent = shortLabel(node.label, 24);
+            label.style.opacity = showLabel ? "0.92" : "0";
+            labelGroup.appendChild(label);
+        }
+
+        const onBackgroundClick = (event) => {
+            if (event.target !== svg) return;
+            state.selectedNodes = [];
+            state.selectedEdgeId = null;
+            renderSpec(spec.key);
+        };
+        svg.addEventListener("click", onBackgroundClick);
+        svg.__bgClickHandler = onBackgroundClick;
+        state.pendingCenterNode = null;
+        return {context, size, nodes, edges: edgeRows, maxWeight};
+    };
+
     const updateSummary = (spec, graph, subset, state, context) => {
         const summary = byId(spec.summaryId);
         if (!summary) return;
         const selectedNodeText = state.selectedNodes.length ? `Selected nodes: ${state.selectedNodes.length}` : "No node selected";
         const selectedEdgeText = state.selectedEdgeId ? "edge selected" : "no edge selected";
-        summary.textContent = `Rendering ${subset.nodes.length} nodes / ${subset.edges.length} edges (total ${graph.summary?.node_count || 0} / ${graph.summary?.edge_count || 0}). ${selectedNodeText}, ${selectedEdgeText}.`;
+        const viewMode = String(state.viewMode || "network");
+        summary.textContent = `${viewMode} view: rendering ${subset.nodes.length} nodes / ${subset.edges.length} edges (total ${graph.summary?.node_count || 0} / ${graph.summary?.edge_count || 0}). ${selectedNodeText}, ${selectedEdgeText}.`;
     };
 
     const applySearch = (spec) => {
@@ -1199,7 +1602,8 @@
         applyModeVisibility(spec, state);
 
         const subset = buildSubset(graph, spec, state);
-        if (spec.supportsMatrix && state.viewMode === "matrix") {
+        const viewMode = String(state.viewMode || "network");
+        if (spec.supportsMatrix && viewMode === "matrix") {
             renderMatrix(spec, subset, state);
             renderRankedCompetitors(spec, subset);
             updateSummary(spec, graph, subset, state, null);
@@ -1209,7 +1613,14 @@
         }
 
         renderMatrix(spec, subset, state);
-        const drawResult = drawGraph(spec, subset, state);
+        let drawResult;
+        if (spec.supportsArc && viewMode === "arc") {
+            drawResult = drawArcGraph(spec, subset, state);
+        } else if (spec.supportsAlluvial && viewMode === "alluvial") {
+            drawResult = drawAlluvialGraph(spec, subset, state);
+        } else {
+            drawResult = drawGraph(spec, subset, state);
+        }
         const context = drawResult?.context || computeSelectionContext(subset, state);
         renderRankedCompetitors(spec, subset);
         updateSummary(spec, graph, subset, state, context);
