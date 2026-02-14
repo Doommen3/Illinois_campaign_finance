@@ -141,15 +141,11 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 
 ### SSH Authentication Notes
 
-The SSH key `~/.ssh/hetzner_ed25519` is **passphrase-protected**. For automated/scripted SSH:
+The SSH key `~/.ssh/hetzner_ed25519` passphrase is stored in **macOS Keychain via ssh-agent**. This was configured in `~/.zshrc`:
 ```bash
-# Interactive (prompts for passphrase):
-ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
-
-# Scripted with sshpass (passphrase mode — note -P 'passphrase' flag, NOT -p):
-export SSHPASS='<passphrase>'
-sshpass -P 'passphrase' -e ssh -o StrictHostKeyChecking=no -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 '<command>'
+ssh-add --apple-use-keychain ~/.ssh/hetzner_ed25519 2>/dev/null
 ```
+SSH, rsync, scp, and Claude Code autonomous SSH all work without passphrase prompts. If the agent ever loses the key (e.g., after OS update), re-run `ssh-add --apple-use-keychain ~/.ssh/hetzner_ed25519` and enter the passphrase once.
 
 The server does NOT have GitHub credentials configured. To pull on the server, either:
 1. Use a deploy key, or
@@ -178,6 +174,23 @@ $PYTHON run.py <command>
 - `gh` CLI is installed and authenticated (fine-grained PAT) for API operations (`gh api`, `gh pr`, etc.)
 - Git push uses the classic PAT stored in osxkeychain (the fine-grained PAT in `gh` does not have git push scope)
 - If push ever returns 403, re-store the classic PAT: `printf 'protocol=https\nhost=github.com\nusername=Doommen3\npassword=<PAT>\n' | git credential-osxkeychain store`
+
+### Syncing Production DB to Local
+
+Use `scripts/pull-db.sh` to pull the production SQLite DB to your local machine. The script checkpoints the WAL, backs up the existing local DB, and uses rsync for efficient incremental transfers.
+
+```bash
+# Full sync (interactive — ssh-agent handles passphrase)
+./scripts/pull-db.sh
+
+# Dry run (show what would transfer)
+./scripts/pull-db.sh --dry-run
+```
+
+**Important**: Do NOT run `init-db`, `run-cross-matching`, or other DB-writing commands on the server while rsync is in progress — they write to the WAL and can cause an inconsistent local copy. Finish the pull first, then run migrations.
+
+Local DB path: `data/campaign_finance.db` (matches `config.DATABASE_PATH` default).
+Backups retained: 3 most recent in `data/backups/`.
 
 ### Endpoint Sweep
 

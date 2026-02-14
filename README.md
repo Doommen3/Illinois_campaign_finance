@@ -110,7 +110,7 @@ python run.py import-lobbying --file Bulk_download/ILSOS_Lobbying_activeandclien
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
 
 # Run cross-matching across all data sources
-python run.py run-cross-matching --only all
+python run.py run-cross-matching --only all --parallel --workers 4
 ```
 
 Compute-heavy workflow recommendation:
@@ -183,6 +183,7 @@ Visit `http://localhost:5000` to access the dashboard.
 │   └── templates/          50+ Jinja2 templates (incl. tabbed detail views)
 ├── scripts/                Automation scripts
 │   ├── sync-fec.sh         Weekly FEC data sync wrapper
+│   ├── pull-db.sh          Pull production DB to local (rsync + WAL checkpoint)
 │   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
 ├── tests/                  pytest suite (20+ test modules)
@@ -274,6 +275,20 @@ Examples:
 ```bash
 ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
 ```
+
+SSH key passphrase is stored in macOS Keychain via ssh-agent (configured in `~/.zshrc`). No passphrase prompt needed.
+
+### Syncing Production DB to Local
+
+```bash
+# Pull the production database (WAL checkpoint + rsync)
+./scripts/pull-db.sh
+
+# Apply any new schema migrations locally
+python run.py init-db
+```
+
+First sync transfers the full ~5.5GB DB. Subsequent syncs use rsync's delta algorithm to transfer only changed blocks. The script automatically backs up the existing local DB (keeps 3 most recent).
 
 ### Server File Paths
 
