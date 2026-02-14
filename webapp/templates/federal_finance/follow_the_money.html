@@ -46,6 +46,7 @@
         Committees: <strong>{{ follow_money.summary.committee_count }}</strong> |
         Connected Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong>
     </p>
+    <p class="help-text">Dense-mode labeling is active: candidate labels are always shown, while non-candidate labels are prioritized by node importance to reduce overlap.</p>
     <div class="network-svg-wrap">
         <svg id="follow-money-svg" viewBox="0 0 1000 520" role="img" aria-label="Follow the money multi hop network"></svg>
     </div>
@@ -73,6 +74,28 @@
                 </td>
                 <td>{{ row.race_label if row.race_label else '-' }}</td>
                 <td>{{ row.party_display if row.party_display else '-' }}</td>
+                <td>{{ row.hop_distance }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    {% if follow_money.reachable_committees %}
+    <h3>Reachable Committees</h3>
+    <p class="help-text">Committees reached in the donor path. Open any committee to inspect its underlying Schedule A receipts.</p>
+    <table class="data-table">
+        <thead>
+            <tr><th>Committee</th><th>Hop Distance</th></tr>
+        </thead>
+        <tbody>
+            {% for row in follow_money.reachable_committees[:40] %}
+            <tr>
+                <td>
+                    {% if row.committee_id %}
+                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=row.committee_id, cycle=cycle) }}">{{ row.committee_name }}</a>
+                    {% else %}{{ row.committee_name }}{% endif %}
+                </td>
                 <td>{{ row.hop_distance }}</td>
             </tr>
             {% endfor %}
@@ -125,6 +148,12 @@
     clearSvg();
     const nodes = followGraph.nodes || [];
     const edges = followGraph.edges || [];
+    const nodeWeight = new Map();
+    for (const edge of edges) {
+        const w = Number(edge.weight || 0);
+        nodeWeight.set(edge.source, (nodeWeight.get(edge.source) || 0) + w);
+        nodeWeight.set(edge.target, (nodeWeight.get(edge.target) || 0) + w);
+    }
     const hops = new Map();
     for (const node of nodes) {
         const hop = Number(node.hop_distance || 0);
@@ -141,6 +170,21 @@
             const y = 40 + (idx * (440 / Math.max(1, col.length - 1)));
             pos.set(node.id, {x, y});
         });
+    });
+
+    const labelIds = new Set();
+    const denseMode = nodes.length > 140 || edges.length > 300;
+    sortedHops.forEach((hop, hopIndex) => {
+        const col = (hops.get(hop) || []).slice();
+        col.sort((a, b) => (nodeWeight.get(b.id) || 0) - (nodeWeight.get(a.id) || 0));
+        const isLastHop = hopIndex === sortedHops.length - 1;
+        const cap = hop === 0 ? 1 : (isLastHop ? 30 : (denseMode ? 8 : 12));
+        for (const node of col) {
+            if (node.node_type === "candidate") labelIds.add(node.id);
+        }
+        for (const node of col.slice(0, cap)) {
+            labelIds.add(node.id);
+        }
     });
 
     for (const edge of edges.slice(0, 500)) {
@@ -162,7 +206,23 @@
             fill = PARTY_COLORS[party] || "#b91c1c";
         }
         drawCircle(p.x, p.y, 6, fill);
-        drawText(p.x, p.y - 9, shortLabel(node.label || node.id), "#1e293b", "9px", "middle");
+    }
+
+    // Candidate labels are always shown; other labels are top-priority only with a
+    // simple y-distance collision guard per column.
+    const columnYUsed = new Map();
+    for (const node of nodes) {
+        if (!labelIds.has(node.id)) continue;
+        const p = pos.get(node.id);
+        if (!p) continue;
+        const columnKey = String(Math.round(p.x));
+        if (!columnYUsed.has(columnKey)) columnYUsed.set(columnKey, []);
+        const used = columnYUsed.get(columnKey);
+        const y = p.y - 9;
+        const tooClose = used.some((existingY) => Math.abs(existingY - y) < 12);
+        if (tooClose && node.node_type !== "candidate") continue;
+        used.push(y);
+        drawText(p.x, y, shortLabel(node.label || node.id), "#1e293b", "9px", "middle");
     }
 })();
 </script>

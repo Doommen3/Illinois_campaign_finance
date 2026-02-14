@@ -41,14 +41,16 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Row-level provenance panels on key tables (source table, sync timing, normalization notes, backlinks)
 - Interactive dashboards with visual summaries for trends, geography, and risk/anomaly distributions
 - Federal finance suite with dedicated pages for networks, money flow, influence scores, follow-the-money path tracing, geographic concentration, donor intelligence, and matching
+- Federal transfer-source committee receipts drilldown, linked from candidate detail, money flow, and follow-the-money committee rows
 - CSS-only tabbed interfaces on candidate detail (Overview/Money In/Money Out/Outside Spending/Cross-Role) and live feed (Local/Federal/Disbursements/Outside Spending)
 - Contextual help-text explanations on all major pages describing data sources and methodology
+- Relationship and cross-role tables now include "how to read" definitions for Donor A/B, Committee A/B, Donated (A), Received via B, and Received via E
 - Lobbying pages with explanatory help-text blocks for Money Destinations, Clients, Matched Donors, and confidence scores
 - Network graph zoom/pan, collision-free node layouts, graph-density modes (Balanced/Strongest/Full), node info panels with relationship semantics, metric units, and flow direction, color legends, and per-tab descriptions for all eight visualization types
 - Committee->candidate link panels now explicitly explain that links represent committee receipts associated with candidate-linked committees (not direct transfers) and show estimated top donor provenance when data is available
 - Adaptive force layout with post-layout collision detection for dense graph readability
-- Follow-the-money donor dropdown selector (replaces raw entity key input) with top 200 donors by contribution volume
-- Committee SBE ID routing for cross-page navigation between lobbying and committee detail pages
+- Follow-the-money donor dropdown selector (replaces raw entity key input) with top 200 donors by contribution volume, candidate-priority labels, and overlap suppression for dense graphs
+- Committee SBE routing now falls back to bulk committee profiles when canonical committee records are missing, preventing lobbying-to-committee dead-end 404s
 - Candidate competition networks with resolved candidate names from bulk data (not raw IDs)
 - Federal-state cross-reference views and donor overlap analysis
 - IL lobbying entity/client browser with cross-matched campaign finance connections
@@ -189,10 +191,16 @@ Visit `http://localhost:5000` to access the dashboard.
 ## Testing
 
 ```bash
-pytest -q -m "not integration"
+pytest -q
 ```
 
-Run live scraper integration checks separately:
+If you want a faster pre-deploy gate, run this subset first:
+
+```bash
+pytest -q tests/test_federal_fec.py tests/test_lobbying_routes.py tests/test_uiux_improvements.py tests/test_webapp.py::TestWebApp::test_federal_finance_page_loads_with_synced_rows
+```
+
+For scraper/live checks, run integration tests separately:
 
 ```bash
 pytest -q -m integration
@@ -343,23 +351,34 @@ cd /srv/illinois_campaign_finance/app
 git config --global --add safe.directory /srv/illinois_campaign_finance/app  # first time only
 git pull origin main
 
-# Re-install deps if requirements.txt changed
+# Re-install deps (required if you hit ModuleNotFoundError such as werkzeug)
 /srv/illinois_campaign_finance/shared/venv/bin/pip install -r requirements.txt
+
+# Rebuild analytics materialized views + snapshot cache
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
+
+# Optional but recommended after federal transfer/committee-link changes
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-fec-transfer-committees --cycle 2026
+/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py sync-fec-transfer-committee-receipts --cycle 2026 --max-calls 1000 --max-pages-per-committee 25
 
 # Restart the web application
 systemctl restart ilcf-web.service
-
-# Rebuild analytics materialized views + snapshot cache (recommended after UI/analytics changes)
-/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
 ```
 
 Production deployment checklist:
-1. Run test suite locally (`pytest -q -m "not integration"`).
+1. Run local tests (`pytest -q`).
 2. Push to `main` and pull on server (`git pull origin main`).
-3. Reinstall dependencies if needed (`pip install -r requirements.txt`).
-4. Rebuild analytics snapshot (`python3 run.py refresh-analytics --with-snapshot`).
-5. Restart web service (`systemctl restart ilcf-web.service`).
-6. Verify health (`systemctl status ilcf-web.service --no-pager`) and load `/analytics/networks`.
+3. Reinstall dependencies in shared venv (`pip install -r requirements.txt`).
+4. Refresh analytics snapshots (`python3 run.py refresh-analytics --with-snapshot`).
+5. Refresh/sync transfer-source committee receipts (`refresh-fec-transfer-committees`, `sync-fec-transfer-committee-receipts`).
+6. Restart web service (`systemctl restart ilcf-web.service`).
+7. Verify service health (`systemctl status ilcf-web.service --no-pager`).
+8. Smoke-test critical routes:
+   - `/analytics/networks`
+   - `/lobbying/`
+   - `/committees/sbe/<known_sbe_id>`
+   - `/federal-finance/follow-the-money?cycle=2026`
+   - `/federal-finance/committees/<committee_id>/receipts?cycle=2026`
 
 ### Uploading New ISBE `expenditures_*.txt` and Updating Production
 
@@ -414,6 +433,7 @@ Notes:
 | `/federal-finance/geography` | Geographic concentration analysis (states, cities, HHI per race) |
 | `/federal-finance/matching` | Federal/local donor matching diagnostics, overlap analysis, and local-vs-federal bubble scatter |
 | `/federal-finance/<candidate_id>` | Federal candidate detail with tabbed A/B/E drilldowns |
+| `/federal-finance/committees/<committee_id>/receipts` | Itemized Schedule A receipts for one committee, used to explain transfer-source provenance |
 | `/admin/` | Consolidated admin hub (requires login) — links to all data tools |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
@@ -421,6 +441,7 @@ Notes:
 | `/analytics/relationships` | Relationship-specific graph lab: co-giving and committee-similarity arc views, candidate competition, and alluvial lobbying/527 pathways |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |
+| `/committees/sbe/<committee_id_sbe>` | Committee detail by SBE ID with canonical redirect and bulk-table fallback when canonical record is missing |
 | `/lobbying/` | IL lobbying entities list with client counts |
 | `/lobbying/<entity_id>` | Lobbying entity detail with clients and matched payees |
 | `/lobbying/client/<client_id>` | Lobbying client detail with entities, donor matches, 527 connections |
@@ -516,6 +537,8 @@ $PYTHON run.py backfill-fec-schedule-b \
   --cycle 2026 \
   --max-calls 1000 \
   --max-pages-per-committee 25 \
+  --refresh-transfer-committees \
+  --sync-transfer-receipts \
   --refresh-cache
 ```
 
@@ -530,6 +553,25 @@ Schedule B wrapper script (recommended for automation):
 ```bash
 cd /srv/illinois_campaign_finance/app
 bash scripts/fec-schedule-b-catchup.sh
+```
+
+### Transfer-Source Committee Receipts Sync (committee-to-candidate provenance)
+
+Use this workflow when you want committee transfer rows to link to underlying committee receipts (for example, "Friends of Raja for Congress" style paths).
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+source /srv/illinois_campaign_finance/shared/.env && export FEC_API_KEY
+
+# 1) Mark committees that transfer money to candidate or committee recipients
+$PYTHON run.py refresh-fec-transfer-committees --cycle 2026
+
+# 2) Pull Schedule A receipts for those transfer-source committees
+$PYTHON run.py sync-fec-transfer-committee-receipts \
+  --cycle 2026 \
+  --max-calls 1000 \
+  --max-pages-per-committee 25
 ```
 
 ### Hourly Schedule E Catch-Up (independent expenditures)

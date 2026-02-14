@@ -163,7 +163,15 @@
                 {% for committee in detail.committees %}
                 <tr>
                     <td>{{ committee.committee_id }}</td>
-                    <td>{{ committee.committee_name if committee.committee_name else '-' }}</td>
+                    <td>
+                        {% if committee.committee_id %}
+                        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee.committee_id, cycle=cycle) }}">
+                            {{ committee.committee_name if committee.committee_name else committee.committee_id }}
+                        </a>
+                        {% else %}
+                        {{ committee.committee_name if committee.committee_name else '-' }}
+                        {% endif %}
+                    </td>
                     <td>
                         {{ committee.committee_designation if committee.committee_designation else '-' }}
                         {% if committee.committee_designation_full %}
@@ -261,7 +269,18 @@
                     <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
                     <td>{{ row.contributor_employer if row.contributor_employer else '-' }}</td>
                     <td>{{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
-                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>
+                        {% if row.committee_name %}
+                        {% set committee_link_id = row.committee_id if row.committee_id is defined else None %}
+                        {% if committee_link_id %}
+                        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_link_id, cycle=cycle) }}">{{ row.committee_name }}</a>
+                        {% else %}
+                        {{ row.committee_name }}
+                        {% endif %}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
                     <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
                     <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
                 </tr>
@@ -375,7 +394,9 @@
                     </td>
                     <td>
                         {% if row.recipient_committee_id %}
-                        {{ row.recipient_committee_name if row.recipient_committee_name else row.recipient_committee_id }}
+                        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=row.recipient_committee_id, cycle=cycle) }}">
+                            {{ row.recipient_committee_name if row.recipient_committee_name else row.recipient_committee_id }}
+                        </a>
                         <br><small>{{ row.recipient_committee_id }}</small>
                         {% else %}
                         -
@@ -457,6 +478,12 @@
 
 <div class="status-section">
     <h2>Cross-Role Organizations (A and B/E)</h2>
+    <p class="help-text">
+        Column definitions: <strong>Donated (A)</strong> is Schedule A money this organization gave as a donor.
+        <strong>Received via B</strong> is Schedule B money it received as a payee/recipient.
+        <strong>Received via E</strong> is Schedule E money it received as a payee.
+        <strong>Net In-Out</strong> equals Donated (A) minus Total Out received.
+    </p>
     <p class="subtitle">
         {{ detail.cross_role_summary.matched_organization_count if detail.cross_role_summary else 0 }} matched organizations
         -

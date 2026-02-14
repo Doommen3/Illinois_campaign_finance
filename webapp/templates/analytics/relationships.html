@@ -51,6 +51,11 @@
     <button type="submit">Apply</button>
 </form>
 
+<div class="status-section">
+    <h2>Shared Money Patterns</h2>
+    <p class="help-text">These views compare pairs of actors (A/B columns) by overlapping funding behavior. Use them to answer: who shares the same donor base, and by how much?</p>
+</div>
+
 <div class="status-section graph-section" data-graph-section="donor-cogiving">
     <h2>Donor Co-Giving Network</h2>
     <p class="subtitle">
@@ -86,6 +91,7 @@
         <aside id="donor-cogiving-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="donor-cogiving-summary" class="subtitle"></p>
+    <p class="help-text"><strong>How to read:</strong> Donor A and Donor B are two donors connected because they gave to overlapping targets. Shared Amount is the summed overlap across those shared targets.</p>
     <table id="donor-cogiving-table" class="data-table">
         <thead>
             <tr>
@@ -154,6 +160,7 @@
         <aside id="committee-similarity-panel" class="graph-selection-panel"></aside>
     </div>
     <p id="committee-similarity-summary" class="subtitle"></p>
+    <p class="help-text"><strong>How to read:</strong> Committee A and Committee B are linked when they draw money from overlapping donors. Jaccard measures overlap breadth; Dollar Overlap indicates overlap intensity.</p>
     <table id="committee-similarity-table" class="data-table">
         <thead>
             <tr>
@@ -217,6 +224,7 @@
             <aside id="candidate-state-panel" class="graph-selection-panel"></aside>
         </div>
         <p id="candidate-state-summary" class="subtitle"></p>
+        <p class="help-text"><strong>How to read:</strong> Candidate A and Candidate B are connected when they share donor entities. Shared Amount is combined overlap from those shared donors.</p>
         <div id="candidate-state-ranked" class="graph-ranked"></div>
         <table id="candidate-state-table" class="data-table">
             <thead>
@@ -270,6 +278,7 @@
             <aside id="candidate-federal-panel" class="graph-selection-panel"></aside>
         </div>
         <p id="candidate-federal-summary" class="subtitle"></p>
+        <p class="help-text"><strong>How to read:</strong> Candidate A and Candidate B are linked by shared donor entities in federal data under the current filters.</p>
         <div id="candidate-federal-ranked" class="graph-ranked"></div>
         <table id="candidate-federal-table" class="data-table">
             <thead>
@@ -324,6 +333,7 @@
             <aside id="candidate-combined-panel" class="graph-selection-panel"></aside>
         </div>
         <p id="candidate-combined-summary" class="subtitle"></p>
+        <p class="help-text"><strong>How to read:</strong> Combined table splits overlap by source: State Share, Federal Share, and Cross Share show where shared funding relationships come from.</p>
         <div id="candidate-combined-ranked" class="graph-ranked"></div>
 
         <table id="candidate-combined-table" class="data-table">
@@ -362,6 +372,11 @@
             </tbody>
         </table>
     </div>
+</div>
+
+<div class="status-section">
+    <h2>Influence Bridge Networks</h2>
+    <p class="help-text">These views connect campaign finance activity to external systems (lobbying filings and IRS 527 data) to reveal bridge relationships that are not visible in campaign records alone.</p>
 </div>
 
 <div class="status-section graph-section" data-graph-section="lobbying-influence">

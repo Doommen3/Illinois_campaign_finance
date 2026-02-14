@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}Federal Committee Receipts - {{ detail.summary.committee_name if detail and detail.summary else committee_id }}{% endblock %}
+
+{% block content %}
+<h1>Federal Committee Receipts</h1>
+<p class="subtitle">
+    Committee: <strong>{{ detail.summary.committee_name if detail and detail.summary else committee_id }}</strong>
+    {% if detail and detail.summary %}| Committee ID: {{ detail.summary.committee_id }}{% endif %}
+    | Cycle: {{ cycle }}
+</p>
+<p class="help-text">
+    This page shows itemized Schedule A receipts for one federal committee. When this committee appears in transfer chains, these rows provide source-of-funds context for committee-to-candidate transfer analysis.
+</p>
+<p class="help-text">
+    Important: these are reported receipts into the committee, not guaranteed one-to-one pass-through transfers to a specific candidate.
+</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+{% if detail and detail.summary %}
+<div class="status-section">
+    <p class="subtitle">
+        Receipts: <strong>{{ detail.summary.receipt_count }}</strong> |
+        Unique donors: <strong>{{ detail.summary.donor_count }}</strong> |
+        Total receipts: <strong>{{ format_currency(detail.summary.total_amount) }}</strong> |
+        Date range: <strong>{{ detail.summary.coverage_start if detail.summary.coverage_start else '-' }}</strong> to
+        <strong>{{ detail.summary.coverage_end if detail.summary.coverage_end else '-' }}</strong>
+    </p>
+
+    {% if detail.transfer_meta %}
+    <p class="help-text">
+        Transfer-source stats: {{ detail.transfer_meta.transfer_count }} Schedule B transfer rows totaling {{ format_currency(detail.transfer_meta.transfer_total_amount) }}.
+        Recipient candidates: {{ detail.transfer_meta.recipient_candidate_count }}.
+        Recipient committees: {{ detail.transfer_meta.recipient_committee_count }}.
+    </p>
+    {% endif %}
+
+    {% if detail.committee_owners %}
+    <p class="help-text">
+        Linked candidate committees:
+        {% for owner in detail.committee_owners %}
+            {% if owner.candidate_id %}
+                <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=owner.candidate_id, cycle=cycle) }}">{{ owner.candidate_name }}</a>{% if owner.is_principal %} (principal){% endif %}{% if not loop.last %}, {% endif %}
+            {% else %}
+                {{ owner.candidate_name }}{% if not loop.last %}, {% endif %}
+            {% endif %}
+        {% endfor %}
+    </p>
+    {% endif %}
+</div>
+
+{% set next_receipt_dir = 'asc' if receipt_dir == 'desc' else 'desc' %}
+<div class="status-section">
+    <h2>Itemized Receipts (Schedule A)</h2>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='date', receipt_dir=next_receipt_dir if receipt_sort == 'date' else 'desc') }}">Date</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='donor', receipt_dir=next_receipt_dir if receipt_sort == 'donor' else 'asc') }}">Donor</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='state', receipt_dir=next_receipt_dir if receipt_sort == 'state' else 'asc') }}">Location</a></th>
+                    <th>Employer / Occupation</th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='type', receipt_dir=next_receipt_dir if receipt_sort == 'type' else 'asc') }}">Type</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='amount', receipt_dir=next_receipt_dir if receipt_sort == 'amount' else 'desc') }}">Amount</a></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in detail.receipts %}
+                <tr>
+                    <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
+                    <td>
+                        {{ row.contributor_name if row.contributor_name else '-' }}
+                        {% if row.candidate_id %}
+                        <br><small>Linked candidate: <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name if row.candidate_name else row.candidate_id }}</a></small>
+                        {% endif %}
+                    </td>
+                    <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
+                    <td>{{ row.contributor_employer if row.contributor_employer else '-' }} / {{ row.contributor_occupation if row.contributor_occupation else '-' }}</td>
+                    <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
+                    <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No Schedule A receipts found for this committee/cycle.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if receipt_pages > 1 %}
+    <nav class="pagination">
+        {% if receipt_page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page-1, receipt_sort=receipt_sort, receipt_dir=receipt_dir) }}">&laquo; Previous</a>
+        {% endif %}
+
+        <span class="page-info">Page {{ receipt_page }} of {{ receipt_pages }}</span>
+
+        {% if receipt_page < receipt_pages %}
+        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page+1, receipt_sort=receipt_sort, receipt_dir=receipt_dir) }}">Next &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+</div>
+{% else %}
+<div class="status-section">
+    <p>No committee receipt data found.</p>
+</div>
+{% endif %}
+{% endblock %}

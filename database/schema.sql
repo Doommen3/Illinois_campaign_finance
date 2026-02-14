@@ -659,6 +659,35 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_backfill_cycle_completed
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_backfill_candidate
     ON fec_schedule_e_backfill_state(candidate_id, cycle);
 
+CREATE TABLE IF NOT EXISTS fec_transfer_source_committees (
+    committee_id TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    committee_name TEXT,
+    transfer_count INTEGER NOT NULL DEFAULT 0,
+    transfer_total_amount REAL NOT NULL DEFAULT 0,
+    source_candidate_count INTEGER NOT NULL DEFAULT 0,
+    recipient_candidate_count INTEGER NOT NULL DEFAULT 0,
+    recipient_committee_count INTEGER NOT NULL DEFAULT 0,
+    latest_transfer_date TEXT,
+    receipts_synced INTEGER NOT NULL DEFAULT 0,
+    receipts_row_count INTEGER NOT NULL DEFAULT 0,
+    receipts_total_amount REAL NOT NULL DEFAULT 0,
+    receipts_coverage_start TEXT,
+    receipts_coverage_end TEXT,
+    next_last_index TEXT,
+    next_last_receipt_date TEXT,
+    receipts_pages_processed_total INTEGER NOT NULL DEFAULT 0,
+    receipts_api_calls_total INTEGER NOT NULL DEFAULT 0,
+    last_receipts_sync_at TIMESTAMP,
+    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (committee_id, cycle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fec_transfer_source_cycle_synced
+    ON fec_transfer_source_committees(cycle, receipts_synced, transfer_total_amount DESC);
+CREATE INDEX IF NOT EXISTS idx_fec_transfer_source_amount
+    ON fec_transfer_source_committees(transfer_total_amount DESC, transfer_count DESC);
+
 CREATE TABLE IF NOT EXISTS fec_local_donor_matches (
     federal_donor_entity_key TEXT NOT NULL,
     local_donor_key TEXT NOT NULL,

@@ -11,6 +11,7 @@ from database.federal_fec import (
     get_federal_disbursement_mismatch_flags,
     get_federal_receipt_mismatch_flags,
     get_federal_candidate_detail,
+    get_federal_committee_receipts,
     get_federal_donor_detail,
     get_federal_donor_network_clusters,
     get_federal_donor_segmentation,
@@ -24,7 +25,9 @@ from database.federal_fec import (
     get_federal_network_graph,
     get_federal_race_analytics,
     list_federal_candidates,
+    refresh_fec_transfer_source_committees,
     refresh_fec_local_donor_matches,
+    sync_fec_transfer_committee_receipts,
     sync_il_federal_fec,
 )
 
@@ -254,6 +257,104 @@ def test_sync_il_federal_fec_and_queries(tmp_path: Path):
         "SELECT COUNT(*) AS count FROM raw_extractions WHERE source_type LIKE 'fec_api:%'"
     ).fetchone()["count"]
     assert raw_count >= 2
+
+    conn.close()
+
+
+def test_transfer_committee_registry_and_receipts_sync(tmp_path: Path):
+    db_path = str(tmp_path / "fec_transfer_committee.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id,
+            cycle,
+            candidate_id,
+            candidate_name,
+            committee_id,
+            committee_name,
+            recipient_name,
+            recipient_candidate_id,
+            disbursement_amount,
+            disbursement_date,
+            api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "sb-transfer-1",
+            2026,
+            "H2IL01349",
+            "JACKSON, JONATHAN",
+            "C00011111",
+            "JONATHAN JACKSON FOR CONGRESS",
+            "FRIENDS OF TARGET",
+            "H2IL05555",
+            7500.0,
+            "2026-02-01",
+            "seed-sb-transfer",
+        ),
+    )
+    conn.commit()
+
+    refresh_stats = refresh_fec_transfer_source_committees(conn, cycle=2026)
+    assert refresh_stats["rows_written"] == 1
+    row = conn.execute(
+        """
+        SELECT committee_id, transfer_count, transfer_total_amount
+        FROM fec_transfer_source_committees
+        WHERE cycle = 2026 AND committee_id = 'C00011111'
+        """
+    ).fetchone()
+    assert row is not None
+    assert int(row["transfer_count"] or 0) == 1
+    assert float(row["transfer_total_amount"] or 0.0) == 7500.0
+
+    sync_stats = sync_fec_transfer_committee_receipts(
+        conn,
+        api_key="fake-key",
+        cycle=2026,
+        max_calls=20,
+        per_page=100,
+        max_pages_per_committee=5,
+        include_completed=False,
+        refresh_cache=False,
+        refresh_registry=False,
+        client=FakeFecClient(),
+    )
+    assert sync_stats["transfer_committees_selected"] == 1
+    assert sync_stats["transfer_committees_processed"] == 1
+    assert sync_stats["contributions_upserted"] == 1
+
+    transfer_row = conn.execute(
+        """
+        SELECT receipts_synced, receipts_row_count, receipts_total_amount
+        FROM fec_transfer_source_committees
+        WHERE cycle = 2026 AND committee_id = 'C00011111'
+        """
+    ).fetchone()
+    assert transfer_row is not None
+    assert int(transfer_row["receipts_synced"] or 0) == 1
+    assert int(transfer_row["receipts_row_count"] or 0) == 1
+    assert float(transfer_row["receipts_total_amount"] or 0.0) == 250.0
+
+    committee_detail = get_federal_committee_receipts(
+        conn,
+        committee_id="C00011111",
+        cycle=2026,
+        receipt_limit=50,
+        receipt_offset=0,
+        receipt_sort="date",
+        receipt_dir="desc",
+    )
+    assert committee_detail is not None
+    assert committee_detail["summary"]["committee_id"] == "C00011111"
+    assert committee_detail["summary"]["receipt_count"] == 1
+    assert committee_detail["summary"]["total_amount"] == 250.0
+    assert committee_detail["receipts"][0]["contributor_name"] == "Jane Donor"
+    assert committee_detail["transfer_meta"] is not None
+    assert committee_detail["transfer_meta"]["transfer_total_amount"] == 7500.0
 
     conn.close()
 

@@ -19,6 +19,19 @@ def app(tmp_path: Path):
     # Seed a committee with an SBE ID
     Committee.get_or_create(conn, "Test SBE Committee", committee_id_sbe=12345)
 
+    # Minimal bulk committee table for SBE fallback route coverage.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bulk_committees_clean (
+            committee_id_sbe INTEGER PRIMARY KEY,
+            committee_name TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO bulk_committees_clean (committee_id_sbe, committee_name) VALUES (23456, 'Bulk Fallback Committee')"
+    )
+
     # Seed lobbying data for entity/client detail pages
     conn.execute(
         "INSERT INTO lobbying_entities (entity_id, entity_name, reg_year) VALUES (1, 'Test Entity', 2026)"
@@ -90,6 +103,13 @@ def test_committee_detail_by_sbe_not_found(client):
     """Unknown SBE ID returns 404."""
     response = client.get("/committees/sbe/99999")
     assert response.status_code == 404
+
+
+def test_committee_detail_by_sbe_bulk_fallback(client):
+    """SBE route renders fallback detail when committee exists only in bulk tables."""
+    response = client.get("/committees/sbe/23456")
+    assert response.status_code == 200
+    assert b"Bulk Fallback Committee" in response.data
 
 
 # ── Phase 2: Lobbying page explanations ──

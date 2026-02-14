@@ -11,6 +11,7 @@ from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
     get_federal_candidate_detail,
+    get_federal_committee_receipts,
     get_federal_donor_detail,
     get_federal_donor_network_clusters,
     get_federal_donor_segmentation,
@@ -936,6 +937,52 @@ def federal_donor_detail(donor_entity_key: str):
         contribution_page=contribution_page,
         contribution_total=contribution_total,
         contribution_pages=contribution_pages,
+    )
+
+
+@federal_finance_bp.route('/committees/<committee_id>/receipts')
+def federal_committee_receipts(committee_id: str):
+    """Show one federal committee's Schedule A receipt rows."""
+    conn = current_app.get_database()
+    cycle = request.args.get('cycle', 2026, type=int)
+    receipt_page = max(request.args.get('receipt_page', 1, type=int), 1)
+    receipt_per_page = 100
+    receipt_offset = (receipt_page - 1) * receipt_per_page
+    receipt_sort = request.args.get('receipt_sort', 'date', type=str).strip().lower()
+    receipt_dir = request.args.get('receipt_dir', 'desc', type=str).strip().lower()
+    if receipt_sort not in {'date', 'amount', 'donor', 'state', 'type'}:
+        receipt_sort = 'date'
+    if receipt_dir not in {'asc', 'desc'}:
+        receipt_dir = 'desc'
+
+    detail = get_federal_committee_receipts(
+        conn,
+        committee_id=committee_id,
+        cycle=cycle,
+        receipt_limit=receipt_per_page,
+        receipt_offset=receipt_offset,
+        receipt_sort=receipt_sort,
+        receipt_dir=receipt_dir,
+    )
+    if not detail:
+        return Response("federal committee receipts unavailable\n", mimetype='text/plain', status=404)
+
+    receipt_total = int(detail.get('total_receipts') or 0)
+    receipt_pages = (receipt_total + receipt_per_page - 1) // receipt_per_page if receipt_total else 0
+
+    return render_template(
+        'federal_finance/committee_receipts.html',
+        active_page='money_flow',
+        committee_id=committee_id,
+        cycle=cycle,
+        analysis_office='',
+        analysis_district='',
+        detail=detail,
+        receipt_page=receipt_page,
+        receipt_total=receipt_total,
+        receipt_pages=receipt_pages,
+        receipt_sort=receipt_sort,
+        receipt_dir=receipt_dir,
     )
 
 

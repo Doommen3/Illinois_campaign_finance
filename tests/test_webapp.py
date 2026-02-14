@@ -821,6 +821,14 @@ class TestWebApp:
         assert b'Total Source:' in detail.data
         assert b'FEC candidate totals endpoint' in detail.data
         assert b'Export CSV' in detail.data
+        assert b'/federal-finance/committees/C00011111/receipts?cycle=2026' in detail.data
+
+        committee_receipts = client.get('/federal-finance/committees/C00011111/receipts?cycle=2026')
+        assert committee_receipts.status_code == 200
+        assert b'Federal Committee Receipts' in committee_receipts.data
+        assert b'Committee ID: C00011111' in committee_receipts.data
+        assert b'JONATHAN JACKSON FOR CONGRESS' in committee_receipts.data
+        assert b'Jane Donor' in committee_receipts.data
 
         detail_sorted = client.get(
             '/federal-finance/H2IL01349?cycle=2026&schedule_b_sort=amount&schedule_b_dir=asc&schedule_e_sort=amount&schedule_e_dir=asc'

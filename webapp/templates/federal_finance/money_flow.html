@@ -80,7 +80,15 @@
             {% for edge in multilayer_network.edges[:60] %}
             <tr>
                 <td>{{ edge.layer_label }}</td>
-                <td>{{ edge.source_label if edge.source_label else edge.source }}</td>
+                <td>
+                    {% if edge.committee_id %}
+                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=edge.committee_id, cycle=cycle) }}">
+                        {{ edge.source_label if edge.source_label else edge.source }}
+                    </a>
+                    {% else %}
+                    {{ edge.source_label if edge.source_label else edge.source }}
+                    {% endif %}
+                </td>
                 <td>{{ edge.target_label if edge.target_label else edge.target }}</td>
                 <td>
                     {% if edge.candidate_id %}
@@ -103,6 +111,7 @@
 <div class="status-section">
     <h2>Cross-Role Organizations (Donor and Payee)</h2>
     <p class="help-text">Organizations that appear on both sides of campaign finance: as donors (Schedule A contributions) and as recipients of payments (Schedule B disbursements or Schedule E independent expenditures). This can reveal entities with outsized influence across the system.</p>
+    <p class="help-text"><strong>Column definitions:</strong> Donated (A) = money given as a donor in Schedule A. Received via B = money received as a Schedule B payee/recipient. Received via E = money received as a Schedule E payee. Net In-Out = Donated (A) - Total Out received.</p>
     <p class="subtitle">
         {{ cross_role_orgs.summary.matched_organization_count }} matched organizations |
         {{ format_currency(cross_role_orgs.summary.total_donor_amount) }} donated |

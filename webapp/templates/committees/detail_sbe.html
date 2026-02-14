@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}{{ profile.committee_name }} - Committee Detail{% endblock %}
+
+{% block content %}
+<h1>{{ profile.committee_name }}</h1>
+<p class="subtitle">SBE Committee ID: {{ profile.committee_id_sbe }}</p>
+<p class="help-text">
+    This committee view is sourced from bulk analytics tables because no canonical committee profile was found in the legacy `committees` table. The totals below are computed from bulk itemized receipts/expenditures.
+</p>
+
+<div class="status-section">
+    <h2>Receipts Summary</h2>
+    <p class="subtitle">
+        Contributions: <strong>{{ profile.receipts_summary.contribution_count }}</strong> |
+        Total receipts: <strong>{{ format_currency(profile.receipts_summary.total_amount) }}</strong> |
+        Date range: <strong>{{ profile.receipts_summary.first_date if profile.receipts_summary.first_date else '-' }}</strong> to
+        <strong>{{ profile.receipts_summary.last_date if profile.receipts_summary.last_date else '-' }}</strong>
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Expenditures Summary</h2>
+    <p class="subtitle">
+        Transactions: <strong>{{ profile.expenditures_summary.transaction_count }}</strong> |
+        Total expenditures: <strong>{{ format_currency(profile.expenditures_summary.total_amount) }}</strong> |
+        Date range: <strong>{{ profile.expenditures_summary.first_date if profile.expenditures_summary.first_date else '-' }}</strong> to
+        <strong>{{ profile.expenditures_summary.last_date if profile.expenditures_summary.last_date else '-' }}</strong>
+    </p>
+</div>
+
+{% if profile.candidate_links %}
+<div class="status-section">
+    <h2>Linked Candidates</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Candidate ID</th><th>Candidate</th></tr>
+        </thead>
+        <tbody>
+            {% for row in profile.candidate_links %}
+            <tr>
+                <td>{{ row.candidate_id }}</td>
+                <td>{{ row.candidate_name }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<div class="two-column">
+    <div class="column">
+        <h2>Top Donors</h2>
+        <table class="data-table">
+            <thead>
+                <tr><th>Donor</th><th>Total</th><th>Contributions</th></tr>
+            </thead>
+            <tbody>
+                {% for row in profile.top_donors %}
+                <tr>
+                    <td>{{ row.donor_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.contribution_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No receipt rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="column">
+        <h2>Top Payees</h2>
+        <table class="data-table">
+            <thead>
+                <tr><th>Payee</th><th>Total</th><th>Transactions</th></tr>
+            </thead>
+            <tbody>
+                {% for row in profile.top_payees %}
+                <tr>
+                    <td>{{ row.payee_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.transaction_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No expenditure rows found.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

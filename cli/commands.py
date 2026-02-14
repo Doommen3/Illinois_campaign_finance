@@ -25,8 +25,10 @@ from database.federal_fec import (
     backfill_fec_missing_schedule_a,
     backfill_fec_schedule_b,
     backfill_fec_schedule_e,
+    refresh_fec_transfer_source_committees,
     rebuild_fec_donor_identities,
     refresh_fec_local_donor_matches,
+    sync_fec_transfer_committee_receipts,
     sync_il_federal_fec,
 )
 from database.local_donor_entities import rebuild_local_donor_entities
@@ -1088,6 +1090,18 @@ def backfill_fec_schedule_a_command(
     is_flag=True,
     help='Only fetch Schedule B rows for principal committees',
 )
+@click.option(
+    '--refresh-transfer-committees/--skip-refresh-transfer-committees',
+    default=True,
+    show_default=True,
+    help='Refresh table of committees that transfer money to candidates/committees',
+)
+@click.option(
+    '--sync-transfer-receipts/--skip-sync-transfer-receipts',
+    default=False,
+    show_default=True,
+    help='After Schedule B sync, fetch Schedule A receipts for transfer-source committees',
+)
 @click.option('--refresh-cache', is_flag=True, help='Ignore cached raw payloads and request fresh API pages')
 @click.option('--max-committees', type=int, default=None, help='Optional committee cap for this run')
 def backfill_fec_schedule_b_command(
@@ -1098,6 +1112,8 @@ def backfill_fec_schedule_b_command(
     max_pages_per_committee,
     include_completed,
     principal_only,
+    refresh_transfer_committees,
+    sync_transfer_receipts,
     refresh_cache,
     max_committees,
 ):
@@ -1125,8 +1141,130 @@ def backfill_fec_schedule_b_command(
         click.echo('FEC Schedule B backfill completed:')
         for key in sorted(stats.keys()):
             click.echo(f'  {key}: {stats[key]}')
+
+        if refresh_transfer_committees:
+            click.echo('Refreshing transfer-source committee registry...')
+            transfer_stats = refresh_fec_transfer_source_committees(
+                conn,
+                cycle=int(cycle),
+            )
+            for key in sorted(transfer_stats.keys()):
+                click.echo(f'  transfer_{key}: {transfer_stats[key]}')
+
+        if sync_transfer_receipts:
+            click.echo('Syncing transfer-source committee receipts (Schedule A)...')
+            transfer_receipt_stats = sync_fec_transfer_committee_receipts(
+                conn,
+                api_key=resolved_api_key,
+                cycle=int(cycle),
+                max_calls=int(max_calls),
+                per_page=int(per_page),
+                max_pages_per_committee=int(max_pages_per_committee),
+                include_completed=bool(include_completed),
+                refresh_cache=bool(refresh_cache),
+                refresh_registry=False,
+                max_committees=max_committees,
+            )
+            for key in sorted(transfer_receipt_stats.keys()):
+                click.echo(f'  transfer_receipts_{key}: {transfer_receipt_stats[key]}')
     except Exception as exc:
         click.echo(f'Error backfilling FEC Schedule B rows: {exc}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('refresh-fec-transfer-committees')
+@click.option('--cycle', default=2026, type=int, show_default=True, help='Two-year transaction period (e.g., 2026)')
+@click.option(
+    '--min-transfer-amount',
+    default=0.0,
+    type=float,
+    show_default=True,
+    help='Only keep committees with at least this much transfer volume',
+)
+def refresh_fec_transfer_committees_command(cycle, min_transfer_amount):
+    """Mark committees that disburse to candidates/committees from Schedule B rows."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Refreshing transfer-source committee registry...')
+        stats = refresh_fec_transfer_source_committees(
+            conn,
+            cycle=int(cycle),
+            min_transfer_amount=float(min_transfer_amount),
+        )
+        click.echo('Transfer-source committee refresh completed:')
+        for key in sorted(stats.keys()):
+            click.echo(f'  {key}: {stats[key]}')
+    except Exception as exc:
+        click.echo(f'Error refreshing transfer-source committees: {exc}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('sync-fec-transfer-committee-receipts')
+@click.option('--api-key', default='', help='FEC API key (defaults to FEC_API_KEY env var)')
+@click.option('--cycle', default=2026, type=int, show_default=True, help='Two-year transaction period (e.g., 2026)')
+@click.option('--max-calls', default=1000, type=int, show_default=True, help='Max FEC API calls for this run')
+@click.option('--per-page', default=100, type=int, show_default=True, help='API per-page size (max 100)')
+@click.option(
+    '--max-pages-per-committee',
+    default=25,
+    type=int,
+    show_default=True,
+    help='Max schedule pages to request per committee during this run',
+)
+@click.option(
+    '--include-completed',
+    is_flag=True,
+    help='Also revisit committees already marked as completed in transfer receipts sync state',
+)
+@click.option(
+    '--refresh-registry/--skip-refresh-registry',
+    default=True,
+    show_default=True,
+    help='Recompute transfer-source committee registry before syncing receipts',
+)
+@click.option('--refresh-cache', is_flag=True, help='Ignore cached raw payloads and request fresh API pages')
+@click.option('--max-committees', type=int, default=None, help='Optional committee cap for this run')
+def sync_fec_transfer_committee_receipts_command(
+    api_key,
+    cycle,
+    max_calls,
+    per_page,
+    max_pages_per_committee,
+    include_completed,
+    refresh_registry,
+    refresh_cache,
+    max_committees,
+):
+    """Sync Schedule A receipts for committees marked as transfer sources."""
+    resolved_api_key = (api_key or '').strip() or (config.FEC_API_KEY or '').strip()
+    if not resolved_api_key:
+        click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
+        sys.exit(1)
+
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Starting transfer-source committee receipts sync...')
+        stats = sync_fec_transfer_committee_receipts(
+            conn,
+            api_key=resolved_api_key,
+            cycle=int(cycle),
+            max_calls=int(max_calls),
+            per_page=int(per_page),
+            max_pages_per_committee=int(max_pages_per_committee),
+            include_completed=bool(include_completed),
+            refresh_cache=bool(refresh_cache),
+            refresh_registry=bool(refresh_registry),
+            max_committees=max_committees,
+        )
+        click.echo('Transfer-source committee receipts sync completed:')
+        for key in sorted(stats.keys()):
+            click.echo(f'  {key}: {stats[key]}')
+    except Exception as exc:
+        click.echo(f'Error syncing transfer committee receipts: {exc}', err=True)
         sys.exit(1)
     finally:
         conn.close()

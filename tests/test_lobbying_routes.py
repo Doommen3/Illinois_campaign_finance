@@ -23,6 +23,23 @@ def app(tmp_path: Path):
     conn.execute(
         "INSERT INTO lobbying_entity_clients (entity_id, client_id, reg_year) VALUES (1, 1, 2026)"
     )
+    conn.execute(
+        """
+        INSERT INTO lobbying_donor_matches (client_id, donor_key, client_name, donor_name, score, method)
+        VALUES (1, 'donor:test', 'Test Client', 'Matched Donor', 0.95, 'token_set')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO analytics_donor_committee_agg (
+            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            occupation, employer, committee_id, committee_name, total_amount, contribution_count
+        ) VALUES (
+            'bulk_receipts', 'donor:test', 'Matched Donor', '', 'Chicago', 'IL',
+            '', '', '24680', 'Fallback Committee', 1200.0, 3
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -69,6 +86,16 @@ def test_lobbying_client_detail(client):
 def test_lobbying_client_not_found(client):
     response = client.get('/lobbying/client/9999')
     assert response.status_code == 404
+
+
+def test_lobbying_committee_link_uses_sbe_fallback(client):
+    response = client.get('/lobbying/client/1')
+    assert response.status_code == 200
+    assert b'/committees/sbe/24680' in response.data
+
+    committee_response = client.get('/committees/sbe/24680')
+    assert committee_response.status_code == 200
+    assert b'Fallback Committee' in committee_response.data
 
 
 @pytest.fixture

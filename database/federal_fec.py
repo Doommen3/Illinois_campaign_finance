@@ -1146,13 +1146,15 @@ def _upsert_schedule_rows(
     conn: sqlite3.Connection,
     rows: list[dict],
     cycle: int,
-    candidate_id: str,
-    candidate_name: str,
+    candidate_id: str | None,
+    candidate_name: str | None,
     committee_id: str,
     default_committee_name: str | None,
     api_source_identifier: str,
 ) -> int:
     payload_rows: list[tuple] = []
+    default_candidate_id = _clean_text(candidate_id)
+    default_candidate_name = _clean_text(candidate_name)
 
     for row in rows:
         sub_id = _clean_text(row.get("sub_id"))
@@ -1218,8 +1220,8 @@ def _upsert_schedule_rows(
             (
                 sub_id,
                 cycle,
-                candidate_id,
-                candidate_name,
+                default_candidate_id or _clean_text(row.get("candidate_id")) or None,
+                default_candidate_name or _clean_text(row.get("candidate_name")) or None,
                 committee_id,
                 committee_name,
                 contributor_name or None,
@@ -2379,6 +2381,541 @@ def _ensure_fec_schedule_e_backfill_state_table(conn: sqlite3.Connection) -> Non
         ON fec_schedule_e_backfill_state(candidate_id, cycle)
         """
     )
+
+
+def _ensure_fec_transfer_source_committees_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fec_transfer_source_committees (
+            committee_id TEXT NOT NULL,
+            cycle INTEGER NOT NULL,
+            committee_name TEXT,
+            transfer_count INTEGER NOT NULL DEFAULT 0,
+            transfer_total_amount REAL NOT NULL DEFAULT 0,
+            source_candidate_count INTEGER NOT NULL DEFAULT 0,
+            recipient_candidate_count INTEGER NOT NULL DEFAULT 0,
+            recipient_committee_count INTEGER NOT NULL DEFAULT 0,
+            latest_transfer_date TEXT,
+            receipts_synced INTEGER NOT NULL DEFAULT 0,
+            receipts_row_count INTEGER NOT NULL DEFAULT 0,
+            receipts_total_amount REAL NOT NULL DEFAULT 0,
+            receipts_coverage_start TEXT,
+            receipts_coverage_end TEXT,
+            next_last_index TEXT,
+            next_last_receipt_date TEXT,
+            receipts_pages_processed_total INTEGER NOT NULL DEFAULT 0,
+            receipts_api_calls_total INTEGER NOT NULL DEFAULT 0,
+            last_receipts_sync_at TIMESTAMP,
+            refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (committee_id, cycle)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_transfer_source_cycle_synced
+        ON fec_transfer_source_committees(cycle, receipts_synced, transfer_total_amount DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fec_transfer_source_amount
+        ON fec_transfer_source_committees(transfer_total_amount DESC, transfer_count DESC)
+        """
+    )
+
+    # Backward compatibility for existing installs if columns were added later.
+    for column_name, column_sql in [
+        ("committee_name", "committee_name TEXT"),
+        ("transfer_count", "transfer_count INTEGER NOT NULL DEFAULT 0"),
+        ("transfer_total_amount", "transfer_total_amount REAL NOT NULL DEFAULT 0"),
+        ("source_candidate_count", "source_candidate_count INTEGER NOT NULL DEFAULT 0"),
+        ("recipient_candidate_count", "recipient_candidate_count INTEGER NOT NULL DEFAULT 0"),
+        ("recipient_committee_count", "recipient_committee_count INTEGER NOT NULL DEFAULT 0"),
+        ("latest_transfer_date", "latest_transfer_date TEXT"),
+        ("receipts_synced", "receipts_synced INTEGER NOT NULL DEFAULT 0"),
+        ("receipts_row_count", "receipts_row_count INTEGER NOT NULL DEFAULT 0"),
+        ("receipts_total_amount", "receipts_total_amount REAL NOT NULL DEFAULT 0"),
+        ("receipts_coverage_start", "receipts_coverage_start TEXT"),
+        ("receipts_coverage_end", "receipts_coverage_end TEXT"),
+        ("next_last_index", "next_last_index TEXT"),
+        ("next_last_receipt_date", "next_last_receipt_date TEXT"),
+        ("receipts_pages_processed_total", "receipts_pages_processed_total INTEGER NOT NULL DEFAULT 0"),
+        ("receipts_api_calls_total", "receipts_api_calls_total INTEGER NOT NULL DEFAULT 0"),
+        ("last_receipts_sync_at", "last_receipts_sync_at TIMESTAMP"),
+        ("refreshed_at", "refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+    ]:
+        if not _column_exists(conn, "fec_transfer_source_committees", column_name):
+            conn.execute(
+                f"ALTER TABLE fec_transfer_source_committees ADD COLUMN {column_sql}"
+            )
+
+
+def refresh_fec_transfer_source_committees(
+    conn: sqlite3.Connection,
+    *,
+    cycle: int | None = None,
+    min_transfer_amount: float = 0.0,
+) -> dict:
+    """Materialize committees that disburse to candidates/committees (Schedule B)."""
+    _ensure_fec_transfer_source_committees_table(conn)
+
+    if not _table_exists(conn, "fec_schedule_b_disbursements"):
+        if cycle is None:
+            conn.execute("DELETE FROM fec_transfer_source_committees")
+        else:
+            conn.execute(
+                "DELETE FROM fec_transfer_source_committees WHERE cycle = ?",
+                (int(cycle),),
+            )
+        conn.commit()
+        return {
+            "cycle": cycle,
+            "rows_written": 0,
+            "transfer_total_amount": 0.0,
+            "skipped_reason": "missing_fec_schedule_b_disbursements",
+        }
+
+    effective_cycle = int(cycle) if cycle is not None else None
+    min_transfer_amount_value = float(max(0.0, min_transfer_amount))
+
+    where_clauses = [
+        "committee_id IS NOT NULL",
+        "NULLIF(committee_id, '') IS NOT NULL",
+        "("
+        "NULLIF(recipient_candidate_id, '') IS NOT NULL "
+        "OR NULLIF(recipient_committee_id, '') IS NOT NULL"
+        ")",
+    ]
+    params: list[Any] = []
+    if effective_cycle is not None:
+        where_clauses.append("cycle = ?")
+        params.append(effective_cycle)
+
+    having_sql = ""
+    if min_transfer_amount_value > 0:
+        having_sql = "HAVING COALESCE(SUM(disbursement_amount), 0.0) >= ?"
+        params.append(min_transfer_amount_value)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            committee_id,
+            cycle,
+            COALESCE(MAX(committee_name), committee_id) AS committee_name,
+            COUNT(*) AS transfer_count,
+            COALESCE(SUM(disbursement_amount), 0.0) AS transfer_total_amount,
+            COUNT(DISTINCT NULLIF(candidate_id, '')) AS source_candidate_count,
+            COUNT(DISTINCT NULLIF(recipient_candidate_id, '')) AS recipient_candidate_count,
+            COUNT(DISTINCT NULLIF(recipient_committee_id, '')) AS recipient_committee_count,
+            MAX(disbursement_date) AS latest_transfer_date
+        FROM fec_schedule_b_disbursements
+        WHERE {" AND ".join(where_clauses)}
+        GROUP BY committee_id, cycle
+        {having_sql}
+        ORDER BY transfer_total_amount DESC, transfer_count DESC, committee_id ASC
+        """,
+        params,
+    ).fetchall()
+
+    preserved_state: dict[str, dict[str, Any]] = {}
+    if effective_cycle is not None:
+        existing_rows = conn.execute(
+            """
+            SELECT
+                committee_id,
+                receipts_synced,
+                receipts_row_count,
+                receipts_total_amount,
+                receipts_coverage_start,
+                receipts_coverage_end,
+                next_last_index,
+                next_last_receipt_date,
+                receipts_pages_processed_total,
+                receipts_api_calls_total,
+                last_receipts_sync_at
+            FROM fec_transfer_source_committees
+            WHERE cycle = ?
+            """,
+            (effective_cycle,),
+        ).fetchall()
+        preserved_state = {
+            _clean_text(row["committee_id"]): {
+                "receipts_synced": int(row["receipts_synced"] or 0),
+                "receipts_row_count": int(row["receipts_row_count"] or 0),
+                "receipts_total_amount": float(row["receipts_total_amount"] or 0.0),
+                "receipts_coverage_start": row["receipts_coverage_start"],
+                "receipts_coverage_end": row["receipts_coverage_end"],
+                "next_last_index": row["next_last_index"],
+                "next_last_receipt_date": row["next_last_receipt_date"],
+                "receipts_pages_processed_total": int(row["receipts_pages_processed_total"] or 0),
+                "receipts_api_calls_total": int(row["receipts_api_calls_total"] or 0),
+                "last_receipts_sync_at": row["last_receipts_sync_at"],
+            }
+            for row in existing_rows
+            if _clean_text(row["committee_id"])
+        }
+        conn.execute(
+            "DELETE FROM fec_transfer_source_committees WHERE cycle = ?",
+            (effective_cycle,),
+        )
+    else:
+        conn.execute("DELETE FROM fec_transfer_source_committees")
+
+    insert_rows: list[tuple[Any, ...]] = []
+    transfer_total_amount = 0.0
+    for row in rows:
+        committee_id = _clean_text(row["committee_id"])
+        if not committee_id:
+            continue
+        cycle_value = int(row["cycle"] or 0)
+        state = preserved_state.get(committee_id, {})
+        transfer_amount = float(row["transfer_total_amount"] or 0.0)
+        transfer_total_amount += transfer_amount
+        insert_rows.append(
+            (
+                committee_id,
+                cycle_value,
+                _clean_text(row["committee_name"]) or committee_id,
+                int(row["transfer_count"] or 0),
+                transfer_amount,
+                int(row["source_candidate_count"] or 0),
+                int(row["recipient_candidate_count"] or 0),
+                int(row["recipient_committee_count"] or 0),
+                row["latest_transfer_date"],
+                int(state.get("receipts_synced") or 0),
+                int(state.get("receipts_row_count") or 0),
+                float(state.get("receipts_total_amount") or 0.0),
+                state.get("receipts_coverage_start"),
+                state.get("receipts_coverage_end"),
+                state.get("next_last_index"),
+                state.get("next_last_receipt_date"),
+                int(state.get("receipts_pages_processed_total") or 0),
+                int(state.get("receipts_api_calls_total") or 0),
+                state.get("last_receipts_sync_at"),
+            )
+        )
+
+    if insert_rows:
+        conn.executemany(
+            """
+            INSERT INTO fec_transfer_source_committees (
+                committee_id,
+                cycle,
+                committee_name,
+                transfer_count,
+                transfer_total_amount,
+                source_candidate_count,
+                recipient_candidate_count,
+                recipient_committee_count,
+                latest_transfer_date,
+                receipts_synced,
+                receipts_row_count,
+                receipts_total_amount,
+                receipts_coverage_start,
+                receipts_coverage_end,
+                next_last_index,
+                next_last_receipt_date,
+                receipts_pages_processed_total,
+                receipts_api_calls_total,
+                last_receipts_sync_at,
+                refreshed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            insert_rows,
+        )
+
+    conn.commit()
+    return {
+        "cycle": effective_cycle,
+        "rows_written": len(insert_rows),
+        "transfer_total_amount": round(transfer_total_amount, 2),
+        "min_transfer_amount": min_transfer_amount_value,
+    }
+
+
+def sync_fec_transfer_committee_receipts(
+    conn: sqlite3.Connection,
+    *,
+    api_key: str,
+    cycle: int,
+    max_calls: int = 1000,
+    per_page: int = 100,
+    max_pages_per_committee: int = 25,
+    include_completed: bool = False,
+    refresh_cache: bool = False,
+    refresh_registry: bool = True,
+    max_committees: int | None = None,
+    client: FecApiClient | None = None,
+) -> dict:
+    """Backfill Schedule A receipts for committees flagged as transfer sources."""
+    if not api_key:
+        raise ValueError("FEC API key is required")
+    if not _table_exists(conn, "raw_extractions"):
+        raise RuntimeError("raw_extractions table is required for transfer-committee sync")
+
+    _ensure_fec_transfer_source_committees_table(conn)
+    conn.commit()
+
+    effective_cycle = int(cycle)
+    registry_stats: dict[str, Any] = {"rows_written": 0}
+    if refresh_registry:
+        registry_stats = refresh_fec_transfer_source_committees(
+            conn,
+            cycle=effective_cycle,
+        )
+
+    include_completed_value = 1 if include_completed else 0
+    queue = conn.execute(
+        """
+        SELECT
+            committee_id,
+            cycle,
+            committee_name,
+            transfer_count,
+            transfer_total_amount,
+            receipts_synced,
+            next_last_index,
+            next_last_receipt_date
+        FROM fec_transfer_source_committees
+        WHERE cycle = ?
+          AND (
+              ? = 1
+              OR COALESCE(receipts_synced, 0) = 0
+              OR NULLIF(next_last_index, '') IS NOT NULL
+          )
+        ORDER BY transfer_total_amount DESC, transfer_count DESC, committee_id ASC
+        """,
+        (effective_cycle, include_completed_value),
+    ).fetchall()
+
+    queue_rows = list(queue)
+    if max_committees is not None:
+        queue_rows = queue_rows[: max(0, int(max_committees))]
+
+    call_budget = max(1, int(max_calls))
+    per_page_value = min(max(1, int(per_page)), 100)
+    page_cap = max(1, int(max_pages_per_committee))
+    api_calls_made = 0
+    pages_processed = 0
+    contributions_upserted = 0
+    committees_processed = 0
+    committees_completed = 0
+    call_budget_reached = False
+
+    api_client = client or FecApiClient(api_key=api_key)
+    use_cache = not bool(refresh_cache)
+
+    for committee in queue_rows:
+        committee_id = _clean_text(committee["committee_id"])
+        committee_name = _clean_text(committee["committee_name"]) or committee_id
+        if not committee_id:
+            continue
+
+        committees_processed += 1
+        committee_pages = 0
+        committee_contributions = 0
+        committee_api_calls = 0
+        committee_completed = False
+        last_error = None
+        seen_tokens: set[str] = set()
+        next_last_index = _clean_text(committee["next_last_index"])
+        next_last_receipt_date = _clean_text(committee["next_last_receipt_date"])
+
+        owner = conn.execute(
+            """
+            SELECT
+                c.candidate_id,
+                COALESCE(MAX(m.fec_name), MAX(m.candidate_name), MAX(c.candidate_id)) AS candidate_name
+            FROM fec_candidate_committees c
+            LEFT JOIN fec_candidate_match m
+              ON m.fec_candidate_id = c.candidate_id
+             AND m.cycle = c.cycle
+            WHERE c.committee_id = ?
+              AND c.cycle = ?
+            GROUP BY c.candidate_id
+            ORDER BY MAX(c.is_principal) DESC, c.candidate_id ASC
+            LIMIT 1
+            """,
+            (committee_id, effective_cycle),
+        ).fetchone()
+        owner_candidate_id = _clean_text(owner["candidate_id"]) if owner else ""
+        owner_candidate_name = _clean_text(owner["candidate_name"]) if owner else ""
+
+        max_date_row = conn.execute(
+            """
+            SELECT MAX(contribution_receipt_date) AS max_date
+            FROM fec_schedule_a_contributions
+            WHERE committee_id = ? AND cycle = ?
+            """,
+            (committee_id, effective_cycle),
+        ).fetchone()
+        min_date = _clean_text(max_date_row["max_date"]) if max_date_row else ""
+
+        while committee_pages < page_cap and api_calls_made < call_budget:
+            params: dict[str, Any] = {
+                "committee_id": committee_id,
+                "two_year_transaction_period": effective_cycle,
+                "per_page": per_page_value,
+                "sort": "-contribution_receipt_date",
+            }
+            if next_last_index:
+                params["last_index"] = next_last_index
+            if next_last_receipt_date:
+                params["last_contribution_receipt_date"] = next_last_receipt_date
+            if min_date and not next_last_index:
+                params["min_date"] = min_date
+
+            try:
+                payload, source_identifier, from_cache = _request_with_cache(
+                    conn,
+                    api_client,
+                    endpoint="/schedules/schedule_a/",
+                    params=params,
+                    use_cache=use_cache,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                break
+
+            if not from_cache:
+                api_calls_made += 1
+                committee_api_calls += 1
+
+            pages_processed += 1
+            committee_pages += 1
+
+            results = payload.get("results") or []
+            if not results:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+
+            upserted_rows = _upsert_schedule_rows(
+                conn,
+                rows=results,
+                cycle=effective_cycle,
+                candidate_id=owner_candidate_id or None,
+                candidate_name=owner_candidate_name or None,
+                committee_id=committee_id,
+                default_committee_name=committee_name,
+                api_source_identifier=source_identifier,
+            )
+            committee_contributions += upserted_rows
+            contributions_upserted += upserted_rows
+            conn.commit()
+
+            pagination = payload.get("pagination") or {}
+            last_indexes = pagination.get("last_indexes") or {}
+            fetched_last_index = _clean_text(last_indexes.get("last_index"))
+            fetched_last_receipt_date = _clean_text(last_indexes.get("last_contribution_receipt_date"))
+
+            if not fetched_last_index:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+
+            token = f"{fetched_last_index}|{fetched_last_receipt_date}"
+            if token in seen_tokens:
+                committee_completed = True
+                next_last_index = ""
+                next_last_receipt_date = ""
+                break
+            seen_tokens.add(token)
+
+            next_last_index = fetched_last_index
+            next_last_receipt_date = fetched_last_receipt_date
+
+            if api_calls_made >= call_budget:
+                call_budget_reached = True
+                break
+
+        receipts_summary = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS row_count,
+                COALESCE(SUM(contribution_receipt_amount), 0.0) AS total_amount,
+                MIN(contribution_receipt_date) AS coverage_start,
+                MAX(contribution_receipt_date) AS coverage_end
+            FROM fec_schedule_a_contributions
+            WHERE committee_id = ? AND cycle = ?
+            """,
+            (committee_id, effective_cycle),
+        ).fetchone()
+        receipts_row_count = int(receipts_summary["row_count"] or 0) if receipts_summary else 0
+        receipts_total_amount = float(receipts_summary["total_amount"] or 0.0) if receipts_summary else 0.0
+        receipts_coverage_start = receipts_summary["coverage_start"] if receipts_summary else None
+        receipts_coverage_end = receipts_summary["coverage_end"] if receipts_summary else None
+
+        conn.execute(
+            """
+            UPDATE fec_transfer_source_committees
+            SET
+                committee_name = COALESCE(NULLIF(?, ''), committee_name),
+                receipts_synced = ?,
+                receipts_row_count = ?,
+                receipts_total_amount = ?,
+                receipts_coverage_start = ?,
+                receipts_coverage_end = ?,
+                next_last_index = ?,
+                next_last_receipt_date = ?,
+                receipts_pages_processed_total = COALESCE(receipts_pages_processed_total, 0) + ?,
+                receipts_api_calls_total = COALESCE(receipts_api_calls_total, 0) + ?,
+                last_receipts_sync_at = CURRENT_TIMESTAMP,
+                refreshed_at = CURRENT_TIMESTAMP
+            WHERE committee_id = ? AND cycle = ?
+            """,
+            (
+                committee_name,
+                1 if committee_completed else 0,
+                receipts_row_count,
+                round(receipts_total_amount, 2),
+                receipts_coverage_start,
+                receipts_coverage_end,
+                next_last_index if not committee_completed else None,
+                next_last_receipt_date if not committee_completed else None,
+                committee_pages,
+                committee_api_calls,
+                committee_id,
+                effective_cycle,
+            ),
+        )
+        conn.commit()
+
+        if committee_completed:
+            committees_completed += 1
+
+        if last_error:
+            # Keep the cursor state so the next run can retry this committee.
+            conn.execute(
+                """
+                UPDATE fec_transfer_source_committees
+                SET refreshed_at = CURRENT_TIMESTAMP
+                WHERE committee_id = ? AND cycle = ?
+                """,
+                (committee_id, effective_cycle),
+            )
+            conn.commit()
+
+        if api_calls_made >= call_budget:
+            call_budget_reached = True
+            break
+
+    return {
+        "cycle": effective_cycle,
+        "transfer_committees_selected": len(queue_rows),
+        "transfer_committees_processed": committees_processed,
+        "transfer_committees_completed": committees_completed,
+        "pages_processed": pages_processed,
+        "contributions_upserted": contributions_upserted,
+        "api_calls_made": api_calls_made,
+        "call_budget_reached": bool(call_budget_reached),
+        "max_calls": call_budget,
+        "refresh_registry": bool(refresh_registry),
+        "registry_rows_written": int(registry_stats.get("rows_written") or 0),
+    }
 
 
 def get_federal_receipt_mismatch_flags(
@@ -4335,6 +4872,7 @@ def get_federal_candidate_detail(
             contributor_zip,
             contributor_employer,
             contributor_occupation,
+            committee_id,
             committee_name,
             line_number,
             receipt_type,
@@ -4610,6 +5148,7 @@ def get_federal_candidate_detail(
                 "contributor_zip": row["contributor_zip"],
                 "contributor_employer": row["contributor_employer"],
                 "contributor_occupation": row["contributor_occupation"],
+                "committee_id": row["committee_id"],
                 "committee_name": row["committee_name"],
                 "line_number": row["line_number"],
                 "receipt_type": row["receipt_type"],
@@ -4679,6 +5218,215 @@ def get_federal_candidate_detail(
         "cross_role_organizations": cross_role.get("rows", []),
         "cross_role_summary": cross_role.get("summary", {}),
         "schedule_b_transfer_chains": transfer_chains,
+    }
+
+
+def get_federal_committee_receipts(
+    conn: sqlite3.Connection,
+    *,
+    committee_id: str,
+    cycle: int | None = None,
+    receipt_limit: int = 100,
+    receipt_offset: int = 0,
+    receipt_sort: str = "date",
+    receipt_dir: str = "desc",
+) -> dict | None:
+    """Return one committee's Schedule A receipts with transfer-source context."""
+    if not _table_exists(conn, "fec_schedule_a_contributions"):
+        return None
+
+    committee_key = _clean_text(committee_id)
+    if not committee_key:
+        return None
+
+    sort_field = _clean_text(receipt_sort).lower() or "date"
+    sort_dir_sql = "ASC" if _clean_text(receipt_dir).lower() == "asc" else "DESC"
+    sort_columns = {
+        "date": "contribution_receipt_date",
+        "amount": "contribution_receipt_amount",
+        "donor": "contributor_name",
+        "state": "contributor_state",
+        "type": "receipt_type_desc",
+    }
+    order_column = sort_columns.get(sort_field, "contribution_receipt_date")
+    order_sql = f"{order_column} {sort_dir_sql}, sub_id DESC"
+
+    where_sql = "WHERE committee_id = ?"
+    params: list[Any] = [committee_key]
+    if cycle is not None:
+        where_sql += " AND cycle = ?"
+        params.append(int(cycle))
+
+    summary = conn.execute(
+        f"""
+        SELECT
+            COALESCE(MAX(committee_name), committee_id) AS committee_name,
+            COUNT(*) AS receipt_count,
+            COALESCE(SUM(contribution_receipt_amount), 0.0) AS total_amount,
+            COUNT(DISTINCT COALESCE(NULLIF(donor_entity_key, ''), NULLIF(donor_key, ''), NULLIF(contributor_name, ''))) AS donor_count,
+            MIN(contribution_receipt_date) AS coverage_start,
+            MAX(contribution_receipt_date) AS coverage_end
+        FROM fec_schedule_a_contributions
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+    if not summary or int(summary["receipt_count"] or 0) == 0:
+        return None
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            sub_id,
+            cycle,
+            candidate_id,
+            candidate_name,
+            committee_id,
+            COALESCE(NULLIF(committee_name, ''), committee_id) AS committee_name,
+            contributor_name,
+            contributor_city,
+            contributor_state,
+            contributor_zip,
+            contributor_employer,
+            contributor_occupation,
+            receipt_type,
+            receipt_type_desc,
+            memo_text,
+            contribution_receipt_amount,
+            contribution_receipt_date,
+            donor_key,
+            donor_entity_key,
+            donor_entity_method
+        FROM fec_schedule_a_contributions
+        {where_sql}
+        ORDER BY {order_sql}
+        LIMIT ? OFFSET ?
+        """,
+        params + [max(1, int(receipt_limit)), max(0, int(receipt_offset))],
+    ).fetchall()
+
+    total_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM fec_schedule_a_contributions
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+    total_receipts = int(total_row["count"] or 0) if total_row else 0
+
+    owner_rows = []
+    if _table_exists(conn, "fec_candidate_committees"):
+        owner_rows = conn.execute(
+            """
+            SELECT
+                c.candidate_id,
+                COALESCE(MAX(m.fec_name), MAX(m.candidate_name), MAX(c.candidate_id)) AS candidate_name,
+                MAX(c.is_principal) AS is_principal
+            FROM fec_candidate_committees c
+            LEFT JOIN fec_candidate_match m
+              ON m.fec_candidate_id = c.candidate_id
+             AND m.cycle = c.cycle
+            WHERE c.committee_id = ?
+              AND (? IS NULL OR c.cycle = ?)
+            GROUP BY c.candidate_id
+            ORDER BY is_principal DESC, candidate_name ASC
+            """,
+            (committee_key, cycle, cycle),
+        ).fetchall()
+
+    transfer_meta = None
+    if _table_exists(conn, "fec_transfer_source_committees"):
+        transfer_meta_row = conn.execute(
+            """
+            SELECT
+                committee_id,
+                cycle,
+                committee_name,
+                transfer_count,
+                transfer_total_amount,
+                source_candidate_count,
+                recipient_candidate_count,
+                recipient_committee_count,
+                latest_transfer_date,
+                receipts_synced,
+                receipts_row_count,
+                receipts_total_amount,
+                receipts_coverage_start,
+                receipts_coverage_end,
+                last_receipts_sync_at
+            FROM fec_transfer_source_committees
+            WHERE committee_id = ?
+              AND (? IS NULL OR cycle = ?)
+            ORDER BY cycle DESC
+            LIMIT 1
+            """,
+            (committee_key, cycle, cycle),
+        ).fetchone()
+        if transfer_meta_row:
+            transfer_meta = {
+                "committee_id": transfer_meta_row["committee_id"],
+                "cycle": int(transfer_meta_row["cycle"] or 0),
+                "committee_name": transfer_meta_row["committee_name"] or committee_key,
+                "transfer_count": int(transfer_meta_row["transfer_count"] or 0),
+                "transfer_total_amount": float(transfer_meta_row["transfer_total_amount"] or 0.0),
+                "source_candidate_count": int(transfer_meta_row["source_candidate_count"] or 0),
+                "recipient_candidate_count": int(transfer_meta_row["recipient_candidate_count"] or 0),
+                "recipient_committee_count": int(transfer_meta_row["recipient_committee_count"] or 0),
+                "latest_transfer_date": transfer_meta_row["latest_transfer_date"],
+                "receipts_synced": bool(int(transfer_meta_row["receipts_synced"] or 0)),
+                "receipts_row_count": int(transfer_meta_row["receipts_row_count"] or 0),
+                "receipts_total_amount": float(transfer_meta_row["receipts_total_amount"] or 0.0),
+                "receipts_coverage_start": transfer_meta_row["receipts_coverage_start"],
+                "receipts_coverage_end": transfer_meta_row["receipts_coverage_end"],
+                "last_receipts_sync_at": transfer_meta_row["last_receipts_sync_at"],
+            }
+
+    return {
+        "summary": {
+            "committee_id": committee_key,
+            "committee_name": summary["committee_name"] or committee_key,
+            "receipt_count": int(summary["receipt_count"] or 0),
+            "total_amount": float(summary["total_amount"] or 0.0),
+            "donor_count": int(summary["donor_count"] or 0),
+            "coverage_start": summary["coverage_start"],
+            "coverage_end": summary["coverage_end"],
+        },
+        "receipts": [
+            {
+                "sub_id": row["sub_id"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"],
+                "committee_id": row["committee_id"],
+                "committee_name": row["committee_name"],
+                "contributor_name": row["contributor_name"],
+                "contributor_city": row["contributor_city"],
+                "contributor_state": row["contributor_state"],
+                "contributor_zip": row["contributor_zip"],
+                "contributor_employer": row["contributor_employer"],
+                "contributor_occupation": row["contributor_occupation"],
+                "receipt_type": row["receipt_type"],
+                "receipt_type_desc": row["receipt_type_desc"],
+                "memo_text": row["memo_text"],
+                "contribution_receipt_amount": float(row["contribution_receipt_amount"] or 0.0),
+                "contribution_receipt_date": row["contribution_receipt_date"],
+                "donor_key": row["donor_key"],
+                "donor_entity_key": row["donor_entity_key"],
+                "donor_entity_method": row["donor_entity_method"],
+            }
+            for row in rows
+        ],
+        "committee_owners": [
+            {
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or row["candidate_id"],
+                "is_principal": bool(int(row["is_principal"] or 0)),
+            }
+            for row in owner_rows
+        ],
+        "transfer_meta": transfer_meta,
+        "total_receipts": total_receipts,
     }
 
 
