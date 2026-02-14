@@ -631,6 +631,52 @@ $PYTHON run.py sync-fec-transfer-committee-receipts \
   --max-pages-per-committee 25
 ```
 
+### IRS 527 Totals Repair / Backfill
+
+Use this when `/527/` shows `$0` totals because legacy 8872 parsing wrote report rows with wrong EIN/totals mapping.
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+set -a; source /srv/illinois_campaign_finance/shared/.env; set +a
+
+# Rebuild irs527_reports from type-2 (8872) rows only
+$PYTHON run.py repair-irs527-reports \
+  --file /srv/illinois_campaign_finance/shared/downloads/FullDataFile.txt \
+  --illinois-only \
+  --replace-existing
+```
+
+If your FullDataFile is stored in the repo path instead of shared downloads:
+
+```bash
+$PYTHON run.py repair-irs527-reports \
+  --file /srv/illinois_campaign_finance/app/Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt \
+  --illinois-only \
+  --replace-existing
+```
+
+Post-repair verification:
+
+```bash
+sqlite3 /srv/illinois_campaign_finance/shared/data/campaign_finance.db <<'SQL'
+SELECT COUNT(*) AS reports, COUNT(DISTINCT ein) AS distinct_eins FROM irs527_reports;
+SELECT ein, COUNT(*) AS c, SUM(total_contributions), SUM(total_expenditures)
+FROM irs527_reports
+GROUP BY ein
+ORDER BY c DESC
+LIMIT 20;
+SELECT COUNT(*) AS orgs_without_report_match
+FROM irs527_organizations o
+LEFT JOIN (SELECT DISTINCT ein FROM irs527_reports) r ON r.ein = o.ein
+WHERE r.ein IS NULL;
+SQL
+```
+
+Notes:
+- Run SQL inside `sqlite3` (or heredoc as above). Raw SQL pasted directly into bash will fail with `syntax error near unexpected token '('`.
+- `--replace-existing` deletes current `irs527_reports` rows before rebuilding to remove bad legacy rows.
+
 ### Hourly Schedule E Catch-Up (independent expenditures)
 
 Use this to fill missing federal independent expenditure rows (Schedule E) with resumable pagination.

@@ -123,9 +123,21 @@ def _parse_report(fields: list[str]) -> Optional[tuple]:
     if len(fields) < 10:
         return None
     form_id = _to_int(_safe_get(fields, 2))
-    ein = _clean_text(_safe_get(fields, 1))
+    ein = _clean_text(_safe_get(fields, 10)) or _clean_text(_safe_get(fields, 1))
     if form_id is None or not ein:
         return None
+
+    # Current IRS FullDataFile 8872 layout:
+    # idx 45 = TOTAL_SCHED_A, idx 47 = TOTAL_SCHED_B, idx 48 = INSERT_DATETIME.
+    # Keep a fallback for older files where totals appeared at lower indexes.
+    total_contributions = _to_float(_safe_get(fields, 45))
+    if total_contributions is None:
+        total_contributions = _to_float(_safe_get(fields, 43))
+    total_expenditures = _to_float(_safe_get(fields, 47))
+    if total_expenditures is None:
+        total_expenditures = _to_float(_safe_get(fields, 44))
+    insert_datetime = _clean_text(_safe_get(fields, 48)) or _clean_text(_safe_get(fields, 47))
+
     return (
         form_id,
         ein,
@@ -162,12 +174,12 @@ def _parse_report(fields: list[str]) -> Optional[tuple]:
         _clean_text(_safe_get(fields, 37)),         # business_zip
         _clean_text(_safe_get(fields, 38)),         # business_zip_ext
         _to_int(_safe_get(fields, 39)),             # qtr_indicator
-        _to_float(_safe_get(fields, 40)),           # monthly_amount_1
+        _to_float(_safe_get(fields, 40)),           # monthly_amount_1 (monthly report month when present)
         _to_float(_safe_get(fields, 41)),           # monthly_amount_2
         _to_float(_safe_get(fields, 42)),           # monthly_amount_3
-        _to_float(_safe_get(fields, 43)),           # total_contributions
-        _to_float(_safe_get(fields, 44)),           # total_expenditures
-        _clean_text(_safe_get(fields, 47)),         # insert_datetime
+        total_contributions,                        # total_contributions (TOTAL_SCHED_A)
+        total_expenditures,                         # total_expenditures (TOTAL_SCHED_B)
+        insert_datetime,                            # insert_datetime
     )
 
 
@@ -567,4 +579,114 @@ def load_irs527_full_file(
     _flush_all()
 
     logger.info("IRS 527 load complete: %s", stats)
+    return stats
+
+
+def reload_irs527_reports(
+    conn: sqlite3.Connection,
+    file_path: str | Path,
+    *,
+    illinois_only: bool = False,
+    replace_existing: bool = True,
+) -> dict:
+    """Rebuild irs527_reports from FullDataFile type-2 rows only."""
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"IRS 527 file not found: {file_path}")
+
+    stats = {
+        "reports_loaded": 0,
+        "reports_skipped": 0,
+        "reports_malformed": 0,
+        "total_lines": 0,
+        "existing_reports_deleted": 0,
+    }
+
+    il_eins: set[str] | None = None
+    if illinois_only:
+        il_eins = set()
+        logger.info("First pass: collecting Illinois EINs for report rebuild...")
+        with file_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n\r")
+                if not line:
+                    continue
+                fields = line.split("|")
+                record_type = fields[0] if fields else ""
+                if record_type == "1":
+                    parsed = _parse_org(fields)
+                    if parsed and _is_illinois_org(parsed):
+                        il_eins.add(parsed[0])
+                elif record_type == "B":
+                    parsed = _parse_expenditure(fields)
+                    if parsed and _is_illinois_expenditure(parsed):
+                        ein = parsed[1]
+                        if ein:
+                            il_eins.add(ein)
+        logger.info("Illinois EIN set size for report rebuild: %d", len(il_eins))
+
+    if replace_existing:
+        existing_reports = conn.execute("SELECT COUNT(*) AS count FROM irs527_reports").fetchone()
+        stats["existing_reports_deleted"] = int(existing_reports["count"] or 0) if existing_reports else 0
+        conn.execute("DELETE FROM irs527_reports")
+        conn.commit()
+
+    report_rows: list[tuple] = []
+
+    def _flush_reports():
+        nonlocal report_rows
+        if not report_rows:
+            return
+        for chunk in _chunked(report_rows):
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO irs527_reports (
+                    form_id, ein, period_start, period_end,
+                    org_name, org_ein, org_address_1, org_address_2,
+                    org_city, org_state, org_zip, org_zip_ext,
+                    email, formation_date, custodian_name,
+                    custodian_address_1, custodian_address_2,
+                    custodian_city, custodian_state, custodian_zip, custodian_zip_ext,
+                    contact_name, contact_address_1, contact_address_2,
+                    contact_city, contact_state, contact_zip, contact_zip_ext,
+                    business_address_1, business_address_2,
+                    business_city, business_state, business_zip, business_zip_ext,
+                    qtr_indicator, monthly_amount_1, monthly_amount_2, monthly_amount_3,
+                    total_contributions, total_expenditures, insert_datetime
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                chunk,
+            )
+        conn.commit()
+        report_rows = []
+
+    flush_threshold = 5000
+    with file_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            stats["total_lines"] += 1
+            line = line.rstrip("\n\r")
+            if not line:
+                continue
+            fields = line.split("|")
+            record_type = fields[0] if fields else ""
+            if record_type != "2":
+                continue
+
+            parsed = _parse_report(fields)
+            if parsed is None:
+                stats["reports_malformed"] += 1
+                continue
+
+            report_ein = parsed[1]
+            if il_eins is not None and report_ein not in il_eins:
+                stats["reports_skipped"] += 1
+                continue
+
+            report_rows.append(parsed)
+            stats["reports_loaded"] += 1
+            if len(report_rows) >= flush_threshold:
+                _flush_reports()
+
+    _flush_reports()
+    logger.info("IRS 527 report rebuild complete: %s", stats)
     return stats

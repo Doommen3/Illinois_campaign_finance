@@ -32,6 +32,13 @@ def app(tmp_path: Path):
         VALUES (100, '123456789', 'Test 527 Org', 'Recipient Inc', 'Springfield', 'IL', 5000, 'Campaign support')
         """
     )
+    conn.execute(
+        """
+        INSERT INTO irs527_reports (
+            form_id, ein, period_start, period_end, org_name, total_contributions, total_expenditures
+        ) VALUES (100, '123456789', '2026-01-01', '2026-03-31', 'Test 527 Org', 12345, 6789)
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -48,6 +55,8 @@ def test_527_list(client):
     response = client.get('/527/')
     assert response.status_code == 200
     assert b'Test 527 Org' in response.data
+    assert b'$12,345.00' in response.data
+    assert b'$6,789.00' in response.data
 
 
 def test_527_list_search(client):

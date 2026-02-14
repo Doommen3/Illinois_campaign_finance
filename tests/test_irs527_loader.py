@@ -5,11 +5,13 @@ from database.connection import get_db, init_db
 from database.irs527_loader import (
     _parse_header,
     _parse_org,
+    _parse_report,
     _parse_director,
     _parse_related_org,
     _parse_expenditure,
     _parse_election_authority,
     load_irs527_full_file,
+    reload_irs527_reports,
 )
 
 
@@ -91,6 +93,30 @@ def test_parse_election_authority_short():
     assert result is None  # Too few fields
 
 
+def test_parse_report_current_8872_layout():
+    fields = [
+        "2", "8872", "9555268", "20030101", "20030630", "1", "0", "0", "0",
+        "HAWAII STATE TEACHERS ASSOCIATION POLITICAL ACTION COMMITTEE", "521073928",
+        "1200 ALA KAPUNA STREET", "", "HONOLULU", "HI", "96819", "",
+        "lhasegawa@nea.org", "19701209", "LYNNELLE HASEGAWA", "1200 ALA KAPUNA STREET",
+        "", "HONOLULU", "HI", "96819", "", "LYNNELLE HASEGAWA", "1200 ALA KAPUNA STREET",
+        "", "HONOLULU", "HI", "96819", "", "1200 ALA KAPUNA STREET", "", "HONOLULU",
+        "HI", "96819", "", "5", "", "", "", "", "0", "97298", "0", "500",
+        "2003-07-08 21:30:24", "",
+    ]
+
+    parsed = _parse_report(fields)
+    assert parsed is not None
+    assert parsed[0] == 9555268
+    assert parsed[1] == "521073928"
+    assert parsed[2] == "20030101"
+    assert parsed[3] == "20030630"
+    assert parsed[34] == 5
+    assert parsed[38] == 97298.0
+    assert parsed[39] == 500.0
+    assert parsed[40] == "2003-07-08 21:30:24"
+
+
 def test_load_irs527_basic(tmp_path: Path):
     """Test loading a small pipe-delimited file."""
     content = (
@@ -165,6 +191,67 @@ def test_load_irs527_illinois_only(tmp_path: Path):
         "SELECT org_name FROM irs527_organizations WHERE ein = '222222222'"
     ).fetchone()
     assert ca_org is None
+
+    conn.close()
+
+
+def test_reload_irs527_reports_illinois_only(tmp_path: Path):
+    content = (
+        "H|20260208|0641|F|\n"
+        "1|8871|8|0|0|0|111111111|IL ORG|123 Main||Chicago|IL|60601||email@test.com|20010101|"
+        "John Custodian|123 Main||Chicago|IL|60601||Jane Contact|123 Main||Chicago|IL|60601||"
+        "123 Main||Chicago|IL|60601||Purpose||2001-01-01 00:00:00|0|1\n"
+        "1|8871|9|0|0|0|222222222|CA ORG|456 Oak||Los Angeles|CA|90001||email@test.com|20010101|"
+        "John Custodian|456 Oak||Los Angeles|CA|90001||Jane Contact|456 Oak||Los Angeles|CA|90001||"
+        "456 Oak||Los Angeles|CA|90001||Purpose||2001-01-01 00:00:00|0|1\n"
+        "2|8872|1001|20240101|20240331|1|0|0|0|IL ORG|111111111|123 Main||Chicago|IL|60601||"
+        "email@test.com|20010101|John Custodian|123 Main||Chicago|IL|60601||Jane Contact|123 Main||"
+        "Chicago|IL|60601||123 Main||Chicago|IL|60601||1|||||0|1000|0|250|2024-04-01 12:00:00|\n"
+        "2|8872|1002|20240101|20240331|1|0|0|0|CA ORG|222222222|456 Oak||Los Angeles|CA|90001||"
+        "email@test.com|20010101|John Custodian|456 Oak||Los Angeles|CA|90001||Jane Contact|456 Oak||"
+        "Los Angeles|CA|90001||456 Oak||Los Angeles|CA|90001||1|||||0|500|0|100|2024-04-01 12:00:00|\n"
+    )
+    data_path = tmp_path / "test_527_reports_repair.txt"
+    data_path.write_text(content, encoding="utf-8")
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    # Pre-seed a bad row to validate replace_existing behavior.
+    conn.execute(
+        """
+        INSERT INTO irs527_reports (form_id, ein, total_contributions, total_expenditures)
+        VALUES (9999, '8872', 0, 0)
+        """
+    )
+    conn.commit()
+
+    stats = reload_irs527_reports(
+        conn,
+        data_path,
+        illinois_only=True,
+        replace_existing=True,
+    )
+
+    assert stats["existing_reports_deleted"] == 1
+    assert stats["reports_loaded"] == 1
+    assert stats["reports_skipped"] == 1
+    assert stats["reports_malformed"] == 0
+
+    rows = conn.execute(
+        """
+        SELECT ein, form_id, total_contributions, total_expenditures
+        FROM irs527_reports
+        ORDER BY form_id
+        """
+    ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["ein"] == "111111111"
+    assert rows[0]["form_id"] == 1001
+    assert rows[0]["total_contributions"] == 1000.0
+    assert rows[0]["total_expenditures"] == 250.0
 
     conn.close()
 

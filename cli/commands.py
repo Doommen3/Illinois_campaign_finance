@@ -33,7 +33,7 @@ from database.federal_fec import (
 )
 from database.local_donor_entities import rebuild_local_donor_entities
 from database.lobbying_loader import load_lobbying_csv
-from database.irs527_loader import load_irs527_full_file
+from database.irs527_loader import load_irs527_full_file, reload_irs527_reports
 from database.cross_matching import (
     match_lobbying_to_donors,
     match_lobbying_to_expenditure_payees,
@@ -1431,6 +1431,38 @@ def import_irs527_command(file_path, illinois_only):
             click.echo(f'  {key}: {value}')
     except Exception as e:
         click.echo(f'Error importing IRS 527 data: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('repair-irs527-reports')
+@click.option('--file', 'file_path', required=True,
+              help='Path to IRS 527 FullDataFile.txt')
+@click.option('--illinois-only/--all-states', default=True, show_default=True,
+              help='Limit repair load to Illinois-related EINs')
+@click.option('--replace-existing/--append', default=True, show_default=True,
+              help='Delete current irs527_reports rows before rebuild')
+def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
+    """Repair irs527_reports totals/ein mapping from FullDataFile type-2 records."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo(f'Rebuilding IRS 527 report totals from {file_path}...')
+        if illinois_only:
+            click.echo('  Filtering to Illinois-related EINs only.')
+        if replace_existing:
+            click.echo('  Existing irs527_reports rows will be replaced.')
+        stats = reload_irs527_reports(
+            conn,
+            Path(file_path),
+            illinois_only=illinois_only,
+            replace_existing=replace_existing,
+        )
+        click.echo('IRS 527 report repair completed:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error repairing IRS 527 reports: {e}', err=True)
         sys.exit(1)
     finally:
         conn.close()
