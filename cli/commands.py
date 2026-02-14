@@ -40,6 +40,9 @@ from database.cross_matching import (
     match_527_to_committees,
     match_527_expenditures_to_committees,
     match_527_directors_to_donors,
+    match_527_directors_to_candidates,
+    match_527_directors_to_donors_by_address,
+    match_527_org_addresses,
     match_lobbying_to_527,
     run_all_cross_matching,
 )
@@ -1474,7 +1477,9 @@ def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
 @click.option('--only', 'only_match', default='all', show_default=True,
               type=click.Choice([
                   'all', 'lobbying-donors', 'lobbying-expenditures',
-                  '527-committees', '527-expenditures', '527-directors', 'lobbying-527',
+                  '527-committees', '527-expenditures', '527-directors',
+                  '527-director-candidates', '527-director-addresses', '527-org-addresses',
+                  'lobbying-527',
               ]),
               help='Run only a specific matching function')
 def run_cross_matching_command(threshold, only_match):
@@ -1484,19 +1489,22 @@ def run_cross_matching_command(threshold, only_match):
         click.echo(f'Running cross-matching (threshold={threshold}, only={only_match})...')
 
         match_funcs = {
-            'lobbying-donors': ('lobbying_donors', match_lobbying_to_donors),
-            'lobbying-expenditures': ('lobbying_expenditures', match_lobbying_to_expenditure_payees),
-            '527-committees': ('527_committees', match_527_to_committees),
-            '527-expenditures': ('527_expenditures', match_527_expenditures_to_committees),
-            '527-directors': ('527_directors', match_527_directors_to_donors),
-            'lobbying-527': ('lobbying_527', match_lobbying_to_527),
+            'lobbying-donors': ('lobbying_donors', lambda c, t: match_lobbying_to_donors(c, threshold=t)),
+            'lobbying-expenditures': ('lobbying_expenditures', lambda c, t: match_lobbying_to_expenditure_payees(c, threshold=t)),
+            '527-committees': ('527_committees', lambda c, t: match_527_to_committees(c, threshold=t)),
+            '527-expenditures': ('527_expenditures', lambda c, t: match_527_expenditures_to_committees(c, threshold=t)),
+            '527-directors': ('527_directors', lambda c, t: match_527_directors_to_donors(c, threshold=t)),
+            '527-director-candidates': ('527_director_candidates', lambda c, t: match_527_directors_to_candidates(c, threshold=t)),
+            '527-director-addresses': ('527_director_addresses', lambda c, _t: match_527_directors_to_donors_by_address(c)),
+            '527-org-addresses': ('527_org_addresses', lambda c, _t: match_527_org_addresses(c)),
+            'lobbying-527': ('lobbying_527', lambda c, t: match_lobbying_to_527(c, threshold=t)),
         }
 
         if only_match == 'all':
             results = run_all_cross_matching(conn, threshold=threshold)
         else:
             label, func = match_funcs[only_match]
-            results = {label: func(conn, threshold=threshold)}
+            results = {label: func(conn, threshold)}
 
         click.echo('Cross-matching completed:')
         for key, value in results.items():
