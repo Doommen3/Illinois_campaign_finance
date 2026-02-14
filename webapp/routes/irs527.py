@@ -178,11 +178,58 @@ def org_detail(ein):
             (ein,),
         ).fetchall()
 
+    # Director-donor matches (keyed by director_name)
+    director_donor_matches = {}
+    if _table_exists(conn, "irs527_director_donor_matches"):
+        ddm_rows = conn.execute(
+            """
+            SELECT director_name, donor_key, donor_name, score
+            FROM irs527_director_donor_matches
+            WHERE ein = ?
+            ORDER BY score DESC
+            """,
+            (ein,),
+        ).fetchall()
+        for row in ddm_rows:
+            director_donor_matches.setdefault(row["director_name"], []).append(row)
+
+    # Director-candidate matches (keyed by director_name)
+    director_candidate_matches = {}
+    if _table_exists(conn, "irs527_director_candidate_matches"):
+        dcm_rows = conn.execute(
+            """
+            SELECT director_name, candidate_id, candidate_name, candidate_source, score
+            FROM irs527_director_candidate_matches
+            WHERE ein = ?
+            ORDER BY score DESC
+            """,
+            (ein,),
+        ).fetchall()
+        for row in dcm_rows:
+            director_candidate_matches.setdefault(row["director_name"], []).append(row)
+
+    # Contributions to this org
+    contributions = []
+    if _table_exists(conn, "irs527_contributions"):
+        contributions = conn.execute(
+            """
+            SELECT contributor_name, city, state, amount, date
+            FROM irs527_contributions
+            WHERE ein = ?
+            ORDER BY amount DESC
+            LIMIT 100
+            """,
+            (ein,),
+        ).fetchall()
+
     return render_template('irs527/detail.html',
                            org=org, financial=financial,
                            directors=directors, related_orgs=related_orgs,
                            expenditures=expenditures,
-                           committee_matches=committee_matches)
+                           contributions=contributions,
+                           committee_matches=committee_matches,
+                           director_donor_matches=director_donor_matches,
+                           director_candidate_matches=director_candidate_matches)
 
 
 @irs527_bp.route('/dark-money')

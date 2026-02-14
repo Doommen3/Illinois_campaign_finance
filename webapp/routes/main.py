@@ -1394,6 +1394,20 @@ def index():
     else:
         stats['irs527_orgs'] = 0
 
+    if _table_exists(conn, "irs527_reports"):
+        stats['irs527_total_expenditures'] = float(_scalar(
+            conn, "SELECT COALESCE(SUM(total_expenditures), 0) FROM irs527_reports", default=0
+        ))
+    else:
+        stats['irs527_total_expenditures'] = 0
+
+    if _table_exists(conn, "irs527_director_donor_matches"):
+        stats['irs527_director_donor_matches'] = int(_scalar(
+            conn, "SELECT COUNT(*) FROM irs527_director_donor_matches", default=0
+        ))
+    else:
+        stats['irs527_director_donor_matches'] = 0
+
     top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
     return render_template('index.html',
@@ -1562,6 +1576,110 @@ def search():
         )
 
     return render_template('search.html', **results)
+
+
+@main_bp.route('/person-intelligence')
+def person_intelligence():
+    """Unified person lookup across all datasets (donors, candidates, 527 directors, lobbying)."""
+    conn = current_app.get_database()
+    query = request.args.get('q', '').strip()
+
+    results = {
+        'query': query,
+        'donors': [],
+        'candidates': [],
+        'directors_527': [],
+        'lobbying_entities': [],
+        'lobbying_clients': [],
+        'fec_contributors': [],
+    }
+
+    if query and len(query) >= 2:
+        like_pattern = f"%{query}%"
+
+        # Donors
+        if _table_exists(conn, "analytics_donor_summary"):
+            results['donors'] = conn.execute(
+                """
+                SELECT donor_key, donor_name, donor_city, donor_state,
+                       total_amount, contribution_count, committee_count
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts' AND donor_name LIKE ?
+                ORDER BY total_amount DESC
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+        # State candidates
+        if _table_exists(conn, "bulk_candidates_clean"):
+            results['candidates'] = conn.execute(
+                """
+                SELECT candidate_id, candidate_full_name
+                FROM bulk_candidates_clean
+                WHERE candidate_full_name LIKE ?
+                ORDER BY candidate_full_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+        # 527 directors
+        if _table_exists(conn, "irs527_directors"):
+            results['directors_527'] = conn.execute(
+                """
+                SELECT DISTINCT ein, org_name, person_name, title, city, state
+                FROM irs527_directors
+                WHERE person_name LIKE ?
+                ORDER BY person_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+        # Lobbying entities
+        if _table_exists(conn, "lobbying_entities"):
+            results['lobbying_entities'] = conn.execute(
+                """
+                SELECT entity_id, entity_name
+                FROM lobbying_entities
+                WHERE entity_name LIKE ?
+                ORDER BY entity_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+        # Lobbying clients
+        if _table_exists(conn, "lobbying_clients"):
+            results['lobbying_clients'] = conn.execute(
+                """
+                SELECT client_id, client_name
+                FROM lobbying_clients
+                WHERE client_name LIKE ?
+                ORDER BY client_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+        # FEC contributors
+        if _table_exists(conn, "fec_schedule_a_contributions"):
+            results['fec_contributors'] = conn.execute(
+                """
+                SELECT DISTINCT contributor_name, contributor_city, contributor_state,
+                       SUM(contribution_receipt_amount) AS total_amount,
+                       COUNT(*) AS contribution_count
+                FROM fec_schedule_a_contributions
+                WHERE contributor_name LIKE ?
+                GROUP BY contributor_name, contributor_city, contributor_state
+                ORDER BY total_amount DESC
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+
+    return render_template('person_intelligence.html', **results)
 
 
 @main_bp.route('/live-feed')

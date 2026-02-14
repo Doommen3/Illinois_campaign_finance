@@ -543,10 +543,73 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
     return {"matches": matches}
 
 
+def _normalize_zip5(value: str | None) -> str | None:
+    """Normalize a zip code to 5-digit form."""
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # Take only digits and first 5
+    digits = re.sub(r"[^0-9]", "", text.split("-")[0])
+    if not digits:
+        return None
+    return digits.zfill(5)[:5]
+
+
+def _normalize_city(value: str | None) -> str | None:
+    """Normalize a city name to lowercase, stripped."""
+    if not value:
+        return None
+    text = value.strip().lower()
+    return text if text else None
+
+
+def _address_score(
+    city1: str | None, state1: str | None, zip1: str | None,
+    city2: str | None, state2: str | None, zip2: str | None,
+) -> float:
+    """Score address similarity (0.0 to 1.0).
+
+    Scoring:
+    - Same state: 0.2
+    - Same city+state: 0.5
+    - Same zip5+city+state: 1.0
+    - Same zip5+state (different city): 0.7
+    """
+    norm_city1 = _normalize_city(city1)
+    norm_city2 = _normalize_city(city2)
+    norm_state1 = (state1 or "").strip().upper()
+    norm_state2 = (state2 or "").strip().upper()
+    norm_zip1 = _normalize_zip5(zip1)
+    norm_zip2 = _normalize_zip5(zip2)
+
+    if not norm_state1 or not norm_state2:
+        return 0.0
+
+    if norm_state1 != norm_state2:
+        return 0.0
+
+    score = 0.2  # Same state
+
+    city_match = norm_city1 and norm_city2 and norm_city1 == norm_city2
+    zip_match = norm_zip1 and norm_zip2 and norm_zip1 == norm_zip2
+
+    if zip_match and city_match:
+        score = 1.0
+    elif zip_match:
+        score = 0.7
+    elif city_match:
+        score = 0.5
+
+    return score
+
+
 def match_527_directors_to_donors(conn: sqlite3.Connection, threshold: float = 0.80) -> dict:
-    """Match IRS 527 directors against analytics_donor_summary.
+    """Match IRS 527 directors against analytics_donor_summary (exhaustive).
 
     Stores results in irs527_director_donor_matches table.
+    No LIMIT on donors — exhaustive matching using sparse inverted-index.
     """
     if not _table_exists(conn, "irs527_directors") or not _table_exists(conn, "analytics_donor_summary"):
         return {"matches": 0, "skipped": "missing_tables"}
@@ -567,8 +630,6 @@ def match_527_directors_to_donors(conn: sqlite3.Connection, threshold: float = 0
         SELECT donor_key, donor_name
         FROM analytics_donor_summary
         WHERE source = 'bulk_receipts'
-        ORDER BY total_amount DESC
-        LIMIT 50000
         """
     ).fetchall()
 
@@ -615,6 +676,298 @@ def match_527_directors_to_donors(conn: sqlite3.Connection, threshold: float = 0
         stats["full_pairs"],
         stats["reduction"],
     )
+    return {"matches": matches}
+
+
+def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float = 0.80) -> dict:
+    """Match IRS 527 directors against state and federal candidates.
+
+    Stores results in irs527_director_candidate_matches table.
+    """
+    if not _table_exists(conn, "irs527_directors"):
+        return {"matches": 0, "skipped": "missing_tables"}
+
+    conn.execute("DELETE FROM irs527_director_candidate_matches")
+    conn.commit()
+
+    directors = conn.execute(
+        """
+        SELECT rowid_local, ein, org_name, person_name
+        FROM irs527_directors
+        WHERE person_name IS NOT NULL
+        """
+    ).fetchall()
+
+    if not directors:
+        return {"matches": 0}
+
+    left_items = []
+    for director in directors:
+        tokens = _normalize_name_tokens(director["person_name"])
+        if tokens:
+            left_items.append(((director["ein"], director["org_name"], director["person_name"]), tokens))
+
+    right_items = []
+
+    # State candidates
+    if _table_exists(conn, "bulk_candidates_clean"):
+        state_candidates = conn.execute(
+            "SELECT candidate_id, candidate_full_name FROM bulk_candidates_clean WHERE candidate_full_name IS NOT NULL"
+        ).fetchall()
+        for c in state_candidates:
+            tokens = _normalize_name_tokens(c["candidate_full_name"])
+            if tokens:
+                right_items.append((("state", str(c["candidate_id"]), c["candidate_full_name"]), tokens))
+
+    # Federal candidates
+    if _table_exists(conn, "fec_candidate_match"):
+        federal_candidates = conn.execute(
+            "SELECT fec_candidate_id, fec_name FROM fec_candidate_match WHERE match_status = 'matched' AND fec_name IS NOT NULL"
+        ).fetchall()
+        for c in federal_candidates:
+            tokens = _normalize_name_tokens(c["fec_name"])
+            if tokens:
+                right_items.append((("federal", c["fec_candidate_id"], c["fec_name"]), tokens))
+
+    if not right_items:
+        return {"matches": 0}
+
+    pair_matches, stats = _sparse_jaccard_matches(
+        left_items,
+        right_items,
+        threshold,
+        job_label="527-director-candidates",
+    )
+    batch = [
+        (ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score)
+        for (ein, org_name, director_name), (candidate_source, candidate_id, candidate_name), score in pair_matches
+    ]
+    matches = len(batch)
+
+    if batch:
+        conn.executemany(
+            """
+            INSERT INTO irs527_director_candidate_matches
+                (ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            batch,
+        )
+        conn.commit()
+
+    logger.info(
+        "527-director-to-candidate matches: %d (elapsed=%s, scored_pairs=%d/%d, reduction=%.1fx)",
+        matches,
+        _format_duration(stats["elapsed_seconds"]),
+        stats["scored_pairs"],
+        stats["full_pairs"],
+        stats["reduction"],
+    )
+    return {"matches": matches}
+
+
+def match_527_directors_to_donors_by_address(conn: sqlite3.Connection, address_threshold: float = 0.5) -> dict:
+    """Match IRS 527 directors to donors using address similarity.
+
+    Uses city+state+zip5 scoring. Stores in irs527_director_address_matches.
+    """
+    if not _table_exists(conn, "irs527_directors") or not _table_exists(conn, "analytics_donor_summary"):
+        return {"matches": 0, "skipped": "missing_tables"}
+
+    conn.execute("DELETE FROM irs527_director_address_matches")
+    conn.commit()
+
+    directors = conn.execute(
+        """
+        SELECT ein, org_name, person_name, city, state, zip
+        FROM irs527_directors
+        WHERE person_name IS NOT NULL AND state IS NOT NULL
+        """
+    ).fetchall()
+
+    donors = conn.execute(
+        """
+        SELECT donor_key, donor_name, donor_city, donor_state
+        FROM analytics_donor_summary
+        WHERE source = 'bulk_receipts' AND donor_state IS NOT NULL
+        """
+    ).fetchall()
+
+    if not directors or not donors:
+        return {"matches": 0}
+
+    # Build state-based index for donors (pre-filter by state)
+    donor_by_state: dict[str, list] = {}
+    for d in donors:
+        state = (d["donor_state"] or "").strip().upper()
+        if state:
+            donor_by_state.setdefault(state, []).append(d)
+
+    batch = []
+    for director in directors:
+        d_state = (director["state"] or "").strip().upper()
+        if not d_state or d_state not in donor_by_state:
+            continue
+
+        d_city = director["city"]
+        d_zip = director["zip"]
+        d_name = director["person_name"]
+        d_name_tokens = _normalize_name_tokens(d_name)
+
+        for donor in donor_by_state[d_state]:
+            score = _address_score(d_city, d_state, d_zip, donor["donor_city"], donor["donor_state"], None)
+            if score >= address_threshold:
+                # Compute optional name score
+                name_score = None
+                if d_name_tokens:
+                    donor_tokens = _normalize_name_tokens(donor["donor_name"])
+                    if donor_tokens:
+                        name_score = _jaccard(d_name_tokens, donor_tokens)
+
+                batch.append((
+                    director["ein"], director["org_name"], d_name,
+                    _normalize_city(d_city), d_state, _normalize_zip5(d_zip),
+                    donor["donor_key"], donor["donor_name"],
+                    _normalize_city(donor["donor_city"]), donor["donor_state"], None,
+                    score, name_score,
+                ))
+
+    matches = len(batch)
+    if batch:
+        conn.executemany(
+            """
+            INSERT INTO irs527_director_address_matches
+                (ein, org_name, director_name,
+                 director_city, director_state, director_zip5,
+                 donor_key, donor_name,
+                 donor_city, donor_state, donor_zip5,
+                 address_score, name_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            batch,
+        )
+        conn.commit()
+
+    logger.info("527-director-to-donor address matches: %d", matches)
+    return {"matches": matches}
+
+
+def match_527_org_addresses(conn: sqlite3.Connection, address_threshold: float = 0.5) -> dict:
+    """Match 527 org addresses against committees and donors.
+
+    Checks org address, custodian address, contact address, business address.
+    Stores results in irs527_org_address_matches.
+    """
+    if not _table_exists(conn, "irs527_organizations"):
+        return {"matches": 0, "skipped": "missing_tables"}
+
+    conn.execute("DELETE FROM irs527_org_address_matches")
+    conn.commit()
+
+    orgs = conn.execute(
+        """
+        SELECT DISTINCT ein, org_name, city, state, zip,
+               custodian_city, custodian_state, custodian_zip,
+               contact_city, contact_state, contact_zip,
+               business_city, business_state, business_zip
+        FROM irs527_organizations
+        WHERE state IS NOT NULL OR custodian_state IS NOT NULL
+              OR contact_state IS NOT NULL OR business_state IS NOT NULL
+        """
+    ).fetchall()
+
+    # Load committees
+    committees = []
+    if _table_exists(conn, "bulk_committees_clean"):
+        committees = conn.execute(
+            "SELECT committee_id_sbe, committee_name, city, state, zip FROM bulk_committees_clean WHERE state IS NOT NULL"
+        ).fetchall()
+
+    # Load donors (aggregated)
+    donors = []
+    if _table_exists(conn, "analytics_donor_summary"):
+        donors = conn.execute(
+            """
+            SELECT donor_key, donor_name, donor_city, donor_state
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts' AND donor_state IS NOT NULL
+            """
+        ).fetchall()
+
+    # Build state indexes for quick lookup
+    cmte_by_state: dict[str, list] = {}
+    for c in committees:
+        state = (c["state"] or "").strip().upper()
+        if state:
+            cmte_by_state.setdefault(state, []).append(c)
+
+    donor_by_state: dict[str, list] = {}
+    for d in donors:
+        state = (d["donor_state"] or "").strip().upper()
+        if state:
+            donor_by_state.setdefault(state, []).append(d)
+
+    batch = []
+
+    for org in orgs:
+        ein = org["ein"]
+        org_name = org["org_name"]
+
+        address_sets = [
+            ("org", org["city"], org["state"], org["zip"]),
+            ("custodian", org["custodian_city"], org["custodian_state"], org["custodian_zip"]),
+            ("contact", org["contact_city"], org["contact_state"], org["contact_zip"]),
+            ("business", org["business_city"], org["business_state"], org["business_zip"]),
+        ]
+
+        for addr_type, o_city, o_state, o_zip in address_sets:
+            o_state_norm = (o_state or "").strip().upper()
+            if not o_state_norm:
+                continue
+
+            # Match against committees
+            for cmte in cmte_by_state.get(o_state_norm, []):
+                score = _address_score(o_city, o_state, o_zip, cmte["city"], cmte["state"], cmte["zip"])
+                if score >= address_threshold:
+                    batch.append((
+                        ein, org_name, addr_type,
+                        _normalize_city(o_city), o_state_norm, _normalize_zip5(o_zip),
+                        "committee", str(cmte["committee_id_sbe"]), cmte["committee_name"],
+                        _normalize_city(cmte["city"]), (cmte["state"] or "").strip().upper(),
+                        _normalize_zip5(cmte["zip"]),
+                        score,
+                    ))
+
+            # Match against donors
+            for donor in donor_by_state.get(o_state_norm, []):
+                score = _address_score(o_city, o_state, o_zip, donor["donor_city"], donor["donor_state"], None)
+                if score >= address_threshold:
+                    batch.append((
+                        ein, org_name, addr_type,
+                        _normalize_city(o_city), o_state_norm, _normalize_zip5(o_zip),
+                        "donor", donor["donor_key"], donor["donor_name"],
+                        _normalize_city(donor["donor_city"]), (donor["donor_state"] or "").strip().upper(),
+                        None,
+                        score,
+                    ))
+
+    matches = len(batch)
+    if batch:
+        conn.executemany(
+            """
+            INSERT INTO irs527_org_address_matches
+                (ein, org_name, address_type,
+                 org_city, org_state, org_zip5,
+                 matched_entity_type, matched_entity_id, matched_entity_name,
+                 matched_city, matched_state, matched_zip5,
+                 address_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            batch,
+        )
+        conn.commit()
+
+    logger.info("527-org-address matches: %d", matches)
     return {"matches": matches}
 
 
@@ -688,5 +1041,8 @@ def run_all_cross_matching(conn: sqlite3.Connection, threshold: float = 0.80) ->
     results["527_committees"] = match_527_to_committees(conn, threshold=threshold)
     results["527_expenditures"] = match_527_expenditures_to_committees(conn, threshold=threshold)
     results["527_directors"] = match_527_directors_to_donors(conn, threshold=threshold)
+    results["527_director_candidates"] = match_527_directors_to_candidates(conn, threshold=threshold)
+    results["527_director_addresses"] = match_527_directors_to_donors_by_address(conn)
+    results["527_org_addresses"] = match_527_org_addresses(conn)
     results["lobbying_527"] = match_lobbying_to_527(conn, threshold=threshold)
     return results

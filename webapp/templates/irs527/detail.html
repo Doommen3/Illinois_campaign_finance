@@ -50,6 +50,7 @@
 
 {% if directors %}
 <h2>Directors / Officers ({{ directors|length }})</h2>
+<p class="help-text">Directors and officers listed on 527 filings. Matched Donor and Matched Candidate columns show cross-references found via name similarity matching against IL campaign finance data.</p>
 <table class="data-table">
     <thead>
         <tr>
@@ -57,6 +58,8 @@
             <th>Title</th>
             <th>City</th>
             <th>State</th>
+            <th>Matched Donor</th>
+            <th>Matched Candidate</th>
         </tr>
     </thead>
     <tbody>
@@ -66,6 +69,24 @@
             <td>{{ d.title or '-' }}</td>
             <td>{{ d.city or '-' }}</td>
             <td>{{ d.state or '-' }}</td>
+            <td>
+                {% if director_donor_matches and d.person_name in director_donor_matches %}
+                    {% for dm in director_donor_matches[d.person_name][:3] %}
+                    <span title="Score: {{ '%.2f'|format(dm.score) }}">{{ dm.donor_name }} ({{ dm.donor_key }})</span>{% if not loop.last %}<br>{% endif %}
+                    {% endfor %}
+                {% else %}
+                    -
+                {% endif %}
+            </td>
+            <td>
+                {% if director_candidate_matches and d.person_name in director_candidate_matches %}
+                    {% for cm in director_candidate_matches[d.person_name][:3] %}
+                    <span title="Score: {{ '%.2f'|format(cm.score) }}, Source: {{ cm.candidate_source }}">{{ cm.candidate_name }} ({{ cm.candidate_source }})</span>{% if not loop.last %}<br>{% endif %}
+                    {% endfor %}
+                {% else %}
+                    -
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
     </tbody>
@@ -90,6 +111,33 @@
             <td>{{ r.relationship_type or '-' }}</td>
             <td>{{ r.city or '-' }}</td>
             <td>{{ r.state or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if contributions %}
+<h2>Contributions To This Organization (Top {{ contributions|length }})</h2>
+<p class="help-text">Schedule A contributions received by this 527 organization from IRS Form 8872 filings.</p>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Contributor</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Amount</th>
+            <th>Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in contributions %}
+        <tr>
+            <td>{{ c.contributor_name or '-' }}</td>
+            <td>{{ c.city or '-' }}</td>
+            <td>{{ c.state or '-' }}</td>
+            <td>{{ format_currency(c.amount) }}</td>
+            <td>{{ c.date or '-' }}</td>
         </tr>
         {% endfor %}
     </tbody>

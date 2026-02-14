@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}Person Intelligence - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Person Intelligence</h1>
+<p class="subtitle">Unified lookup across all datasets: donors, candidates, 527 directors, lobbying entities, and federal contributors.</p>
+
+<form action="{{ url_for('main.person_intelligence') }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search by name..." value="{{ query }}">
+    <button type="submit">Search</button>
+</form>
+
+{% if query %}
+<p class="help-text">Showing results for "<strong>{{ query }}</strong>" across all data sources.</p>
+
+{% if donors %}
+<h2>Campaign Donors ({{ donors|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Donor Name</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Total Contributed</th>
+            <th>Contributions</th>
+            <th>Committees</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in donors %}
+        <tr>
+            <td>{{ d.donor_name }}</td>
+            <td>{{ d.donor_city or '-' }}</td>
+            <td>{{ d.donor_state or '-' }}</td>
+            <td>{{ format_currency(d.total_amount) }}</td>
+            <td>{{ d.contribution_count }}</td>
+            <td>{{ d.committee_count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if candidates %}
+<h2>State Candidates ({{ candidates|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Candidate Name</th>
+            <th>Candidate ID</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in candidates %}
+        <tr>
+            <td>{{ c.candidate_full_name }}</td>
+            <td>{{ c.candidate_id }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if directors_527 %}
+<h2>527 Organization Directors ({{ directors_527|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Title</th>
+            <th>Organization</th>
+            <th>EIN</th>
+            <th>City</th>
+            <th>State</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in directors_527 %}
+        <tr>
+            <td>{{ d.person_name }}</td>
+            <td>{{ d.title or '-' }}</td>
+            <td><a href="{{ url_for('irs527.org_detail', ein=d.ein) }}">{{ d.org_name or '-' }}</a></td>
+            <td>{{ d.ein }}</td>
+            <td>{{ d.city or '-' }}</td>
+            <td>{{ d.state or '-' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if lobbying_entities %}
+<h2>Lobbying Entities ({{ lobbying_entities|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Entity Name</th>
+            <th>Entity ID</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in lobbying_entities %}
+        <tr>
+            <td><a href="{{ url_for('lobbying.entity_detail', entity_id=e.entity_id) }}">{{ e.entity_name }}</a></td>
+            <td>{{ e.entity_id }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if lobbying_clients %}
+<h2>Lobbying Clients ({{ lobbying_clients|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Client Name</th>
+            <th>Client ID</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in lobbying_clients %}
+        <tr>
+            <td><a href="{{ url_for('lobbying.client_detail', client_id=c.client_id) }}">{{ c.client_name }}</a></td>
+            <td>{{ c.client_id }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if fec_contributors %}
+<h2>Federal Contributors ({{ fec_contributors|length }})</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Contributor Name</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Total Contributed</th>
+            <th>Contributions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in fec_contributors %}
+        <tr>
+            <td>{{ c.contributor_name }}</td>
+            <td>{{ c.contributor_city or '-' }}</td>
+            <td>{{ c.contributor_state or '-' }}</td>
+            <td>{{ format_currency(c.total_amount) }}</td>
+            <td>{{ c.contribution_count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if not donors and not candidates and not directors_527 and not lobbying_entities and not lobbying_clients and not fec_contributors %}
+<p>No results found for "{{ query }}" across any dataset.</p>
+{% endif %}
+
+{% else %}
+<p class="help-text">Enter a name above to search across all Illinois campaign finance datasets: state donors, candidates, 527 organization directors/officers, lobbying entities and clients, and federal FEC contributors.</p>
+{% endif %}
+{% endblock %}

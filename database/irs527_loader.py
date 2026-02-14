@@ -227,6 +227,31 @@ def _parse_related_org(fields: list[str]) -> Optional[tuple]:
     )
 
 
+def _parse_contribution(fields: list[str]) -> Optional[tuple]:
+    """Parse type A (contribution TO 527 org) record."""
+    if len(fields) < 5:
+        return None
+    form_id = _to_int(_safe_get(fields, 1))
+    if form_id is None:
+        return None
+    return (
+        form_id,
+        _clean_text(_safe_get(fields, 4)),          # ein
+        _clean_text(_safe_get(fields, 3)),          # org_name
+        _clean_text(_safe_get(fields, 5)),          # contributor_name
+        _clean_text(_safe_get(fields, 6)),          # contributor_address
+        _clean_text(_safe_get(fields, 7)),          # contributor_address_2
+        _clean_text(_safe_get(fields, 8)),          # city
+        _clean_text(_safe_get(fields, 9)),          # state
+        _clean_text(_safe_get(fields, 10)),         # zip
+        _clean_text(_safe_get(fields, 11)),         # zip_ext
+        _clean_text(_safe_get(fields, 12)),         # contributor_employer
+        _to_float(_safe_get(fields, 13)),           # amount
+        _clean_text(_safe_get(fields, 14)),         # contributor_occupation
+        _clean_text(_safe_get(fields, 15)),         # date
+    )
+
+
 def _parse_expenditure(fields: list[str]) -> Optional[tuple]:
     """Parse type B (expenditure) record."""
     if len(fields) < 5:
@@ -308,6 +333,8 @@ def load_irs527_full_file(
         "reports": 0,
         "directors": 0,
         "related_orgs": 0,
+        "contributions": 0,
+        "contributions_skipped": 0,
         "expenditures": 0,
         "expenditures_skipped": 0,
         "election_authorities": 0,
@@ -345,6 +372,7 @@ def load_irs527_full_file(
     report_rows: list[tuple] = []
     director_rows: list[tuple] = []
     related_org_rows: list[tuple] = []
+    contribution_rows: list[tuple] = []
     expenditure_rows: list[tuple] = []
     election_authority_rows: list[tuple] = []
 
@@ -353,6 +381,7 @@ def load_irs527_full_file(
         _flush_reports()
         _flush_directors()
         _flush_related_orgs()
+        _flush_contributions()
         _flush_expenditures()
         _flush_election_authorities()
 
@@ -442,6 +471,24 @@ def load_irs527_full_file(
             )
         conn.commit()
         related_org_rows = []
+
+    def _flush_contributions():
+        nonlocal contribution_rows
+        if not contribution_rows:
+            return
+        for chunk in _chunked(contribution_rows):
+            conn.executemany(
+                """
+                INSERT INTO irs527_contributions (
+                    form_id, ein, org_name, contributor_name,
+                    contributor_address, contributor_address_2, city, state, zip, zip_ext,
+                    contributor_employer, amount, contributor_occupation, date
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                chunk,
+            )
+        conn.commit()
+        contribution_rows = []
 
     def _flush_expenditures():
         nonlocal expenditure_rows
@@ -541,6 +588,19 @@ def load_irs527_full_file(
                     stats["related_orgs"] += 1
                     if len(related_org_rows) >= FLUSH_THRESHOLD:
                         _flush_related_orgs()
+
+                elif record_type == "A":
+                    parsed = _parse_contribution(fields)
+                    if parsed is None:
+                        stats["malformed_rows"] += 1
+                        continue
+                    if il_eins is not None and parsed[1] not in il_eins:
+                        stats["contributions_skipped"] += 1
+                        continue
+                    contribution_rows.append(parsed)
+                    stats["contributions"] += 1
+                    if len(contribution_rows) >= FLUSH_THRESHOLD:
+                        _flush_contributions()
 
                 elif record_type == "B":
                     parsed = _parse_expenditure(fields)
