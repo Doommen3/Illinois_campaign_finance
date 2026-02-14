@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -1101,4 +1102,78 @@ def run_all_cross_matching(conn: sqlite3.Connection, threshold: float = 0.80) ->
     results["527_director_addresses"] = match_527_directors_to_donors_by_address(conn)
     results["527_org_addresses"] = match_527_org_addresses(conn)
     results["lobbying_527"] = match_lobbying_to_527(conn, threshold=threshold)
+    return results
+
+
+def run_all_cross_matching_parallel(
+    db_path: str,
+    threshold: float = 0.80,
+    max_workers: int = 4,
+) -> dict:
+    """Run all cross-matching functions in parallel using a thread pool.
+
+    Each worker thread creates its own SQLite connection (required by SQLite's
+    threading model). WAL mode allows concurrent reads; writes serialize via
+    busy_timeout. The existing sequential ``run_all_cross_matching`` is unchanged.
+
+    Returns dict with same keys as ``run_all_cross_matching`` plus an ``_errors``
+    key listing any per-job failures.
+    """
+    from database.connection import get_db
+
+    jobs: list[tuple[str, Any]] = [
+        ("lobbying_donors", lambda c: match_lobbying_to_donors(c, threshold=threshold)),
+        ("lobbying_expenditures", lambda c: match_lobbying_to_expenditure_payees(c, threshold=threshold)),
+        ("527_committees", lambda c: match_527_to_committees(c, threshold=threshold)),
+        ("527_expenditures", lambda c: match_527_expenditures_to_committees(c, threshold=threshold)),
+        ("527_directors", lambda c: match_527_directors_to_donors(c, threshold=threshold)),
+        ("527_director_candidates", lambda c: match_527_directors_to_candidates(c, threshold=threshold)),
+        ("527_director_addresses", lambda c: match_527_directors_to_donors_by_address(c)),
+        ("527_org_addresses", lambda c: match_527_org_addresses(c)),
+        ("lobbying_527", lambda c: match_lobbying_to_527(c, threshold=threshold)),
+    ]
+
+    results: dict[str, Any] = {}
+    errors: list[dict[str, str]] = []
+    started = time.perf_counter()
+
+    def _run_job(label: str, func):
+        """Execute a single match job on its own connection."""
+        conn = get_db(db_path)
+        # Increase busy_timeout for parallel write contention
+        conn.execute("PRAGMA busy_timeout = 60000")
+        try:
+            return label, func(conn)
+        finally:
+            conn.close()
+
+    logger.info(
+        "Starting parallel cross-matching: %d jobs, max_workers=%d",
+        len(jobs), max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_label = {
+            executor.submit(_run_job, label, func): label
+            for label, func in jobs
+        }
+        for future in as_completed(future_to_label):
+            label = future_to_label[future]
+            try:
+                _, result = future.result()
+                results[label] = result
+                logger.info("Parallel job completed: %s -> %s", label, result)
+            except Exception as exc:
+                logger.error("Parallel job failed: %s -> %s", label, exc)
+                errors.append({"job": label, "error": str(exc)})
+                results[label] = {"matches": 0, "error": str(exc)}
+
+    elapsed = time.perf_counter() - started
+    results["_errors"] = errors
+    logger.info(
+        "Parallel cross-matching finished in %s (%d succeeded, %d failed)",
+        _format_duration(elapsed),
+        len(jobs) - len(errors),
+        len(errors),
+    )
     return results

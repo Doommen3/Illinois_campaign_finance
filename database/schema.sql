@@ -314,6 +314,8 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_amount
     ON analytics_donor_summary(source, total_amount DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
     ON analytics_donor_summary(source, donor_name);
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_city_state
+    ON analytics_donor_summary(donor_state, donor_city);
 
 -- Local donor entity resolution layer (confidence-scored merges)
 CREATE TABLE IF NOT EXISTS donor_entity_local (
@@ -860,6 +862,8 @@ CREATE TABLE IF NOT EXISTS irs527_directors (
 
 CREATE INDEX IF NOT EXISTS idx_irs527_directors_ein ON irs527_directors(ein);
 CREATE INDEX IF NOT EXISTS idx_irs527_directors_name ON irs527_directors(person_name);
+CREATE INDEX IF NOT EXISTS idx_irs527_directors_state_city
+    ON irs527_directors(state, city);
 
 CREATE TABLE IF NOT EXISTS irs527_related_orgs (
     rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,

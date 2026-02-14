@@ -10,6 +10,7 @@ from database.cross_matching import (
     match_527_expenditures_to_committees,
     match_527_to_committees,
     run_all_cross_matching,
+    run_all_cross_matching_parallel,
 )
 
 
@@ -222,3 +223,47 @@ def test_run_all_cross_matching(tmp_path: Path):
     assert "527_directors" in results
     assert "lobbying_527" in results
     conn.close()
+
+
+def test_run_all_cross_matching_parallel(tmp_path: Path):
+    """Verify parallel orchestrator returns all 9 result keys with no errors."""
+    db_path = str(tmp_path / "test_parallel.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _insert_lobbying_client(conn, 1, "Northwestern University")
+    _insert_donor_summary(conn, "northwestern|university", "Northwestern University")
+    _insert_527_org(conn, "123456789", "Citizens for Springfield")
+    conn.close()
+
+    results = run_all_cross_matching_parallel(db_path, threshold=0.80, max_workers=4)
+
+    expected_keys = {
+        "lobbying_donors", "lobbying_expenditures",
+        "527_committees", "527_expenditures",
+        "527_directors", "527_director_candidates",
+        "527_director_addresses", "527_org_addresses",
+        "lobbying_527",
+    }
+    assert expected_keys.issubset(results.keys())
+    assert results["_errors"] == []
+
+
+def test_run_all_cross_matching_parallel_matches_sequential(tmp_path: Path):
+    """Verify parallel and sequential produce the same match counts."""
+    db_path = str(tmp_path / "test_compare.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _insert_lobbying_client(conn, 1, "Northwestern University")
+    _insert_donor_summary(conn, "northwestern|university", "Northwestern University")
+    _insert_527_org(conn, "123456789", "Citizens for Springfield")
+
+    sequential_results = run_all_cross_matching(conn, threshold=0.80)
+    conn.close()
+
+    parallel_results = run_all_cross_matching_parallel(db_path, threshold=0.80, max_workers=4)
+    parallel_results.pop("_errors", None)
+
+    for key in sequential_results:
+        seq_matches = sequential_results[key].get("matches", 0)
+        par_matches = parallel_results[key].get("matches", 0)
+        assert seq_matches == par_matches, f"{key}: sequential={seq_matches} != parallel={par_matches}"

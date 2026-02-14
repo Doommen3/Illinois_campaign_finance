@@ -45,6 +45,7 @@ from database.cross_matching import (
     match_527_org_addresses,
     match_lobbying_to_527,
     run_all_cross_matching,
+    run_all_cross_matching_parallel,
 )
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
@@ -1482,11 +1483,15 @@ def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
                   'lobbying-527',
               ]),
               help='Run only a specific matching function')
-def run_cross_matching_command(threshold, only_match):
+@click.option('--parallel/--no-parallel', default=True, show_default=True,
+              help='Run all match functions in parallel threads (only applies to --only all)')
+@click.option('--workers', default=4, type=int, show_default=True,
+              help='Number of parallel worker threads (only applies with --parallel)')
+def run_cross_matching_command(threshold, only_match, parallel, workers):
     """Run cross-matching between lobbying, IRS 527, and campaign finance data."""
     conn = get_db(config.DATABASE_PATH)
     try:
-        click.echo(f'Running cross-matching (threshold={threshold}, only={only_match})...')
+        click.echo(f'Running cross-matching (threshold={threshold}, only={only_match}, parallel={parallel})...')
 
         match_funcs = {
             'lobbying-donors': ('lobbying_donors', lambda c, t: match_lobbying_to_donors(c, threshold=t)),
@@ -1501,7 +1506,21 @@ def run_cross_matching_command(threshold, only_match):
         }
 
         if only_match == 'all':
-            results = run_all_cross_matching(conn, threshold=threshold)
+            if parallel:
+                conn.close()
+                conn = None  # each worker opens its own connection
+                results = run_all_cross_matching_parallel(
+                    config.DATABASE_PATH,
+                    threshold=threshold,
+                    max_workers=max(1, workers),
+                )
+                errors = results.pop("_errors", [])
+                if errors:
+                    click.echo(f'  Parallel errors ({len(errors)}):')
+                    for err in errors:
+                        click.echo(f'    - {err["job"]}: {err["error"]}')
+            else:
+                results = run_all_cross_matching(conn, threshold=threshold)
         else:
             label, func = match_funcs[only_match]
             results = {label: func(conn, threshold)}
@@ -1513,7 +1532,8 @@ def run_cross_matching_command(threshold, only_match):
         click.echo(f'Error during cross-matching: {e}', err=True)
         sys.exit(1)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @cli.command('runserver')
