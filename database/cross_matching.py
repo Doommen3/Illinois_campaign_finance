@@ -1109,28 +1109,39 @@ def run_all_cross_matching_parallel(
     db_path: str,
     threshold: float = 0.80,
     max_workers: int = 4,
+    job_timeout: int = 180,
 ) -> dict:
-    """Run all cross-matching functions in parallel using a thread pool.
+    """Run cross-matching in two phases: fast jobs parallel, heavy jobs sequential.
 
-    Each worker thread creates its own SQLite connection (required by SQLite's
-    threading model). WAL mode allows concurrent reads; writes serialize via
-    busy_timeout. The existing sequential ``run_all_cross_matching`` is unchanged.
+    Phase 1 (parallel): Name-based Jaccard matching jobs run concurrently.
+        These are read-heavy with brief writes (DELETE + INSERT small result sets).
+    Phase 2 (sequential): Address-based SQL JOIN jobs run one at a time.
+        These do large JOINs that can produce millions of rows and hold the
+        write lock for extended periods.
 
-    Returns dict with same keys as ``run_all_cross_matching`` plus an ``_errors``
-    key listing any per-job failures.
+    Per-job timeout: any job exceeding ``job_timeout`` seconds is killed and
+    retried sequentially. If sequential retry also fails, the error is logged
+    and the remaining jobs continue.
+
+    Returns dict with same keys as ``run_all_cross_matching`` plus ``_errors``.
     """
     from database.connection import get_db
 
-    jobs: list[tuple[str, Any]] = [
+    # Phase 1: name-matching jobs (safe to parallelize — small write footprint)
+    parallel_jobs: list[tuple[str, Any]] = [
         ("lobbying_donors", lambda c: match_lobbying_to_donors(c, threshold=threshold)),
         ("lobbying_expenditures", lambda c: match_lobbying_to_expenditure_payees(c, threshold=threshold)),
         ("527_committees", lambda c: match_527_to_committees(c, threshold=threshold)),
         ("527_expenditures", lambda c: match_527_expenditures_to_committees(c, threshold=threshold)),
         ("527_directors", lambda c: match_527_directors_to_donors(c, threshold=threshold)),
         ("527_director_candidates", lambda c: match_527_directors_to_candidates(c, threshold=threshold)),
+        ("lobbying_527", lambda c: match_lobbying_to_527(c, threshold=threshold)),
+    ]
+
+    # Phase 2: address-matching jobs (heavy SQL JOINs — run sequentially)
+    sequential_jobs: list[tuple[str, Any]] = [
         ("527_director_addresses", lambda c: match_527_directors_to_donors_by_address(c)),
         ("527_org_addresses", lambda c: match_527_org_addresses(c)),
-        ("lobbying_527", lambda c: match_lobbying_to_527(c, threshold=threshold)),
     ]
 
     results: dict[str, Any] = {}
@@ -1140,41 +1151,89 @@ def run_all_cross_matching_parallel(
     def _run_job(label: str, func):
         """Execute a single match job on its own connection."""
         conn = get_db(db_path)
-        # 5-minute busy_timeout: 9 concurrent jobs contend for the single
-        # SQLite write lock, so the last job may wait for all others to finish
-        conn.execute("PRAGMA busy_timeout = 300000")
+        conn.execute("PRAGMA busy_timeout = 60000")
         try:
             return label, func(conn)
         finally:
             conn.close()
 
+    # --- Phase 1: parallel name-matching ------------------------------------
     logger.info(
-        "Starting parallel cross-matching: %d jobs, max_workers=%d",
-        len(jobs), max_workers,
+        "Phase 1: parallel name-matching (%d jobs, max_workers=%d, timeout=%ds)",
+        len(parallel_jobs), max_workers, job_timeout,
     )
 
+    failed_parallel: list[tuple[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_label = {
-            executor.submit(_run_job, label, func): label
-            for label, func in jobs
+            executor.submit(_run_job, label, func): (label, func)
+            for label, func in parallel_jobs
         }
         for future in as_completed(future_to_label):
-            label = future_to_label[future]
+            label, func = future_to_label[future]
             try:
-                _, result = future.result()
+                _, result = future.result(timeout=job_timeout)
                 results[label] = result
-                logger.info("Parallel job completed: %s -> %s", label, result)
+                logger.info("Phase 1 completed: %s -> %s", label, result)
+            except TimeoutError:
+                future.cancel()
+                logger.warning(
+                    "Phase 1 timeout (%ds): %s — will retry sequentially",
+                    job_timeout, label,
+                )
+                failed_parallel.append((label, func))
             except Exception as exc:
-                logger.error("Parallel job failed: %s -> %s", label, exc)
-                errors.append({"job": label, "error": str(exc)})
-                results[label] = {"matches": 0, "error": str(exc)}
+                logger.error("Phase 1 failed: %s -> %s", label, exc)
+                if "locked" in str(exc).lower():
+                    logger.info("Will retry %s sequentially", label)
+                    failed_parallel.append((label, func))
+                else:
+                    errors.append({"job": label, "error": str(exc), "phase": "parallel"})
+                    results[label] = {"matches": 0, "error": str(exc)}
+
+    phase1_elapsed = time.perf_counter() - started
+    logger.info(
+        "Phase 1 finished in %s (%d succeeded, %d to retry)",
+        _format_duration(phase1_elapsed),
+        len(parallel_jobs) - len(failed_parallel) - len(errors),
+        len(failed_parallel),
+    )
+
+    # --- Phase 2: sequential (address jobs + any failed parallel jobs) ------
+    all_sequential = failed_parallel + sequential_jobs
+    if all_sequential:
+        logger.info("Phase 2: sequential (%d jobs)", len(all_sequential))
+
+    for label, func in all_sequential:
+        job_started = time.perf_counter()
+        try:
+            conn = get_db(db_path)
+            conn.execute("PRAGMA busy_timeout = 120000")
+            try:
+                result = func(conn)
+                results[label] = result
+                job_elapsed = time.perf_counter() - job_started
+                logger.info(
+                    "Phase 2 completed: %s -> %s (elapsed=%s)",
+                    label, result, _format_duration(job_elapsed),
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            job_elapsed = time.perf_counter() - job_started
+            logger.error(
+                "Phase 2 failed: %s -> %s (elapsed=%s)",
+                label, exc, _format_duration(job_elapsed),
+            )
+            errors.append({"job": label, "error": str(exc), "phase": "sequential"})
+            results[label] = {"matches": 0, "error": str(exc)}
 
     elapsed = time.perf_counter() - started
     results["_errors"] = errors
     logger.info(
-        "Parallel cross-matching finished in %s (%d succeeded, %d failed)",
+        "Cross-matching finished in %s (%d succeeded, %d failed)",
         _format_duration(elapsed),
-        len(jobs) - len(errors),
+        sum(1 for k, v in results.items() if k != "_errors" and "error" not in v),
         len(errors),
     )
     return results
