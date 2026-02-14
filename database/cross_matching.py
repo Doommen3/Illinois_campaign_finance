@@ -952,7 +952,7 @@ def match_527_org_addresses(conn: sqlite3.Connection, address_threshold: float =
             SELECT o.ein, o.org_name, o.addr_type,
                    o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
                    c.committee_id_sbe, c.committee_name,
-                   c.city AS c_city, c.state AS c_state, c.zip AS c_zip
+                   c.city AS c_city, c.state AS c_state, c.postal_code AS c_zip
             FROM _tmp_527_org_addrs o
             JOIN bulk_committees_clean c
                 ON o.norm_state = UPPER(TRIM(c.state))
@@ -1140,8 +1140,9 @@ def run_all_cross_matching_parallel(
     def _run_job(label: str, func):
         """Execute a single match job on its own connection."""
         conn = get_db(db_path)
-        # Increase busy_timeout for parallel write contention
-        conn.execute("PRAGMA busy_timeout = 60000")
+        # 5-minute busy_timeout: 9 concurrent jobs contend for the single
+        # SQLite write lock, so the last job may wait for all others to finish
+        conn.execute("PRAGMA busy_timeout = 300000")
         try:
             return label, func(conn)
         finally:
