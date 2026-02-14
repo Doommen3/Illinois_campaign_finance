@@ -107,9 +107,11 @@
         return adj;
     };
 
-    /* ── Helper: apply click-to-lock highlighting ── */
-    const setupClickToLock = (svg, nodeEls, labelEls, edgeEls, adjacency) => {
+    /* ── Helper: apply click-to-lock highlighting + info panel ── */
+    const setupClickToLock = (svg, nodeEls, labelEls, edgeEls, adjacency, localById, infoPanelId) => {
         let lockedNodeId = "";
+        const infoPanel = infoPanelId ? document.getElementById(infoPanelId) : null;
+
         const applyHighlight = (nodeId) => {
             const neighborhood = nodeId ? (adjacency.get(nodeId) || new Set([nodeId])) : null;
             for (const c of nodeEls) {
@@ -126,17 +128,97 @@
                 e.setAttribute("stroke-opacity", keep ? "0.46" : "0.08");
             }
         };
+
+        const showInfoPanel = (nodeId) => {
+            if (!infoPanel || !localById) return;
+            const node = localById.get(nodeId);
+            if (!node) { infoPanel.style.display = "none"; return; }
+            const neighbors = adjacency.get(nodeId) || new Set();
+            const connectionCount = neighbors.size - 1; // exclude self
+            // Build top connections list
+            const connections = [];
+            for (const nid of neighbors) {
+                if (nid === nodeId) continue;
+                const neighbor = localById.get(nid);
+                if (neighbor) connections.push({ label: neighbor.label || nid, type: neighbor.node_type || "unknown", wd: neighbor.weighted_degree || 0 });
+            }
+            connections.sort((a, b) => b.wd - a.wd);
+            const topConns = connections.slice(0, 10);
+            let html = `<h4>${shortLabel(node.label, 40)}</h4>`;
+            html += `<p><strong>Type:</strong> ${node.node_type || "unknown"} | <strong>Weighted degree:</strong> $${Number(node.weighted_degree || 0).toLocaleString()}</p>`;
+            if (node.region) html += `<p><strong>Region:</strong> ${node.region}</p>`;
+            html += `<p><strong>Connections:</strong> ${connectionCount}</p>`;
+            if (topConns.length) {
+                html += `<ul>`;
+                for (const c of topConns) html += `<li>${shortLabel(c.label, 30)} <small>(${c.type})</small></li>`;
+                html += `</ul>`;
+            }
+            infoPanel.innerHTML = html;
+            infoPanel.style.display = "block";
+        };
+
+        const hideInfoPanel = () => { if (infoPanel) infoPanel.style.display = "none"; };
+
         for (const c of nodeEls) {
             const nid = c.dataset.nodeId || "";
             c.addEventListener("mouseenter", () => { if (!lockedNodeId) applyHighlight(nid); });
             c.addEventListener("mouseleave", () => { if (!lockedNodeId) applyHighlight(""); });
             c.addEventListener("click", (ev) => {
                 ev.stopPropagation();
-                if (lockedNodeId === nid) { lockedNodeId = ""; applyHighlight(""); return; }
-                lockedNodeId = nid; applyHighlight(nid);
+                if (lockedNodeId === nid) { lockedNodeId = ""; applyHighlight(""); hideInfoPanel(); return; }
+                lockedNodeId = nid; applyHighlight(nid); showInfoPanel(nid);
             });
         }
-        svg.addEventListener("click", () => { lockedNodeId = ""; applyHighlight(""); });
+        svg.addEventListener("click", () => { lockedNodeId = ""; applyHighlight(""); hideInfoPanel(); });
+    };
+
+    /* ── Helper: zoom and pan on SVG ── */
+    const setupZoomPan = (svg) => {
+        const vb = (svg.getAttribute("viewBox") || "0 0 980 520").split(/\s+/).map(Number);
+        let vx = vb[0], vy = vb[1], vw = vb[2], vh = vb[3];
+        const origW = vw, origH = vh;
+        let isPanning = false, startX = 0, startY = 0, startVx = 0, startVy = 0, moved = false;
+        const MOVE_THRESHOLD = 4;
+
+        svg.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            const rect = svg.getBoundingClientRect();
+            const mx = (e.clientX - rect.left) / rect.width;
+            const my = (e.clientY - rect.top) / rect.height;
+            const factor = e.deltaY > 0 ? 1.12 : 0.89;
+            const newW = clamp(vw * factor, origW * 0.25, origW * 4);
+            const newH = clamp(vh * factor, origH * 0.25, origH * 4);
+            vx += (vw - newW) * mx;
+            vy += (vh - newH) * my;
+            vw = newW; vh = newH;
+            svg.setAttribute("viewBox", `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`);
+        }, { passive: false });
+
+        svg.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            isPanning = true; moved = false;
+            startX = e.clientX; startY = e.clientY;
+            startVx = vx; startVy = vy;
+            svg.classList.add("is-dragging");
+        });
+        window.addEventListener("mousemove", (e) => {
+            if (!isPanning) return;
+            const dx = e.clientX - startX, dy = e.clientY - startY;
+            if (Math.abs(dx) + Math.abs(dy) > MOVE_THRESHOLD) moved = true;
+            const rect = svg.getBoundingClientRect();
+            vx = startVx - dx * (vw / rect.width);
+            vy = startVy - dy * (vh / rect.height);
+            svg.setAttribute("viewBox", `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`);
+        });
+        window.addEventListener("mouseup", () => {
+            isPanning = false;
+            svg.classList.remove("is-dragging");
+        });
+
+        // Suppress click events that were actually pan drags
+        svg.addEventListener("click", (e) => {
+            if (moved) { e.stopPropagation(); moved = false; }
+        }, true);
     };
 
     /* ── Helper: run force layout ── */
@@ -198,7 +280,7 @@
     };
 
     /* ── Helper: get node radius ── */
-    const getNodeRadius = (node) => Math.max(4, Math.min(20, 4 + Math.sqrt(Math.max(node.weighted_degree || 0, 1)) / 3));
+    const getNodeRadius = (node) => Math.max(5, Math.min(30, 5 + Math.sqrt(Math.max(node.weighted_degree || 0, 1)) / 2));
 
     /* ── Helper: render a generic force graph ── */
     const renderForceGraph = (svg, summaryEl, nodes, edges, colorFn, opts = {}) => {
@@ -240,7 +322,7 @@
             edgeEls.push(line);
         }
 
-        const topLabels = nodes.slice().sort((a, b) => (b.weighted_degree || 0) - (a.weighted_degree || 0)).slice(0, 18);
+        const topLabels = nodes.slice().sort((a, b) => (b.weighted_degree || 0) - (a.weighted_degree || 0)).slice(0, 30);
         const labeledSet = new Set(topLabels.map((n) => n.id));
 
         const nodeEls = [];
@@ -263,7 +345,7 @@
             if (labeledSet.has(n.id)) {
                 const text = createSvgEl("text", {
                     x: (n.x + r + 3).toFixed(2), y: (n.y + 4).toFixed(2),
-                    "font-size": "10", fill: "#0f172a",
+                    "font-size": "11", fill: "#0f172a",
                 });
                 text.dataset.nodeId = n.id;
                 text.textContent = shortLabel(n.label, 22);
@@ -272,8 +354,9 @@
             }
         }
 
-        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency);
-        if (summaryEl) summaryEl.textContent = `${nodes.length} nodes, ${edges.length} edges. Click a node to highlight its connections.`;
+        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId);
+        setupZoomPan(svg);
+        if (summaryEl) summaryEl.textContent = `${nodes.length} nodes, ${edges.length} edges. Click a node to highlight its connections. Scroll to zoom, drag to pan.`;
     };
 
     /* ── Helper: build Sankey column layout ── */
@@ -319,7 +402,14 @@
         if (!networkSvg) return;
         const { nodes, edges, mode } = getGraphSubset();
         const colorFn = (n) => mode === "region" ? (regionColors[n.region] || regionColors.Unknown) : (typeColor[n.node_type] || "#64748b");
-        renderForceGraph(networkSvg, networkSummary, nodes, edges, colorFn, { emptyMsg: "No network data. Switch to Full mode." });
+        renderForceGraph(networkSvg, networkSummary, nodes, edges, colorFn, { emptyMsg: "No network data. Switch to Full mode.", infoPanelId: "network-info-panel" });
+        // Toggle description text based on mode
+        const descEl = document.getElementById("network-description");
+        if (descEl) {
+            descEl.textContent = mode === "region"
+                ? "Regional view: nodes are colored by geographic region. Filter by a specific region to focus the graph."
+                : "Power Players view: the top 45 nodes by contribution volume and their direct connections. Node color indicates type (donor, committee, candidate, vendor).";
+        }
     };
 
     if (renderBtn) renderBtn.addEventListener("click", renderForce);
@@ -605,6 +695,7 @@
         renderForceGraph(vendorSvg, vendorSummary, nodes, edges, colorFn, {
             emptyMsg: "No vendor expenditure data available.",
             charge: 3000, spring: 0.012, iterations: 200,
+            infoPanelId: "vendor-info-panel",
         });
     };
 
@@ -775,6 +866,7 @@
         renderForceGraph(overlapSvg, overlapSummaryEl, nodes, edges, colorFn, {
             emptyMsg: "No state-federal overlap data. Run cross-matching first.",
             anchorFn, anchorStrength: 0.015, charge: 3500, spring: 0.01,
+            infoPanelId: "overlap-info-panel",
         });
     };
 
@@ -798,6 +890,7 @@
         renderForceGraph(lobbyingSvg, lobbyingSummaryEl, nodes, edges, colorFn, {
             emptyMsg: "No lobbying data. Import lobbying data and run cross-matching first.",
             charge: 3000, spring: 0.012,
+            infoPanelId: "lobbying-info-panel",
         });
     };
 
@@ -821,6 +914,7 @@
         renderForceGraph(darkMoneySvg, darkMoneySummaryEl, nodes, edges, colorFn, {
             emptyMsg: "No 527 data. Import IRS 527 data and run cross-matching first.",
             charge: 3000, spring: 0.012,
+            infoPanelId: "darkmoney-info-panel",
         });
     };
 

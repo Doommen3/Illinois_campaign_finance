@@ -95,6 +95,15 @@
 
     <div class="tab-panels">
         <div class="tab-panel panel-force">
+            <p id="network-description" class="help-text">Power Players view: the top 45 nodes by contribution volume and their direct connections. Node color indicates type (donor, committee, candidate, vendor).</p>
+            <div class="network-color-legend" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem;font-size:0.8rem;">
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2563eb;margin-right:3px;"></span>Donor</span>
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#059669;margin-right:3px;"></span>Committee</span>
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#dc2626;margin-right:3px;"></span>Candidate</span>
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#d97706;margin-right:3px;"></span>Vendor</span>
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#7c3aed;margin-right:3px;"></span>Lobbying</span>
+                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#be185d;margin-right:3px;"></span>527 Org</span>
+            </div>
             <div class="network-controls">
                 <label for="network-view-mode">View</label>
                 <select id="network-view-mode">
@@ -110,10 +119,12 @@
             <div class="network-svg-wrap">
                 <svg id="network-svg" viewBox="0 0 980 520" role="img" aria-label="Interactive force-directed network graph"></svg>
             </div>
+            <div id="network-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="network-summary" class="subtitle"></p>
         </div>
 
         <div class="tab-panel panel-sankey">
+            <p class="help-text">Three-column donor &rarr; committee &rarr; candidate flow diagram. Ribbon width represents contribution amount. Use the controls below to adjust how many donors and candidates are shown.</p>
             <div class="network-controls">
                 <label for="sankey-donor-limit">Top Donors</label>
                 <select id="sankey-donor-limit">
@@ -136,6 +147,7 @@
         </div>
 
         <div class="tab-panel panel-heatmap">
+            <p class="help-text">Grid of top donors (rows) vs. top committees (columns). Darker cells indicate larger total contributions between that donor-committee pair.</p>
             <div class="network-controls">
                 <label for="heatmap-donor-limit">Top Donors</label>
                 <select id="heatmap-donor-limit">
@@ -158,13 +170,16 @@
         </div>
 
         <div class="tab-panel panel-vendor">
+            <p class="help-text">Committee-to-vendor expenditure network. Node size reflects total spending. Pink nodes indicate vendors that also match lobbying entity/client records.</p>
             <div class="network-svg-wrap">
                 <svg id="vendor-svg" viewBox="0 0 980 520" role="img" aria-label="Vendor expenditure network"></svg>
             </div>
+            <div id="vendor-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="vendor-summary" class="subtitle"></p>
         </div>
 
         <div class="tab-panel panel-combined">
+            <p class="help-text">Full four-column money pipeline: donors &rarr; committees &rarr; candidates + vendors. Shows how contributions flow from donors through committees to both candidates and vendor expenditures.</p>
             <div class="network-controls">
                 <label for="combined-donor-limit">Top Donors</label>
                 <select id="combined-donor-limit">
@@ -185,23 +200,29 @@
         </div>
 
         <div class="tab-panel panel-overlap">
+            <p class="help-text">Donors giving to both state (green, left) and federal (blue, right) committees. Lines connect donors to the committees they contribute to, revealing cross-level giving patterns.</p>
             <div class="network-svg-wrap">
                 <svg id="overlap-svg" viewBox="0 0 980 520" role="img" aria-label="State-federal donor overlap"></svg>
             </div>
+            <div id="overlap-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="overlap-summary" class="subtitle"></p>
         </div>
 
         <div class="tab-panel panel-lobbying">
+            <p class="help-text">Lobbying clients and entities (purple) connected to campaign finance committees through donor name matching. Shows how lobbying interests link to political contributions.</p>
             <div class="network-svg-wrap">
                 <svg id="lobbying-svg" viewBox="0 0 980 520" role="img" aria-label="Lobbying-campaign finance bridge"></svg>
             </div>
+            <div id="lobbying-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="lobbying-summary" class="subtitle"></p>
         </div>
 
         <div class="tab-panel panel-darkmoney">
+            <p class="help-text">IRS 527 political organizations (pink) and their matched financial flows to Illinois committees and candidates. Reveals dark money pathways from tax-exempt political orgs into state-level campaigns.</p>
             <div class="network-svg-wrap">
                 <svg id="dark-money-svg" viewBox="0 0 980 520" role="img" aria-label="527 dark money pathway"></svg>
             </div>
+            <div id="darkmoney-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="darkmoney-summary" class="subtitle"></p>
         </div>
     </div>

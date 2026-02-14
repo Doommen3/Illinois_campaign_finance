@@ -5,6 +5,7 @@
 {% block content %}
 <h1>{{ client.client_name }}</h1>
 <p class="subtitle">Lobbying Client ID: {{ client.client_id }}</p>
+<p class="help-text">This is a lobbying client &mdash; a company or organization that hired a lobbying firm to represent its interests before Illinois state government. Financial connections below are identified by fuzzy name-matching this client against campaign contribution donor records.</p>
 
 <div class="status-badges">
     <span class="badge badge-open">Matched donors: {{ donor_matches|length }}</span>
@@ -15,6 +16,7 @@
 
 <div class="status-section lobbying-money-card">
     <h2>Money Destinations</h2>
+    <p class="help-text">These are campaign contributions made by donors whose names match this lobbying client. The amounts shown are contributions from those matched donors, not direct payments from the client itself.</p>
     <p class="subtitle">
         Matched donor dollars: <strong>{{ format_currency(money_destinations.total_amount or 0) }}</strong> |
         Contributions: <strong>{{ money_destinations.contribution_count or 0 }}</strong> |
@@ -52,7 +54,7 @@
                     {% for row in money_destinations.committee_destinations %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id) }}">
+                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id) }}">
                                 {{ row.committee_name }}
                             </a>
                         </td>
@@ -92,6 +94,7 @@
 </div>
 
 <h2>Represented By ({{ entities|length }})</h2>
+<p class="help-text">These are the lobbying firms and individual lobbyists registered with the IL Secretary of State to represent this client.</p>
 <table class="data-table">
     <thead>
         <tr>
@@ -119,6 +122,7 @@
 
 {% if donor_matches %}
 <h2>Matched Campaign Donors</h2>
+<p class="help-text">Donors found via fuzzy name matching against this client's name. Confidence scores range from 0 to 1, with bands: High (&ge;0.85), Medium (0.70&ndash;0.84), Low (&lt;0.70). Higher scores indicate stronger name similarity.</p>
 <table class="data-table">
     <thead>
         <tr>

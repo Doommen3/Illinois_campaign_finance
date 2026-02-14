@@ -5,6 +5,7 @@
 {% block content %}
 <h1>{{ entity.entity_name }}</h1>
 <p class="subtitle">Lobbying Entity ID: {{ entity.entity_id }} | Registration Year: {{ entity.reg_year or 'N/A' }}</p>
+<p class="help-text">This is a registered lobbying entity (firm or individual lobbyist) filed with the Illinois Secretary of State. The financial connections shown below are derived by fuzzy name-matching this entity's clients against campaign contribution donor records.</p>
 
 <div class="status-badges">
     <span class="badge badge-open">Matched donors: {{ donor_matches|length }}</span>
@@ -15,6 +16,7 @@
 
 <div class="status-section lobbying-money-card">
     <h2>Money Destinations</h2>
+    <p class="help-text">These are campaign contributions made by donors whose names match this entity's clients. The amounts shown are contributions from those matched donors, not direct payments from the lobbying entity itself.</p>
     <p class="subtitle">
         Matched donor dollars: <strong>{{ format_currency(money_destinations.total_amount or 0) }}</strong> |
         Contributions: <strong>{{ money_destinations.contribution_count or 0 }}</strong> |
@@ -40,6 +42,7 @@
     <div class="two-column">
         <div class="column">
             <h3>Top Committees</h3>
+            <p class="help-text">Committees that received the most contributions from name-matched donors associated with this entity's clients.</p>
             <table class="data-table">
                 <thead>
                     <tr>
@@ -52,7 +55,7 @@
                     {% for row in money_destinations.committee_destinations %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id) }}">
+                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id) }}">
                                 {{ row.committee_name }}
                             </a>
                         </td>
@@ -67,6 +70,7 @@
         </div>
         <div class="column">
             <h3>Top Candidates</h3>
+            <p class="help-text">Candidates supported by the committees above, with contribution amounts allocated proportionally based on committee-candidate linkage.</p>
             <table class="data-table">
                 <thead>
                     <tr>
@@ -92,6 +96,7 @@
 </div>
 
 <h2>Clients ({{ clients|length }})</h2>
+<p class="help-text">These are the companies and organizations that hired this lobbying entity to represent them, sourced from Illinois Secretary of State lobbying registration records. Financial connections are established by fuzzy name-matching clients against campaign contribution donor records.</p>
 <table class="data-table">
     <thead>
         <tr>

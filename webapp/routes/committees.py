@@ -1,5 +1,5 @@
 """Committee routes."""
-from flask import Blueprint, render_template, request, current_app, abort
+from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for
 
 from database.models import Committee, Report, Contribution
 
@@ -86,3 +86,13 @@ def committee_detail(committee_id):
                            report_dir=report_dir,
                            contrib_sort=contrib_sort,
                            contrib_dir=contrib_dir)
+
+
+@committees_bp.route('/sbe/<int:committee_id_sbe>')
+def committee_detail_by_sbe(committee_id_sbe):
+    """Redirect from SBE committee ID to the canonical internal-ID route."""
+    conn = current_app.get_database()
+    committee = Committee.get_by_sbe_id(conn, committee_id_sbe)
+    if not committee:
+        abort(404)
+    return redirect(url_for('committees.committee_detail', committee_id=committee.id))

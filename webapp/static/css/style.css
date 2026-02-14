@@ -200,6 +200,13 @@ h2 {
     margin-bottom: 1rem;
 }
 
+.help-text {
+    color: #64748b;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    margin-bottom: 0.75rem;
+}
+
 /* Stats grid */
 .stats-grid {
     display: grid;
