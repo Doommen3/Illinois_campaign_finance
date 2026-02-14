@@ -28,8 +28,10 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Geographic Analysis** — State and city-level donor aggregation from parsed addresses
 - **NLP Categorization** — Keyword-based expenditure classification
 - **Entity Resolution** — Jaccard similarity candidate matching across state/federal records
-- **Cross-Matching Engine** — Lobbying-to-donor, lobbying-to-expenditure, 527-to-committee, 527-expenditure-to-committee, 527-director-to-donor, and lobbying-to-527 matching
+- **Cross-Matching Engine** — Lobbying-to-donor, lobbying-to-expenditure, 527-to-committee, 527-expenditure-to-committee, 527-director-to-donor (exhaustive), 527-director-to-candidate (state + federal), 527-director-address-to-donor, 527-org-address-to-committee/donor, and lobbying-to-527 matching
+- **527 Contribution Parsing** — IRS FullDataFile type-A records (who donates TO 527 organizations)
 - **Dark Money Tracker** — 527 organization expenditures matched to IL committees and candidates
+- **Person Intelligence** — Unified cross-dataset name lookup across state donors, candidates, 527 directors, lobbying entities/clients, and federal contributors
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
@@ -54,8 +56,10 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Candidate competition networks with resolved candidate names from bulk data (not raw IDs)
 - Federal-state cross-reference views and donor overlap analysis
 - IL lobbying entity/client browser with cross-matched campaign finance connections
-- IRS 527 organization browser with financial summaries, directors, and IL expenditures
+- IRS 527 organization browser with financial summaries, directors (with matched donors/candidates columns), contributions received, and IL expenditures
 - Dark money tracker showing 527 expenditures flowing to IL committees and candidates
+- Dashboard 527 Dark Money summary card with organization count, total expenditures, director-donor overlaps, and lobbying entity count
+- Person Intelligence page for unified name search across all data sources (state donors, candidates, 527 directors, lobbying entities/clients, federal FEC contributors)
 - Session authentication with consolidated admin tool hub
 
 ## Tech Stack
@@ -63,7 +67,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Python 3.12** — Core language
 - **Flask 3.0** — Web framework (Jinja2 templates)
 - **Playwright** — Async browser automation for scraping
-- **SQLite** — Database (WAL mode, 53-table schema, optimized pragmas)
+- **SQLite** — Database (WAL mode, 57-table schema, optimized pragmas)
 - **Click** — CLI command framework
 - **pytest** — Test suite
 
@@ -181,7 +185,7 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── sync-fec.sh         Weekly FEC data sync wrapper
 │   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
-├── tests/                  pytest suite (17 test modules)
+├── tests/                  pytest suite (20+ test modules)
 ├── docs/                   Data update guide, roadmaps, checklists
 │   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
@@ -503,8 +507,9 @@ Notes:
 | `/lobbying/<entity_id>` | Lobbying entity detail with clients and matched payees |
 | `/lobbying/client/<client_id>` | Lobbying client detail with entities, donor matches, 527 connections |
 | `/527/` | IRS 527 organization list (IL-filtered) with financial totals |
-| `/527/<ein>` | 527 org detail — directors, related orgs, expenditures, committee matches |
+| `/527/<ein>` | 527 org detail — directors (with matched donors/candidates), contributions received, expenditures, committee matches |
 | `/527/dark-money` | Dark money tracker — 527 expenditures matched to IL committees/candidates |
+| `/person-intelligence` | Unified cross-dataset person search (donors, candidates, 527 directors, lobbying, FEC) |
 
 CSV exports:
 - Candidate detail Schedule B: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_b`

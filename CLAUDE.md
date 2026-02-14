@@ -27,7 +27,7 @@ python run.py runserver --port 5000
 | Path | Purpose |
 |------|---------|
 | `cli/commands.py` | All CLI commands |
-| `database/schema.sql` | 53-table DDL schema |
+| `database/schema.sql` | 57-table DDL schema |
 | `database/models.py` | Dataclass-based ORM |
 | `database/analytics.py` | Network, anomaly, concentration analytics |
 | `database/cross_matching.py` | Jaccard-based cross-dataset matching engine |
@@ -46,14 +46,19 @@ python run.py runserver --port 5000
 
 ### Cross-Matching Engine
 
-All matching uses Jaccard similarity with sparse inverted-index candidate generation (`database/cross_matching.py`). Current matches:
-- Lobbying client -> donor (0.80 threshold)
-- Lobbying client/entity -> expenditure payee (0.80)
-- 527 org -> IL committee (0.80)
-- 527 expenditure recipient -> committee/candidate (0.80)
-- 527 director -> donor (0.80)
-- Lobbying client -> 527 org (0.80)
+All name matching uses Jaccard similarity with sparse inverted-index candidate generation (`database/cross_matching.py`). Address matching uses normalized zip5+city+state scoring. Current matches:
+- Lobbying client -> donor (Jaccard 0.80 threshold)
+- Lobbying client/entity -> expenditure payee (Jaccard 0.80)
+- 527 org -> IL committee (Jaccard 0.80)
+- 527 expenditure recipient -> committee/candidate (Jaccard 0.80)
+- 527 director -> donor (Jaccard 0.80, exhaustive — no row limit)
+- 527 director -> state + federal candidate (Jaccard 0.80)
+- 527 director -> donor by address (city+state+zip scoring, 0.5 threshold)
+- 527 org addresses -> committee/donor (4 address types: org, custodian, contact, business)
+- Lobbying client -> 527 org (Jaccard 0.80)
 - Federal donor -> local donor (zip+state+name)
+
+**Performance note**: The matching engine uses Python dict-based sparse inverted indexes, NOT numpy/matrix operations. Each match function builds an in-memory token→entity index, then iterates candidates. For ~5K directors × ~1M donors, the inverted index approach keeps memory and CPU reasonable (~5–15 minutes on production for `run-cross-matching --only all`).
 
 ## Testing
 
@@ -98,7 +103,7 @@ All matching uses Jaccard similarity with sparse inverted-index candidate genera
 
 1. Run local tests: `pytest -q`
 2. Push to main: `git push origin main`
-3. SSH to server and pull:
+3. SSH to server and pull (see SSH note below):
    ```bash
    cd /srv/illinois_campaign_finance/app && git pull --ff-only origin main
    ```
@@ -124,6 +129,27 @@ All matching uses Jaccard similarity with sparse inverted-index candidate genera
    curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/
    ```
 
+### SSH Authentication Notes
+
+The SSH key `~/.ssh/hetzner_ed25519` is **passphrase-protected**. For automated/scripted SSH:
+```bash
+# Interactive (prompts for passphrase):
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
+
+# Scripted with sshpass (passphrase mode — note -P 'passphrase' flag, NOT -p):
+export SSHPASS='<passphrase>'
+sshpass -P 'passphrase' -e ssh -o StrictHostKeyChecking=no -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 '<command>'
+```
+
+The server does NOT have GitHub credentials configured. To pull on the server, either:
+1. Use a deploy key, or
+2. Temporarily embed a PAT in the remote URL (remove after pull):
+   ```bash
+   git remote set-url origin https://<PAT>@github.com/Doommen3/Illinois_campaign_finance.git
+   git pull --ff-only origin main
+   git remote set-url origin https://github.com/Doommen3/Illinois_campaign_finance.git
+   ```
+
 ### Server Command Pattern
 
 ```bash
@@ -137,7 +163,9 @@ $PYTHON run.py <command>
 ### GitHub
 
 - Username: Doommen3
-- Remote: HTTPS (credentials needed for push/pull on server)
+- Remote: HTTPS
+- Local auth: `gh` CLI with fine-grained PAT (via `gh auth git-credential`)
+- **Important**: Fine-grained PATs need the "Contents: Read and write" permission for git push. If push returns 403 but API shows push:true, the PAT is missing this scope — regenerate with Contents write access.
 
 ### Endpoint Sweep
 
@@ -165,8 +193,14 @@ python run.py refresh-analytics --with-snapshot
 
 ## Database Notes
 
-- 53-table schema in `database/schema.sql`
+- 57-table schema in `database/schema.sql`
 - WAL mode enabled for concurrent reads
 - Materialized views refreshed via `refresh-analytics` CLI command
-- Cross-matching results stored in dedicated match tables (e.g., `irs527_director_donor_matches`)
+- Cross-matching results stored in dedicated match tables:
+  - `irs527_director_donor_matches` — name-based director↔donor
+  - `irs527_director_candidate_matches` — director↔state/federal candidate
+  - `irs527_director_address_matches` — address-based director↔donor
+  - `irs527_org_address_matches` — org address↔committee/donor
+  - `lobbying_donor_matches`, `lobbying_expenditure_matches`, etc.
+- `irs527_contributions` — parsed type-A records (who donates TO 527 orgs)
 - All IRS 527 tables prefixed with `irs527_`
