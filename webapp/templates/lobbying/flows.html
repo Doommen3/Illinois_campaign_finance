@@ -12,9 +12,9 @@
     <button type="submit">Update</button>
 </form>
 
-<div id="sankey-status" class="help-text"></div>
+<div id="sankey-status" class="help-text" aria-live="polite"></div>
 <div id="sankey-container" style="width: 100%; overflow-x: auto;">
-    <svg id="sankey" width="960" height="520"></svg>
+    <svg id="sankey" width="960" height="520" data-testid="lobbying-flows-sankey"></svg>
 </div>
 {% endblock %}
 

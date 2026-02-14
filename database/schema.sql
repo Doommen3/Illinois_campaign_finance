@@ -239,6 +239,8 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_source_amount
     ON analytics_donor_committee_agg(source, total_amount DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_committee
     ON analytics_donor_committee_agg(source, committee_name);
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_source_donor
+    ON analytics_donor_committee_agg(source, donor_key);
 
 CREATE TABLE IF NOT EXISTS analytics_committee_monthly_totals (
     source TEXT NOT NULL, -- bulk_receipts, contributions
@@ -932,6 +934,10 @@ CREATE TABLE IF NOT EXISTS lobbying_donor_matches (
 
 CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_score
     ON lobbying_donor_matches(score DESC);
+CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_donor_score
+    ON lobbying_donor_matches(donor_key, score DESC);
+CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_client_name
+    ON lobbying_donor_matches(client_name);
 
 CREATE TABLE IF NOT EXISTS lobbying_expenditure_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,

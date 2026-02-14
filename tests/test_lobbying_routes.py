@@ -114,3 +114,40 @@ def empty_client(empty_app):
 def test_lobbying_list_empty_tables(empty_client):
     response = empty_client.get('/lobbying/')
     assert response.status_code == 200
+
+
+def test_lobbying_flows_page_has_stable_ui_hooks(client):
+    response = client.get('/lobbying/flows')
+    assert response.status_code == 200
+    assert b'id="sankey-status"' in response.data
+    assert b'aria-live="polite"' in response.data
+    assert b'id="sankey-container"' in response.data
+    assert b'data-testid="lobbying-flows-sankey"' in response.data
+
+
+def test_lobbying_flows_data_returns_summary_metadata(client):
+    response = client.get('/lobbying/flows/data')
+    assert response.status_code == 200
+
+    payload = response.get_json()
+    assert payload["nodes"]
+    assert payload["links"]
+    assert payload["summary"] == {
+        "node_count": len(payload["nodes"]),
+        "link_count": len(payload["links"]),
+        "total_flow_amount": 1200.0,
+    }
+
+
+def test_lobbying_flows_data_empty_payload_includes_summary(empty_client):
+    response = empty_client.get('/lobbying/flows/data')
+    assert response.status_code == 200
+
+    payload = response.get_json()
+    assert payload["nodes"] == []
+    assert payload["links"] == []
+    assert payload["summary"] == {
+        "node_count": 0,
+        "link_count": 0,
+        "total_flow_amount": 0.0,
+    }

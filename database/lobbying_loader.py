@@ -9,6 +9,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_REQUIRED_HEADERS = {
+    "ENT_REG_YEAR",
+    "ENTITY_ID",
+    "ENTITY_NAME",
+    "CLIENT_ID",
+    "CLIENT_NAME",
+}
+
 
 def _clean_text(value: str | None) -> Optional[str]:
     if value is None:
@@ -52,9 +60,15 @@ def load_lobbying_csv(conn: sqlite3.Connection, file_path: str | Path) -> dict:
     entities: dict[int, tuple] = {}
     clients: dict[int, tuple] = {}
     pairs: list[tuple] = []
+    rows_skipped = 0
 
     with file_path.open("r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        present_headers = set(reader.fieldnames or [])
+        missing_headers = sorted(_REQUIRED_HEADERS - present_headers)
+        if missing_headers:
+            raise ValueError(f"Lobbying CSV missing required headers: {', '.join(missing_headers)}")
+
         for row_num, row in enumerate(reader, start=2):
             entity_id = _to_int(row.get("ENTITY_ID"))
             client_id = _to_int(row.get("CLIENT_ID"))
@@ -64,6 +78,7 @@ def load_lobbying_csv(conn: sqlite3.Connection, file_path: str | Path) -> dict:
 
             if entity_id is None or client_id is None:
                 logger.warning("Row %d: missing entity_id or client_id, skipping", row_num)
+                rows_skipped += 1
                 continue
 
             if entity_id not in entities:
@@ -116,6 +131,7 @@ def load_lobbying_csv(conn: sqlite3.Connection, file_path: str | Path) -> dict:
         "entities_loaded": len(entities),
         "clients_loaded": len(clients),
         "pairs_loaded": len(pairs),
+        "rows_skipped": rows_skipped,
     }
     logger.info("Lobbying CSV loaded: %s", stats)
     return stats

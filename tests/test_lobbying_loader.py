@@ -1,6 +1,8 @@
 """Tests for lobbying data loader."""
 from pathlib import Path
 
+import pytest
+
 from database.connection import get_db, init_db
 from database.lobbying_loader import load_lobbying_csv
 
@@ -111,3 +113,66 @@ def test_load_lobbying_csv_missing_file(tmp_path: Path):
         pass
     finally:
         conn.close()
+
+
+def test_load_lobbying_csv_rejects_missing_required_headers(tmp_path: Path):
+    csv_content = (
+        '"ENT_REG_YEAR","ENTITY_ID","ENTITY_NAME"\n'
+        '"2026","100","Alpha Lobby Group"\n'
+    )
+    csv_path = _make_csv(tmp_path, content=csv_content)
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    try:
+        with pytest.raises(ValueError):
+            load_lobbying_csv(conn, csv_path)
+    finally:
+        conn.close()
+
+
+def test_load_lobbying_csv_tracks_malformed_rows(tmp_path: Path):
+    csv_content = (
+        '"ENT_REG_YEAR","ENTITY_ID","ENTITY_NAME","CLIENT_ID","CLIENT_NAME"\n'
+        '"2026","100","Entity A","200","Client A"\n'
+        '"2026","BROKEN","Entity B","201","Client B"\n'
+        '"2026","101","Entity C","","Client C"\n'
+    )
+    csv_path = _make_csv(tmp_path, content=csv_content)
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_lobbying_csv(conn, csv_path)
+
+    assert stats["entities_loaded"] == 1
+    assert stats["clients_loaded"] == 1
+    assert stats["pairs_loaded"] == 1
+    assert stats["rows_skipped"] == 2
+
+    conn.close()
+
+
+def test_load_lobbying_csv_bom_and_empty_inputs_report_consistent_stats(tmp_path: Path):
+    csv_path = tmp_path / "lobbying_bom.csv"
+    csv_path.write_text(
+        '\ufeff"ENT_REG_YEAR","ENTITY_ID","ENTITY_NAME","CLIENT_ID","CLIENT_NAME"\n',
+        encoding="utf-8",
+    )
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_lobbying_csv(conn, csv_path)
+
+    assert stats == {
+        "entities_loaded": 0,
+        "clients_loaded": 0,
+        "pairs_loaded": 0,
+        "rows_skipped": 0,
+    }
+
+    conn.close()

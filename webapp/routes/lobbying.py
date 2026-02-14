@@ -101,6 +101,39 @@ def _confidence_band(score: float) -> str:
     return "low"
 
 
+def _empty_flow_payload() -> dict:
+    return {
+        "nodes": [],
+        "links": [],
+        "summary": {
+            "node_count": 0,
+            "link_count": 0,
+            "total_flow_amount": 0.0,
+        },
+    }
+
+
+def _ensure_lobbying_flow_indexes(conn) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_donor_score
+        ON lobbying_donor_matches(donor_key, score DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_client_name
+        ON lobbying_donor_matches(client_name)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_source_donor
+        ON analytics_donor_committee_agg(source, donor_key)
+        """
+    )
+
+
 def _get_federal_match_lookup(conn, donor_keys: list[str]) -> dict[str, dict]:
     if not donor_keys or not _table_exists(conn, "fec_local_donor_matches"):
         return {}
@@ -665,27 +698,34 @@ def flows_data():
     conn = current_app.get_database()
 
     if not _table_exists(conn, "lobbying_donor_matches") or not _table_exists(conn, "analytics_donor_committee_agg"):
-        return jsonify({"nodes": [], "links": []})
+        return jsonify(_empty_flow_payload())
+
+    _ensure_lobbying_flow_indexes(conn)
 
     client_filter = request.args.get('client', '').strip()
-    where = ["ldm.score >= 0.80", "a.source = 'bulk_receipts'"]
+    where = ["score >= 0.80"]
     params = []
     if client_filter:
-        where.append("ldm.client_name LIKE ?")
+        where.append("client_name LIKE ?")
         params.append(f"%{client_filter}%")
 
     rows = conn.execute(
         f"""
+        WITH filtered_matches AS (
+            SELECT donor_key, COALESCE(client_name, 'Unknown Client') AS client_name
+            FROM lobbying_donor_matches
+            WHERE {' AND '.join(where)}
+        )
         SELECT
-            ldm.client_name AS client_name,
-            a.committee_name AS committee_name,
+            fm.client_name AS client_name,
+            COALESCE(a.committee_name, 'Unknown Committee') AS committee_name,
             SUM(a.total_amount) AS flow_amount
-        FROM lobbying_donor_matches ldm
+        FROM filtered_matches fm
         JOIN analytics_donor_committee_agg a
-          ON a.donor_key = ldm.donor_key
-        WHERE {" AND ".join(where)}
-        GROUP BY ldm.client_name, a.committee_name
-        HAVING flow_amount >= 1000
+          ON a.donor_key = fm.donor_key
+         AND a.source = 'bulk_receipts'
+        GROUP BY fm.client_name, a.committee_name
+        HAVING SUM(a.total_amount) >= 1000
         ORDER BY flow_amount DESC
         LIMIT 100
         """,
@@ -693,7 +733,7 @@ def flows_data():
     ).fetchall()
 
     if not rows:
-        return jsonify({"nodes": [], "links": []})
+        return jsonify(_empty_flow_payload())
 
     nodes = []
     node_index = {}
@@ -707,6 +747,7 @@ def flows_data():
         return node_index[key]
 
     links = []
+    total_flow_amount = 0.0
     for r in rows:
         client_name = r["client_name"] or "Unknown Client"
         committee_name = r["committee_name"] or "Unknown Committee"
@@ -716,5 +757,19 @@ def flows_data():
         source = _ensure_node(client_name, "client")
         target = _ensure_node(committee_name, "committee")
         links.append({"source": source, "target": target, "value": value})
+        total_flow_amount += value
 
-    return jsonify({"nodes": nodes, "links": links})
+    if not links:
+        return jsonify(_empty_flow_payload())
+
+    return jsonify(
+        {
+            "nodes": nodes,
+            "links": links,
+            "summary": {
+                "node_count": len(nodes),
+                "link_count": len(links),
+                "total_flow_amount": round(total_flow_amount, 2),
+            },
+        }
+    )
