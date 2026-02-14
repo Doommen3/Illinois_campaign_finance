@@ -18,7 +18,14 @@
         <option value="P" {% if analysis_office == 'P' %}selected{% endif %}>President</option>
     </select>
     <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District">
-    <input type="text" name="follow_donor_key" value="{{ follow_donor_key }}" placeholder="Donor entity key (required)">
+    <select name="follow_donor_key" style="max-width:340px;">
+        <option value="">-- Select a donor --</option>
+        {% for d in top_donors %}
+        <option value="{{ d.entity_key }}" {% if d.entity_key == follow_donor_key %}selected{% endif %}>
+            {{ d.donor_name }} ({{ d.donor_state }}) — ${{ '{:,.0f}'.format(d.total_amount) }}
+        </option>
+        {% endfor %}
+    </select>
     <input type="text" name="follow_max_hops" value="{{ follow_max_hops }}" placeholder="Max hops (1-8)">
     <input type="text" name="follow_min_edge_amount" value="{{ follow_min_edge_amount }}" placeholder="Min edge amount">
     <button type="submit">Trace</button>
@@ -45,8 +52,8 @@
     {% elif follow_donor_key %}
     <p>No multi-hop network found for <strong>{{ follow_donor_key }}</strong> under current filters.</p>
     {% else %}
-    <p>Enter a donor entity key in the form above to trace their money flow through the campaign finance network.</p>
-    <p class="help-text">You can find donor entity keys on the <a href="{{ url_for('federal_finance.federal_candidates') }}">Federal Candidates</a> page by clicking into a candidate and viewing their donor list.</p>
+    <p>Select a donor from the dropdown above to trace their money flow through the campaign finance network.</p>
+    <p class="help-text">The dropdown shows the top 200 donors by total contribution amount. Select one and click Trace to visualize the multi-hop money path.</p>
     {% endif %}
 
     {% if follow_money.reachable_candidates %}

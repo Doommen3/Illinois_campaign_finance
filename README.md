@@ -43,8 +43,11 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - CSS-only tabbed interfaces on candidate detail (Overview/Money In/Money Out/Outside Spending/Cross-Role) and live feed (Local/Federal/Disbursements/Outside Spending)
 - Contextual help-text explanations on all major pages describing data sources and methodology
 - Lobbying pages with explanatory help-text blocks for Money Destinations, Clients, Matched Donors, and confidence scores
-- Network graph zoom/pan, node info panels on click, color legends, and per-tab descriptions for all eight visualization types
+- Network graph zoom/pan, collision-free node layouts, node info panels with dollar amounts and flow direction, color legends, and per-tab descriptions for all eight visualization types
+- Adaptive force layout with post-layout collision detection for dense graph readability
+- Follow-the-money donor dropdown selector (replaces raw entity key input) with top 200 donors by contribution volume
 - Committee SBE ID routing for cross-page navigation between lobbying and committee detail pages
+- Candidate competition networks with resolved candidate names from bulk data (not raw IDs)
 - Federal-state cross-reference views and donor overlap analysis
 - IL lobbying entity/client browser with cross-matched campaign finance connections
 - IRS 527 organization browser with financial summaries, directors, and IL expenditures

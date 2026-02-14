@@ -6654,6 +6654,51 @@ def get_federal_influence_scores(
     }
 
 
+def get_top_donor_entities(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Return top donor entities by total contributions for use in dropdowns."""
+    if not _table_exists(conn, "fec_schedule_a_contributions"):
+        return []
+    cycle_filter = ""
+    params: list[Any] = []
+    if cycle is not None:
+        cycle_filter = "AND sa.cycle = ?"
+        params.append(int(cycle))
+    params.append(min(max(int(limit), 50), 1000))
+    rows = conn.execute(
+        f"""
+        SELECT
+            COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS entity_key,
+            MAX(COALESCE(sa.contributor_name, '')) AS donor_name,
+            MAX(COALESCE(sa.contributor_state, '')) AS donor_state,
+            SUM(COALESCE(sa.contribution_receipt_amount, 0)) AS total_amount,
+            COUNT(*) AS contribution_count
+        FROM fec_schedule_a_contributions sa
+        WHERE sa.candidate_id IS NOT NULL
+          AND COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) IS NOT NULL
+          {cycle_filter}
+        GROUP BY entity_key
+        HAVING total_amount > 0
+        ORDER BY total_amount DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [
+        {
+            "entity_key": row["entity_key"],
+            "donor_name": row["donor_name"] or "Unknown",
+            "donor_state": row["donor_state"] or "",
+            "total_amount": round(float(row["total_amount"] or 0), 2),
+            "contribution_count": int(row["contribution_count"] or 0),
+        }
+        for row in rows
+    ]
+
+
 def get_federal_follow_the_money(
     conn: sqlite3.Connection,
     donor_entity_key: str,

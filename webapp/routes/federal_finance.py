@@ -24,6 +24,7 @@ from database.federal_fec import (
     get_federal_network_graph,
     get_federal_race_analytics,
     get_federal_view_snapshot,
+    get_top_donor_entities,
     list_federal_candidates,
     save_federal_view_snapshot,
 )
@@ -639,6 +640,10 @@ def federal_follow_the_money():
             min_edge_amount=follow_min_edge_amount,
         )
 
+    top_donors = []
+    if table_available:
+        top_donors = get_top_donor_entities(conn, cycle=cycle, limit=200)
+
     return render_template(
         'federal_finance/follow_the_money.html',
         **_base_context('follow_the_money', table_available, cycle, analysis_office, analysis_district),
@@ -646,6 +651,7 @@ def federal_follow_the_money():
         follow_max_hops=follow_max_hops,
         follow_min_edge_amount=follow_min_edge_amount,
         follow_money=follow_money,
+        top_donors=top_donors,
     )
 
 

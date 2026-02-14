@@ -3186,8 +3186,14 @@ def get_candidate_competition_networks(
     state_available = _table_exists(conn, "analytics_donor_committee_agg") and _table_exists(
         conn, "bulk_cmte_candidate_links_clean"
     )
-    state_candidate_name_expr = "'Candidate ' || l.candidate_id"
-    if _column_exists(conn, "bulk_cmte_candidate_links_clean", "candidate_full_name"):
+    # Resolve candidate names: prefer bulk_candidates_clean table (has candidate_full_name),
+    # fall back to columns on the links table, then to raw candidate_id.
+    _has_candidates_table = _table_exists(conn, "bulk_candidates_clean")
+    if _has_candidates_table:
+        state_candidate_name_expr = (
+            "COALESCE(NULLIF(TRIM(bc.candidate_full_name), ''), 'Candidate ' || l.candidate_id)"
+        )
+    elif _column_exists(conn, "bulk_cmte_candidate_links_clean", "candidate_full_name"):
         state_candidate_name_expr = (
             "COALESCE(NULLIF(TRIM(l.candidate_full_name), ''), 'Candidate ' || l.candidate_id)"
         )
@@ -3195,6 +3201,8 @@ def get_candidate_competition_networks(
         state_candidate_name_expr = (
             "COALESCE(NULLIF(TRIM(l.candidate_name), ''), 'Candidate ' || l.candidate_id)"
         )
+    else:
+        state_candidate_name_expr = "'Candidate ' || l.candidate_id"
     state_top_donor_cte = """
                 top_state_donors AS (
                     SELECT donor_key
@@ -3249,6 +3257,7 @@ def get_candidate_competition_networks(
                       ON td.donor_key = a.donor_key
                     JOIN bulk_cmte_candidate_links_clean l
                       ON l.committee_id_sbe = a.committee_id
+                    {"LEFT JOIN bulk_candidates_clean bc ON bc.candidate_id = l.candidate_id" if _has_candidates_table else ""}
                     LEFT JOIN committee_candidate_counts cc
                       ON cc.committee_id_sbe = l.committee_id_sbe
                     WHERE a.source = 'bulk_receipts'

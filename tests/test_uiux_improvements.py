@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from database.analytics import save_dashboard_snapshot
+from database.analytics import save_dashboard_snapshot, get_candidate_competition_networks
 from database.connection import get_db, init_db
 from database.models import Committee
 from webapp.app import create_app
@@ -150,3 +150,128 @@ def test_analytics_networks_has_color_legend(client):
     assert "Donor" in html
     assert "Committee" in html
     assert "Candidate" in html
+
+
+# ── Round 2: Overlapping nodes, info panel, candidate names, donor dropdown ──
+
+
+def test_network_svg_expanded_viewbox(client):
+    """Force-graph SVGs use the expanded 1200x700 viewBox for less overlap."""
+    response = client.get("/analytics/networks?load_mode=full")
+    html = response.data.decode()
+    assert 'viewBox="0 0 1200 700"' in html
+
+
+def test_network_js_has_collision_detection(app):
+    """analytics_networks.js includes post-layout collision resolution."""
+    import os
+
+    js_path = os.path.join(app.static_folder, "js", "analytics_networks.js")
+    with open(js_path) as f:
+        js = f.read()
+    assert "collision resolution" in js.lower() or "collision" in js.lower()
+    assert "overlap" in js.lower()
+
+
+def test_info_panel_has_dollar_amounts_markup(app):
+    """Info panel JS generates a table with Amount and Flow columns."""
+    import os
+
+    js_path = os.path.join(app.static_folder, "js", "analytics_networks.js")
+    with open(js_path) as f:
+        js = f.read()
+    assert "Amount" in js
+    assert "Flow" in js
+    assert "totalAmount" in js
+
+
+def test_candidate_competition_uses_candidates_table(tmp_path):
+    """Candidate competition resolves names via bulk_candidates_clean JOIN."""
+    db_path = str(tmp_path / "test_competition.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    # Create bulk download tables (not part of init_db)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS bulk_cmte_candidate_links_clean (
+            link_record_id INTEGER PRIMARY KEY,
+            committee_id_sbe INTEGER,
+            candidate_id INTEGER,
+            source_file TEXT,
+            source_row_number INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS bulk_candidates_clean (
+            candidate_id INTEGER PRIMARY KEY,
+            last_name TEXT,
+            first_name TEXT,
+            candidate_full_name TEXT,
+            address_line_1 TEXT,
+            address_line_2 TEXT,
+            city TEXT,
+            state TEXT,
+            postal_code TEXT,
+            office_sought TEXT,
+            district_type TEXT,
+            district TEXT,
+            residence_county TEXT,
+            party_affiliation TEXT,
+            redaction_requested INTEGER,
+            source_file TEXT,
+            source_row_number INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS analytics_donor_committee_agg (
+            donor_key TEXT, committee_id TEXT, committee_name TEXT,
+            total_amount REAL, contribution_count INTEGER, source TEXT
+        );
+    """)
+
+    # Seed the data
+    conn.execute(
+        "INSERT INTO committees (name, committee_id_sbe) VALUES ('TestCmte', 100)"
+    )
+    conn.execute(
+        """INSERT INTO bulk_cmte_candidate_links_clean
+           (link_record_id, committee_id_sbe, candidate_id, source_file, source_row_number)
+           VALUES (1, 100, 555, 'test', 1)"""
+    )
+    conn.execute(
+        """INSERT INTO bulk_candidates_clean
+           (candidate_id, last_name, first_name, candidate_full_name, source_file, source_row_number)
+           VALUES (555, 'Smith', 'Alice', 'Alice Smith', 'test', 1)"""
+    )
+    conn.execute(
+        """INSERT INTO analytics_donor_committee_agg
+           (donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count, source)
+           VALUES ('donor_a', 'Test Donor A', '100', 'TestCmte', 5000.0, 3, 'bulk_receipts')"""
+    )
+    conn.commit()
+
+    result = get_candidate_competition_networks(conn, candidate_limit=50, edge_limit=50)
+    conn.close()
+
+    # The state network should have used the candidate name, not the ID
+    state_nodes = result.get("state", {}).get("nodes", [])
+    for node in state_nodes:
+        if "555" in str(node.get("id", "")):
+            assert "Alice Smith" in node.get("label", ""), (
+                f"Expected 'Alice Smith' in label, got: {node.get('label')}"
+            )
+            break
+
+
+def test_follow_the_money_has_donor_dropdown(client):
+    """Follow-the-money page has a donor select dropdown instead of text input."""
+    response = client.get("/federal-finance/follow-the-money")
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert "Select a donor" in html
+    assert '<select name="follow_donor_key"' in html
+    # Should NOT have the old text input
+    assert 'Donor entity key (required)' not in html
+
+
+def test_follow_the_money_dropdown_help_text(client):
+    """Follow-the-money page has updated help text about the dropdown."""
+    response = client.get("/federal-finance/follow-the-money")
+    html = response.data.decode()
+    assert "top 200 donors" in html.lower() or "select a donor" in html.lower()

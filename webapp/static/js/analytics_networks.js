@@ -108,9 +108,21 @@
     };
 
     /* ── Helper: apply click-to-lock highlighting + info panel ── */
-    const setupClickToLock = (svg, nodeEls, labelEls, edgeEls, adjacency, localById, infoPanelId) => {
+    const setupClickToLock = (svg, nodeEls, labelEls, edgeEls, adjacency, localById, infoPanelId, graphEdges) => {
         let lockedNodeId = "";
         const infoPanel = infoPanelId ? document.getElementById(infoPanelId) : null;
+
+        // Build edge lookup: nodeId -> [{neighbor, weight, direction}]
+        const edgeLookup = new Map();
+        if (graphEdges) {
+            for (const e of graphEdges) {
+                const w = Number(e.weight || 0);
+                if (!edgeLookup.has(e.source)) edgeLookup.set(e.source, []);
+                edgeLookup.get(e.source).push({ neighbor: e.target, weight: w, direction: "outgoing" });
+                if (!edgeLookup.has(e.target)) edgeLookup.set(e.target, []);
+                edgeLookup.get(e.target).push({ neighbor: e.source, weight: w, direction: "incoming" });
+            }
+        }
 
         const applyHighlight = (nodeId) => {
             const neighborhood = nodeId ? (adjacency.get(nodeId) || new Set([nodeId])) : null;
@@ -135,23 +147,53 @@
             if (!node) { infoPanel.style.display = "none"; return; }
             const neighbors = adjacency.get(nodeId) || new Set();
             const connectionCount = neighbors.size - 1; // exclude self
-            // Build top connections list
-            const connections = [];
-            for (const nid of neighbors) {
-                if (nid === nodeId) continue;
-                const neighbor = localById.get(nid);
-                if (neighbor) connections.push({ label: neighbor.label || nid, type: neighbor.node_type || "unknown", wd: neighbor.weighted_degree || 0 });
+
+            // Build connections with dollar amounts from edge data
+            const connMap = new Map(); // neighborId -> {label, type, totalAmount, directions}
+            const nodeEdges = edgeLookup.get(nodeId) || [];
+            for (const e of nodeEdges) {
+                const neighbor = localById.get(e.neighbor);
+                if (!neighbor || e.neighbor === nodeId) continue;
+                if (!connMap.has(e.neighbor)) {
+                    connMap.set(e.neighbor, { label: neighbor.label || e.neighbor, type: neighbor.node_type || "unknown", totalAmount: 0, incoming: 0, outgoing: 0 });
+                }
+                const c = connMap.get(e.neighbor);
+                c.totalAmount += e.weight;
+                if (e.direction === "incoming") c.incoming += e.weight;
+                else c.outgoing += e.weight;
             }
-            connections.sort((a, b) => b.wd - a.wd);
-            const topConns = connections.slice(0, 10);
-            let html = `<h4>${shortLabel(node.label, 40)}</h4>`;
-            html += `<p><strong>Type:</strong> ${node.node_type || "unknown"} | <strong>Weighted degree:</strong> $${Number(node.weighted_degree || 0).toLocaleString()}</p>`;
-            if (node.region) html += `<p><strong>Region:</strong> ${node.region}</p>`;
-            html += `<p><strong>Connections:</strong> ${connectionCount}</p>`;
+
+            // Also add neighbors that have no edge data (adjacency-only)
+            for (const nid of neighbors) {
+                if (nid === nodeId || connMap.has(nid)) continue;
+                const neighbor = localById.get(nid);
+                if (neighbor) connMap.set(nid, { label: neighbor.label || nid, type: neighbor.node_type || "unknown", totalAmount: 0, incoming: 0, outgoing: 0 });
+            }
+
+            const connections = Array.from(connMap.values()).sort((a, b) => b.totalAmount - a.totalAmount);
+            const topConns = connections.slice(0, 12);
+            const totalFlow = connections.reduce((s, c) => s + c.totalAmount, 0);
+
+            let html = `<h4>${shortLabel(node.label, 50)}</h4>`;
+            html += `<p><strong>Type:</strong> ${node.node_type || "unknown"}`;
+            html += ` | <strong>Total flow:</strong> $${Number(node.weighted_degree || 0).toLocaleString()}`;
+            if (node.region && node.region !== "Unknown") html += ` | <strong>Region:</strong> ${node.region}`;
+            html += `</p>`;
+            html += `<p><strong>Connections:</strong> ${connectionCount}`;
+            if (totalFlow > 0) html += ` | <strong>Connected flow:</strong> $${totalFlow.toLocaleString()}`;
+            html += `</p>`;
             if (topConns.length) {
-                html += `<ul>`;
-                for (const c of topConns) html += `<li>${shortLabel(c.label, 30)} <small>(${c.type})</small></li>`;
-                html += `</ul>`;
+                html += `<table class="data-table" style="font-size:0.82rem;margin-top:0.4rem"><thead><tr><th>Connected To</th><th>Type</th><th>Amount</th><th>Flow</th></tr></thead><tbody>`;
+                for (const c of topConns) {
+                    let flowDir = "";
+                    if (c.outgoing > 0 && c.incoming > 0) flowDir = "both";
+                    else if (c.outgoing > 0) flowDir = "\u2192 outgoing";
+                    else if (c.incoming > 0) flowDir = "\u2190 incoming";
+                    else flowDir = "-";
+                    html += `<tr><td>${shortLabel(c.label, 32)}</td><td><small>${c.type}</small></td><td>$${c.totalAmount.toLocaleString()}</td><td><small>${flowDir}</small></td></tr>`;
+                }
+                html += `</tbody></table>`;
+                if (connections.length > 12) html += `<p class="help-text">Showing top 12 of ${connections.length} connections.</p>`;
             }
             infoPanel.innerHTML = html;
             infoPanel.style.display = "block";
@@ -223,12 +265,14 @@
 
     /* ── Helper: run force layout ── */
     const runForceLayout = (nodes, edges, width, height, opts = {}) => {
-        const charge = opts.charge || 2500;
-        const spring = opts.spring || 0.015;
-        const centerPull = opts.centerPull || 0.02;
-        const damping = opts.damping || 0.88;
-        const linkLength = opts.linkLength || 95;
-        const iterations = opts.iterations || Math.min(260, 80 + nodes.length * 2);
+        // Adaptive charge: scale up for denser graphs to prevent overlap
+        const baseCharge = opts.charge || (nodes.length > 80 ? 5000 : nodes.length > 40 ? 4000 : 3200);
+        const charge = baseCharge;
+        const spring = opts.spring || 0.012;
+        const centerPull = opts.centerPull || 0.015;
+        const damping = opts.damping || 0.86;
+        const linkLength = opts.linkLength || (nodes.length > 80 ? 140 : nodes.length > 40 ? 120 : 100);
+        const iterations = opts.iterations || Math.min(320, 100 + nodes.length * 2);
         const anchorFn = opts.anchorFn || null;
         const anchorStrength = opts.anchorStrength || 0.01;
 
@@ -275,6 +319,32 @@
                 n.x += n.vx; n.y += n.vy;
                 n.x = clamp(n.x, 16, width - 16);
                 n.y = clamp(n.y, 16, height - 16);
+            }
+        }
+
+        // Post-layout collision resolution: push overlapping nodes apart
+        const getR = (n) => Math.max(5, Math.min(30, 5 + Math.sqrt(Math.max(n.weighted_degree || 0, 1)) / 2));
+        for (let pass = 0; pass < 8; pass++) {
+            for (let i = 0; i < nodes.length; i++) {
+                const a = nodes[i];
+                const ra = getR(a) + 6; // padding
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const b = nodes[j];
+                    const rb = getR(b) + 6;
+                    const minDist = ra + rb;
+                    let dx = b.x - a.x, dy = b.y - a.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < minDist && dist > 0.01) {
+                        const overlap = (minDist - dist) / 2;
+                        const nx = dx / dist, ny = dy / dist;
+                        a.x -= nx * overlap; a.y -= ny * overlap;
+                        b.x += nx * overlap; b.y += ny * overlap;
+                        a.x = clamp(a.x, 16, width - 16);
+                        a.y = clamp(a.y, 16, height - 16);
+                        b.x = clamp(b.x, 16, width - 16);
+                        b.y = clamp(b.y, 16, height - 16);
+                    }
+                }
             }
         }
     };
@@ -354,7 +424,7 @@
             }
         }
 
-        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId);
+        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId, edges);
         setupZoomPan(svg);
         if (summaryEl) summaryEl.textContent = `${nodes.length} nodes, ${edges.length} edges. Click a node to highlight its connections. Scroll to zoom, drag to pan.`;
     };
