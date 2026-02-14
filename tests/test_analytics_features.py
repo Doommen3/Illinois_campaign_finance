@@ -19,6 +19,7 @@ from database.analytics import (
     get_nlp_spending_summary,
     get_reconciliation_outliers,
     get_time_series,
+    get_vendor_expenditure_network,
     refresh_analytics_materialized,
     save_dashboard_snapshot,
 )
@@ -560,6 +561,62 @@ def test_materialized_refresh_and_snapshot_cache(analytics_conn):
     assert cached["is_fresh"] is True
     assert cached["payload"] is not None
     assert "network" in cached["payload"]
+
+
+def test_vendor_network_supports_bulk_committees_clean_sbe_schema(analytics_conn):
+    analytics_conn.execute("DROP TABLE IF EXISTS bulk_expenditures_clean")
+    analytics_conn.execute(
+        """
+        CREATE TABLE bulk_expenditures_clean (
+            committee_id_sbe INTEGER,
+            payee_last_or_business_name TEXT,
+            amount REAL
+        )
+        """
+    )
+    analytics_conn.execute("DROP TABLE IF EXISTS bulk_committees_clean")
+    analytics_conn.execute(
+        """
+        CREATE TABLE bulk_committees_clean (
+            committee_id_sbe INTEGER PRIMARY KEY,
+            committee_name TEXT
+        )
+        """
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO bulk_committees_clean (committee_id_sbe, committee_name)
+        VALUES (?, ?)
+        """,
+        [
+            (10, "Committee Ten"),
+            (11, "Committee Eleven"),
+        ],
+    )
+    analytics_conn.executemany(
+        """
+        INSERT INTO bulk_expenditures_clean (committee_id_sbe, payee_last_or_business_name, amount)
+        VALUES (?, ?, ?)
+        """,
+        [
+            (10, "Vendor One", 1200.0),
+            (10, "Vendor One", 900.0),
+            (11, "Vendor Two", 1500.0),
+        ],
+    )
+    analytics_conn.commit()
+
+    graph = get_vendor_expenditure_network(
+        analytics_conn,
+        committee_limit=20,
+        vendor_limit=20,
+        edge_limit=100,
+        min_amount=1000.0,
+    )
+
+    assert graph["summary"]["edge_count"] > 0
+    committee_labels = {node["label"] for node in graph["nodes"] if node["node_type"] == "committee"}
+    assert "Committee Ten" in committee_labels
 
 
 def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):

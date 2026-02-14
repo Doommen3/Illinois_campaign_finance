@@ -4052,12 +4052,33 @@ def get_vendor_expenditure_network(
     committee_names: dict[str, str] = {}
     if has_committees:
         placeholders = ",".join("?" * len(keep_committees))
-        name_rows = conn.execute(
-            f"SELECT id, name FROM bulk_committees_clean WHERE id IN ({placeholders})",
-            list(keep_committees),
-        ).fetchall()
-        for row in name_rows:
-            committee_names[str(row["id"])] = row["name"]
+        if _column_exists(conn, "bulk_committees_clean", "committee_id_sbe"):
+            committee_id_column = "committee_id_sbe"
+        elif _column_exists(conn, "bulk_committees_clean", "id"):
+            committee_id_column = "id"
+        else:
+            committee_id_column = None
+
+        if _column_exists(conn, "bulk_committees_clean", "committee_name"):
+            committee_name_column = "committee_name"
+        elif _column_exists(conn, "bulk_committees_clean", "name"):
+            committee_name_column = "name"
+        else:
+            committee_name_column = None
+
+        if committee_id_column and committee_name_column:
+            name_rows = conn.execute(
+                f"""
+                SELECT
+                    {committee_id_column} AS committee_id_value,
+                    {committee_name_column} AS committee_name_value
+                FROM bulk_committees_clean
+                WHERE {committee_id_column} IN ({placeholders})
+                """,
+                list(keep_committees),
+            ).fetchall()
+            for row in name_rows:
+                committee_names[str(row["committee_id_value"])] = row["committee_name_value"]
 
     placeholders = ",".join("?" * len(keep_committees))
     edge_rows = conn.execute(
