@@ -259,9 +259,10 @@ The production site runs on a Hetzner VPS.
 ### Compute-Heavy Tasks (Run Locally First)
 
 Default policy for expensive processing:
-- If a command is expected to run for a long time or heavily use CPU, consider the local-machine path first.
+- If a command is expected to run for a long time or heavily use CPU, consider the local-machine path first (MacBook M3 Pro, 18GB RAM).
 - Run the compute-heavy step locally, validate outputs, then upload outputs/artifacts to production.
 - Use server compute for these jobs only when the step must run directly against production-only data.
+- **Server tasks estimated >10 minutes**: Do NOT run autonomously. Provide the exact command to the operator so they can run it themselves, watch progress, and see it through to completion. Always estimate the expected runtime before handing off.
 - For tasks that will run on the server, print an estimated runtime before execution (for example: expected duration range and whether it is CPU-heavy).
 
 Examples:

@@ -2,7 +2,14 @@
 
 ## Project Overview
 
-Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, 53-table SQLite schema, 5.5GB+ database.
+Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, 57-table SQLite schema, 5.5GB+ database.
+
+## Local Development Machine
+
+- **Hardware**: MacBook Pro M3 Pro, 18GB RAM, Apple Silicon (ARM64)
+- All local compute-heavy operations should be optimized for Apple Silicon when possible (e.g., use Metal/Accelerate-backed libraries, ARM-native builds).
+- Prefer running CPU/memory-intensive tasks locally rather than on the 16GB Hetzner VPS.
+- When adding numeric/scientific dependencies in the future, prefer Apple Silicon-optimized builds (numpy with Accelerate, scipy with vecLib, etc.).
 
 ## Quick Start
 
@@ -58,7 +65,9 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - Lobbying client -> 527 org (Jaccard 0.80)
 - Federal donor -> local donor (zip+state+name)
 
-**Performance note**: The matching engine uses Python dict-based sparse inverted indexes, NOT numpy/matrix operations. Each match function builds an in-memory token→entity index, then iterates candidates. For ~5K directors × ~1M donors, the inverted index approach keeps memory and CPU reasonable (~5–15 minutes on production for `run-cross-matching --only all`).
+**Performance note**: The matching engine uses Python dict-based sparse inverted indexes, NOT numpy/matrix operations. Each match function builds an in-memory token→entity index, then iterates candidates. Address matching uses SQL-level JOINs on normalized state+city to keep memory low. For ~5K directors × ~1M donors, the inverted index approach keeps CPU reasonable (~1–2 minutes locally on M3 Pro).
+
+**Why not numpy/scipy?** The Jaccard similarity on small token sets (3–8 tokens per name) is more efficient with Python set operations and inverted-index pruning than sparse matrix multiplication. The inverted index already reduces the 6.3B-pair search space by 100–144x. NumPy would add a dependency for marginal gains at current scale. If donor tables grow 10x+, scipy sparse matrix Jaccard could be considered.
 
 ## Testing
 
@@ -84,6 +93,7 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - When asked about deployment, always assume REMOTE/PRODUCTION server unless explicitly told otherwise.
 - Always verify actual server paths, service names, and directory structures before generating deployment commands — never assume defaults.
 - Use `python3` (not `python`) in all server scripts and systemd files.
+- **Long-running server tasks (>10 minutes)**: Do NOT run these autonomously via Claude. Instead, provide the user with the exact command to run so they can execute it themselves, watch the output, and see it through to completion. Examples: `run-cross-matching --only all`, `import-irs527`, `refresh-analytics` on large datasets. Always estimate the runtime before handing off.
 
 ### Server Details
 
@@ -164,8 +174,10 @@ $PYTHON run.py <command>
 
 - Username: Doommen3
 - Remote: HTTPS
-- Local auth: `gh` CLI with fine-grained PAT (via `gh auth git-credential`)
-- **Important**: Fine-grained PATs need the "Contents: Read and write" permission for git push. If push returns 403 but API shows push:true, the PAT is missing this scope — regenerate with Contents write access.
+- Local auth: Classic PAT via macOS Keychain (`credential.helper = osxkeychain` in `.gitconfig`)
+- `gh` CLI is installed and authenticated (fine-grained PAT) for API operations (`gh api`, `gh pr`, etc.)
+- Git push uses the classic PAT stored in osxkeychain (the fine-grained PAT in `gh` does not have git push scope)
+- If push ever returns 403, re-store the classic PAT: `printf 'protocol=https\nhost=github.com\nusername=Doommen3\npassword=<PAT>\n' | git credential-osxkeychain store`
 
 ### Endpoint Sweep
 
