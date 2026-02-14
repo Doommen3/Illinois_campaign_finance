@@ -270,6 +270,29 @@ def _refresh_params(filters: dict) -> dict:
     return {key: filters[key] for key in keys}
 
 
+def _safe_optional_graph(graph_key: str, callback, fallback: dict) -> dict:
+    """Return optional graph payload, logging and degrading safely on failure."""
+    try:
+        payload = callback()
+    except Exception:
+        current_app.logger.exception("Analytics optional graph build failed: %s", graph_key)
+        payload = {}
+
+    if isinstance(payload, dict) and payload.get("nodes") is not None and payload.get("edges") is not None:
+        return payload
+
+    summary = dict((fallback.get("summary") or {}))
+    summary.setdefault("node_count", 0)
+    summary.setdefault("edge_count", 0)
+    summary["error"] = f"{graph_key}_query_failed"
+    return {
+        "nodes": [],
+        "edges": [],
+        "centrality": [],
+        "summary": summary,
+    }
+
+
 def _base_context(active_page: str, filters: dict, snapshot_state: dict) -> dict:
     return {
         "active_page": active_page,
@@ -340,10 +363,26 @@ def networks():
 
     empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
     if snapshot_state["heavy_sections_loaded"]:
-        vendor_network = get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800)
-        overlap_graph = get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600)
-        lobbying_graph = get_lobbying_influence_graph(conn, client_limit=80, edge_limit=600)
-        ecosystem_527 = get_irs527_ecosystem_graph(conn, org_limit=80, edge_limit=600)
+        vendor_network = _safe_optional_graph(
+            "vendor_network",
+            lambda: get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800),
+            empty_graph,
+        )
+        overlap_graph = _safe_optional_graph(
+            "overlap_graph",
+            lambda: get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600),
+            empty_graph,
+        )
+        lobbying_graph = _safe_optional_graph(
+            "lobbying_graph",
+            lambda: get_lobbying_influence_graph(conn, client_limit=80, edge_limit=600),
+            empty_graph,
+        )
+        ecosystem_527 = _safe_optional_graph(
+            "ecosystem_527",
+            lambda: get_irs527_ecosystem_graph(conn, org_limit=80, edge_limit=600),
+            empty_graph,
+        )
     else:
         vendor_network = empty_graph
         overlap_graph = empty_graph

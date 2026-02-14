@@ -763,6 +763,24 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Skipped in quick mode" not in geography.data
 
 
+def test_analytics_networks_full_mode_survives_optional_graph_failures(analytics_client, monkeypatch):
+    overview = analytics_client.get("/analytics/?load_mode=full&sync_full=1")
+    assert overview.status_code == 200
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("simulated vendor graph failure")
+
+    import webapp.routes.analytics as analytics_routes
+
+    monkeypatch.setattr(analytics_routes, "get_vendor_expenditure_network", _explode)
+
+    response = analytics_client.get("/analytics/networks?load_mode=full")
+    assert response.status_code == 200
+    assert b"Analytics: Networks" in response.data
+    assert b'id="vendor-network-data"' in response.data
+    assert b"vendor_network_query_failed" in response.data
+
+
 def test_analytics_api_endpoints(analytics_client):
     network = analytics_client.get("/api/analytics/network?min_edge_amount=0&limit=100")
     assert network.status_code == 200
