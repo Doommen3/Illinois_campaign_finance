@@ -47,6 +47,10 @@
         | Donor-&gt;Committee: {{ network.summary.donor_committee_edges }}
         | Committee-&gt;Candidate: {{ network.summary.committee_candidate_edges }}
     </p>
+    <p class="help-text">
+        Weighted degree is the sum of connected edge weights for a node in the active graph. Edge weights can be dollar amounts or match-confidence scores depending on relationship type.
+        Committee-&gt;candidate edges represent committee-level receipts linked to candidates via committee linkage tables, not direct committee-to-candidate transfer transactions.
+    </p>
 
     {% if heavy_sections_loaded %}
     <style>
@@ -92,10 +96,19 @@
         <label for="tab-lobbying" class="label-lobbying">Lobbying Bridge</label>
         <label for="tab-darkmoney" class="label-darkmoney">527 Dark Money</label>
     </div>
+    <div class="network-controls">
+        <label for="graph-density-mode">Graph Density</label>
+        <select id="graph-density-mode">
+            <option value="balanced" selected>Balanced (Recommended)</option>
+            <option value="focus">Strongest Links Only</option>
+            <option value="full">Full Detail</option>
+        </select>
+    </div>
+    <p id="graph-density-note" class="help-text">Balanced mode hides weaker links in dense views to reduce overlap. Full detail restores every edge.</p>
 
     <div class="tab-panels">
         <div class="tab-panel panel-force">
-            <p id="network-description" class="help-text">Power Players view: the top 45 nodes by contribution volume and their direct connections. Node color indicates type (donor, committee, candidate, vendor).</p>
+            <p id="network-description" class="help-text">Power Players view: top nodes by contribution volume and their direct connections. Committee-&gt;candidate links show committee receipts associated with a candidate committee link, with estimated donor provenance where available.</p>
             <div class="network-color-legend" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem;font-size:0.8rem;">
                 <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2563eb;margin-right:3px;"></span>Donor</span>
                 <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#059669;margin-right:3px;"></span>Committee</span>
@@ -120,6 +133,7 @@
                 <svg id="network-svg" viewBox="0 0 1200 700" role="img" aria-label="Interactive force-directed network graph"></svg>
             </div>
             <div id="network-info-panel" class="graph-selection-panel" style="display:none"></div>
+            <p class="help-text">Node detail panels show relationship type, metric units, and edge-level notes (including estimated donor source attribution on committee-candidate edges).</p>
             <p id="network-summary" class="subtitle"></p>
         </div>
 

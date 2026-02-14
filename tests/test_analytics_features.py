@@ -240,6 +240,14 @@ def test_analytics_service_outputs(analytics_conn):
     assert network["summary"]["donor_committee_source"] in {"contributions", "bulk_receipts"}
     assert any(edge["edge_type"] == "committee_candidate" for edge in network["edges"])
     assert any(node["node_type"] == "candidate" for node in network["nodes"])
+    assert "edge_type_definitions" in network["summary"]
+    assert "committee_candidate" in network["summary"]["edge_type_definitions"]
+    donor_edge = next(edge for edge in network["edges"] if edge["edge_type"] == "donor_committee")
+    assert donor_edge["weight_unit"] == "usd"
+    committee_edge = next(edge for edge in network["edges"] if edge["edge_type"] == "committee_candidate")
+    assert committee_edge["is_direct_transfer"] is False
+    assert committee_edge["weight_unit"] == "usd"
+    assert "edge_caveat" in committee_edge
 
     anomalies = get_anomaly_flags(analytics_conn, limit=50)
     anomaly_types = {row["flag_type"] for row in anomalies}
@@ -617,6 +625,10 @@ def test_vendor_network_supports_bulk_committees_clean_sbe_schema(analytics_conn
     assert graph["summary"]["edge_count"] > 0
     committee_labels = {node["label"] for node in graph["nodes"] if node["node_type"] == "committee"}
     assert "Committee Ten" in committee_labels
+    assert "edge_type_definitions" in graph["summary"]
+    vendor_edge = graph["edges"][0]
+    assert vendor_edge["edge_type"] == "committee_vendor"
+    assert vendor_edge["weight_unit"] == "usd"
 
 
 def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
@@ -848,6 +860,7 @@ def test_analytics_api_endpoints(analytics_client):
     assert "region_counts" in network_data["summary"]
     assert len(network_data["summary"]["region_counts"]) > 0
     assert all("region" in node for node in network_data["nodes"])
+    assert "edge_type_definitions" in network_data["summary"]
 
     anomalies = analytics_client.get("/api/analytics/anomalies?limit=10")
     assert anomalies.status_code == 200

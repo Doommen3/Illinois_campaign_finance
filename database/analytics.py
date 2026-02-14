@@ -107,6 +107,121 @@ def _normalize_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", value.strip().lower())
 
 
+_EDGE_TYPE_SEMANTICS: dict[str, dict[str, str]] = {
+    "donor_committee": {
+        "label": "Donor -> committee contributions",
+        "description": "Total itemized contributions from a donor into a committee.",
+        "weight_unit": "usd",
+        "metric_label": "Contribution amount (USD)",
+    },
+    "committee_candidate": {
+        "label": "Committee receipts linked to candidate",
+        "description": "Committee-level reported receipts tied to a candidate via committee linkage (not a direct transfer edge).",
+        "weight_unit": "usd",
+        "metric_label": "Linked committee receipts (USD)",
+        "caveat": "This edge reflects committee fundraising totals associated with the candidate, not direct committee-to-candidate payments.",
+    },
+    "committee_vendor": {
+        "label": "Committee -> vendor spending",
+        "description": "Committee expenditures paid to a vendor/payee.",
+        "weight_unit": "usd",
+        "metric_label": "Expenditure amount (USD)",
+    },
+    "donor_local": {
+        "label": "Donor -> state committee",
+        "description": "Matched donor contributions into Illinois state-level committees.",
+        "weight_unit": "usd",
+        "metric_label": "Contribution amount (USD)",
+    },
+    "donor_federal": {
+        "label": "Donor -> federal committee",
+        "description": "Matched donor contributions into federal committees (FEC).",
+        "weight_unit": "usd",
+        "metric_label": "Contribution amount (USD)",
+    },
+    "client_entity": {
+        "label": "Lobbying client -> entity relationship",
+        "description": "Registered client-to-entity association from lobbying registrations.",
+        "weight_unit": "count",
+        "metric_label": "Registration linkage count",
+    },
+    "client_donor_match": {
+        "label": "Lobbying client -> matched donor",
+        "description": "Name-matching relationship between lobbying client and donor identity.",
+        "weight_unit": "score",
+        "metric_label": "Name-match confidence score",
+    },
+    "client_payee_match": {
+        "label": "Lobbying client -> matched payee",
+        "description": "Name-matching relationship between lobbying client and campaign payee/vendor.",
+        "weight_unit": "score",
+        "metric_label": "Name-match confidence score",
+    },
+    "entity_payee_match": {
+        "label": "Lobbying entity -> matched payee",
+        "description": "Name-matching relationship between lobbying entity and campaign payee/vendor.",
+        "weight_unit": "score",
+        "metric_label": "Name-match confidence score",
+    },
+    "payee_committee_match": {
+        "label": "Payee -> committee spending link",
+        "description": "Observed committee spending to a payee matched to lobbying data.",
+        "weight_unit": "usd",
+        "metric_label": "Matched committee spend (USD)",
+    },
+    "donor_committee_flow": {
+        "label": "Matched donor -> committee flow",
+        "description": "Observed donor contribution flow for donor identities matched from external datasets.",
+        "weight_unit": "usd",
+        "metric_label": "Contribution amount (USD)",
+    },
+    "org_committee_match": {
+        "label": "527 organization -> committee match",
+        "description": "Name-match relationship between IRS 527 organization and Illinois committee.",
+        "weight_unit": "score",
+        "metric_label": "Name-match confidence score",
+    },
+    "org_recipient_match": {
+        "label": "527 organization -> recipient match",
+        "description": "Matched 527 expenditure recipients to campaign-finance entities or targets.",
+        "weight_unit": "usd",
+        "metric_label": "Matched 527 expenditure amount (USD)",
+    },
+    "org_director": {
+        "label": "527 organization -> director",
+        "description": "Director listed on IRS 527 filing linked to the organization.",
+        "weight_unit": "score",
+        "metric_label": "Linkage score",
+    },
+    "director_donor_match": {
+        "label": "Director -> matched donor",
+        "description": "Name-matching relationship between a 527 director and donor identity.",
+        "weight_unit": "score",
+        "metric_label": "Name-match confidence score",
+    },
+}
+
+
+def _edge_semantics(
+    edge_type: str,
+    *,
+    weight_unit: str | None = None,
+    metric_label: str | None = None,
+    source_table: str | None = None,
+    caveat: str | None = None,
+) -> dict[str, str]:
+    base = _EDGE_TYPE_SEMANTICS.get(edge_type, {})
+    payload = {
+        "edge_label": base.get("label", edge_type.replace("_", " ").title()),
+        "edge_description": base.get("description", "Graph relationship edge."),
+        "weight_unit": weight_unit or base.get("weight_unit", "value"),
+        "metric_label": metric_label or base.get("metric_label", "Graph weight"),
+        "source_table": source_table,
+        "edge_caveat": caveat or base.get("caveat"),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
 def _percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -712,6 +827,210 @@ def _get_donor_committee_rows(
     return output, source
 
 
+def _committee_donor_provenance(
+    conn: sqlite3.Connection,
+    committee_ids: set[str],
+    source: str,
+    fallback_rows: list[dict],
+    top_n: int = 5,
+) -> dict[str, dict]:
+    normalized_ids = sorted({str(cid).strip() for cid in committee_ids if str(cid or "").strip()})
+    if not normalized_ids:
+        return {}
+
+    top_n = max(1, min(int(top_n), 10))
+    totals_map: dict[str, float] = {}
+    donor_count_map: dict[str, int] = {}
+    top_donor_map: dict[str, list[dict]] = defaultdict(list)
+
+    if _rows_for_source_exist(conn, "analytics_donor_committee_agg", source):
+        placeholders = ",".join(["?"] * len(normalized_ids))
+        totals_rows = conn.execute(
+            f"""
+            SELECT
+                committee_id,
+                COALESCE(SUM(total_amount), 0) AS committee_total,
+                COUNT(*) AS donor_count
+            FROM analytics_donor_committee_agg
+            WHERE source = ?
+              AND committee_id IN ({placeholders})
+            GROUP BY committee_id
+            """,
+            [source, *normalized_ids],
+        ).fetchall()
+        for row in totals_rows:
+            committee_id = str(row["committee_id"])
+            totals_map[committee_id] = float(row["committee_total"] or 0.0)
+            donor_count_map[committee_id] = int(row["donor_count"] or 0)
+
+        ranked_rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT
+                    committee_id,
+                    donor_key,
+                    donor_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY committee_id
+                        ORDER BY total_amount DESC, donor_name ASC
+                    ) AS rn
+                FROM analytics_donor_committee_agg
+                WHERE source = ?
+                  AND committee_id IN ({placeholders})
+            )
+            SELECT committee_id, donor_key, donor_name, total_amount
+            FROM ranked
+            WHERE rn <= ?
+            ORDER BY committee_id, total_amount DESC
+            """,
+            [source, *normalized_ids, top_n],
+        ).fetchall()
+        for row in ranked_rows:
+            committee_id = str(row["committee_id"])
+            top_donor_map[committee_id].append(
+                {
+                    "donor_key": row["donor_key"],
+                    "donor_name": row["donor_name"] or row["donor_key"] or "Unknown Donor",
+                    "total_amount": float(row["total_amount"] or 0.0),
+                }
+            )
+    elif source == "contributions":
+        placeholders = ",".join(["?"] * len(normalized_ids))
+        totals_rows = conn.execute(
+            f"""
+            WITH donor_committee AS (
+                SELECT
+                    CAST(c.id AS TEXT) AS committee_id,
+                    d.id AS donor_id,
+                    d.name AS donor_name,
+                    COALESCE(SUM(ct.amount), 0) AS total_amount
+                FROM contributions ct
+                JOIN donors d ON d.id = ct.donor_id
+                JOIN reports r ON r.id = ct.report_id
+                JOIN committees c ON c.id = r.committee_id
+                WHERE CAST(c.id AS TEXT) IN ({placeholders})
+                GROUP BY c.id, d.id, d.name
+            )
+            SELECT
+                committee_id,
+                COALESCE(SUM(total_amount), 0) AS committee_total,
+                COUNT(*) AS donor_count
+            FROM donor_committee
+            GROUP BY committee_id
+            """,
+            normalized_ids,
+        ).fetchall()
+        for row in totals_rows:
+            committee_id = str(row["committee_id"])
+            totals_map[committee_id] = float(row["committee_total"] or 0.0)
+            donor_count_map[committee_id] = int(row["donor_count"] or 0)
+
+        ranked_rows = conn.execute(
+            f"""
+            WITH donor_committee AS (
+                SELECT
+                    CAST(c.id AS TEXT) AS committee_id,
+                    d.id AS donor_id,
+                    d.name AS donor_name,
+                    COALESCE(SUM(ct.amount), 0) AS total_amount
+                FROM contributions ct
+                JOIN donors d ON d.id = ct.donor_id
+                JOIN reports r ON r.id = ct.report_id
+                JOIN committees c ON c.id = r.committee_id
+                WHERE CAST(c.id AS TEXT) IN ({placeholders})
+                GROUP BY c.id, d.id, d.name
+            ),
+            ranked AS (
+                SELECT
+                    committee_id,
+                    donor_id,
+                    donor_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY committee_id
+                        ORDER BY total_amount DESC, donor_name ASC
+                    ) AS rn
+                FROM donor_committee
+            )
+            SELECT committee_id, donor_id, donor_name, total_amount
+            FROM ranked
+            WHERE rn <= ?
+            ORDER BY committee_id, total_amount DESC
+            """,
+            [*normalized_ids, top_n],
+        ).fetchall()
+        for row in ranked_rows:
+            committee_id = str(row["committee_id"])
+            donor_key = f"donor:{row['donor_id']}"
+            top_donor_map[committee_id].append(
+                {
+                    "donor_key": donor_key,
+                    "donor_name": row["donor_name"] or donor_key,
+                    "total_amount": float(row["total_amount"] or 0.0),
+                }
+            )
+
+    fallback_committee_donors: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in fallback_rows:
+        committee_id = str(row.get("committee_id") or "").strip()
+        if committee_id not in normalized_ids:
+            continue
+        donor_key = str(row.get("donor_key") or "").strip()
+        donor_name = row.get("donor_name") or donor_key or "Unknown Donor"
+        amount = float(row.get("total_amount") or 0.0)
+        if amount <= 0 or not donor_key:
+            continue
+        donor_bucket = fallback_committee_donors[committee_id].setdefault(
+            donor_key,
+            {"donor_key": donor_key, "donor_name": donor_name, "total_amount": 0.0},
+        )
+        donor_bucket["total_amount"] += amount
+
+    output: dict[str, dict] = {}
+    for committee_id in normalized_ids:
+        donors = list(top_donor_map.get(committee_id) or [])
+        fallback_donors = list(fallback_committee_donors.get(committee_id, {}).values())
+        if not donors and fallback_donors:
+            fallback_donors.sort(key=lambda row: float(row.get("total_amount") or 0.0), reverse=True)
+            donors = fallback_donors[:top_n]
+
+        if not donors:
+            continue
+
+        committee_total = float(totals_map.get(committee_id) or 0.0)
+        if committee_total <= 0:
+            committee_total = sum(float(row.get("total_amount") or 0.0) for row in fallback_donors) or sum(
+                float(row.get("total_amount") or 0.0) for row in donors
+            )
+        donor_count = int(donor_count_map.get(committee_id) or len(fallback_donors) or len(donors))
+
+        normalized_donors: list[dict] = []
+        donor_share_sum = 0.0
+        for donor in donors:
+            donor_amount = float(donor.get("total_amount") or 0.0)
+            donor_share = (donor_amount / committee_total) if committee_total > 0 else 0.0
+            donor_share_sum += donor_share
+            normalized_donors.append(
+                {
+                    "donor_key": donor.get("donor_key"),
+                    "donor_name": donor.get("donor_name") or donor.get("donor_key") or "Unknown Donor",
+                    "total_amount": round(donor_amount, 2),
+                    "donor_share_of_committee": round(donor_share, 6),
+                }
+            )
+
+        output[committee_id] = {
+            "committee_total_receipts": round(committee_total, 2),
+            "donor_count": donor_count,
+            "top_donors": normalized_donors,
+            "top_donor_share": round(min(1.0, donor_share_sum), 6),
+            "source": source,
+        }
+
+    return output
+
+
 def get_donor_committee_rows(
     conn: sqlite3.Connection,
     min_edge_amount: float = 0.0,
@@ -749,6 +1068,16 @@ def get_network_graph(
         ]
         donor_committee_rows = filtered_rows[: max(1, int(limit))]
 
+    has_materialized_donor_source = bool(
+        donor_source and _rows_for_source_exist(conn, "analytics_donor_committee_agg", donor_source)
+    )
+    if has_materialized_donor_source:
+        donor_edge_source_table = "analytics_donor_committee_agg"
+    elif donor_source == "bulk_receipts":
+        donor_edge_source_table = "bulk_receipts_clean"
+    else:
+        donor_edge_source_table = "contributions"
+
     for row in donor_committee_rows:
         donor_city = row.get("donor_city")
         donor_state = row.get("donor_state")
@@ -781,32 +1110,52 @@ def get_network_graph(
 
         edge_weight = float(row.get("total_amount") or 0)
         committee_region_weights[committee_node_id][donor_region] += edge_weight
-        edges.append(
-            {
-                "source": donor_node_id,
-                "target": committee_node_id,
-                "edge_type": "donor_committee",
-                "weight": edge_weight,
-                "count": int(row.get("contribution_count") or 0),
-            }
+        edge_payload = {
+            "source": donor_node_id,
+            "target": committee_node_id,
+            "edge_type": "donor_committee",
+            "weight": edge_weight,
+            "count": int(row.get("contribution_count") or 0),
+        }
+        edge_payload.update(
+            _edge_semantics(
+                "donor_committee",
+                source_table=donor_edge_source_table,
+            )
         )
+        edges.append(edge_payload)
 
     if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
         committee_candidate_rows = conn.execute(
             """
             SELECT
+                committee_id_sbe AS committee_id,
                 committee_name,
                 candidate_id,
                 candidate_full_name,
-                COALESCE(SUM(sum_total_receipts), 0) AS edge_weight
+                COALESCE(SUM(sum_total_receipts), 0) AS edge_weight,
+                COALESCE(SUM(filing_count), 0) AS filing_count
             FROM bulk_candidate_committee_finance_agg
             WHERE committee_name IS NOT NULL
-            GROUP BY committee_name, candidate_id, candidate_full_name
+            GROUP BY committee_id_sbe, committee_name, candidate_id, candidate_full_name
             ORDER BY edge_weight DESC
             LIMIT ?
             """,
             (int(limit),),
         ).fetchall()
+
+        provenance_committee_ids = {
+            str(row["committee_id"]).strip()
+            for row in committee_candidate_rows
+            if str(row["committee_id"] or "").strip()
+        }
+        committee_provenance = _committee_donor_provenance(
+            conn,
+            provenance_committee_ids,
+            donor_source or _donor_flow_source(conn),
+            donor_committee_rows,
+            top_n=5,
+        )
 
         for row in committee_candidate_rows:
             normalized_committee = _normalize_name(row["committee_name"])
@@ -838,15 +1187,53 @@ def get_network_graph(
             )
 
             edge_weight = float(row["edge_weight"] or 0)
-            edges.append(
-                {
-                    "source": committee_node_id,
-                    "target": candidate_node_id,
-                    "edge_type": "committee_candidate",
-                    "weight": edge_weight,
-                    "count": 1,
-                }
+            committee_id_key = str(row["committee_id"]).strip() if row["committee_id"] is not None else ""
+            provenance = committee_provenance.get(committee_id_key, {})
+            committee_total_receipts = float(provenance.get("committee_total_receipts") or 0.0)
+            estimated_top_donors: list[dict] = []
+            top_share_sum = 0.0
+            for donor in provenance.get("top_donors", []):
+                donor_share = float(donor.get("donor_share_of_committee") or 0.0)
+                top_share_sum += donor_share
+                estimated_top_donors.append(
+                    {
+                        "donor_key": donor.get("donor_key"),
+                        "donor_node_id": f"donor:{donor.get('donor_key')}" if donor.get("donor_key") else None,
+                        "donor_label": donor.get("donor_name") or donor.get("donor_key") or "Unknown Donor",
+                        "donor_amount_to_committee": round(float(donor.get("total_amount") or 0.0), 2),
+                        "donor_share_of_committee": round(donor_share, 6),
+                        "estimated_amount_to_candidate_receipts": round(edge_weight * donor_share, 2),
+                    }
+                )
+
+            edge_payload = {
+                "source": committee_node_id,
+                "target": candidate_node_id,
+                "edge_type": "committee_candidate",
+                "weight": edge_weight,
+                "count": int(row["filing_count"] or 0) or 1,
+                "is_direct_transfer": False,
+                "disaggregation_method": "proportional_share_of_committee_receipts",
+                "disaggregation_confidence": "estimated",
+            }
+            edge_payload.update(
+                _edge_semantics(
+                    "committee_candidate",
+                    source_table="bulk_candidate_committee_finance_agg",
+                )
             )
+            if committee_total_receipts > 0:
+                edge_payload["committee_total_receipts"] = round(committee_total_receipts, 2)
+                edge_payload["committee_donor_count"] = int(provenance.get("donor_count") or 0)
+            if estimated_top_donors:
+                clipped_share = min(1.0, max(0.0, top_share_sum))
+                edge_payload["estimated_top_donors"] = estimated_top_donors
+                edge_payload["estimated_top_donor_share"] = round(clipped_share, 6)
+                edge_payload["estimated_unattributed_amount"] = round(
+                    max(0.0, edge_weight * (1.0 - clipped_share)),
+                    2,
+                )
+            edges.append(edge_payload)
 
     for node_id, node in nodes.items():
         if node.get("node_type") != "committee":
@@ -894,6 +1281,10 @@ def get_network_graph(
     region_counts: dict[str, int] = defaultdict(int)
     for node in nodes.values():
         region_counts[node.get("region", "Unknown")] += 1
+    edge_types_present = {edge.get("edge_type", "") for edge in edges if edge.get("edge_type")}
+    disaggregated_committee_edges = sum(
+        1 for edge in edges if edge.get("edge_type") == "committee_candidate" and edge.get("estimated_top_donors")
+    )
 
     return {
         "nodes": list(nodes.values()),
@@ -906,6 +1297,10 @@ def get_network_graph(
             "committee_candidate_edges": sum(1 for e in edges if e["edge_type"] == "committee_candidate"),
             "donor_committee_source": donor_source,
             "region_counts": dict(sorted(region_counts.items(), key=lambda item: item[0])),
+            "edge_type_definitions": {
+                edge_type: _edge_semantics(edge_type) for edge_type in sorted(edge_types_present)
+            },
+            "committee_candidate_disaggregation_edges": disaggregated_committee_edges,
         },
     }
 
@@ -3548,6 +3943,41 @@ def get_lobbying_influence_graph(
         params.append(edge_limit * 2)
         expenditure_rows = conn.execute(query, params).fetchall()
 
+    payee_committee_amounts: dict[tuple[str, str], dict[str, float | int]] = {}
+    if expenditure_rows and _table_exists(conn, "bulk_expenditures_clean"):
+        matched_pair_keys = {
+            (str(row["committee_id_sbe"]), _normalize_name(row["payee_name"]))
+            for row in expenditure_rows
+            if row["committee_id_sbe"] is not None and (row["payee_name"] or "").strip()
+        }
+        committee_ids = sorted({pair[0] for pair in matched_pair_keys})
+        if committee_ids:
+            placeholders = ",".join(["?"] * len(committee_ids))
+            spend_rows = conn.execute(
+                f"""
+                SELECT
+                    committee_id_sbe,
+                    payee_last_or_business_name AS payee_name,
+                    COALESCE(SUM(amount), 0) AS total_amount,
+                    COUNT(*) AS txn_count
+                FROM bulk_expenditures_clean
+                WHERE amount > 0
+                  AND CAST(committee_id_sbe AS TEXT) IN ({placeholders})
+                  AND payee_last_or_business_name IS NOT NULL
+                  AND TRIM(payee_last_or_business_name) != ''
+                GROUP BY committee_id_sbe, payee_last_or_business_name
+                """,
+                committee_ids,
+            ).fetchall()
+            for row in spend_rows:
+                key = (str(row["committee_id_sbe"]), _normalize_name(row["payee_name"]))
+                if key not in matched_pair_keys:
+                    continue
+                payee_committee_amounts[key] = {
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "txn_count": int(row["txn_count"] or 0),
+                }
+
     donor_committee_rows = []
     donor_keys = sorted({(row["donor_key"] or "").strip() for row in donor_match_rows if row["donor_key"]})
     has_donor_committee_edges = _table_exists(conn, "analytics_donor_committee_agg")
@@ -3593,7 +4023,16 @@ def get_lobbying_influence_graph(
             },
         )
 
-    def add_edge(source: str, target: str, edge_type: str, weight: float, source_label: str, target_label: str) -> None:
+    def add_edge(
+        source: str,
+        target: str,
+        edge_type: str,
+        weight: float,
+        source_label: str,
+        target_label: str,
+        *,
+        extra: dict | None = None,
+    ) -> None:
         if not source or not target or source == target:
             return
         key = (source, target, edge_type)
@@ -3611,6 +4050,19 @@ def get_lobbying_influence_graph(
         )
         bucket["weight"] += float(weight or 0.0)
         bucket["row_count"] += 1
+        if extra:
+            for field, value in extra.items():
+                if value is None:
+                    continue
+                if isinstance(value, bool):
+                    bucket[field] = value
+                elif isinstance(value, (int, float)):
+                    if field.endswith("_max"):
+                        bucket[field] = max(float(bucket.get(field) or 0.0), float(value))
+                    else:
+                        bucket[field] = float(bucket.get(field) or 0.0) + float(value)
+                else:
+                    bucket[field] = value
 
     client_label = {row["client_id"]: row["client_name"] or f"Client {row['client_id']}" for row in client_rows}
     entity_label = {row["entity_id"]: row["entity_name"] or f"Entity {row['entity_id']}" for row in entity_rows}
@@ -3629,6 +4081,12 @@ def get_lobbying_influence_graph(
             float(row["reg_year_count"] or 1.0),
             client_label.get(row["client_id"], client_node),
             entity_label.get(row["entity_id"], entity_node),
+            extra={
+                **_edge_semantics(
+                    "client_entity",
+                    source_table="lobbying_entity_clients",
+                ),
+            },
         )
 
     for row in donor_match_rows:
@@ -3646,6 +4104,14 @@ def get_lobbying_influence_graph(
             float(row["score"] or 0.0),
             client_label.get(row["client_id"], client_node),
             donor_label,
+            extra={
+                **_edge_semantics(
+                    "client_donor_match",
+                    source_table="lobbying_donor_matches",
+                ),
+                "match_score_sum": float(row["score"] or 0.0),
+                "match_score_max": float(row["score"] or 0.0),
+            },
         )
 
     for row in expenditure_rows:
@@ -3654,6 +4120,14 @@ def get_lobbying_influence_graph(
         payee_name = (row["payee_name"] or "").strip()
         if not payee_name:
             continue
+        committee_id = row["committee_id_sbe"]
+        pair_key = (
+            str(committee_id),
+            _normalize_name(payee_name),
+        ) if committee_id is not None else None
+        pair_amount = float(payee_committee_amounts.get(pair_key, {}).get("total_amount") or 0.0) if pair_key else 0.0
+        pair_txn_count = int(payee_committee_amounts.get(pair_key, {}).get("txn_count") or 0) if pair_key else 0
+
         payee_node = f"payee:{_stable_entity_key(payee_name)}"
         add_node(payee_node, payee_name, "matched_payee")
 
@@ -3665,27 +4139,52 @@ def get_lobbying_influence_graph(
             source_node = f"entity:{source_id}"
             source_label = entity_label.get(source_id, source_node)
             edge_type = "entity_payee_match"
+        score = float(row["score"] or 0.0)
         add_edge(
             source_node,
             payee_node,
             edge_type,
-            float(row["score"] or 0.0),
+            score,
             source_label,
             payee_name,
+            extra={
+                **_edge_semantics(
+                    edge_type,
+                    source_table="lobbying_expenditure_matches",
+                ),
+                "match_score_sum": score,
+                "match_score_max": score,
+                "linked_committee_spend_amount": pair_amount,
+                "linked_committee_spend_transactions": pair_txn_count,
+            },
         )
 
-        committee_id = row["committee_id_sbe"]
         if committee_id is not None:
             committee_node = f"committee:{committee_id}"
             committee_label = f"Committee {committee_id}"
             add_node(committee_node, committee_label, "committee")
+            payee_committee_weight = pair_amount if pair_amount > 0 else score
+            payee_committee_unit = "usd" if pair_amount > 0 else "score"
+            payee_metric_label = "Matched committee spend (USD)" if pair_amount > 0 else "Name-match confidence score"
             add_edge(
                 payee_node,
                 committee_node,
                 "payee_committee_match",
-                float(row["score"] or 0.0),
+                payee_committee_weight,
                 payee_name,
                 committee_label,
+                extra={
+                    **_edge_semantics(
+                        "payee_committee_match",
+                        weight_unit=payee_committee_unit,
+                        metric_label=payee_metric_label,
+                        source_table="lobbying_expenditure_matches + bulk_expenditures_clean",
+                    ),
+                    "match_score_sum": score,
+                    "match_score_max": score,
+                    "matched_amount": pair_amount,
+                    "matched_transaction_count": pair_txn_count,
+                },
             )
 
     for row in donor_committee_rows:
@@ -3706,6 +4205,12 @@ def get_lobbying_influence_graph(
             float(row["total_amount"] or 0.0),
             donor_label_value,
             committee_label_value,
+            extra={
+                **_edge_semantics(
+                    "donor_committee_flow",
+                    source_table="analytics_donor_committee_agg",
+                ),
+            },
         )
 
     edges = sorted(
@@ -3730,6 +4235,10 @@ def get_lobbying_influence_graph(
             "has_payee_matches": has_payee_matches,
             "has_donor_committee_edges": has_donor_committee_edges,
             "client_pool_size": len(client_ids),
+            "edge_type_definitions": {
+                edge_type: _edge_semantics(edge_type)
+                for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})
+            },
         },
     }
 
@@ -3780,6 +4289,41 @@ def get_irs527_ecosystem_graph(
             """,
             (edge_limit * 2,),
         ).fetchall()
+
+    recipient_amounts: dict[tuple[str, str], dict[str, float | int]] = {}
+    if recipient_rows and _table_exists(conn, "irs527_expenditures"):
+        recipient_keys = {
+            ((row["ein"] or "").strip(), _normalize_name(row["recipient_name"]))
+            for row in recipient_rows
+            if (row["ein"] or "").strip() and (row["recipient_name"] or "").strip()
+        }
+        keep_ein_keys = sorted({ein for ein, _ in recipient_keys if ein})
+        if keep_ein_keys:
+            placeholders = ",".join(["?"] * len(keep_ein_keys))
+            amount_rows = conn.execute(
+                f"""
+                SELECT
+                    ein,
+                    recipient_name,
+                    COALESCE(SUM(amount), 0) AS total_amount,
+                    COUNT(*) AS txn_count
+                FROM irs527_expenditures
+                WHERE ein IN ({placeholders})
+                  AND COALESCE(amount, 0) > 0
+                  AND recipient_name IS NOT NULL
+                  AND TRIM(recipient_name) != ''
+                GROUP BY ein, recipient_name
+                """,
+                keep_ein_keys,
+            ).fetchall()
+            for row in amount_rows:
+                key = ((row["ein"] or "").strip(), _normalize_name(row["recipient_name"]))
+                if key not in recipient_keys:
+                    continue
+                recipient_amounts[key] = {
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "txn_count": int(row["txn_count"] or 0),
+                }
 
     director_rows = []
     if has_director_donor_matches:
@@ -3835,7 +4379,16 @@ def get_irs527_ecosystem_graph(
             },
         )
 
-    def add_edge(source: str, target: str, edge_type: str, weight: float, source_label: str, target_label: str) -> None:
+    def add_edge(
+        source: str,
+        target: str,
+        edge_type: str,
+        weight: float,
+        source_label: str,
+        target_label: str,
+        *,
+        extra: dict | None = None,
+    ) -> None:
         if not source or not target or source == target:
             return
         key = (source, target, edge_type)
@@ -3853,6 +4406,19 @@ def get_irs527_ecosystem_graph(
         )
         bucket["weight"] += float(weight or 0.0)
         bucket["row_count"] += 1
+        if extra:
+            for field, value in extra.items():
+                if value is None:
+                    continue
+                if isinstance(value, bool):
+                    bucket[field] = value
+                elif isinstance(value, (int, float)):
+                    if field.endswith("_max"):
+                        bucket[field] = max(float(bucket.get(field) or 0.0), float(value))
+                    else:
+                        bucket[field] = float(bucket.get(field) or 0.0) + float(value)
+                else:
+                    bucket[field] = value
 
     for ein in keep_eins:
         if not ein:
@@ -3885,6 +4451,14 @@ def get_irs527_ecosystem_graph(
             float(row["score"] or 0.0),
             org_label,
             committee_label,
+            extra={
+                **_edge_semantics(
+                    "org_committee_match",
+                    source_table="irs527_committee_matches",
+                ),
+                "match_score_sum": float(row["score"] or 0.0),
+                "match_score_max": float(row["score"] or 0.0),
+            },
         )
 
     for row in recipient_rows:
@@ -3905,13 +4479,32 @@ def get_irs527_ecosystem_graph(
             target_type = "recipient_target"
         target_label = target_name or target_node
         add_node(target_node, target_label, target_type)
+        recipient_key = (ein, _normalize_name(row["recipient_name"]))
+        recipient_amount = float(recipient_amounts.get(recipient_key, {}).get("total_amount") or 0.0)
+        recipient_txn_count = int(recipient_amounts.get(recipient_key, {}).get("txn_count") or 0)
+        score = float(row["score"] or 0.0)
+        edge_weight = recipient_amount if recipient_amount > 0 else score
+        edge_weight_unit = "usd" if recipient_amount > 0 else "score"
+        metric_label = "Matched 527 expenditure amount (USD)" if recipient_amount > 0 else "Name-match confidence score"
         add_edge(
             org_node,
             target_node,
             "org_recipient_match",
-            float(row["score"] or 0.0),
+            edge_weight,
             org_label,
             target_label,
+            extra={
+                **_edge_semantics(
+                    "org_recipient_match",
+                    weight_unit=edge_weight_unit,
+                    metric_label=metric_label,
+                    source_table="irs527_expenditure_recipient_matches + irs527_expenditures",
+                ),
+                "match_score_sum": score,
+                "match_score_max": score,
+                "matched_amount": recipient_amount,
+                "matched_transaction_count": recipient_txn_count,
+            },
         )
 
     donor_keys: set[str] = set()
@@ -3931,6 +4524,14 @@ def get_irs527_ecosystem_graph(
             float(row["score"] or 0.0),
             org_label,
             director_name,
+            extra={
+                **_edge_semantics(
+                    "org_director",
+                    source_table="irs527_director_donor_matches",
+                ),
+                "match_score_sum": float(row["score"] or 0.0),
+                "match_score_max": float(row["score"] or 0.0),
+            },
         )
         donor_key = (row["donor_key"] or "").strip()
         donor_name = (row["donor_name"] or "").strip() or donor_key
@@ -3944,6 +4545,14 @@ def get_irs527_ecosystem_graph(
                 float(row["score"] or 0.0),
                 director_name,
                 donor_name or donor_key,
+                extra={
+                    **_edge_semantics(
+                        "director_donor_match",
+                        source_table="irs527_director_donor_matches",
+                    ),
+                    "match_score_sum": float(row["score"] or 0.0),
+                    "match_score_max": float(row["score"] or 0.0),
+                },
             )
             donor_keys.add(donor_key)
 
@@ -3991,6 +4600,12 @@ def get_irs527_ecosystem_graph(
                 float(row["total_amount"] or 0.0),
                 donor_label,
                 committee_label,
+                extra={
+                    **_edge_semantics(
+                        "donor_committee_flow",
+                        source_table="analytics_donor_committee_agg",
+                    ),
+                },
             )
 
     edges = sorted(
@@ -4015,6 +4630,10 @@ def get_irs527_ecosystem_graph(
             "has_director_donor_matches": has_director_donor_matches,
             "has_donor_committee_edges": has_donor_committee_edges,
             "org_pool_size": len(keep_eins),
+            "edge_type_definitions": {
+                edge_type: _edge_semantics(edge_type)
+                for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})
+            },
         },
     }
 
@@ -4147,6 +4766,10 @@ def get_vendor_expenditure_network(
                 "edge_type": "committee_vendor",
                 "weight": float(row["total_amount"]),
                 "count": int(row["txn_count"]),
+                **_edge_semantics(
+                    "committee_vendor",
+                    source_table="bulk_expenditures_clean",
+                ),
             }
         )
 
@@ -4173,6 +4796,10 @@ def get_vendor_expenditure_network(
                 "lobbying_expenditure_matches": has_lobbying_matches,
             },
             "has_lobbying_matches": has_lobbying_matches,
+            "edge_type_definitions": {
+                edge_type: _edge_semantics(edge_type)
+                for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})
+            },
         },
     }
 
@@ -4264,6 +4891,10 @@ def get_state_federal_overlap_graph(
                         "target": cid,
                         "edge_type": "donor_local",
                         "weight": float(flow["total_amount"]),
+                        **_edge_semantics(
+                            "donor_local",
+                            source_table="analytics_donor_committee_agg",
+                        ),
                     }
                 )
 
@@ -4298,6 +4929,10 @@ def get_state_federal_overlap_graph(
                         "target": cid,
                         "edge_type": "donor_federal",
                         "weight": float(flow["total_amount"] or 0),
+                        **_edge_semantics(
+                            "donor_federal",
+                            source_table="fec_schedule_a_contributions",
+                        ),
                     }
                 )
 
@@ -4320,5 +4955,9 @@ def get_state_federal_overlap_graph(
                 "fec_schedule_a_contributions": has_federal,
             },
             "donor_count": len(donor_rows),
+            "edge_type_definitions": {
+                edge_type: _edge_semantics(edge_type)
+                for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})
+            },
         },
     }

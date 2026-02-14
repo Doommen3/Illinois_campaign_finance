@@ -52,6 +52,63 @@
         "Central Illinois": "#f59e0b", "Southern Illinois": "#ef4444",
         "Other Illinois": "#a855f7", "Out of State": "#64748b", Unknown: "#94a3b8",
     };
+    const edgeTypeFallback = {
+        donor_committee: { label: "Donor -> committee contributions", description: "Observed donor contributions into committee receipts.", unit: "usd", metric: "Contribution amount (USD)" },
+        committee_candidate: { label: "Committee receipts linked to candidate", description: "Committee receipts associated with a candidate linkage (not a direct transfer edge).", unit: "usd", metric: "Linked committee receipts (USD)" },
+        committee_vendor: { label: "Committee -> vendor spending", description: "Committee expenditures paid to vendor/payee records.", unit: "usd", metric: "Expenditure amount (USD)" },
+        donor_local: { label: "Donor -> state committee", description: "Matched donor flow into Illinois state committees.", unit: "usd", metric: "Contribution amount (USD)" },
+        donor_federal: { label: "Donor -> federal committee", description: "Matched donor flow into federal committees.", unit: "usd", metric: "Contribution amount (USD)" },
+        client_entity: { label: "Client -> lobbying entity", description: "Registered client/entity relationship in lobbying filings.", unit: "count", metric: "Registration link count" },
+        client_donor_match: { label: "Client -> matched donor", description: "Fuzzy name match between lobbying client and donor identity.", unit: "score", metric: "Name-match confidence score" },
+        client_payee_match: { label: "Client -> matched payee", description: "Fuzzy name match between lobbying client and campaign payee.", unit: "score", metric: "Name-match confidence score" },
+        entity_payee_match: { label: "Entity -> matched payee", description: "Fuzzy name match between lobbying entity and campaign payee.", unit: "score", metric: "Name-match confidence score" },
+        payee_committee_match: { label: "Payee -> committee spending link", description: "Observed committee spending to matched payee.", unit: "usd", metric: "Matched committee spend (USD)" },
+        donor_committee_flow: { label: "Matched donor -> committee flow", description: "Observed donor contributions from matched donor identities.", unit: "usd", metric: "Contribution amount (USD)" },
+        org_committee_match: { label: "527 organization -> committee match", description: "Fuzzy name match between IRS 527 organization and committee.", unit: "score", metric: "Name-match confidence score" },
+        org_recipient_match: { label: "527 organization -> matched recipient", description: "Matched 527 recipient linked to campaign-finance target.", unit: "usd", metric: "Matched 527 expenditure amount (USD)" },
+        org_director: { label: "527 organization -> director", description: "Director listed on IRS 527 filing linked to organization.", unit: "score", metric: "Linkage score" },
+        director_donor_match: { label: "Director -> matched donor", description: "Fuzzy name match between 527 director and donor identity.", unit: "score", metric: "Name-match confidence score" },
+    };
+    const nodeTypeMeaning = {
+        donor: "Donor entities contributing into committees.",
+        matched_donor: "Donor identities matched from cross-dataset name resolution.",
+        committee: "Political committees in state campaign finance filings.",
+        local_committee: "Illinois state committees from ISBE data.",
+        federal_committee: "Federal committees from FEC data.",
+        candidate: "Candidates linked via committee-candidate records.",
+        vendor: "Payees receiving committee expenditures.",
+        matched_payee: "Payees matched to lobbying or cross-dataset entities.",
+        lobbying_client: "Registered lobbying clients.",
+        lobbying_entity: "Registered lobbying entities/firms.",
+        irs527_org: "IRS 527 political organizations.",
+        director: "Directors from IRS 527 filings.",
+        recipient_target: "Matched recipient target from 527 expenditure data.",
+    };
+    const normalizeDisplayKey = (text) => String(text || "").trim().toLowerCase().replace(/\s+/g, " ");
+    const edgeMeta = (edge) => {
+        const fallback = edgeTypeFallback[edge.edge_type] || {};
+        const unit = edge.weight_unit || fallback.unit || "value";
+        return {
+            label: edge.edge_label || fallback.label || (edge.edge_type ? edge.edge_type.replace(/_/g, " ") : "relationship"),
+            description: edge.edge_description || fallback.description || "Graph relationship edge.",
+            metric: edge.metric_label || fallback.metric || "Graph weight",
+            unit,
+            caveat: edge.edge_caveat || "",
+        };
+    };
+    const formatMetric = (value, unit) => {
+        const n = Number(value || 0);
+        if (unit === "usd") return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        if (unit === "score") return n.toFixed(3);
+        if (unit === "count") return `${Math.round(n).toLocaleString()}`;
+        return n.toLocaleString(undefined, { maximumFractionDigits: 3 });
+    };
+    const unitLabel = (unit) => {
+        if (unit === "usd") return "USD";
+        if (unit === "score") return "score";
+        if (unit === "count") return "count";
+        return "value";
+    };
 
     /* ── Load JSON data blocks ── */
     const loadJson = (id) => {
@@ -112,15 +169,30 @@
         let lockedNodeId = "";
         const infoPanel = infoPanelId ? document.getElementById(infoPanelId) : null;
 
-        // Build edge lookup: nodeId -> [{neighbor, weight, direction}]
+        // Build edge lookup: nodeId -> [{neighbor, weight, direction, metadata...}]
         const edgeLookup = new Map();
         if (graphEdges) {
             for (const e of graphEdges) {
                 const w = Number(e.weight || 0);
+                const meta = edgeMeta(e);
+                const shared = {
+                    edgeType: e.edge_type || "relationship",
+                    unit: meta.unit,
+                    edgeLabel: meta.label,
+                    edgeDescription: meta.description,
+                    metricLabel: meta.metric,
+                    caveat: meta.caveat || "",
+                    matchScoreSum: Number(e.match_score_sum || 0),
+                    linkedCommitteeSpendAmount: Number(e.linked_committee_spend_amount || e.matched_amount || 0),
+                    linkedCommitteeSpendTransactions: Number(e.linked_committee_spend_transactions || e.matched_transaction_count || 0),
+                    estimatedTopDonors: Array.isArray(e.estimated_top_donors) ? e.estimated_top_donors : [],
+                    committeeTotalReceipts: Number(e.committee_total_receipts || 0),
+                    isDirectTransfer: e.is_direct_transfer,
+                };
                 if (!edgeLookup.has(e.source)) edgeLookup.set(e.source, []);
-                edgeLookup.get(e.source).push({ neighbor: e.target, weight: w, direction: "outgoing" });
+                edgeLookup.get(e.source).push({ neighbor: e.target, weight: w, direction: "outgoing", ...shared });
                 if (!edgeLookup.has(e.target)) edgeLookup.set(e.target, []);
-                edgeLookup.get(e.target).push({ neighbor: e.source, weight: w, direction: "incoming" });
+                edgeLookup.get(e.target).push({ neighbor: e.source, weight: w, direction: "incoming", ...shared });
             }
         }
 
@@ -146,54 +218,142 @@
             const node = localById.get(nodeId);
             if (!node) { infoPanel.style.display = "none"; return; }
             const neighbors = adjacency.get(nodeId) || new Set();
-            const connectionCount = neighbors.size - 1; // exclude self
 
-            // Build connections with dollar amounts from edge data
-            const connMap = new Map(); // neighborId -> {label, type, totalAmount, directions}
+            const connMap = new Map();
             const nodeEdges = edgeLookup.get(nodeId) || [];
+            const unitTotals = new Map();
+            const relationshipTotals = new Map();
+            const uniqueNeighborIds = new Set();
+
             for (const e of nodeEdges) {
                 const neighbor = localById.get(e.neighbor);
                 if (!neighbor || e.neighbor === nodeId) continue;
-                if (!connMap.has(e.neighbor)) {
-                    connMap.set(e.neighbor, { label: neighbor.label || e.neighbor, type: neighbor.node_type || "unknown", totalAmount: 0, incoming: 0, outgoing: 0 });
+                uniqueNeighborIds.add(e.neighbor);
+                const displayKey = `${normalizeDisplayKey(neighbor.label)}|${neighbor.node_type || "unknown"}|${e.edgeType}|${e.unit}`;
+                if (!connMap.has(displayKey)) {
+                    connMap.set(displayKey, {
+                        label: neighbor.label || e.neighbor,
+                        type: neighbor.node_type || "unknown",
+                        unit: e.unit || "value",
+                        edgeType: e.edgeType,
+                        edgeLabel: e.edgeLabel,
+                        edgeDescription: e.edgeDescription,
+                        metricLabel: e.metricLabel,
+                        caveat: e.caveat || "",
+                        totalWeight: 0,
+                        incoming: 0,
+                        outgoing: 0,
+                        occurrences: 0,
+                        linkedCommitteeSpendAmount: 0,
+                        linkedCommitteeSpendTransactions: 0,
+                        matchScoreSum: 0,
+                        estimatedTopDonors: [],
+                        committeeTotalReceipts: 0,
+                        isDirectTransfer: e.isDirectTransfer,
+                    });
                 }
-                const c = connMap.get(e.neighbor);
-                c.totalAmount += e.weight;
+                const c = connMap.get(displayKey);
+                c.totalWeight += e.weight;
+                c.occurrences += 1;
+                c.matchScoreSum += Number(e.matchScoreSum || 0);
+                c.linkedCommitteeSpendAmount += Number(e.linkedCommitteeSpendAmount || 0);
+                c.linkedCommitteeSpendTransactions += Number(e.linkedCommitteeSpendTransactions || 0);
+                c.committeeTotalReceipts = Math.max(c.committeeTotalReceipts, Number(e.committeeTotalReceipts || 0));
+                if (Array.isArray(e.estimatedTopDonors) && e.estimatedTopDonors.length) c.estimatedTopDonors = e.estimatedTopDonors;
                 if (e.direction === "incoming") c.incoming += e.weight;
                 else c.outgoing += e.weight;
+                unitTotals.set(c.unit, (unitTotals.get(c.unit) || 0) + e.weight);
+                relationshipTotals.set(c.edgeType, (relationshipTotals.get(c.edgeType) || 0) + e.weight);
             }
 
-            // Also add neighbors that have no edge data (adjacency-only)
+            // Include adjacency-only neighbors with no edge payload (rare fallback case)
             for (const nid of neighbors) {
-                if (nid === nodeId || connMap.has(nid)) continue;
+                if (nid === nodeId || uniqueNeighborIds.has(nid)) continue;
                 const neighbor = localById.get(nid);
-                if (neighbor) connMap.set(nid, { label: neighbor.label || nid, type: neighbor.node_type || "unknown", totalAmount: 0, incoming: 0, outgoing: 0 });
+                if (!neighbor) continue;
+                const displayKey = `${normalizeDisplayKey(neighbor.label)}|${neighbor.node_type || "unknown"}|adjacent|value`;
+                if (!connMap.has(displayKey)) {
+                    connMap.set(displayKey, {
+                        label: neighbor.label || nid,
+                        type: neighbor.node_type || "unknown",
+                        unit: "value",
+                        edgeType: "adjacent",
+                        edgeLabel: "Adjacent relationship",
+                        edgeDescription: "Connected in graph adjacency.",
+                        metricLabel: "Graph linkage",
+                        caveat: "",
+                        totalWeight: 0,
+                        incoming: 0,
+                        outgoing: 0,
+                        occurrences: 1,
+                        linkedCommitteeSpendAmount: 0,
+                        linkedCommitteeSpendTransactions: 0,
+                        matchScoreSum: 0,
+                        estimatedTopDonors: [],
+                        committeeTotalReceipts: 0,
+                        isDirectTransfer: undefined,
+                    });
+                }
             }
 
-            const connections = Array.from(connMap.values()).sort((a, b) => b.totalAmount - a.totalAmount);
+            const connections = Array.from(connMap.values()).sort((a, b) => b.totalWeight - a.totalWeight);
             const topConns = connections.slice(0, 12);
-            const totalFlow = connections.reduce((s, c) => s + c.totalAmount, 0);
+            const connectionCount = Math.max(0, Math.max(neighbors.size - 1, uniqueNeighborIds.size));
+            const nodeUnits = new Set(nodeEdges.map((edge) => edge.unit).filter(Boolean));
+            const singleNodeUnit = nodeUnits.size === 1 ? Array.from(nodeUnits)[0] : null;
 
-            let html = `<h4>${shortLabel(node.label, 50)}</h4>`;
+            let html = `<h4>${shortLabel(node.label, 58)}</h4>`;
             html += `<p><strong>Type:</strong> ${node.node_type || "unknown"}`;
-            html += ` | <strong>Total flow:</strong> $${Number(node.weighted_degree || 0).toLocaleString()}`;
             if (node.region && node.region !== "Unknown") html += ` | <strong>Region:</strong> ${node.region}`;
             html += `</p>`;
-            html += `<p><strong>Connections:</strong> ${connectionCount}`;
-            if (totalFlow > 0) html += ` | <strong>Connected flow:</strong> $${totalFlow.toLocaleString()}`;
-            html += `</p>`;
+            if (singleNodeUnit) {
+                html += `<p><strong>Weighted degree:</strong> ${formatMetric(node.weighted_degree || 0, singleNodeUnit)} <small>(${unitLabel(singleNodeUnit)}-weighted)</small></p>`;
+            } else {
+                html += `<p><strong>Weighted degree:</strong> ${Number(node.weighted_degree || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} <small>(mixed units across edge types)</small></p>`;
+            }
+            html += `<p><strong>Connections:</strong> ${connectionCount} | <strong>Relationship rows:</strong> ${connections.length}</p>`;
+            html += `<p class="help-text"><strong>What this node represents:</strong> ${nodeTypeMeaning[node.node_type] || "Entity in this network graph."}</p>`;
+            if (relationshipTotals.size) {
+                const breakdown = Array.from(relationshipTotals.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 4)
+                    .map(([edgeType]) => edgeTypeFallback[edgeType]?.label || edgeType.replace(/_/g, " "));
+                html += `<p class="help-text"><strong>Relationship meaning:</strong> ${breakdown.join(" | ")}</p>`;
+            }
+            if (unitTotals.has("score")) {
+                html += `<p class="help-text">Score-based edges are fuzzy name-matching confidence, not direct dollar transactions.</p>`;
+            }
+
             if (topConns.length) {
-                html += `<table class="data-table" style="font-size:0.82rem;margin-top:0.4rem"><thead><tr><th>Connected To</th><th>Type</th><th>Amount</th><th>Flow</th></tr></thead><tbody>`;
+                html += `<table class="data-table" style="font-size:0.82rem;margin-top:0.4rem"><thead><tr><th>Connected To</th><th>Relationship</th><th>Metric</th><th>Flow</th><th>Notes</th></tr></thead><tbody>`;
                 for (const c of topConns) {
                     let flowDir = "";
                     if (c.outgoing > 0 && c.incoming > 0) flowDir = "both";
                     else if (c.outgoing > 0) flowDir = "\u2192 outgoing";
                     else if (c.incoming > 0) flowDir = "\u2190 incoming";
                     else flowDir = "-";
-                    html += `<tr><td>${shortLabel(c.label, 32)}</td><td><small>${c.type}</small></td><td>$${c.totalAmount.toLocaleString()}</td><td><small>${flowDir}</small></td></tr>`;
+
+                    const notes = [];
+                    if (c.occurrences > 1) notes.push(`aggregated ${c.occurrences} links`);
+                    if (c.caveat) notes.push(c.caveat);
+                    if (c.unit === "score" && c.linkedCommitteeSpendAmount > 0) {
+                        notes.push(`linked committee spend ${formatMetric(c.linkedCommitteeSpendAmount, "usd")} (${Math.round(c.linkedCommitteeSpendTransactions).toLocaleString()} txns)`);
+                    }
+                    if (c.edgeType === "committee_candidate" && c.isDirectTransfer === false) {
+                        notes.push("not a direct transfer edge");
+                    }
+                    if (c.edgeType === "committee_candidate" && c.estimatedTopDonors.length) {
+                        const topDonorText = c.estimatedTopDonors
+                            .slice(0, 3)
+                            .map((d) => `${shortLabel(d.donor_label || d.donor_name, 18)} ${formatMetric(d.estimated_amount_to_candidate_receipts || 0, "usd")}`)
+                            .join(", ");
+                        if (topDonorText) notes.push(`est. top donor provenance: ${topDonorText}`);
+                    }
+
+                    html += `<tr><td>${shortLabel(c.label, 32)}</td><td><small>${shortLabel(c.edgeLabel || c.edgeType, 34)}</small></td><td>${formatMetric(c.totalWeight, c.unit)} <small>${unitLabel(c.unit)}</small></td><td><small>${flowDir}</small></td><td><small>${shortLabel(notes.join(" | ") || "-", 88)}</small></td></tr>`;
                 }
                 html += `</tbody></table>`;
-                if (connections.length > 12) html += `<p class="help-text">Showing top 12 of ${connections.length} connections.</p>`;
+                if (connections.length > 12) html += `<p class="help-text">Showing top 12 of ${connections.length} relationship rows.</p>`;
             }
             infoPanel.innerHTML = html;
             infoPanel.style.display = "block";
@@ -352,6 +512,79 @@
     /* ── Helper: get node radius ── */
     const getNodeRadius = (node) => Math.max(5, Math.min(30, 5 + Math.sqrt(Math.max(node.weighted_degree || 0, 1)) / 2));
 
+    /* ── Helper: reduce clutter for dense graphs ── */
+    const applyDensityFilter = (nodes, edges, mode = "balanced") => {
+        const rawNodes = Array.isArray(nodes) ? nodes : [];
+        const rawEdges = Array.isArray(edges) ? edges : [];
+        if (!rawNodes.length || !rawEdges.length || mode === "full") {
+            return {
+                nodes: rawNodes.map((n) => ({ ...n })),
+                edges: rawEdges.map((e) => ({ ...e })),
+                filtered: false,
+                rawNodeCount: rawNodes.length,
+                rawEdgeCount: rawEdges.length,
+            };
+        }
+        const shouldFilter = mode === "focus" || rawEdges.length > 320 || rawNodes.length > 180;
+        if (!shouldFilter) {
+            return {
+                nodes: rawNodes.map((n) => ({ ...n })),
+                edges: rawEdges.map((e) => ({ ...e })),
+                filtered: false,
+                rawNodeCount: rawNodes.length,
+                rawEdgeCount: rawEdges.length,
+            };
+        }
+
+        const nodeEdgeMap = new Map();
+        for (const n of rawNodes) nodeEdgeMap.set(n.id, []);
+        for (const e of rawEdges) {
+            if (nodeEdgeMap.has(e.source)) nodeEdgeMap.get(e.source).push(e);
+            if (nodeEdgeMap.has(e.target)) nodeEdgeMap.get(e.target).push(e);
+        }
+
+        const perNodeLimit = mode === "focus" ? 3 : (rawEdges.length > 1200 ? 4 : rawEdges.length > 700 ? 5 : 7);
+        const edgeCap = mode === "focus" ? 280 : (rawEdges.length > 1200 ? 720 : rawEdges.length > 700 ? 620 : 520);
+
+        const keepEdgeKeys = new Set();
+        const edgeKey = (edge) => `${edge.source}|${edge.target}|${edge.edge_type || ""}`;
+        for (const [nodeId, incidentEdges] of nodeEdgeMap.entries()) {
+            const sorted = incidentEdges
+                .slice()
+                .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
+                .slice(0, perNodeLimit);
+            for (const edge of sorted) {
+                keepEdgeKeys.add(edgeKey(edge));
+            }
+            if (sorted.length === 0) nodeEdgeMap.delete(nodeId);
+        }
+
+        const strongestEdges = rawEdges
+            .slice()
+            .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
+            .slice(0, edgeCap);
+        for (const edge of strongestEdges) keepEdgeKeys.add(edgeKey(edge));
+
+        let filteredEdges = rawEdges.filter((edge) => keepEdgeKeys.has(edgeKey(edge)));
+        filteredEdges = filteredEdges
+            .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
+            .slice(0, edgeCap);
+        const usedNodeIds = new Set();
+        for (const edge of filteredEdges) {
+            usedNodeIds.add(edge.source);
+            usedNodeIds.add(edge.target);
+        }
+        const filteredNodes = rawNodes.filter((node) => usedNodeIds.has(node.id));
+
+        return {
+            nodes: filteredNodes.map((n) => ({ ...n })),
+            edges: filteredEdges.map((e) => ({ ...e })),
+            filtered: filteredNodes.length !== rawNodes.length || filteredEdges.length !== rawEdges.length,
+            rawNodeCount: rawNodes.length,
+            rawEdgeCount: rawEdges.length,
+        };
+    };
+
     /* ── Helper: render a generic force graph ── */
     const renderForceGraph = (svg, summaryEl, nodes, edges, colorFn, opts = {}) => {
         clearSvg(svg);
@@ -362,9 +595,17 @@
             return;
         }
 
-        runForceLayout(nodes, edges, width, height, opts);
-        const adjacency = buildAdjacency(nodes, edges);
-        const localById = new Map(nodes.map((n) => [n.id, n]));
+        const densityMode = opts.densityMode || "balanced";
+        const filtered = applyDensityFilter(nodes, edges, densityMode);
+        if (!filtered.nodes.length || !filtered.edges.length) {
+            drawEmpty(svg, opts.emptyMsg || "No data available for this visualization.");
+            if (summaryEl) summaryEl.textContent = "";
+            return;
+        }
+
+        runForceLayout(filtered.nodes, filtered.edges, width, height, opts);
+        const adjacency = buildAdjacency(filtered.nodes, filtered.edges);
+        const localById = new Map(filtered.nodes.map((n) => [n.id, n]));
 
         const edgeGroup = createSvgEl("g");
         const nodeGroup = createSvgEl("g");
@@ -374,9 +615,10 @@
         svg.appendChild(labelGroup);
 
         const edgeEls = [];
-        for (const e of edges) {
+        for (const e of filtered.edges) {
             const s = localById.get(e.source), t = localById.get(e.target);
             if (!s || !t) continue;
+            const meta = edgeMeta(e);
             const line = createSvgEl("line", {
                 x1: s.x.toFixed(2), y1: s.y.toFixed(2),
                 x2: t.x.toFixed(2), y2: t.y.toFixed(2),
@@ -386,18 +628,18 @@
             line.dataset.source = e.source;
             line.dataset.target = e.target;
             const title = createSvgEl("title");
-            title.textContent = `${shortLabel(s.label)} \u2192 ${shortLabel(t.label)} | $${Number(e.weight || 0).toLocaleString()}`;
+            title.textContent = `${shortLabel(s.label)} \u2192 ${shortLabel(t.label)} | ${meta.label}: ${formatMetric(e.weight || 0, meta.unit)}`;
             line.appendChild(title);
             edgeGroup.appendChild(line);
             edgeEls.push(line);
         }
 
-        const topLabels = nodes.slice().sort((a, b) => (b.weighted_degree || 0) - (a.weighted_degree || 0)).slice(0, 30);
+        const topLabels = filtered.nodes.slice().sort((a, b) => (b.weighted_degree || 0) - (a.weighted_degree || 0)).slice(0, 30);
         const labeledSet = new Set(topLabels.map((n) => n.id));
 
         const nodeEls = [];
         const labelEls = [];
-        for (const n of nodes) {
+        for (const n of filtered.nodes) {
             const r = getNodeRadius(n);
             const circle = createSvgEl("circle", {
                 cx: n.x.toFixed(2), cy: n.y.toFixed(2), r,
@@ -407,7 +649,7 @@
             circle.dataset.nodeId = n.id;
             circle.style.cursor = "pointer";
             const title = createSvgEl("title");
-            title.textContent = `${n.label} (${n.node_type}) | $${Number(n.weighted_degree || 0).toLocaleString()}`;
+            title.textContent = `${n.label} (${n.node_type}) | weighted degree ${Number(n.weighted_degree || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
             circle.appendChild(title);
             nodeGroup.appendChild(circle);
             nodeEls.push(circle);
@@ -424,9 +666,16 @@
             }
         }
 
-        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId, edges);
+        setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId, filtered.edges);
         setupZoomPan(svg);
-        if (summaryEl) summaryEl.textContent = `${nodes.length} nodes, ${edges.length} edges. Click a node to highlight its connections. Scroll to zoom, drag to pan.`;
+        if (summaryEl) {
+            const modeLabel = densityMode === "focus" ? "Strongest links" : densityMode === "full" ? "Full detail" : "Balanced";
+            if (filtered.filtered) {
+                summaryEl.textContent = `Showing ${filtered.nodes.length}/${filtered.rawNodeCount} nodes and ${filtered.edges.length}/${filtered.rawEdgeCount} edges (${modeLabel}). Click a node to inspect relationship meaning and metrics. Scroll to zoom, drag to pan.`;
+            } else {
+                summaryEl.textContent = `${filtered.nodes.length} nodes, ${filtered.edges.length} edges (${modeLabel}). Click a node to inspect relationship meaning and metrics. Scroll to zoom, drag to pan.`;
+            }
+        }
     };
 
     /* ── Helper: build Sankey column layout ── */
@@ -450,6 +699,8 @@
     const networkSummary = document.getElementById("network-summary");
     const modeSelect = document.getElementById("network-view-mode");
     const renderBtn = document.getElementById("network-render-btn");
+    const densitySelect = document.getElementById("graph-density-mode");
+    const getDensityMode = () => densitySelect?.value || "balanced";
 
     const getGraphSubset = () => {
         const mode = modeSelect ? modeSelect.value : "power";
@@ -472,13 +723,17 @@
         if (!networkSvg) return;
         const { nodes, edges, mode } = getGraphSubset();
         const colorFn = (n) => mode === "region" ? (regionColors[n.region] || regionColors.Unknown) : (typeColor[n.node_type] || "#64748b");
-        renderForceGraph(networkSvg, networkSummary, nodes, edges, colorFn, { emptyMsg: "No network data. Switch to Full mode.", infoPanelId: "network-info-panel" });
+        renderForceGraph(networkSvg, networkSummary, nodes, edges, colorFn, {
+            emptyMsg: "No network data. Switch to Full mode.",
+            infoPanelId: "network-info-panel",
+            densityMode: getDensityMode(),
+        });
         // Toggle description text based on mode
         const descEl = document.getElementById("network-description");
         if (descEl) {
             descEl.textContent = mode === "region"
                 ? "Regional view: nodes are colored by geographic region. Filter by a specific region to focus the graph."
-                : "Power Players view: the top 45 nodes by contribution volume and their direct connections. Node color indicates type (donor, committee, candidate, vendor).";
+                : "Power Players view: top contribution nodes and their direct connections. Node detail explains whether edge values are dollars, counts, or match scores.";
         }
     };
 
@@ -766,6 +1021,7 @@
             emptyMsg: "No vendor expenditure data available.",
             charge: 3000, spring: 0.012, iterations: 200,
             infoPanelId: "vendor-info-panel",
+            densityMode: getDensityMode(),
         });
     };
 
@@ -937,6 +1193,7 @@
             emptyMsg: "No state-federal overlap data. Run cross-matching first.",
             anchorFn, anchorStrength: 0.015, charge: 3500, spring: 0.01,
             infoPanelId: "overlap-info-panel",
+            densityMode: getDensityMode(),
         });
     };
 
@@ -961,6 +1218,7 @@
             emptyMsg: "No lobbying data. Import lobbying data and run cross-matching first.",
             charge: 3000, spring: 0.012,
             infoPanelId: "lobbying-info-panel",
+            densityMode: getDensityMode(),
         });
     };
 
@@ -985,33 +1243,49 @@
             emptyMsg: "No 527 data. Import IRS 527 data and run cross-matching first.",
             charge: 3000, spring: 0.012,
             infoPanelId: "darkmoney-info-panel",
+            densityMode: getDensityMode(),
         });
     };
 
     /* ── Tab-driven lazy rendering ── */
     const tabRadios = document.querySelectorAll('input[name="network-tabs"]');
     const rendered = new Set();
+    const densityNote = document.getElementById("graph-density-note");
 
-    const renderActiveTab = () => {
+    const renderTab = (id) => {
+        if (id === "tab-force") renderForce();
+        else if (id === "tab-sankey") renderSankey();
+        else if (id === "tab-heatmap") renderHeatmap();
+        else if (id === "tab-vendor") renderVendor();
+        else if (id === "tab-combined") renderCombined();
+        else if (id === "tab-overlap") renderOverlap();
+        else if (id === "tab-lobbying") renderLobbying();
+        else if (id === "tab-darkmoney") renderDarkMoney();
+    };
+
+    const renderActiveTab = (force = false) => {
         for (const radio of tabRadios) {
             if (!radio.checked) continue;
             const id = radio.id;
-            if (rendered.has(id)) break;
+            if (!force && rendered.has(id)) break;
             rendered.add(id);
-            if (id === "tab-force") renderForce();
-            else if (id === "tab-sankey") renderSankey();
-            else if (id === "tab-heatmap") renderHeatmap();
-            else if (id === "tab-vendor") renderVendor();
-            else if (id === "tab-combined") renderCombined();
-            else if (id === "tab-overlap") renderOverlap();
-            else if (id === "tab-lobbying") renderLobbying();
-            else if (id === "tab-darkmoney") renderDarkMoney();
+            renderTab(id);
             break;
         }
     };
 
-    for (const radio of tabRadios) radio.addEventListener("change", renderActiveTab);
+    for (const radio of tabRadios) radio.addEventListener("change", () => renderActiveTab(true));
+    if (densitySelect) {
+        densitySelect.addEventListener("change", () => {
+            if (densityNote) {
+                if (densitySelect.value === "full") densityNote.textContent = "Full detail mode shows all edges and may be dense on large graphs.";
+                else if (densitySelect.value === "focus") densityNote.textContent = "Strongest links mode keeps only the highest-weight relationships for maximum readability.";
+                else densityNote.textContent = "Balanced mode hides weaker links in dense views to reduce overlap. Full detail restores every edge.";
+            }
+            renderActiveTab(true);
+        });
+    }
 
     // Initial render of the force graph (default tab)
-    renderActiveTab();
+    renderActiveTab(true);
 })();

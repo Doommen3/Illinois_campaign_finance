@@ -130,6 +130,7 @@ def test_analytics_networks_has_graph_descriptions(client):
     html = response.data.decode()
     assert "Three-column donor" in html
     assert "dark money" in html.lower() or "527" in html
+    assert "Graph Density" in html
 
 
 def test_analytics_networks_has_info_panels(client):
@@ -173,16 +174,29 @@ def test_network_js_has_collision_detection(app):
     assert "overlap" in js.lower()
 
 
-def test_info_panel_has_dollar_amounts_markup(app):
-    """Info panel JS generates a table with Amount and Flow columns."""
+def test_info_panel_has_semantic_metric_markup(app):
+    """Info panel JS generates semantic relationship/metric columns and score explanation text."""
     import os
 
     js_path = os.path.join(app.static_folder, "js", "analytics_networks.js")
     with open(js_path) as f:
         js = f.read()
-    assert "Amount" in js
+    assert "Relationship" in js
+    assert "Metric" in js
     assert "Flow" in js
-    assert "totalAmount" in js
+    assert "score-based edges" in js.lower()
+
+
+def test_network_js_has_density_filter_mode(app):
+    """Dense graph rendering supports a filter mode toggle."""
+    import os
+
+    js_path = os.path.join(app.static_folder, "js", "analytics_networks.js")
+    with open(js_path) as f:
+        js = f.read()
+    assert "applyDensityFilter" in js
+    assert "graph-density-mode" in js
+    assert "Balanced" in js
 
 
 def test_candidate_competition_uses_candidates_table(tmp_path):

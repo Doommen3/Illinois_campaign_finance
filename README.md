@@ -20,6 +20,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Analytics
 - **Network Analysis** — Interactive graph suite including force graph (click-to-lock), 3-column Sankey flow, donor-committee heatmap, vendor expenditure network, combined money flow (4-column), state-federal donor overlap, lobbying-campaign finance bridge, 527 dark money pathway, plus advanced relationship views (arc diagrams, local/federal overlap bubble scatter, community treemap/sunburst, and alluvial edge-type flow maps)
+- **Edge Semantics + Provenance** — Edge payloads include relationship definitions and metric units (USD vs score/count), and committee-linked candidate edges include estimated donor provenance (proportional-share method) with explicit caveats
 - **Anomaly Detection** — Large contribution flags, monthly spike detection, high donor concentration risk (HHI-based)
 - **Risk Explainability** — Per-flag explainability payloads (rule, baseline, threshold, percentile context)
 - **Concentration Metrics** — Herfindahl-Hirschman Index (HHI), Gini coefficient, top-N donor share
@@ -43,7 +44,8 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - CSS-only tabbed interfaces on candidate detail (Overview/Money In/Money Out/Outside Spending/Cross-Role) and live feed (Local/Federal/Disbursements/Outside Spending)
 - Contextual help-text explanations on all major pages describing data sources and methodology
 - Lobbying pages with explanatory help-text blocks for Money Destinations, Clients, Matched Donors, and confidence scores
-- Network graph zoom/pan, collision-free node layouts, node info panels with dollar amounts and flow direction, color legends, and per-tab descriptions for all eight visualization types
+- Network graph zoom/pan, collision-free node layouts, graph-density modes (Balanced/Strongest/Full), node info panels with relationship semantics, metric units, and flow direction, color legends, and per-tab descriptions for all eight visualization types
+- Committee->candidate link panels now explicitly explain that links represent committee receipts associated with candidate-linked committees (not direct transfers) and show estimated top donor provenance when data is available
 - Adaptive force layout with post-layout collision detection for dense graph readability
 - Follow-the-money donor dropdown selector (replaces raw entity key input) with top 200 donors by contribution volume
 - Committee SBE ID routing for cross-page navigation between lobbying and committee detail pages
@@ -350,6 +352,14 @@ systemctl restart ilcf-web.service
 # Rebuild analytics materialized views + snapshot cache (recommended after UI/analytics changes)
 /srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
 ```
+
+Production deployment checklist:
+1. Run test suite locally (`pytest -q -m "not integration"`).
+2. Push to `main` and pull on server (`git pull origin main`).
+3. Reinstall dependencies if needed (`pip install -r requirements.txt`).
+4. Rebuild analytics snapshot (`python3 run.py refresh-analytics --with-snapshot`).
+5. Restart web service (`systemctl restart ilcf-web.service`).
+6. Verify health (`systemctl status ilcf-web.service --no-pager`) and load `/analytics/networks`.
 
 ### Uploading New ISBE `expenditures_*.txt` and Updating Production
 
