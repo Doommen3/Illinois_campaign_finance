@@ -301,6 +301,60 @@ Use these paths/services for production operations on the Hetzner host:
 - Web service: `ilcf-web.service`
 - FEC sync service/timer: `il-campaign-fec-sync.service` + `il-campaign-fec-sync.timer`
 
+### Running Commands From The Shared Venv (Required)
+
+All production CLI tasks should run with the shared virtualenv binaries, not system Python.
+
+Canonical paths:
+- Python: `/srv/illinois_campaign_finance/shared/venv/bin/python3`
+- Pip: `/srv/illinois_campaign_finance/shared/venv/bin/pip`
+- App root: `/srv/illinois_campaign_finance/app`
+- Env file: `/srv/illinois_campaign_finance/shared/.env`
+
+Recommended pattern (without activating the venv):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+PIP=/srv/illinois_campaign_finance/shared/venv/bin/pip
+
+# Load/export runtime env vars (FEC_API_KEY, etc.)
+set -a
+source /srv/illinois_campaign_finance/shared/.env
+set +a
+
+# Install deps with venv pip
+$PIP install -r /srv/illinois_campaign_finance/app/requirements.txt
+
+# Run CLI commands with venv python3
+$PYTHON run.py refresh-analytics --with-snapshot
+```
+
+Optional pattern (activate first, then use `python3`/`pip`):
+
+```bash
+cd /srv/illinois_campaign_finance/app
+source /srv/illinois_campaign_finance/shared/venv/bin/activate
+set -a; source /srv/illinois_campaign_finance/shared/.env; set +a
+python3 run.py refresh-analytics --with-snapshot
+```
+
+Verification commands:
+
+```bash
+/srv/illinois_campaign_finance/shared/venv/bin/python3 -V
+/srv/illinois_campaign_finance/shared/venv/bin/python3 -c "import sys; print(sys.executable)"
+/srv/illinois_campaign_finance/shared/venv/bin/pip -V
+```
+
+Common failures and fixes:
+- `ModuleNotFoundError: No module named 'werkzeug'`:
+  - `/srv/illinois_campaign_finance/shared/venv/bin/pip install -r /srv/illinois_campaign_finance/app/requirements.txt`
+- `Error: missing FEC API key`:
+  - `set -a; source /srv/illinois_campaign_finance/shared/.env; set +a`
+- Running with wrong interpreter:
+  - Use the full venv python path in every command, or activate the shared venv first.
+
 Do not use legacy paths/services unless intentionally migrating:
 
 - Legacy app path: `/srv/illinois/app`
@@ -351,15 +405,18 @@ cd /srv/illinois_campaign_finance/app
 git config --global --add safe.directory /srv/illinois_campaign_finance/app  # first time only
 git pull origin main
 
+PYTHON=/srv/illinois_campaign_finance/shared/venv/bin/python3
+PIP=/srv/illinois_campaign_finance/shared/venv/bin/pip
+
 # Re-install deps (required if you hit ModuleNotFoundError such as werkzeug)
-/srv/illinois_campaign_finance/shared/venv/bin/pip install -r requirements.txt
+$PIP install -r /srv/illinois_campaign_finance/app/requirements.txt
 
 # Rebuild analytics materialized views + snapshot cache
-/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot
+$PYTHON run.py refresh-analytics --with-snapshot
 
 # Optional but recommended after federal transfer/committee-link changes
-/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-fec-transfer-committees --cycle 2026
-/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py sync-fec-transfer-committee-receipts --cycle 2026 --max-calls 1000 --max-pages-per-committee 25
+$PYTHON run.py refresh-fec-transfer-committees --cycle 2026
+$PYTHON run.py sync-fec-transfer-committee-receipts --cycle 2026 --max-calls 1000 --max-pages-per-committee 25
 
 # Restart the web application
 systemctl restart ilcf-web.service
@@ -368,9 +425,9 @@ systemctl restart ilcf-web.service
 Production deployment checklist:
 1. Run local tests (`pytest -q`).
 2. Push to `main` and pull on server (`git pull origin main`).
-3. Reinstall dependencies in shared venv (`pip install -r requirements.txt`).
-4. Refresh analytics snapshots (`python3 run.py refresh-analytics --with-snapshot`).
-5. Refresh/sync transfer-source committee receipts (`refresh-fec-transfer-committees`, `sync-fec-transfer-committee-receipts`).
+3. Reinstall dependencies in shared venv (`/srv/illinois_campaign_finance/shared/venv/bin/pip install -r /srv/illinois_campaign_finance/app/requirements.txt`).
+4. Refresh analytics snapshots (`/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-analytics --with-snapshot`).
+5. Refresh/sync transfer-source committee receipts (`/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py refresh-fec-transfer-committees`, `/srv/illinois_campaign_finance/shared/venv/bin/python3 run.py sync-fec-transfer-committee-receipts`).
 6. Restart web service (`systemctl restart ilcf-web.service`).
 7. Verify service health (`systemctl status ilcf-web.service --no-pager`).
 8. Smoke-test critical routes:
