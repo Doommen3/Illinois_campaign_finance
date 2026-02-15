@@ -3258,8 +3258,8 @@ class D2ReceiptsRecon:
                 """
                 (
                     COALESCE(committee_name, '') LIKE ?
-                    OR CAST(COALESCE(committee_id_sbe, '') AS TEXT) LIKE ?
-                    OR CAST(COALESCE(filed_doc_id, '') AS TEXT) LIKE ?
+                    OR COALESCE(CAST(committee_id_sbe AS TEXT), '') LIKE ?
+                    OR COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?
                 )
                 """
             )
@@ -3267,11 +3267,15 @@ class D2ReceiptsRecon:
             params.extend([like_term, like_term, like_term])
 
         if min_abs_diff is not None:
-            clauses.append("ABS(COALESCE(receipts_minus_d2_total, 0)) >= ?")
+            clauses.append(
+                "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) >= ?"
+            )
             params.append(float(min_abs_diff))
 
         if min_receipt_rows is not None:
-            clauses.append("COALESCE(receipt_row_count, 0) >= ?")
+            clauses.append(
+                "COALESCE(CAST(NULLIF(TRIM(CAST(receipt_row_count AS TEXT)), '') AS INTEGER), 0) >= ?"
+            )
             params.append(int(min_receipt_rows))
 
         if not clauses:
@@ -3329,9 +3333,12 @@ class D2ReceiptsRecon:
             "first_receipt_date": "first_receipt_date",
             "last_receipt_date": "last_receipt_date",
             "receipts_minus_d2_total": "receipts_minus_d2_total",
-            "abs_diff": "ABS(COALESCE(receipts_minus_d2_total, 0))",
+            "abs_diff": "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0))",
         }
-        order_by = sort_map.get(sort_by, "ABS(COALESCE(receipts_minus_d2_total, 0))")
+        order_by = sort_map.get(
+            sort_by,
+            "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0))",
+        )
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
 
         query = f"""

@@ -640,12 +640,12 @@ def _search_local_candidates(conn, query: str, limit: int = 30) -> list[dict]:
             candidate_full_name,
             {office_expr},
             COUNT(DISTINCT committee_id_sbe) AS committee_count,
-            COALESCE(SUM(sum_total_receipts), 0) AS total_receipts,
+            COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0) AS total_receipts,
             {latest_expr}
         FROM bulk_candidate_committee_finance_agg
         WHERE
             COALESCE(candidate_full_name, '') LIKE ?
-            OR CAST(COALESCE(candidate_id, '') AS TEXT) LIKE ?
+            OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
         GROUP BY candidate_id, candidate_full_name
         ORDER BY total_receipts DESC, candidate_full_name ASC
         LIMIT ?
@@ -790,12 +790,12 @@ def _search_filed_docs(conn, query: str, limit: int = 30) -> list[dict]:
                 filed_doc_id,
                 committee_id_sbe,
                 committee_name,
-                ABS(COALESCE(receipts_minus_d2_total, 0)) AS abs_diff,
+                ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) AS abs_diff,
                 first_receipt_date,
                 last_receipt_date
             FROM bulk_d2_receipts_recon
             WHERE
-                CAST(COALESCE(filed_doc_id, '') AS TEXT) LIKE ?
+                COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?
                 OR COALESCE(committee_name, '') LIKE ?
             ORDER BY abs_diff DESC, filed_doc_id DESC
             LIMIT ?

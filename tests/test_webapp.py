@@ -9,8 +9,9 @@ from urllib.parse import quote
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from webapp.app import create_app
+import webapp.routes.main as main_routes
 from database.connection import init_db, get_db
-from database.models import Committee, Report, Donor, Contribution, AppUser
+from database.models import Committee, Report, Donor, Contribution, AppUser, D2ReceiptsRecon
 
 
 @pytest.fixture
@@ -76,6 +77,23 @@ def _login_manual_user(client, *, next_url="/manual-entry/"):
         },
         follow_redirects=False,
     )
+
+
+class _CaptureSqlResult:
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+
+class _CaptureSqlConn:
+    def __init__(self):
+        self.sql_history: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.sql_history.append(sql)
+        return _CaptureSqlResult()
 
 
 class TestWebApp:
@@ -1318,6 +1336,34 @@ class TestWebApp:
         """Test that the search page loads."""
         response = client.get('/search')
         assert response.status_code == 200
+
+    def test_search_local_candidates_uses_safe_numeric_and_text_casts(self, monkeypatch):
+        conn = _CaptureSqlConn()
+        monkeypatch.setattr(main_routes, "_table_exists", lambda _conn, _table: True)
+        monkeypatch.setattr(main_routes, "_column_exists", lambda _conn, _table, _col: True)
+
+        main_routes._search_local_candidates(conn, "smith", limit=10)
+
+        rendered_sql = "\n".join(conn.sql_history)
+        assert "COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0)" in rendered_sql
+        assert "COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?" in rendered_sql
+
+    def test_search_filed_docs_uses_safe_abs_diff_cast(self, monkeypatch):
+        conn = _CaptureSqlConn()
+        monkeypatch.setattr(main_routes, "_table_exists", lambda _conn, _table: _table == "bulk_d2_receipts_recon")
+
+        main_routes._search_filed_docs(conn, "9001", limit=10)
+
+        rendered_sql = "\n".join(conn.sql_history)
+        assert "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) AS abs_diff" in rendered_sql
+        assert "COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?" in rendered_sql
+
+    def test_d2_receipts_recon_filters_use_postgres_safe_casts(self):
+        where_sql, _params = D2ReceiptsRecon._build_filter_sql(search="9001", min_abs_diff=10, min_receipt_rows=2)
+        assert "COALESCE(CAST(committee_id_sbe AS TEXT), '') LIKE ?" in where_sql
+        assert "COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?" in where_sql
+        assert "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) >= ?" in where_sql
+        assert "COALESCE(CAST(NULLIF(TRIM(CAST(receipt_row_count AS TEXT)), '') AS INTEGER), 0) >= ?" in where_sql
 
     def test_search_extended_categories(self, app, client):
         """Test global search includes candidates, reports, filed docs, and donor keys."""
