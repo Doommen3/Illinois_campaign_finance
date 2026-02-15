@@ -11,6 +11,7 @@ from database.maintenance import (
     find_garbage_committees,
     delete_committees_and_related,
     normalize_donor_metadata,
+    normalize_bulk_receipt_dates,
     data_quality_summary,
     find_reports_for_detail_rescrape,
     requeue_reports_for_detail_scrape,
@@ -263,6 +264,30 @@ def data_quality_command():
 
     except Exception as e:
         click.echo(f'Error generating data quality summary: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('normalize-bulk-receipt-dates')
+@click.option('--apply', is_flag=True, help='Apply changes (default is dry-run)')
+def normalize_bulk_receipt_dates_command(apply):
+    """Normalize bulk receipt dates to YYYY-MM-DD and preserve raw datetime values."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        stats = normalize_bulk_receipt_dates(conn, apply=apply)
+        if not stats['table_exists']:
+            click.echo('bulk_receipts_clean table not found; nothing to normalize.')
+            return
+
+        click.echo('Bulk receipt date normalization:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+
+        if not apply:
+            click.echo('Dry-run complete. Re-run with --apply to execute changes.')
+    except Exception as e:
+        click.echo(f'Error normalizing bulk receipt dates: {e}', err=True)
         sys.exit(1)
     finally:
         conn.close()

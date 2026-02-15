@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from pathlib import Path
 import sqlite3
 import sys
+from datetime import datetime
 from typing import Iterable, Optional
 
 
@@ -71,6 +73,47 @@ def _to_bool(value: str | None) -> Optional[int]:
     if lowered in {"false", "f", "0", "no", "n"}:
         return 0
     return None
+
+
+def _normalize_bulk_receipt_date(value: str | None) -> tuple[Optional[str], Optional[str]]:
+    """Normalize receipt date to YYYY-MM-DD and preserve raw datetime text when present."""
+    cleaned = _clean_text(value)
+    if cleaned is None:
+        return None, None
+
+    raw_datetime = cleaned if len(cleaned) > 10 else None
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+    ):
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+            return parsed.date().isoformat(), raw_datetime
+        except ValueError:
+            continue
+
+    iso_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", cleaned)
+    if iso_match:
+        return iso_match.group(0), raw_datetime
+
+    us_match = re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", cleaned)
+    if us_match:
+        candidate = us_match.group(0)
+        for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                return parsed.date().isoformat(), raw_datetime
+            except ValueError:
+                continue
+
+    return cleaned, raw_datetime
 
 
 def _normalize_bool(value: str | None) -> tuple[Optional[int], bool]:
@@ -250,6 +293,7 @@ def init_bulk_tables(conn: sqlite3.Connection) -> None:
             last_or_business_name TEXT,
             first_name TEXT,
             received_date TEXT,
+            received_datetime_raw TEXT,
             amount REAL,
             aggregate_amount REAL,
             loan_amount REAL,
@@ -548,7 +592,7 @@ def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> int:
     insert_sql = """
         INSERT INTO bulk_receipts_clean (
             receipt_record_id, committee_id_sbe, filed_doc_id, electronic_transaction_id,
-            last_or_business_name, first_name, received_date,
+            last_or_business_name, first_name, received_date, received_datetime_raw,
             amount, aggregate_amount, loan_amount,
             occupation, employer, address_line_1, address_line_2, city, state, postal_code,
             d2_part_code, description,
@@ -556,13 +600,14 @@ def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> int:
             vendor_address_line_1, vendor_address_line_2, vendor_city, vendor_state, vendor_postal_code,
             is_archived, country, redaction_requested,
             source_file, source_row_number
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     def rows():
         with file_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
             reader = csv.DictReader(f, delimiter="\t")
             for row_num, row in enumerate(reader, start=2):
+                received_date, received_datetime_raw = _normalize_bulk_receipt_date(row.get("RcvDate"))
                 yield (
                     _to_int(row.get("ID")),
                     _to_int(row.get("CommitteeID")),
@@ -570,7 +615,8 @@ def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> int:
                     _clean_text(row.get("ETransID")),
                     _clean_text(row.get("LastOnlyName")),
                     _clean_text(row.get("FirstName")),
-                    _clean_text(row.get("RcvDate")),
+                    received_date,
+                    received_datetime_raw,
                     _to_float(row.get("Amount")),
                     _to_float(row.get("AggregateAmount")),
                     _to_float(row.get("LoanAmount")),

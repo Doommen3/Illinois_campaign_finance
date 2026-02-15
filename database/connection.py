@@ -133,6 +133,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'analytics_donor_committee_agg', 'employer', 'employer TEXT')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_version', 'materialization_version INTEGER NOT NULL DEFAULT 1')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_notes', 'materialization_notes TEXT')
+    _ensure_column(conn, 'bulk_receipts_clean', 'received_datetime_raw', 'received_datetime_raw TEXT')
 
     conn.executescript(schema)
 

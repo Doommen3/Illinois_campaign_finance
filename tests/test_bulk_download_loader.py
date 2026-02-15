@@ -3,6 +3,7 @@ from pathlib import Path
 
 from database.connection import get_db, init_db
 from database.bulk_download_loader import (
+    _normalize_bulk_receipt_date,
     _to_bool,
     _to_float,
     _to_int,
@@ -21,6 +22,20 @@ def test_type_parsers():
     assert _to_bool('True') == 1
     assert _to_bool('false') == 0
     assert _to_bool('') is None
+
+
+def test_normalize_bulk_receipt_date():
+    normalized, raw = _normalize_bulk_receipt_date('2025-01-10 00:00:00')
+    assert normalized == '2025-01-10'
+    assert raw == '2025-01-10 00:00:00'
+
+    normalized, raw = _normalize_bulk_receipt_date('2025-01-10')
+    assert normalized == '2025-01-10'
+    assert raw is None
+
+    normalized, raw = _normalize_bulk_receipt_date('1/5/2026')
+    assert normalized == '2026-01-05'
+    assert raw is None
 
 
 def test_import_bulk_download_creates_joined_tables(tmp_path: Path):
