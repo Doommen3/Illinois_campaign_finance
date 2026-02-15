@@ -250,6 +250,8 @@ def create_app(config=None):
         {
             "SECRET_KEY": app_config.FLASK_SECRET_KEY,
             "DATABASE_PATH": app_config.DATABASE_PATH,
+            "DATABASE_URL": app_config.DATABASE_URL,
+            "DATABASE_TARGET": app_config.DATABASE_TARGET,
             "PUBLIC_CONTACT_EMAIL": app_config.PUBLIC_CONTACT_EMAIL,
             "APP_ENV": app_config.APP_ENV,
             "API_KEYS": list(app_config.API_KEYS),
@@ -278,6 +280,14 @@ def create_app(config=None):
 
     if config:
         app.config.update(config)
+
+    resolved_database_target = (
+        (app.config.get("DATABASE_URL") or "").strip()
+        or (app.config.get("DATABASE_PATH") or "").strip()
+        or app_config.DATABASE_PATH
+    )
+    app.config["DATABASE_TARGET"] = resolved_database_target
+    app.config["DATABASE_PATH"] = resolved_database_target
 
     if app.config.get("TESTING") and (not config or "ROUTE_PERF_CACHE_ENABLED" not in config):
         app.config["ROUTE_PERF_CACHE_ENABLED"] = False
@@ -353,7 +363,7 @@ def create_app(config=None):
     # Add database helper - creates per-request connection using Flask's g object
     def get_database():
         if '_database' not in g:
-            g._database = get_db(app.config['DATABASE_PATH'])
+            g._database = get_db(app.config['DATABASE_TARGET'])
         return g._database
 
     app.get_database = get_database
@@ -420,7 +430,7 @@ def create_app(config=None):
                 from webapp.routes.main import warm_dashboard_home_cache
 
                 warm_dashboard_home_cache(
-                    app.config['DATABASE_PATH'],
+                    app.config['DATABASE_TARGET'],
                     insights_ttl_seconds=max(15, int(app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180))),
                     candidate_stats_ttl_seconds=max(15, int(app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180))),
                     top_donors_ttl_seconds=max(15, int(app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180))),

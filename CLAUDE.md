@@ -107,6 +107,38 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - After generating test data, always verify NOT NULL constraints and required fields match the actual schema.
 - Run tests after every implementation change before presenting work as complete.
 
+## Performance-First Delivery Policy (Required)
+
+For any significant code path (imports, migrations, cross-matching, analytics refreshes, route queries, or caching changes), treat performance as a first-class requirement.
+
+1. **Measure Baseline Before Refactor**
+   - Capture current runtime and throughput using realistic data volume.
+   - For routes, capture 1 cold and 2-3 warm passes (use median warm).
+   - For long CLI jobs, capture wall-clock start/end and rows processed.
+
+2. **Evaluate Fast Paths Before Deep Implementation**
+   - Compare at least two viable approaches and choose based on measured end-to-end runtime, not intuition.
+   - Typical comparisons:
+     - SQL aggregation/materialized summaries vs Python post-processing
+     - Incremental vs full rebuild execution
+     - Bulk load/COPY-style insertion vs row/chunk executemany
+     - Parallel workers vs single-writer mode when DB contention exists
+
+3. **Optimization Order of Operations**
+   - First reduce rows scanned/recomputed.
+   - Then reuse cached/materialized outputs.
+   - Then optimize write paths (batch/bulk operations).
+   - Only then tune parallelism/worker counts.
+
+4. **Completion Gate (Do Not Skip)**
+   - Re-run the same measurements after changes.
+   - Report before/after numbers in the handoff.
+   - If no meaningful gain is observed, document why and either iterate once more or keep the simpler safer path.
+
+5. **Documentation Requirement**
+   - Update `README.md` (and relevant runbooks) with the fastest known command pattern and caveats.
+   - Explicitly call out when a "fast" mode is unsafe in production (for example lock contention, high WAL pressure, or memory risk).
+
 ## Code Style
 
 - Primary stack: Python (backend), HTML/CSS/JavaScript (frontend).
@@ -151,6 +183,13 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 - Always verify actual server paths, service names, and directory structures before generating deployment commands — never assume defaults.
 - Use `python3` (not `python`) in all server scripts and systemd files.
 - **Long-running server tasks (>10 minutes)**: Do NOT run these autonomously via Claude. Instead, provide the user with the exact command to run so they can execute it themselves, watch the output, and see it through to completion. Examples: `run-cross-matching --only all`, `import-irs527`, `refresh-analytics` on large datasets. Always estimate the runtime before handing off.
+- For long-running server tasks, provide the fastest validated safe command first (including flags like incremental mode), then provide fallback/recovery commands.
+- Runtime DB selection: if `DATABASE_URL` is set, the web app targets PostgreSQL at runtime; if unset, it falls back to `DATABASE_PATH` (SQLite).
+- Safe runtime cutover policy:
+   1. Require successful migration parity check (`mismatches=0`) before switching service env.
+   2. Keep `DATABASE_PATH` unchanged for rollback.
+   3. Add `DATABASE_URL` in service env, restart service, run endpoint sweep.
+   4. On any critical regression, remove `DATABASE_URL` and restart immediately.
 
 ### Server Details
 

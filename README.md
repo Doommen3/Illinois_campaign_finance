@@ -137,6 +137,15 @@ PostgreSQL (self-hosted) migration runbook:
   - `scripts/postgres/migrate_sqlite_to_postgres.py`
   - `scripts/postgres/verify_sqlite_postgres_counts.py`
 
+PostgreSQL runtime mode (web service):
+- The web runtime can now use PostgreSQL by setting `DATABASE_URL`.
+- If `DATABASE_URL` is set, the app uses it as the DB target; otherwise it falls back to `DATABASE_PATH` (SQLite).
+- Recommended staged cutover:
+  1. Keep SQLite value in `DATABASE_PATH` as rollback target.
+  2. Set `DATABASE_URL=postgresql://...` in the service environment.
+  3. Restart web service and run endpoint smoke checks.
+  4. If needed, unset `DATABASE_URL` and restart to roll back to SQLite immediately.
+
 ### Run Scrapers (Optional)
 ```bash
 # Scrape ISBE main report list
@@ -230,6 +239,50 @@ For scraper/live checks, run integration tests separately:
 ```bash
 pytest -q -m integration
 ```
+
+## Performance-First Execution Workflow (Required)
+
+For any non-trivial pipeline, import, migration, cross-matching run, or route/query change, use this workflow before considering the task complete.
+
+1. **Baseline First (Current Path)**
+  - Measure current behavior with realistic data and record wall-clock runtime.
+  - For web routes, capture at least 1 cold run and 2-3 warm runs (median warm).
+  - For CLI jobs, log start/end timestamps and rows/records processed.
+
+2. **Identify Fastest Viable Path Up Front**
+  - Compare at least two implementation strategies before coding deeply (example: SQL-side aggregation/materialization vs Python loops; COPY/bulk load vs row inserts; incremental mode vs full rebuild).
+  - Prefer approaches that reduce total I/O and repeated recomputation.
+  - Do not assume parallelization is faster if the bottleneck is DB write contention.
+
+3. **Choose by Measured Throughput, Not Intuition**
+  - Run a bounded benchmark/prototype of candidate approaches on representative slices.
+  - Pick the option with best end-to-end runtime that preserves correctness and operational safety.
+
+4. **Default Optimization Priorities**
+  - Reduce data scanned and rows touched first.
+  - Reuse precomputed summaries/materialized tables where available.
+  - Use chunked/bulk operations instead of per-row writes.
+  - Add indexes only where query plans show benefit; avoid speculative indexing.
+  - Use incremental execution modes when source fingerprints/data are unchanged.
+
+5. **Post-Change Verification Gate**
+  - Re-run the same baseline measurement after changes and report before/after numbers.
+  - If speed does not improve materially, either iterate once more or clearly document why the chosen path is still preferred.
+  - Update docs with command flags and the fastest known invocation for future runs.
+
+### Large-Run Fast Path Defaults
+
+- Cross-matching:
+  - Prefer incremental mode for routine reruns:
+    - `python run.py run-cross-matching --only all --parallel --workers 4 --incremental`
+  - Use full rebuild only when matching logic/inputs changed significantly.
+
+- PostgreSQL migration:
+  - Prefer bulk-loading methods over row-by-row inserts when available.
+  - Defer expensive index creation until after data copy for faster initial load.
+
+- Route performance:
+  - Prefer summary/materialized tables and route TTL cache fast paths before adding heavier compute in request time.
 
 ## New Data Integration Checklist (Required)
 

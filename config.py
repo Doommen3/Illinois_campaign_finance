@@ -23,6 +23,8 @@ DATABASE_PATH = os.environ.get(
     'DATABASE_PATH',
     str(BASE_DIR / 'data' / 'campaign_finance.db')
 )
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+DATABASE_TARGET = DATABASE_URL or DATABASE_PATH
 
 # Rate limiting
 RATE_LIMIT_RPM = int(os.environ.get('RATE_LIMIT_RPM', 30))

@@ -1659,6 +1659,7 @@ def runserver_command(host, port, debug):
     app = create_app({
         'SECRET_KEY': config.FLASK_SECRET_KEY,
         'DATABASE_PATH': config.DATABASE_PATH,
+        'DATABASE_URL': config.DATABASE_URL,
         'PUBLIC_CONTACT_EMAIL': config.PUBLIC_CONTACT_EMAIL,
     })
 

@@ -2,10 +2,24 @@
 import sqlite3
 import os
 from pathlib import Path
+from urllib.parse import urlparse
+
+from .pg_compat import PostgresCompatConnection
 
 
 # Default database path
 DEFAULT_DB_PATH = Path(__file__).parent.parent / 'data' / 'campaign_finance.db'
+
+
+def _is_postgres_dsn(value: str | None) -> bool:
+    text = (value or '').strip()
+    if not text:
+        return False
+    try:
+        scheme = (urlparse(text).scheme or '').lower()
+    except Exception:
+        return False
+    return scheme in {'postgres', 'postgresql'}
 
 
 def _clean_env(value: str | None) -> str:
@@ -150,13 +164,19 @@ def get_db(db_path: str = None) -> sqlite3.Connection:
     Returns:
         A sqlite3 connection with row factory set to sqlite3.Row
     """
-    if db_path is None:
-        db_path = os.environ.get('DATABASE_PATH', str(DEFAULT_DB_PATH))
+    db_target = (db_path or '').strip() if isinstance(db_path, str) else db_path
+    if not db_target:
+        db_target = (os.environ.get('DATABASE_URL') or '').strip()
+    if not db_target:
+        db_target = os.environ.get('DATABASE_PATH', str(DEFAULT_DB_PATH))
+
+    if _is_postgres_dsn(db_target):
+        return PostgresCompatConnection(db_target)
 
     # Ensure the directory exists
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(db_target).parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path, timeout=60.0)
+    conn = sqlite3.connect(db_target, timeout=60.0)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA busy_timeout = 60000')
     conn.execute('PRAGMA journal_mode = WAL')
@@ -189,7 +209,19 @@ def init_db(db_path: str = None) -> None:
     Args:
         db_path: Optional path to the database file.
     """
-    conn = get_db(db_path)
+    db_target = (db_path or '').strip() if isinstance(db_path, str) else db_path
+    if not db_target:
+        db_target = (os.environ.get('DATABASE_URL') or '').strip()
+    if not db_target:
+        db_target = os.environ.get('DATABASE_PATH', str(DEFAULT_DB_PATH))
+
+    if _is_postgres_dsn(db_target):
+        raise RuntimeError(
+            'init-db currently applies SQLite schema only. '
+            'For PostgreSQL, use scripts/postgres/migrate_sqlite_to_postgres.py after creating the target database.'
+        )
+
+    conn = get_db(db_target)
     try:
         ensure_schema(conn)
     finally:
