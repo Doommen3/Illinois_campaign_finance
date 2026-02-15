@@ -6,7 +6,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 - **Illinois State Board of Elections (ISBE)** — Committee filings, D-2 reports, itemized receipts, itemized expenditures, candidate/committee metadata via bulk TXT exports and web scraping
 - **Federal Elections Commission (FEC)** — Illinois federal candidates, Schedule A contributions, Schedule B disbursements, Schedule E independent expenditures via the FEC API
-- **IL Secretary of State Lobbying** — Active lobbying entities and their clients (625 entities, 3,748 clients, 14K entity-client pairs)
+- **IL Secretary of State Lobbying** — Active lobbying entities/clients plus daily lobbyist-entity-client extracts (supports both `ENTITY_ID`/`ENTITY_NAME` and `ENT_ID`/`ENT_NAME` source headers)
 - **IRS 527 Political Organizations** — Organization registrations, periodic reports, directors, related organizations, expenditures, and election authority filings from IRS Form 8871/8872
 
 ## Features
@@ -67,7 +67,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Python 3.12** — Core language
 - **Flask 3.0** — Web framework (Jinja2 templates)
 - **Playwright** — Async browser automation for scraping
-- **SQLite** — Database (WAL mode, 57-table schema, optimized pragmas)
+- **SQLite** — Database (WAL mode, 59-table schema, optimized pragmas)
 - **Click** — CLI command framework
 - **pytest** — Test suite
 
@@ -105,6 +105,9 @@ python run.py rebuild-fec-donor-identities
 
 # Import IL SOS lobbying data
 python run.py import-lobbying --file Bulk_download/ILSOS_Lobbying_activeandclients/Active_Lobbying_Entities_and_Their_Clients_20260213.csv
+
+# Or import daily lobbyist/entity/client extract format
+python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_Daily_20260214.csv
 
 # Import IRS 527 political org filings (IL-filtered by default)
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
@@ -223,6 +226,7 @@ pytest -q -m integration
 | IL lobbying entities | 625 |
 | IL lobbying clients | 3,748 |
 | IL lobbying entity-client pairs | 14,000+ |
+| IL lobbying lobbyists | 4,000+ |
 | IRS 527 organizations | 17.5M lines (IL-filtered subset) |
 | Database size | 5.5 GB+ |
 

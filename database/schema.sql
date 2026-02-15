@@ -750,6 +750,55 @@ CREATE TABLE IF NOT EXISTS lobbying_entity_clients (
 CREATE INDEX IF NOT EXISTS idx_lobbying_entity_clients_client
     ON lobbying_entity_clients(client_id);
 
+CREATE TABLE IF NOT EXISTS lobbying_lobbyists (
+    lobbyist_id INTEGER PRIMARY KEY,
+    first_name TEXT,
+    middle_name TEXT,
+    last_name TEXT,
+    email TEXT,
+    phone TEXT,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    postal_code TEXT,
+    status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyists_last_first
+    ON lobbying_lobbyists(last_name, first_name);
+
+CREATE TABLE IF NOT EXISTS lobbying_lobbyist_registrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lobbyist_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    client_id INTEGER,
+    reg_year INTEGER,
+    lobbyist_status TEXT,
+    client_status TEXT,
+    source_file TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (lobbyist_id) REFERENCES lobbying_lobbyists(lobbyist_id),
+    FOREIGN KEY (entity_id) REFERENCES lobbying_entities(entity_id),
+    FOREIGN KEY (client_id) REFERENCES lobbying_clients(client_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_unique
+    ON lobbying_lobbyist_registrations(
+        lobbyist_id,
+        entity_id,
+        COALESCE(client_id, -1),
+        COALESCE(reg_year, -1)
+    );
+
+CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_entity
+    ON lobbying_lobbyist_registrations(entity_id);
+CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_client
+    ON lobbying_lobbyist_registrations(client_id);
+CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_year
+    ON lobbying_lobbyist_registrations(reg_year);
+
 -- IRS 527 Political Organization Filings
 CREATE TABLE IF NOT EXISTS irs527_organizations (
     ein TEXT NOT NULL,

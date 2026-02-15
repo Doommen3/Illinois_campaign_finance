@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, 57-table SQLite schema, 5.5GB+ database.
+Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, 59-table SQLite schema, 5.5GB+ database.
 
 ## Local Development Machine
 
@@ -48,7 +48,7 @@ python run.py runserver --port 5000
 
 1. **ISBE** (state) - Committees, candidates, receipts, expenditures, D-2 reports
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
-3. **IL SOS** - Lobbying entities and clients
+3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
 
 ### Cross-Matching Engine
@@ -222,6 +222,11 @@ After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). 
 
 ## Common Operations
 
+### Import IL SOS lobbying data
+```bash
+python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_Daily_20260214.csv
+```
+
 ### Import IRS 527 data
 ```bash
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
@@ -249,4 +254,7 @@ python run.py refresh-analytics --with-snapshot
   - `irs527_org_address_matches` — org address↔committee/donor
   - `lobbying_donor_matches`, `lobbying_expenditure_matches`, etc.
 - `irs527_contributions` — parsed type-A records (who donates TO 527 orgs)
+- Lobbying raw dimensions and facts include:
+   - `lobbying_lobbyists` — lobbyist profile/contact/status rows
+   - `lobbying_lobbyist_registrations` — lobbyist↔entity↔client/year registrations (nullable client for unassigned rows)
 - All IRS 527 tables prefixed with `irs527_`

@@ -147,10 +147,12 @@ def test_load_lobbying_csv_tracks_malformed_rows(tmp_path: Path):
 
     stats = load_lobbying_csv(conn, csv_path)
 
-    assert stats["entities_loaded"] == 1
+    assert stats["entities_loaded"] == 2
     assert stats["clients_loaded"] == 1
     assert stats["pairs_loaded"] == 1
-    assert stats["rows_skipped"] == 2
+    assert stats["lobbyists_loaded"] == 0
+    assert stats["registrations_loaded"] == 0
+    assert stats["rows_skipped"] == 1
 
     conn.close()
 
@@ -172,6 +174,75 @@ def test_load_lobbying_csv_bom_and_empty_inputs_report_consistent_stats(tmp_path
         "entities_loaded": 0,
         "clients_loaded": 0,
         "pairs_loaded": 0,
+        "lobbyists_loaded": 0,
+        "registrations_loaded": 0,
+        "rows_skipped": 0,
+    }
+
+    conn.close()
+
+
+def test_load_lobbying_csv_daily_file_header_aliases_and_lobbyist_registrations(tmp_path: Path):
+    csv_content = (
+        '"ENT_REG_YEAR","LOBBYIST_LNAME","LOBBYIST_FNAME","LOBBYIST_MNAME","LOBBYIST_ID","LOBBYIST_EMAIL","LOBBYIST_ADDR1","LOBBYIST_ADDR2","LOBBYIST_CITY","LOBBYIST_ST_ABBR","LOBBYIST_ZIP","LOBBYIST_STATUS","LOBBYIST_PHONE","ENT_ID","ENT_NAME","ENT_ADDR1","ENT_ADDR2","ENT_CITY","ENT_ST_ABBR","ENT_ZIP","CLIENT_ID","CLIENT_NAME","CLIENT_ADDR1","CLIENT_ADDR2","CLIENT_CITY","CLIENT_ST_ABBR","CLIENT_ZIP","CLIENT_STATUS"\n'
+        '"2026","DOE","JANE","A","9001","JANE@EXAMPLE.COM","1 MAIN ST","","SPRINGFIELD","IL","62701","ACTIVE","2175550101","110","ENTITY ALPHA","100 CAPITOL","","SPRINGFIELD","IL","62701","501","CLIENT ALPHA","200 CLIENT RD","","CHICAGO","IL","60601","ACTIVE"\n'
+        '"2026","DOE","JANE","A","9001","JANE@EXAMPLE.COM","1 MAIN ST","","SPRINGFIELD","IL","62701","ACTIVE","2175550101","110","ENTITY ALPHA","100 CAPITOL","","SPRINGFIELD","IL","62701","0","","","","","","",""\n'
+    )
+    csv_path = _make_csv(tmp_path, filename="lobbying_daily.csv", content=csv_content)
+
+    db_path = str(tmp_path / "test_daily.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_lobbying_csv(conn, csv_path)
+
+    assert stats["entities_loaded"] == 1
+    assert stats["clients_loaded"] == 1
+    assert stats["pairs_loaded"] == 1
+    assert stats["lobbyists_loaded"] == 1
+    assert stats["registrations_loaded"] == 2
+    assert stats["rows_skipped"] == 0
+
+    lobbyist = conn.execute(
+        "SELECT lobbyist_id, first_name, last_name, status FROM lobbying_lobbyists WHERE lobbyist_id = 9001"
+    ).fetchone()
+    assert lobbyist is not None
+    assert lobbyist["first_name"] == "JANE"
+    assert lobbyist["last_name"] == "DOE"
+    assert lobbyist["status"] == "ACTIVE"
+
+    registration_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM lobbying_lobbyist_registrations"
+    ).fetchone()["c"]
+    assert registration_count == 2
+
+    null_client_rows = conn.execute(
+        "SELECT COUNT(*) AS c FROM lobbying_lobbyist_registrations WHERE client_id IS NULL"
+    ).fetchone()["c"]
+    assert null_client_rows == 1
+
+    conn.close()
+
+
+def test_load_lobbying_csv_daily_bom_empty_file(tmp_path: Path):
+    csv_path = tmp_path / "lobbying_daily_bom.csv"
+    csv_path.write_text(
+        '\ufeff"ENT_REG_YEAR","LOBBYIST_ID","ENT_ID","ENT_NAME","CLIENT_ID","CLIENT_NAME"\n',
+        encoding="utf-8",
+    )
+
+    db_path = str(tmp_path / "test_daily_bom.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_lobbying_csv(conn, csv_path)
+
+    assert stats == {
+        "entities_loaded": 0,
+        "clients_loaded": 0,
+        "pairs_loaded": 0,
+        "lobbyists_loaded": 0,
+        "registrations_loaded": 0,
         "rows_skipped": 0,
     }
 

@@ -58,6 +58,14 @@ def test_lobbying_list(client):
     assert b'Test Entity' in response.data
 
 
+def test_lobbying_list_has_stable_ui_classes(client):
+    response = client.get('/lobbying/')
+    assert response.status_code == 200
+    assert b'class="search-form"' in response.data
+    assert b'class="data-table"' in response.data
+    assert b'class="btn btn-primary"' in response.data
+
+
 def test_lobbying_list_search(client):
     response = client.get('/lobbying/?q=Test')
     assert response.status_code == 200
