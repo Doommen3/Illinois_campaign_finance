@@ -332,7 +332,7 @@ def _refresh_donor_address_index_if_stale(conn: sqlite3.Connection) -> None:
 def _shadow_output_table_for_worker(conn: sqlite3.Connection, table_name: str) -> None:
     if _is_postgres_connection(conn):
         conn.execute(f"DROP TABLE IF EXISTS pg_temp.{table_name}")
-        conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM public.{table_name} WHERE 0")
+        conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM public.{table_name} WHERE FALSE")
     else:
         conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
         conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM main.{table_name} WHERE 0")

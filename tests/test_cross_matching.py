@@ -323,7 +323,7 @@ def test_shadow_output_table_for_postgres_uses_public_source():
     conn = PostgresCompatConnection()
     _shadow_output_table_for_worker(conn, "lobbying_donor_matches")
     assert any("DROP TABLE IF EXISTS pg_temp.lobbying_donor_matches" in q for q in conn.sql)
-    assert any("CREATE TEMP TABLE lobbying_donor_matches AS SELECT * FROM public.lobbying_donor_matches WHERE 0" in q for q in conn.sql)
+    assert any("CREATE TEMP TABLE lobbying_donor_matches AS SELECT * FROM public.lobbying_donor_matches WHERE FALSE" in q for q in conn.sql)
 
 
 def test_merge_rows_into_output_table_postgres_uses_swap_pattern():
