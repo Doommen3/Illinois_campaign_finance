@@ -348,6 +348,27 @@ def _read_temp_output_rows(conn: sqlite3.Connection, table_name: str) -> tuple[l
     return columns, rows
 
 
+def _dedupe_replace_target_rows(
+    table_name: str,
+    columns: list[str],
+    rows: list[tuple],
+) -> list[tuple]:
+    conflict_cols = _REPLACE_TARGET_PRIMARY_KEYS.get(table_name)
+    if not conflict_cols or not rows:
+        return rows
+
+    index_by_column = {column: idx for idx, column in enumerate(columns)}
+    conflict_indexes = [index_by_column[column] for column in conflict_cols if column in index_by_column]
+    if len(conflict_indexes) != len(conflict_cols):
+        return rows
+
+    deduped: dict[tuple[Any, ...], tuple] = {}
+    for row in rows:
+        conflict_key = tuple(row[idx] for idx in conflict_indexes)
+        deduped[conflict_key] = row
+    return list(deduped.values())
+
+
 def _merge_rows_into_output_table(
     conn: sqlite3.Connection,
     table_name: str,
@@ -355,6 +376,7 @@ def _merge_rows_into_output_table(
     rows: list[tuple],
 ) -> None:
     safe_table_name = _safe_identifier(table_name)
+    rows = _dedupe_replace_target_rows(table_name, columns, rows)
 
     if not _is_postgres_connection(conn):
         conn.execute(f"DELETE FROM {safe_table_name}")

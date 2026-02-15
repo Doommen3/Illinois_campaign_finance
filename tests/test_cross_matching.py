@@ -378,6 +378,43 @@ def test_merge_rows_into_output_table_postgres_uses_swap_pattern():
     assert len(rows) == 1
 
 
+def test_merge_rows_into_output_table_postgres_dedupes_replace_keys():
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.execute_calls = []
+            self.executemany_calls = []
+
+        def execute(self, sql, params=None):
+            self.execute_calls.append(sql)
+            return self
+
+        def executemany(self, sql, rows):
+            self.executemany_calls.append((sql, list(rows)))
+            return self
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    conn = PostgresCompatConnection()
+    _merge_rows_into_output_table(
+        conn,
+        "irs527_committee_matches",
+        ["ein", "org_name", "committee_id_sbe", "committee_name", "score", "method"],
+        [
+            ("111", "Org A", 10, "Committee", 0.85, "jaccard"),
+            ("111", "Org A Updated", 10, "Committee", 0.90, "jaccard"),
+        ],
+    )
+
+    assert conn.executemany_calls
+    _sql, rows = conn.executemany_calls[0]
+    assert len(rows) == 1
+    assert rows[0][1] == "Org A Updated"
+
+
 def test_build_donor_address_indexes_persists_cache(tmp_path: Path):
     conn = _setup_db(tmp_path)
     _insert_donor_summary(
