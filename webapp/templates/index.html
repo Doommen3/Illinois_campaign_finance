@@ -9,12 +9,18 @@
 
 <div class="status-section">
     <h2>Start Here</h2>
-    <p>Use these core views to explore current data and donor networks.</p>
+    <p>Use guided templates first, then move to advanced pages as needed.</p>
     <p>
-        <a class="btn btn-primary" href="{{ url_for('main.candidates') }}">Candidates</a>
-        <a class="btn btn-primary" href="{{ url_for('main.live_feed') }}">Live Feed</a>
-        <a class="btn btn-primary" href="{{ url_for('analytics.dashboard') }}">Analytics</a>
-        <a class="btn btn-primary" href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='investigate') }}">Investigate a person/organization</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='flow') }}">Trace money flow</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='patterns') }}">Find unusual patterns this month</a>
+    </p>
+    <p class="help-text">Advanced pages (optional):</p>
+    <p>
+        <a class="btn btn-small btn-success" href="{{ url_for('main.candidates') }}">Candidates</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('main.live_feed') }}">Live Feed</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('analytics.dashboard') }}">Analytics</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a>
     </p>
 </div>
 

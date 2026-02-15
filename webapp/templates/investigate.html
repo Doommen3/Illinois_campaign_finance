@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+
+{% block title %}Start Here - Guided Investigation Workspace{% endblock %}
+
+{% block content %}
+<h1>Start Here: Guided Investigation Workspace</h1>
+<p class="subtitle">Move from raw data browsing to answer-first investigation workflows.</p>
+<p class="help-text">Choose a template, enter a person or organization, and review guided results with plain-language summaries first. Expand technical details only when needed.</p>
+
+<div class="status-section">
+    <h2>Task Templates</h2>
+    <p class="help-text">Use one of these three guided tasks to begin.</p>
+    <p>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='investigate', q=query) }}">Investigate a person/organization</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='flow', q=query) }}">Trace money flow</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='patterns', month=month_key) }}">Find unusual patterns this month</a>
+    </p>
+</div>
+
+<div class="status-section">
+    <div class="federal-subnav" role="tablist" aria-label="Investigation tabs">
+        <a class="federal-subnav-link {% if tab == 'investigate' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='investigate', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Investigate</a>
+        <a class="federal-subnav-link {% if tab == 'flow' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='flow', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Money Flow</a>
+        <a class="federal-subnav-link {% if tab == 'patterns' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='patterns', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Unusual Patterns</a>
+    </div>
+
+    <form action="{{ url_for('main.investigate_workspace') }}" method="get" class="search-form">
+        <input type="hidden" name="tab" value="{{ tab }}">
+        <input type="text" name="q" value="{{ query }}" placeholder="Person, company, donor, client, 527 org...">
+        <button type="submit">Run Guided Analysis</button>
+    </form>
+
+    <details class="provenance-panel" {% if show_advanced %}open{% endif %}>
+        <summary>Advanced filters (optional)</summary>
+        <form action="{{ url_for('main.investigate_workspace') }}" method="get" class="search-form">
+            <input type="hidden" name="tab" value="{{ tab }}">
+            <input type="hidden" name="q" value="{{ query }}">
+            <label>
+                Cycle
+                <input type="text" name="cycle" value="{{ cycle }}" placeholder="2026">
+            </label>
+            <label>
+                Month
+                <select name="month">
+                    <option value="{{ month_key }}">{{ month_key }}</option>
+                    {% for month in available_months %}
+                    <option value="{{ month }}" {% if month == month_key %}selected{% endif %}>{{ month }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <input type="hidden" name="advanced" value="1">
+            <button type="submit">Apply Advanced Filters</button>
+        </form>
+    </details>
+
+    <p class="stat-detail"><strong>Auto-generated summary:</strong> {{ narrative_summary }}</p>
+    <p>
+        <a class="btn btn-success btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None, format='csv') }}">Export data (CSV)</a>
+        <a class="btn btn-primary btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None, format='notes') }}">Export methodology notes</a>
+    </p>
+</div>
+
+{% if tab == 'investigate' %}
+<div class="status-section">
+    <h2>Investigate: Cross-dataset entity matches</h2>
+    <p class="help-text"><strong>What this means:</strong> This table shows where a person or organization appears across local donors, federal donors, lobbying clients, and IRS 527 organizations.</p>
+    <p class="help-text"><strong>How calculated:</strong> Name-based lookups across canonical analytics and source tables using your query text.</p>
+    <p class="help-text"><strong>Caveats:</strong> Name collisions and legal-entity aliases can produce ambiguous records; confirm key findings in source filings.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Dataset</th>
+                    <th>Entity</th>
+                    <th>Key</th>
+                    <th>Total Amount</th>
+                    <th>Records</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in entity_rows %}
+                <tr>
+                    <td>{{ row.source_domain }}</td>
+                    <td>{{ row.entity_name }}</td>
+                    <td>{{ row.entity_key }}</td>
+                    <td>{% if row.total_amount is not none %}{{ format_currency(row.total_amount) }}{% else %}-{% endif %}</td>
+                    <td>{{ row.record_count if row.record_count is not none else '-' }}</td>
+                    <td>{{ row.extra }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">Enter a query to start cross-dataset investigation.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <h2>Matched entities with confidence badges</h2>
+    <p class="help-text"><strong>What this means:</strong> These are fuzzy matches between lobbying clients and campaign donors.</p>
+    <p class="help-text"><strong>How calculated:</strong> Score output from cross-matching jobs.</p>
+    <p class="help-text"><strong>Caveats:</strong> Lower scores should be treated as leads, not conclusions.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Client</th>
+                    <th>Donor</th>
+                    <th>Confidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in matched_rows %}
+                {% set label, cls = row.score|confidence_label %}
+                <tr>
+                    <td>{{ row.client_name }}</td>
+                    <td>{{ row.donor_name }}</td>
+                    <td><span class="{{ cls }}">{{ label }}</span></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No matched entities for this query yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if tab == 'flow' %}
+<div class="status-section">
+    <h2>Money Flow: Donor → Committee</h2>
+    <p class="help-text"><strong>What this means:</strong> This view shows where the selected donor appears in committee funding flows.</p>
+    <p class="help-text"><strong>How calculated:</strong> Pulled from `analytics_donor_committee_agg` rows for local receipts.</p>
+    <p class="help-text"><strong>Caveats:</strong> Flows show contributions and not final spending impact.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Donor</th>
+                    <th>Committee</th>
+                    <th>Total</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in donor_committee_rows %}
+                <tr>
+                    <td>{{ row.donor_name }}</td>
+                    <td>{{ row.committee_name }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>{{ row.contribution_count }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">No donor→committee flow rows for this query.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <h2>Money Flow: Lobbying Client ↔ Donor links</h2>
+    <p class="help-text"><strong>What this means:</strong> Potential bridge between lobbying entities and campaign donors.</p>
+    <p class="help-text"><strong>How calculated:</strong> Score-based client↔donor links from cross-matching tables.</p>
+    <p class="help-text"><strong>Caveats:</strong> A match indicates likely identity overlap, not causation.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Client</th>
+                    <th>Donor</th>
+                    <th>Confidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in client_donor_rows %}
+                {% set label, cls = row.score|confidence_label %}
+                <tr>
+                    <td>{{ row.client_name }}</td>
+                    <td>{{ row.donor_name }}</td>
+                    <td><span class="{{ cls }}">{{ label }}</span></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3">No client↔donor flow links for this query.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if tab == 'patterns' %}
+<div class="status-section">
+    <h2>Unusual Patterns: {{ month_key }}</h2>
+    <p class="help-text"><strong>What this means:</strong> This table highlights unusually large contributions flagged in the selected month.</p>
+    <p class="help-text"><strong>How calculated:</strong> Uses `analytics_large_contributions` anomaly rows and their thresholds.</p>
+    <p class="help-text"><strong>Caveats:</strong> Anomalies are statistical alerts, not allegations.</p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Committee</th>
+                    <th>Donor</th>
+                    <th>Amount</th>
+                    <th>Threshold</th>
+                    <th>Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in unusual_rows %}
+                <tr>
+                    <td>{{ row.event_date }}</td>
+                    <td>{{ row.committee_name }}</td>
+                    <td>{{ row.donor_name }}</td>
+                    <td>{{ format_currency(row.amount) }}</td>
+                    <td>{{ format_currency(row.large_threshold) }}</td>
+                    <td>{{ row.source }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No unusual-pattern rows available for this month.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

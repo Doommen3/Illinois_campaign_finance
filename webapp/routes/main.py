@@ -1368,6 +1368,340 @@ def _recent_federal_schedule_e_expenditures(conn, limit: int = 75) -> list[dict]
     return output
 
 
+def _latest_month_with_large_contributions(conn) -> str:
+    latest = _scalar(
+        conn,
+        """
+        SELECT SUBSTR(MAX(event_date), 1, 7) AS latest_month
+        FROM analytics_large_contributions
+        """,
+        default="",
+    )
+    text = (latest or "").strip()
+    if len(text) == 7 and text[4] == "-":
+        return text
+    return datetime.utcnow().strftime("%Y-%m")
+
+
+@main_bp.route('/investigate')
+def investigate_workspace():
+    """Guided investigation workspace for novice users."""
+    conn = current_app.get_database()
+    tab = request.args.get('tab', 'investigate').strip().lower()
+    if tab not in {'investigate', 'flow', 'patterns'}:
+        tab = 'investigate'
+
+    query = request.args.get('q', '').strip()
+    cycle = request.args.get('cycle', '2026').strip() or '2026'
+    month = request.args.get('month', '').strip()
+    show_advanced = request.args.get('advanced', '').strip() == '1'
+    export_format = request.args.get('format', '').strip().lower()
+
+    like_param = f"%{query}%" if query else ""
+    entity_rows: list[dict] = []
+    matched_rows: list[dict] = []
+    donor_committee_rows: list[dict] = []
+    client_donor_rows: list[dict] = []
+    unusual_rows: list[dict] = []
+
+    if query and _table_exists(conn, "analytics_donor_summary"):
+        rows = conn.execute(
+            """
+            SELECT donor_key, donor_name, total_amount, contribution_count, committee_count
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts' AND donor_name LIKE ?
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """,
+            (like_param,),
+        ).fetchall()
+        for row in rows:
+            entity_rows.append(
+                {
+                    "source_domain": "State donor",
+                    "entity_name": row["donor_name"] or row["donor_key"],
+                    "entity_key": row["donor_key"],
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "record_count": int(row["contribution_count"] or 0),
+                    "extra": f"{int(row['committee_count'] or 0)} committees",
+                }
+            )
+
+    if query and _table_exists(conn, "fec_schedule_a_contributions"):
+        rows = conn.execute(
+            """
+            SELECT
+                donor_entity_key,
+                COALESCE(MAX(contributor_name), donor_entity_key) AS contributor_name,
+                COALESCE(SUM(contribution_receipt_amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count
+            FROM fec_schedule_a_contributions
+            WHERE contributor_name LIKE ?
+            GROUP BY donor_entity_key
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """,
+            (like_param,),
+        ).fetchall()
+        for row in rows:
+            entity_rows.append(
+                {
+                    "source_domain": "Federal donor",
+                    "entity_name": row["contributor_name"] or row["donor_entity_key"],
+                    "entity_key": row["donor_entity_key"],
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "record_count": int(row["contribution_count"] or 0),
+                    "extra": f"cycle {cycle}",
+                }
+            )
+
+    if query and _table_exists(conn, "lobbying_clients"):
+        rows = conn.execute(
+            """
+            SELECT client_id, client_name
+            FROM lobbying_clients
+            WHERE client_name LIKE ?
+            ORDER BY client_name ASC
+            LIMIT 8
+            """,
+            (like_param,),
+        ).fetchall()
+        for row in rows:
+            entity_rows.append(
+                {
+                    "source_domain": "Lobbying client",
+                    "entity_name": row["client_name"],
+                    "entity_key": str(row["client_id"]),
+                    "total_amount": None,
+                    "record_count": None,
+                    "extra": "lobbying registry",
+                }
+            )
+
+    if query and _table_exists(conn, "irs527_organizations"):
+        rows = conn.execute(
+            """
+            SELECT ein, COALESCE(MAX(org_name), ein) AS org_name
+            FROM irs527_organizations
+            WHERE org_name LIKE ?
+            GROUP BY ein
+            ORDER BY org_name ASC
+            LIMIT 8
+            """,
+            (like_param,),
+        ).fetchall()
+        for row in rows:
+            entity_rows.append(
+                {
+                    "source_domain": "IRS 527 organization",
+                    "entity_name": row["org_name"] or row["ein"],
+                    "entity_key": row["ein"],
+                    "total_amount": None,
+                    "record_count": None,
+                    "extra": "IRS 8871/8872 filings",
+                }
+            )
+
+    if query and _table_exists(conn, "lobbying_donor_matches"):
+        matched_rows = [
+            {
+                "client_name": row["client_name"] or "Unknown Client",
+                "donor_name": row["donor_name"] or row["donor_key"] or "Unknown Donor",
+                "score": float(row["score"] or 0.0),
+            }
+            for row in conn.execute(
+                """
+                SELECT client_name, donor_name, donor_key, score
+                FROM lobbying_donor_matches
+                WHERE client_name LIKE ? OR donor_name LIKE ?
+                ORDER BY score DESC, client_name ASC
+                LIMIT 12
+                """,
+                (like_param, like_param),
+            ).fetchall()
+        ]
+
+    if query and _table_exists(conn, "analytics_donor_committee_agg"):
+        donor_committee_rows = [
+            {
+                "donor_name": row["donor_name"] or row["donor_key"],
+                "committee_name": row["committee_name"] or row["committee_id"],
+                "total_amount": float(row["total_amount"] or 0.0),
+                "contribution_count": int(row["contribution_count"] or 0),
+            }
+            for row in conn.execute(
+                """
+                SELECT donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts' AND (donor_name LIKE ? OR donor_key LIKE ?)
+                ORDER BY total_amount DESC
+                LIMIT 15
+                """,
+                (like_param, like_param),
+            ).fetchall()
+        ]
+
+    if query and _table_exists(conn, "lobbying_donor_matches"):
+        client_donor_rows = [
+            {
+                "client_name": row["client_name"] or "Unknown Client",
+                "donor_name": row["donor_name"] or row["donor_key"] or "Unknown Donor",
+                "score": float(row["score"] or 0.0),
+            }
+            for row in conn.execute(
+                """
+                SELECT client_name, donor_name, donor_key, score
+                FROM lobbying_donor_matches
+                WHERE donor_name LIKE ? OR client_name LIKE ?
+                ORDER BY score DESC, client_name ASC
+                LIMIT 15
+                """,
+                (like_param, like_param),
+            ).fetchall()
+        ]
+
+    available_months = []
+    if _table_exists(conn, "analytics_large_contributions"):
+        available_months = [
+            row["month_key"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT SUBSTR(event_date, 1, 7) AS month_key
+                FROM analytics_large_contributions
+                WHERE event_date IS NOT NULL
+                ORDER BY month_key DESC
+                LIMIT 12
+                """
+            ).fetchall()
+            if row["month_key"]
+        ]
+
+    month_key = month if month else (_latest_month_with_large_contributions(conn) if _table_exists(conn, "analytics_large_contributions") else datetime.utcnow().strftime("%Y-%m"))
+    if month_key and _table_exists(conn, "analytics_large_contributions"):
+        unusual_rows = [
+            {
+                "event_date": row["event_date"],
+                "committee_name": row["committee_name"] or "Unknown Committee",
+                "donor_name": row["donor_name"] or "Unknown Donor",
+                "amount": float(row["amount"] or 0.0),
+                "large_threshold": float(row["large_threshold"] or 0.0),
+                "source": row["source"] or "unknown",
+            }
+            for row in conn.execute(
+                """
+                SELECT event_date, committee_name, donor_name, amount, large_threshold, source
+                FROM analytics_large_contributions
+                WHERE SUBSTR(event_date, 1, 7) = ?
+                ORDER BY amount DESC
+                LIMIT 20
+                """,
+                (month_key,),
+            ).fetchall()
+        ]
+
+    if tab == 'investigate':
+        narrative_summary = (
+            f"For '{query or 'your selected scope'}', the workspace found {len(entity_rows)} cross-dataset entity hits "
+            f"and {len(matched_rows)} confidence-scored lobbying↔donor links. Start with high-confidence links first, then expand to likely/possible matches."
+        )
+    elif tab == 'flow':
+        total_flow = sum(row["total_amount"] for row in donor_committee_rows)
+        narrative_summary = (
+            f"For '{query or 'your selected scope'}', we identified {len(donor_committee_rows)} donor→committee flow edges totaling "
+            f"${total_flow:,.2f}, plus {len(client_donor_rows)} lobbying client↔donor links that can explain potential influence pathways."
+        )
+    else:
+        flagged_total = sum(row["amount"] for row in unusual_rows)
+        narrative_summary = (
+            f"In {month_key}, there are {len(unusual_rows)} unusually large contributions totaling ${flagged_total:,.2f}. "
+            "Use this as a lead list for reporting, then verify each row in source filings."
+        )
+
+    methodology_notes = {
+        "investigate": (
+            "Investigate person/organization\n"
+            "How calculated: name-based lookup across state donors, federal donors, lobbying clients, and 527 organizations.\n"
+            "Confidence: lobbying-donor rows include score-based confidence labels from cross-matching outputs.\n"
+            "Caveats: name collisions and legal-entity aliases can create ambiguous matches."
+        ),
+        "flow": (
+            "Trace money flow\n"
+            "How calculated: donor-to-committee totals come from analytics_donor_committee_agg (bulk_receipts source).\n"
+            "Confidence: lobbying client-donor edges use cross-match scores.\n"
+            "Caveats: donor-to-candidate paths are inferred through committee channels, not always direct transfers."
+        ),
+        "patterns": (
+            "Find unusual patterns this month\n"
+            "How calculated: rows come from analytics_large_contributions for the selected month key.\n"
+            "Threshold: each row includes its computed large-threshold comparator.\n"
+            "Caveats: anomaly flags are statistical leads, not evidence of wrongdoing."
+        ),
+    }
+
+    if export_format == 'notes':
+        return Response(
+            methodology_notes[tab] + "\n",
+            mimetype='text/plain',
+            headers={"Content-Disposition": f"attachment; filename=investigation_{tab}_methodology.txt"},
+        )
+
+    if export_format == 'csv':
+        if tab == 'investigate':
+            headers = ["source_domain", "entity_name", "entity_key", "total_amount", "record_count", "extra"]
+            rows = [
+                [
+                    row["source_domain"],
+                    row["entity_name"],
+                    row["entity_key"],
+                    row["total_amount"],
+                    row["record_count"],
+                    row["extra"],
+                ]
+                for row in entity_rows
+            ]
+        elif tab == 'flow':
+            headers = ["donor_name", "committee_name", "total_amount", "contribution_count"]
+            rows = [
+                [
+                    row["donor_name"],
+                    row["committee_name"],
+                    row["total_amount"],
+                    row["contribution_count"],
+                ]
+                for row in donor_committee_rows
+            ]
+        else:
+            headers = ["event_date", "committee_name", "donor_name", "amount", "large_threshold", "source"]
+            rows = [
+                [
+                    row["event_date"],
+                    row["committee_name"],
+                    row["donor_name"],
+                    row["amount"],
+                    row["large_threshold"],
+                    row["source"],
+                ]
+                for row in unusual_rows
+            ]
+        return _csv_response(rows, headers, filename=f"investigation_{tab}.csv")
+
+    return render_template(
+        'investigate.html',
+        tab=tab,
+        query=query,
+        cycle=cycle,
+        month_key=month_key,
+        show_advanced=show_advanced,
+        available_months=available_months,
+        entity_rows=entity_rows,
+        matched_rows=matched_rows,
+        donor_committee_rows=donor_committee_rows,
+        client_donor_rows=client_donor_rows,
+        unusual_rows=unusual_rows,
+        narrative_summary=narrative_summary,
+    )
+
+
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
