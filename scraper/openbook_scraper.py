@@ -1745,21 +1745,21 @@ class OpenBookScraper:
         # ------------------------------------------------------------------
         # Phase 2: Scrape resolved-but-unscraped vendor keys
         # ------------------------------------------------------------------
-                unscraped = self.conn.execute(
-                        """SELECT
-                                        m.openbook_vendor_key,
-                                        m.openbook_vendor_label,
-                                        MIN(m.seed_id) AS seed_id,
-                                        MIN(m.match_id) AS first_match_id
-                             FROM openbook_vendor_match m
-                             LEFT JOIN openbook_contracts_raw c
-                                     ON m.openbook_vendor_key = c.openbook_vendor_key
-                             WHERE m.match_method != 'no_match'
-                                 AND m.openbook_vendor_key != ''
-                                 AND c.id IS NULL
-                             GROUP BY m.openbook_vendor_key, m.openbook_vendor_label
-                             ORDER BY MIN(m.match_id)""",
-                ).fetchall()
+        unscraped = self.conn.execute(
+            """SELECT
+                m.openbook_vendor_key,
+                m.openbook_vendor_label,
+                MIN(m.seed_id) AS seed_id,
+                MIN(m.match_id) AS first_match_id
+               FROM openbook_vendor_match m
+               LEFT JOIN openbook_contracts_raw c
+               ON m.openbook_vendor_key = c.openbook_vendor_key
+               WHERE m.match_method != 'no_match'
+             AND m.openbook_vendor_key != ''
+             AND c.id IS NULL
+               GROUP BY m.openbook_vendor_key, m.openbook_vendor_label
+               ORDER BY MIN(m.match_id)""",
+        ).fetchall()
 
         if max_vendors is not None:
             remaining = max(0, max_vendors - len(unresolved))
