@@ -88,6 +88,7 @@ _REPLACE_TARGET_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
 
 _DONOR_ADDRESS_INDEX_TABLE = "cross_matching_donor_address_index"
 _DONOR_ADDRESS_INDEX_JOB = "_donor_address_index"
+_DONOR_ADDRESS_MV = "mv_donor_addresses"
 _ORG_ADDRESS_PROGRESS_EVERY = 5000
 _ORG_DONOR_NAME_PREFILTER_THRESHOLD = 0.20
 _IDENTITY_LIKE_COLUMNS = {"match_id", "id", "rowid_local"}
@@ -110,12 +111,132 @@ def _apply_postgres_session_tuning(conn: sqlite3.Connection) -> None:
         "SET synchronous_commit TO OFF",
         "SET work_mem TO '256MB'",
         "SET temp_buffers TO '64MB'",
+        # Enable parallel workers for large similarity JOINs (Phase 2)
+        "SET max_parallel_workers_per_gather TO 4",
+        "SET parallel_tuple_cost TO 0.001",
+        "SET parallel_setup_cost TO 100",
     )
     for sql in tuning_sql:
         try:
             conn.execute(sql)
         except Exception:
             continue
+
+
+def _set_phase2_parallel_plan(conn: sqlite3.Connection) -> None:
+    """Disable nested loops and index scans to force parallel merge join.
+
+    Scoped to Phase 2 address matching — call _restore_default_plan() after.
+    Without this, PG uses serial index-scan merge join on sorted B-tree.
+    With this, PG uses Gather → Parallel Seq Scan → Sort → Merge Join (3+ workers).
+    Benchmark: 10s (parallel) vs 40s (serial) for 25M director pairs.
+    """
+    if not _is_postgres_connection(conn):
+        return
+    for sql in (
+        "SET enable_nestloop TO off",
+        "SET enable_indexscan TO off",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+
+
+def _restore_default_plan(conn: sqlite3.Connection) -> None:
+    """Re-enable nested loops and index scans after Phase 2 queries."""
+    if not _is_postgres_connection(conn):
+        return
+    for sql in (
+        "SET enable_nestloop TO on",
+        "SET enable_indexscan TO on",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+
+
+def _ensure_pg_trgm(conn: sqlite3.Connection) -> bool:
+    """Enable pg_trgm extension on Postgres. Returns True if available."""
+    if not _is_postgres_connection(conn):
+        return False
+    try:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+
+
+def _ensure_donor_address_mv(conn: sqlite3.Connection) -> bool:
+    """Create/refresh materialized view of donor addresses for SQL-side blocking.
+
+    The view normalizes state/zip/city from analytics_donor_summary and adds
+    a GIN trigram index on donor_name for fast similarity() filtering.
+    Returns True if the MV exists and is usable.
+    """
+    if not _is_postgres_connection(conn):
+        return False
+    if not _table_exists(conn, "analytics_donor_summary"):
+        return False
+
+    mv_name = _DONOR_ADDRESS_MV
+    try:
+        conn.execute(f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {mv_name} AS
+            SELECT
+                donor_key,
+                donor_name,
+                donor_city,
+                donor_state,
+                UPPER(TRIM(donor_state)) AS norm_state,
+                LOWER(TRIM(donor_city)) AS norm_city,
+                CASE
+                    WHEN donor_key LIKE '%%|%%'
+                    THEN SUBSTRING(SPLIT_PART(donor_key, '|', 7) FROM 1 FOR 5)
+                    ELSE NULL
+                END AS donor_zip5
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+                AND donor_key IS NOT NULL
+                AND donor_name IS NOT NULL
+                AND donor_state IS NOT NULL
+            WITH DATA
+        """)
+        conn.commit()
+    except Exception:
+        # MV may already exist — refresh it
+        conn.rollback()
+        try:
+            conn.execute(f"REFRESH MATERIALIZED VIEW {mv_name}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            return False
+
+    # Create indexes (IF NOT EXISTS is safe to re-run)
+    try:
+        conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{mv_name}_state_zip
+            ON {mv_name}(norm_state, donor_zip5)
+        """)
+        conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{mv_name}_state_city
+            ON {mv_name}(norm_state, norm_city)
+        """)
+        conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{mv_name}_name_trgm
+            ON {mv_name} USING gin (donor_name gin_trgm_ops)
+        """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        # Indexes may already exist
+        pass
+
+    return True
 
 
 def _safe_identifier(name: str) -> str:
@@ -1288,23 +1409,116 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
     return {"matches": matches}
 
 
-def match_527_directors_to_donors_by_address(
+def _match_directors_to_donors_by_address_pg(
+    conn: sqlite3.Connection,
+    name_threshold: float = 0.30,
+) -> dict:
+    """Postgres-native: single INSERT...SELECT with zip5 JOIN + pg_trgm similarity().
+
+    Expected: ~420K candidate pairs (5.6K directors × ~75 donors per zip5 bucket)
+    instead of 576M with city-level blocking.  Runs in seconds, not minutes.
+    """
+    started = time.perf_counter()
+
+    has_trgm = _ensure_pg_trgm(conn)
+    if not has_trgm:
+        logger.warning("pg_trgm not available — falling back to Python matching")
+        return _match_directors_to_donors_by_address_sqlite(conn, name_threshold)
+
+    mv_ok = _ensure_donor_address_mv(conn)
+    if not mv_ok:
+        logger.warning("Could not create donor address MV — falling back to Python matching")
+        return _match_directors_to_donors_by_address_sqlite(conn, name_threshold)
+
+    mv = _DONOR_ADDRESS_MV
+    _clear_table(conn, "irs527_director_address_matches")
+    conn.commit()
+
+    # Force parallel merge join for large similarity JOIN
+    # INSERT...SELECT prevents PG from using parallel workers, so we use CTAS
+    # (CREATE TEMP TABLE AS) which does allow parallelism, then INSERT FROM temp.
+    # Benchmark: ~10s (parallel CTAS + INSERT) vs 35s (serial INSERT...SELECT)
+    _set_phase2_parallel_plan(conn)
+
+    conn.execute("DROP TABLE IF EXISTS _tmp_dir_donor_addr")
+    # Parallel SELECT into temp table
+    sql_ctas = f"""
+        CREATE TEMP TABLE _tmp_dir_donor_addr AS
+        SELECT DISTINCT ON (d.ein, d.person_name, m.donor_key)
+            d.ein,
+            d.org_name,
+            d.person_name AS director_name,
+            LOWER(TRIM(d.city)) AS director_city,
+            UPPER(TRIM(d.state)) AS director_state,
+            SUBSTRING(TRIM(d.zip) FROM 1 FOR 5) AS director_zip5,
+            m.donor_key,
+            m.donor_name,
+            m.norm_city AS donor_city,
+            m.norm_state AS donor_state,
+            m.donor_zip5,
+            CASE
+                WHEN m.donor_zip5 = SUBSTRING(TRIM(d.zip) FROM 1 FOR 5)
+                     AND m.norm_city = LOWER(TRIM(d.city))
+                THEN 1.0
+                WHEN m.donor_zip5 = SUBSTRING(TRIM(d.zip) FROM 1 FOR 5)
+                THEN 0.7
+                ELSE 0.2
+            END AS address_score,
+            similarity(LOWER(d.person_name), LOWER(m.donor_name)) AS name_score
+        FROM irs527_directors d
+        JOIN {mv} m
+            ON m.norm_state = UPPER(TRIM(d.state))
+            AND m.donor_zip5 = SUBSTRING(TRIM(d.zip) FROM 1 FOR 5)
+        WHERE d.person_name IS NOT NULL
+            AND d.state IS NOT NULL
+            AND d.zip IS NOT NULL AND TRIM(d.zip) != ''
+            AND m.donor_zip5 IS NOT NULL
+            AND similarity(LOWER(d.person_name), LOWER(m.donor_name)) >= ?
+        ORDER BY d.ein, d.person_name, m.donor_key,
+                 similarity(LOWER(d.person_name), LOWER(m.donor_name)) DESC
+    """
+    conn.execute(sql_ctas, (name_threshold,))
+
+    # Copy from temp to target
+    conn.execute("""
+        INSERT INTO irs527_director_address_matches
+            (ein, org_name, director_name,
+             director_city, director_state, director_zip5,
+             donor_key, donor_name,
+             donor_city, donor_state, donor_zip5,
+             address_score, name_score)
+        SELECT ein, org_name, director_name,
+               director_city, director_state, director_zip5,
+               donor_key, donor_name,
+               donor_city, donor_state, donor_zip5,
+               address_score, name_score
+        FROM _tmp_dir_donor_addr
+    """)
+    conn.execute("DROP TABLE IF EXISTS _tmp_dir_donor_addr")
+    conn.commit()
+
+    # Restore default planner settings
+    _restore_default_plan(conn)
+
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM irs527_director_address_matches"
+    ).fetchone()
+    matches_found = int(row["c"]) if row else 0
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "527-director-to-donor address+name matches (Postgres SQL): %d (elapsed=%s)",
+        matches_found, _format_duration(elapsed),
+    )
+    return {"matches": matches_found}
+
+
+def _match_directors_to_donors_by_address_sqlite(
     conn: sqlite3.Connection,
     name_threshold: float = 0.30,
     donor_indexes: Optional[dict[str, Any]] = None,
 ) -> dict:
-    """Match 527 directors to donors by zip5+state co-location AND name similarity.
-
-    JOIN on zip5+state keeps candidate pairs manageable (~thousands per zip
-    vs millions per city). Then filter by Jaccard name similarity >= name_threshold
-    to find genuine person matches that pure name-matching might miss due to
-    spelling variants (e.g., "J. Smith" vs "John Smith").
-
-    Stores in irs527_director_address_matches.
-    """
-    if not _table_exists(conn, "irs527_directors") or not _table_exists(conn, "analytics_donor_summary"):
-        return {"matches": 0, "skipped": "missing_tables"}
-
+    """SQLite fallback: Python dict-based matching (used in tests and local dev)."""
     started = time.perf_counter()
     _clear_table(conn, "irs527_director_address_matches")
     conn.commit()
@@ -1321,14 +1535,14 @@ def match_527_directors_to_donors_by_address(
     )
 
     if donor_indexes is None:
-        logger.info("527-director-address: building donor zip index from analytics_donor_summary")
+        logger.info("527-director-address (SQLite): building donor zip index")
         donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
 
     zip_index = donor_indexes["zip_index"]
     city_index = donor_indexes["city_index"]
     donor_count = int(donor_indexes["donor_count"])
     logger.info(
-        "527-director-address: %d donors indexed (zip_buckets=%d, city_buckets=%d)",
+        "527-director-address (SQLite): %d donors indexed (zip_buckets=%d, city_buckets=%d)",
         donor_count, len(zip_index), len(city_index)
     )
     for bucket in zip_index.values():
@@ -1340,7 +1554,6 @@ def match_527_directors_to_donors_by_address(
             if "_tokens" not in dr:
                 dr["_tokens"] = _normalize_name_tokens(dr["donor_name"])
 
-    # Load directors with zip
     directors = conn.execute("""
         SELECT ein, org_name, person_name,
                city, state, zip,
@@ -1355,7 +1568,7 @@ def match_527_directors_to_donors_by_address(
     batch = []
     candidates_scored = 0
     matches_found = 0
-    seen = set()  # deduplicate (ein, person_name, donor_key)
+    seen = set()
 
     def _flush():
         if batch:
@@ -1419,12 +1632,339 @@ def match_527_directors_to_donors_by_address(
 
     elapsed = time.perf_counter() - started
     logger.info(
-        "527-director-to-donor address+name matches: %d "
+        "527-director-to-donor address+name matches (SQLite): %d "
         "(directors=%d, candidates_scored=%d, elapsed=%s)",
         matches_found, len(directors), candidates_scored,
         _format_duration(elapsed),
     )
     return {"matches": matches_found}
+
+
+def match_527_directors_to_donors_by_address(
+    conn: sqlite3.Connection,
+    name_threshold: float = 0.30,
+    donor_indexes: Optional[dict[str, Any]] = None,
+) -> dict:
+    """Match 527 directors to donors by zip5+state co-location AND name similarity.
+
+    On Postgres: Single INSERT...SELECT with JOIN on zip5+state, filtered by
+    pg_trgm similarity() >= name_threshold.  ~420K candidates vs 576M (144x faster).
+
+    On SQLite: Falls back to Python dict-based matching.
+
+    Stores in irs527_director_address_matches.
+    """
+    if not _table_exists(conn, "irs527_directors") or not _table_exists(conn, "analytics_donor_summary"):
+        return {"matches": 0, "skipped": "missing_tables"}
+
+    if _is_postgres_connection(conn):
+        return _match_directors_to_donors_by_address_pg(conn, name_threshold)
+    return _match_directors_to_donors_by_address_sqlite(conn, name_threshold, donor_indexes)
+
+
+def _match_org_addresses_pg(
+    conn: sqlite3.Connection,
+    name_threshold: float = 0.30,
+    org_donor_name_threshold: float = 0.0,
+) -> dict:
+    """Postgres-native: SQL JOINs with pg_trgm for both committee and donor matching.
+
+    Fixes the 'PostgresCompatCursor is not iterable' bug and replaces
+    Python dict-based donor matching with SQL-side zip5 JOIN + similarity().
+    """
+    started = time.perf_counter()
+
+    has_trgm = _ensure_pg_trgm(conn)
+    mv_ok = _ensure_donor_address_mv(conn)
+
+    can_match_committees = _table_exists(conn, "bulk_committees_clean")
+    can_match_donors = _table_exists(conn, "analytics_donor_summary") and mv_ok
+
+    _clear_table(conn, "irs527_org_address_matches")
+    conn.commit()
+
+    # Build flattened org addresses temp table (shared between committee + donor arms)
+    conn.execute("DROP TABLE IF EXISTS _tmp_527_org_addrs")
+    conn.execute("""
+        CREATE TEMP TABLE _tmp_527_org_addrs (
+            ein TEXT, org_name TEXT, addr_type TEXT,
+            city TEXT, state TEXT, zip TEXT,
+            norm_state TEXT, norm_zip5 TEXT
+        )
+    """)
+    for addr_type, city_col, state_col, zip_col in [
+        ("org", "city", "state", "zip"),
+        ("custodian", "custodian_city", "custodian_state", "custodian_zip"),
+        ("contact", "contact_city", "contact_state", "contact_zip"),
+        ("business", "business_city", "business_state", "business_zip"),
+    ]:
+        conn.execute(f"""
+            INSERT INTO _tmp_527_org_addrs
+            SELECT ein, org_name, '{addr_type}', {city_col}, {state_col}, {zip_col},
+                   UPPER(TRIM({state_col})), SUBSTRING(TRIM({zip_col}) FROM 1 FOR 5)
+            FROM irs527_organizations
+            WHERE {state_col} IS NOT NULL
+                AND {zip_col} IS NOT NULL AND TRIM({zip_col}) != ''
+        """)
+    conn.execute("CREATE INDEX IF NOT EXISTS _idx_tmp_org_sz ON _tmp_527_org_addrs(norm_state, norm_zip5)")
+    conn.commit()
+
+    total_matches = 0
+
+    # Force parallel merge join for large similarity JOINs
+    _set_phase2_parallel_plan(conn)
+
+    # --- Arm 1: Org → Committees (SQL JOIN + pg_trgm) ---
+    if can_match_committees:
+        zip_col = None
+        if _column_exists(conn, "bulk_committees_clean", "postal_code"):
+            zip_col = "postal_code"
+        elif _column_exists(conn, "bulk_committees_clean", "zip"):
+            zip_col = "zip"
+
+        if zip_col and has_trgm:
+            # CTAS for parallel merge join, then copy to target
+            conn.execute("DROP TABLE IF EXISTS _tmp_org_cmte_matches")
+            conn.execute(f"""
+                CREATE TEMP TABLE _tmp_org_cmte_matches AS
+                SELECT DISTINCT ON (o.ein, o.addr_type, c.committee_id_sbe)
+                    o.ein, o.org_name, o.addr_type,
+                    LOWER(TRIM(o.city)) AS org_city,
+                    UPPER(TRIM(o.state)) AS org_state,
+                    SUBSTRING(TRIM(o.zip) FROM 1 FOR 5) AS org_zip5,
+                    'committee'::TEXT AS matched_entity_type,
+                    c.committee_id_sbe::TEXT AS matched_entity_id,
+                    c.committee_name AS matched_entity_name,
+                    LOWER(TRIM(c.city)) AS matched_city,
+                    UPPER(TRIM(c.state)) AS matched_state,
+                    SUBSTRING(TRIM(c.{zip_col}) FROM 1 FOR 5) AS matched_zip5,
+                    CASE
+                        WHEN SUBSTRING(TRIM(c.{zip_col}) FROM 1 FOR 5) = o.norm_zip5
+                             AND LOWER(TRIM(c.city)) = LOWER(TRIM(o.city))
+                        THEN 1.0
+                        WHEN SUBSTRING(TRIM(c.{zip_col}) FROM 1 FOR 5) = o.norm_zip5
+                        THEN 0.7
+                        ELSE 0.2
+                    END AS address_score
+                FROM _tmp_527_org_addrs o
+                JOIN bulk_committees_clean c
+                    ON UPPER(TRIM(c.state)) = o.norm_state
+                    AND SUBSTRING(TRIM(c.{zip_col}) FROM 1 FOR 5) = o.norm_zip5
+                WHERE c.state IS NOT NULL
+                    AND c.{zip_col} IS NOT NULL
+                    AND TRIM(c.{zip_col}) != ''
+                    AND similarity(LOWER(o.org_name), LOWER(c.committee_name)) >= ?
+                ORDER BY o.ein, o.addr_type, c.committee_id_sbe,
+                         similarity(LOWER(o.org_name), LOWER(c.committee_name)) DESC
+            """, (name_threshold,))
+            conn.execute("""
+                INSERT INTO irs527_org_address_matches
+                    (ein, org_name, address_type,
+                     org_city, org_state, org_zip5,
+                     matched_entity_type, matched_entity_id, matched_entity_name,
+                     matched_city, matched_state, matched_zip5,
+                     address_score)
+                SELECT ein, org_name, addr_type,
+                       org_city, org_state, org_zip5,
+                       matched_entity_type, matched_entity_id, matched_entity_name,
+                       matched_city, matched_state, matched_zip5,
+                       address_score
+                FROM _tmp_org_cmte_matches
+            """)
+            conn.execute("DROP TABLE IF EXISTS _tmp_org_cmte_matches")
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM irs527_org_address_matches WHERE matched_entity_type = 'committee'"
+            ).fetchone()
+            cmte_matches = int(row["c"]) if row else 0
+            total_matches += cmte_matches
+            logger.info("527-org-address committee matches (Postgres SQL): %d", cmte_matches)
+
+        elif zip_col:
+            # No pg_trgm — use Python Jaccard (with .fetchall() fix)
+            total_matches += _match_org_to_committees_python(
+                conn, zip_col, name_threshold
+            )
+
+    # --- Arm 2: Org → Donors (SQL JOIN on mv_donor_addresses + similarity) ---
+    if can_match_donors and has_trgm:
+        mv = _DONOR_ADDRESS_MV
+        # Determine effective donor name threshold
+        effective_donor_threshold = max(org_donor_name_threshold, 0.0)
+
+        conn.execute("DROP TABLE IF EXISTS _tmp_org_donor_matches")
+        conn.execute(f"""
+            CREATE TEMP TABLE _tmp_org_donor_matches AS
+            SELECT DISTINCT ON (o.ein, o.addr_type, m.donor_key)
+                o.ein, o.org_name, o.addr_type,
+                LOWER(TRIM(o.city)) AS org_city,
+                UPPER(TRIM(o.state)) AS org_state,
+                SUBSTRING(TRIM(o.zip) FROM 1 FOR 5) AS org_zip5,
+                'donor'::TEXT AS matched_entity_type,
+                m.donor_key AS matched_entity_id,
+                m.donor_name AS matched_entity_name,
+                m.norm_city AS matched_city,
+                m.norm_state AS matched_state,
+                m.donor_zip5 AS matched_zip5,
+                CASE
+                    WHEN m.donor_zip5 = o.norm_zip5
+                         AND m.norm_city = LOWER(TRIM(o.city))
+                    THEN 1.0
+                    WHEN m.donor_zip5 = o.norm_zip5
+                    THEN 0.7
+                    ELSE 0.5
+                END AS address_score
+            FROM _tmp_527_org_addrs o
+            JOIN {mv} m
+                ON m.norm_state = o.norm_state
+                AND m.donor_zip5 = o.norm_zip5
+            WHERE m.donor_zip5 IS NOT NULL
+                AND CASE
+                    WHEN ? > 0 THEN similarity(LOWER(o.org_name), LOWER(m.donor_name)) >= ?
+                    ELSE TRUE
+                END
+            ORDER BY o.ein, o.addr_type, m.donor_key
+        """, (effective_donor_threshold, effective_donor_threshold))
+        conn.execute("""
+            INSERT INTO irs527_org_address_matches
+                (ein, org_name, address_type,
+                 org_city, org_state, org_zip5,
+                 matched_entity_type, matched_entity_id, matched_entity_name,
+                 matched_city, matched_state, matched_zip5,
+                 address_score)
+            SELECT ein, org_name, addr_type,
+                   org_city, org_state, org_zip5,
+                   matched_entity_type, matched_entity_id, matched_entity_name,
+                   matched_city, matched_state, matched_zip5,
+                   address_score
+            FROM _tmp_org_donor_matches
+        """)
+        conn.execute("DROP TABLE IF EXISTS _tmp_org_donor_matches")
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM irs527_org_address_matches WHERE matched_entity_type = 'donor'"
+        ).fetchone()
+        donor_matches = int(row["c"]) if row else 0
+        total_matches += donor_matches
+        logger.info("527-org-address donor matches (Postgres SQL): %d", donor_matches)
+
+    conn.execute("DROP TABLE IF EXISTS _tmp_527_org_addrs")
+    conn.commit()
+
+    # Restore default planner settings
+    _restore_default_plan(conn)
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "527-org-address+name matches (Postgres): %d (elapsed=%s)",
+        total_matches, _format_duration(elapsed),
+    )
+    return {"matches": total_matches}
+
+
+def _match_org_to_committees_python(
+    conn: sqlite3.Connection,
+    zip_col: str,
+    name_threshold: float,
+) -> int:
+    """Python Jaccard fallback for org→committee matching (used when pg_trgm unavailable)."""
+    conn.execute("DROP TABLE IF EXISTS _tmp_bulk_committees_norm")
+    conn.execute(
+        f"""
+        CREATE TEMP TABLE _tmp_bulk_committees_norm AS
+        SELECT committee_id_sbe, committee_name,
+               city AS c_city,
+               state AS c_state,
+               {zip_col} AS c_zip,
+               UPPER(TRIM(state)) AS norm_state,
+               SUBSTR(TRIM({zip_col}), 1, 5) AS norm_zip5
+        FROM bulk_committees_clean
+        WHERE state IS NOT NULL
+            AND {zip_col} IS NOT NULL
+            AND TRIM({zip_col}) != ''
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS _idx_tmp_bulk_cmte_norm_sz "
+        "ON _tmp_bulk_committees_norm(norm_state, norm_zip5)"
+    )
+    conn.commit()
+
+    rows = conn.execute(
+        """
+        SELECT o.ein, o.org_name, o.addr_type,
+               o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
+               c.committee_id_sbe, c.committee_name,
+               c.c_city, c.c_state, c.c_zip
+        FROM _tmp_527_org_addrs o
+        JOIN _tmp_bulk_committees_norm c
+            ON o.norm_state = c.norm_state
+            AND o.norm_zip5 = c.norm_zip5
+        """
+    ).fetchall()
+
+    _INSERT_SQL = _build_insert_sql(
+        conn,
+        "irs527_org_address_matches",
+        ["ein", "org_name", "address_type",
+         "org_city", "org_state", "org_zip5",
+         "matched_entity_type", "matched_entity_id", "matched_entity_name",
+         "matched_city", "matched_state", "matched_zip5",
+         "address_score"],
+        replace=False,
+    )
+
+    batch = []
+    seen = set()
+    matches = 0
+
+    for row in rows:
+        org_tokens = _normalize_name_tokens(row["org_name"])
+        if not org_tokens:
+            continue
+        cmte_tokens = _normalize_name_tokens(row["committee_name"])
+        if not cmte_tokens:
+            continue
+        name_score = _jaccard(org_tokens, cmte_tokens)
+        if name_score < name_threshold:
+            continue
+
+        dedup_key = (row["ein"], row["addr_type"], "committee", row["committee_id_sbe"])
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        address_score = _address_score(
+            row["o_city"], row["o_state"], row["o_zip"],
+            row["c_city"], row["c_state"], row["c_zip"],
+        )
+
+        batch.append((
+            row["ein"], row["org_name"], row["addr_type"],
+            _normalize_city(row["o_city"]),
+            (row["o_state"] or "").strip().upper(),
+            _normalize_zip5(row["o_zip"]),
+            "committee", str(row["committee_id_sbe"]), row["committee_name"],
+            _normalize_city(row["c_city"]),
+            (row["c_state"] or "").strip().upper(),
+            _normalize_zip5(row["c_zip"]),
+            address_score,
+        ))
+        if len(batch) >= 50000:
+            conn.executemany(_INSERT_SQL, batch)
+            matches += len(batch)
+            batch.clear()
+
+    if batch:
+        conn.executemany(_INSERT_SQL, batch)
+        matches += len(batch)
+    conn.commit()
+
+    conn.execute("DROP TABLE IF EXISTS _tmp_bulk_committees_norm")
+    conn.commit()
+    return matches
 
 
 def match_527_org_addresses(
@@ -1433,11 +1973,12 @@ def match_527_org_addresses(
     org_donor_name_threshold: float = 0.0,
     donor_indexes: Optional[dict[str, Any]] = None,
 ) -> dict:
-    """Match 527 org addresses against committees by zip5+state AND name similarity.
+    """Match 527 org addresses against committees and donors by zip5+state.
 
-    JOIN on zip5+state keeps candidate pairs small, then filter by Jaccard
-    name similarity (org_name vs committee_name) >= name_threshold.
-    Checks org address, custodian address, contact address, business address.
+    On Postgres: SQL JOINs with pg_trgm similarity() filtering.
+    On SQLite: Python dict-based matching with Jaccard name filtering.
+
+    Checks org, custodian, contact, business addresses.
     Stores results in irs527_org_address_matches.
     """
     if not _table_exists(conn, "irs527_organizations"):
@@ -1448,6 +1989,10 @@ def match_527_org_addresses(
     if not can_match_committees and not can_match_donors:
         return {"matches": 0, "skipped": "missing_tables"}
 
+    if _is_postgres_connection(conn):
+        return _match_org_addresses_pg(conn, name_threshold, org_donor_name_threshold)
+
+    # --- SQLite fallback ---
     started = time.perf_counter()
     _clear_table(conn, "irs527_org_address_matches")
     conn.commit()
@@ -1521,87 +2066,11 @@ def match_527_org_addresses(
 
     seen = set()
     if can_match_committees:
-        zip_col = None
-        if _column_exists(conn, "bulk_committees_clean", "postal_code"):
-            zip_col = "postal_code"
-        elif _column_exists(conn, "bulk_committees_clean", "zip"):
-            zip_col = "zip"
-
-        if zip_col:
-            conn.execute("DROP TABLE IF EXISTS _tmp_bulk_committees_norm")
-            conn.execute(
-                f"""
-                CREATE TEMP TABLE _tmp_bulk_committees_norm AS
-                SELECT committee_id_sbe, committee_name,
-                       city AS c_city,
-                       state AS c_state,
-                       {zip_col} AS c_zip,
-                       UPPER(TRIM(state)) AS norm_state,
-                       SUBSTR(TRIM({zip_col}), 1, 5) AS norm_zip5
-                FROM bulk_committees_clean
-                WHERE state IS NOT NULL
-                    AND {zip_col} IS NOT NULL
-                    AND TRIM({zip_col}) != ''
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS _idx_tmp_bulk_cmte_norm_sz "
-                "ON _tmp_bulk_committees_norm(norm_state, norm_zip5)"
-            )
-            conn.commit()
-
-            # JOIN on zip5+state, then filter by org_name/committee_name Jaccard
-            rows = conn.execute(
-                f"""
-                SELECT o.ein, o.org_name, o.addr_type,
-                       o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
-                       c.committee_id_sbe, c.committee_name,
-                       c.c_city, c.c_state, c.c_zip
-                FROM _tmp_527_org_addrs o
-                JOIN _tmp_bulk_committees_norm c
-                    ON o.norm_state = c.norm_state
-                    AND o.norm_zip5 = c.norm_zip5
-                """
-            )
-
-            for row in rows:
-                candidates_scored += 1
-
-                # Name similarity filter
-                org_tokens = _normalize_name_tokens(row["org_name"])
-                if not org_tokens:
-                    continue
-                cmte_tokens = _normalize_name_tokens(row["committee_name"])
-                if not cmte_tokens:
-                    continue
-                name_score = _jaccard(org_tokens, cmte_tokens)
-                if name_score < name_threshold:
-                    continue
-
-                # Deduplicate
-                dedup_key = (row["ein"], row["addr_type"], "committee", row["committee_id_sbe"])
-                if dedup_key in seen:
-                    continue
-                seen.add(dedup_key)
-
-                address_score = _address_score(
-                    row["o_city"], row["o_state"], row["o_zip"],
-                    row["c_city"], row["c_state"], row["c_zip"],
-                )
-
-                batch.append((
-                    row["ein"], row["org_name"], row["addr_type"],
-                    _normalize_city(row["o_city"]),
-                    (row["o_state"] or "").strip().upper(),
-                    _normalize_zip5(row["o_zip"]),
-                    "committee", str(row["committee_id_sbe"]), row["committee_name"],
-                    _normalize_city(row["c_city"]),
-                    (row["c_state"] or "").strip().upper(),
-                    _normalize_zip5(row["c_zip"]),
-                    address_score,
-                ))
-                if len(batch) >= 50000:
-                    _flush()
+        total_matches += _match_org_to_committees_python(
+            conn,
+            "postal_code" if _column_exists(conn, "bulk_committees_clean", "postal_code") else "zip",
+            name_threshold,
+        )
 
     if can_match_donors:
         if donor_indexes is None:
@@ -1627,20 +2096,6 @@ def match_527_org_addresses(
             bucket_zip = donor_zip_index.get((norm_state, norm_zip5)) or []
             bucket_city = donor_city_index.get((norm_state, norm_city), []) if norm_city else []
             if not bucket_zip and not bucket_city:
-                if processed_org_rows % _ORG_ADDRESS_PROGRESS_EVERY == 0:
-                    elapsed = max(time.perf_counter() - donor_phase_started, 1e-6)
-                    rate = processed_org_rows / elapsed
-                    eta = max((len(org_rows) - processed_org_rows) / max(rate, 1e-6), 0.0)
-                    logger.info(
-                        "527-org-address donor progress: %d/%d (%.1f%%), candidates=%d, matches=%d, rate=%.1f rows/s, eta=%s",
-                        processed_org_rows,
-                        len(org_rows),
-                        (processed_org_rows / max(len(org_rows), 1)) * 100.0,
-                        candidates_scored,
-                        total_matches,
-                        rate,
-                        _format_duration(eta),
-                    )
                 continue
 
             org_tokens = _normalize_name_tokens(o["org_name"])
@@ -1684,21 +2139,6 @@ def match_527_org_addresses(
                     if len(batch) >= 50000:
                         _flush()
 
-            if processed_org_rows % _ORG_ADDRESS_PROGRESS_EVERY == 0:
-                elapsed = max(time.perf_counter() - donor_phase_started, 1e-6)
-                rate = processed_org_rows / elapsed
-                eta = max((len(org_rows) - processed_org_rows) / max(rate, 1e-6), 0.0)
-                logger.info(
-                    "527-org-address donor progress: %d/%d (%.1f%%), candidates=%d, matches=%d, rate=%.1f rows/s, eta=%s",
-                    processed_org_rows,
-                    len(org_rows),
-                    (processed_org_rows / max(len(org_rows), 1)) * 100.0,
-                    candidates_scored,
-                    total_matches,
-                    rate,
-                    _format_duration(eta),
-                )
-
     _flush()
     conn.commit()
 
@@ -1708,7 +2148,7 @@ def match_527_org_addresses(
 
     elapsed = time.perf_counter() - started
     logger.info(
-        "527-org-address+name matches: %d (candidates_scored=%d, elapsed=%s)",
+        "527-org-address+name matches (SQLite): %d (candidates_scored=%d, elapsed=%s)",
         total_matches, candidates_scored, _format_duration(elapsed),
     )
     return {"matches": total_matches}
@@ -1816,8 +2256,10 @@ def _run_cross_matching_sequential(
             continue
 
         if label == "527_director_addresses":
-            if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
-                shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
+            # Postgres path uses SQL-native matching (no Python dict needed)
+            if not _is_postgres_connection(conn):
+                if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
+                    shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
             result = match_527_directors_to_donors_by_address(conn, donor_indexes=shared_donor_indexes)
         elif label == "527_org_addresses":
             result = match_527_org_addresses(
@@ -1984,8 +2426,10 @@ def run_all_cross_matching_parallel(
             try:
                 _shadow_output_table_for_worker(conn, _output_table)
                 if label == "527_director_addresses":
-                    if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
-                        shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
+                    # Postgres path uses SQL-native matching (no Python dict needed)
+                    if not _is_postgres_connection(conn):
+                        if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
+                            shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
                     result = match_527_directors_to_donors_by_address(
                         conn,
                         donor_indexes=shared_donor_indexes,

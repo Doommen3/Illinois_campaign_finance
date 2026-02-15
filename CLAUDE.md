@@ -66,9 +66,9 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - Lobbying client -> 527 org (Jaccard 0.80)
 - Federal donor -> local donor (zip+state+name)
 
-**Performance note**: The matching engine uses Python dict-based sparse inverted indexes, NOT numpy/matrix operations. Each match function builds an in-memory token→entity index, then iterates candidates. Address matching uses SQL-level JOINs on normalized state+city to keep memory low. For ~5K directors × ~1M donors, the inverted index approach keeps CPU reasonable (~1–2 minutes locally on M3 Pro).
+**Performance note**: Phase 1 (name matching) uses Python dict-based sparse inverted indexes — each match function builds an in-memory token→entity index, then iterates candidates. This is faster than matrix operations for small token sets (3–8 tokens per name). Phase 2 (address matching) runs as SQL-native `INSERT...SELECT` with `pg_trgm` similarity on Postgres (parallel merge join, ~10s for 25M candidate pairs) and falls back to Python dict matching on SQLite.
 
-**Why not numpy/scipy?** The Jaccard similarity on small token sets (3–8 tokens per name) is more efficient with Python set operations and inverted-index pruning than sparse matrix multiplication. The inverted index already reduces the 6.3B-pair search space by 100–144x. NumPy would add a dependency for marginal gains at current scale. If donor tables grow 10x+, scipy sparse matrix Jaccard could be considered.
+**numpy/scipy policy**: Not currently used. Acceptable to add if a concrete use case arises (e.g., embedding-based similarity, large dense matrix operations). For current workloads, Python set operations (Phase 1) and Postgres pg_trgm (Phase 2) are faster than sparse matrix alternatives. When adding, prefer Apple Silicon-optimized builds (numpy with Accelerate, scipy with vecLib).
 
 ### Route Performance Caching (2026-02)
 
