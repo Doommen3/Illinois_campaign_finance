@@ -95,6 +95,12 @@ def _set_busy_timeout(conn: sqlite3.Connection, timeout_ms: int) -> None:
     conn.execute(f"PRAGMA busy_timeout = {int(timeout_ms)}")
 
 
+def _safe_identifier(name: str) -> str:
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise ValueError(f"Unsafe SQL identifier: {name}")
+    return name
+
+
 def _build_insert_sql(
     conn: sqlite3.Connection,
     table_name: str,
@@ -222,15 +228,45 @@ def _merge_rows_into_output_table(
     columns: list[str],
     rows: list[tuple],
 ) -> None:
-    conn.execute(f"DELETE FROM {table_name}")
-    if not rows:
-        conn.commit()
+    safe_table_name = _safe_identifier(table_name)
+
+    if not _is_postgres_connection(conn):
+        conn.execute(f"DELETE FROM {safe_table_name}")
+        if not rows:
+            conn.commit()
+            return
+
+        insert_sql = _build_insert_sql(conn, safe_table_name, columns, replace=True)
+        for chunk in _chunked(rows, size=5000):
+            conn.executemany(insert_sql, chunk)
+            conn.commit()
         return
 
-    insert_sql = _build_insert_sql(conn, table_name, columns, replace=True)
-    for chunk in _chunked(rows, size=5000):
-        conn.executemany(insert_sql, chunk)
+    swap_suffix = int(time.time() * 1000)
+    shadow_table = _safe_identifier(f"_swap_{safe_table_name}_{swap_suffix}")
+    old_table = _safe_identifier(f"_old_{safe_table_name}_{swap_suffix}")
+
+    try:
+        conn.execute(f"CREATE TABLE {shadow_table} (LIKE {safe_table_name} INCLUDING ALL)")
+        if rows:
+            insert_sql = _build_insert_sql(conn, shadow_table, columns, replace=False)
+            for chunk in _chunked(rows, size=5000):
+                conn.executemany(insert_sql, chunk)
+
+        conn.execute("BEGIN")
+        conn.execute(f"LOCK TABLE {safe_table_name} IN ACCESS EXCLUSIVE MODE")
+        conn.execute(f"ALTER TABLE {safe_table_name} RENAME TO {old_table}")
+        conn.execute(f"ALTER TABLE {shadow_table} RENAME TO {safe_table_name}")
+        conn.execute(f"DROP TABLE {old_table}")
         conn.commit()
+    except Exception:
+        conn.rollback()
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {shadow_table}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        raise
 
 
 def _build_donor_address_indexes(
@@ -1632,6 +1668,7 @@ def run_all_cross_matching_parallel(
             conn = get_db(db_path)
             _set_busy_timeout(conn, 120000)
             try:
+                _shadow_output_table_for_worker(conn, _output_table)
                 if label == "527_director_addresses":
                     if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
                         shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
@@ -1646,16 +1683,27 @@ def run_all_cross_matching_parallel(
                     )
                 else:
                     result = func(conn)
-                results[label] = result
-                if incremental and "error" not in result:
-                    _save_job_fingerprint(conn, label, _job_fingerprint(conn, label))
-                job_elapsed = time.perf_counter() - job_started
-                logger.info(
-                    "Phase 2 completed: %s -> %s (elapsed=%s)",
-                    label, result, _format_duration(job_elapsed),
-                )
+                columns, rows = _read_temp_output_rows(conn, _output_table)
             finally:
                 conn.close()
+
+            merge_conn = get_db(db_path)
+            _set_busy_timeout(merge_conn, 120000)
+            try:
+                if incremental:
+                    _ensure_incremental_state_table(merge_conn)
+                _merge_rows_into_output_table(merge_conn, _output_table, columns, rows)
+                results[label] = result
+                if incremental and "error" not in result:
+                    _save_job_fingerprint(merge_conn, label, _job_fingerprint(merge_conn, label))
+            finally:
+                merge_conn.close()
+
+            job_elapsed = time.perf_counter() - job_started
+            logger.info(
+                "Phase 2 completed: %s -> %s (elapsed=%s)",
+                label, result, _format_duration(job_elapsed),
+            )
         except Exception as exc:
             job_elapsed = time.perf_counter() - job_started
             logger.error(
