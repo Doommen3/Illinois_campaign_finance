@@ -7240,7 +7240,7 @@ def _federal_edge_rows(
         FROM fec_schedule_a_contributions sa
         WHERE sa.candidate_id IS NOT NULL
           AND (? IS NULL OR sa.cycle = ?)
-        GROUP BY donor_entity_key, sa.candidate_id
+                GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id
         """,
         (cycle, cycle),
     ).fetchall()
@@ -7265,7 +7265,7 @@ def _federal_donor_committee_edges(
         FROM fec_schedule_a_contributions sa
         WHERE sa.committee_id IS NOT NULL
           AND (? IS NULL OR sa.cycle = ?)
-        GROUP BY donor_entity_key, sa.committee_id
+                GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.committee_id
         """,
         (cycle, cycle),
     ).fetchall()

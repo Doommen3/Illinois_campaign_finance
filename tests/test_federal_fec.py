@@ -1,6 +1,8 @@
 """Tests for FEC federal ingestion and query helpers."""
 from pathlib import Path
 
+import database.federal_fec as federal_fec_module
+
 from database.connection import get_db, init_db
 from database.federal_fec import (
     backfill_fec_missing_schedule_a,
@@ -30,6 +32,38 @@ from database.federal_fec import (
     sync_fec_transfer_committee_receipts,
     sync_il_federal_fec,
 )
+
+
+class _CaptureExecuteConn:
+    def __init__(self):
+        self.sql = ""
+        self.params = ()
+
+    def execute(self, sql, params=()):
+        self.sql = sql
+        self.params = params
+        return self
+
+    def fetchall(self):
+        return []
+
+
+def _normalize_sql(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+def test_federal_edge_rows_groups_by_fallback_expression_not_alias_only():
+    conn = _CaptureExecuteConn()
+    federal_fec_module._federal_edge_rows(conn, cycle=2026)
+    normalized = _normalize_sql(conn.sql)
+    assert "GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id" in normalized
+
+
+def test_federal_donor_committee_edges_groups_by_fallback_expression_not_alias_only():
+    conn = _CaptureExecuteConn()
+    federal_fec_module._federal_donor_committee_edges(conn, cycle=2026)
+    normalized = _normalize_sql(conn.sql)
+    assert "GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.committee_id" in normalized
 
 
 class FakeFecClient:
