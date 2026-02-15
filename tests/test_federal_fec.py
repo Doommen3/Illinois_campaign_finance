@@ -38,10 +38,12 @@ class _CaptureExecuteConn:
     def __init__(self):
         self.sql = ""
         self.params = ()
+        self.sql_history: list[str] = []
 
     def execute(self, sql, params=()):
         self.sql = sql
         self.params = params
+        self.sql_history.append(sql)
         return self
 
     def fetchall(self):
@@ -64,6 +66,14 @@ def test_federal_donor_committee_edges_groups_by_fallback_expression_not_alias_o
     federal_fec_module._federal_donor_committee_edges(conn, cycle=2026)
     normalized = _normalize_sql(conn.sql)
     assert "GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.committee_id" in normalized
+
+
+def test_federal_network_graph_groups_by_fallback_expression_not_alias_only(monkeypatch):
+    conn = _CaptureExecuteConn()
+    monkeypatch.setattr(federal_fec_module, "_ensure_missing_donor_identities", lambda _conn, cycle=None: None)
+    federal_fec_module.get_federal_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=10)
+    normalized = _normalize_sql(conn.sql)
+    assert "GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id" in normalized
 
 
 class FakeFecClient:

@@ -6007,7 +6007,7 @@ def get_federal_network_graph(
          AND cm.cycle = sa.cycle
         WHERE sa.candidate_id IS NOT NULL
           AND (? IS NULL OR sa.cycle = ?)
-        GROUP BY donor_entity_key, sa.candidate_id
+                GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id
         HAVING COALESCE(SUM(sa.contribution_receipt_amount), 0) >= ?
         ORDER BY total_amount DESC
         LIMIT ?
