@@ -9,6 +9,7 @@ from database.cross_matching import (
     _build_donor_address_indexes,
     _apply_postgres_session_tuning,
     _shadow_output_table_for_worker,
+    _read_temp_output_rows,
     _merge_rows_into_output_table,
     match_lobbying_to_donors,
     match_lobbying_to_527,
@@ -413,6 +414,32 @@ def test_merge_rows_into_output_table_postgres_dedupes_replace_keys():
     _sql, rows = conn.executemany_calls[0]
     assert len(rows) == 1
     assert rows[0][1] == "Org A Updated"
+
+
+def test_read_temp_output_rows_drops_null_identity_columns():
+    class FakeConn:
+        def execute(self, sql, params=None):
+            if "PRAGMA temp.table_info" in sql:
+                return FakeResult([
+                    {"name": "match_id"},
+                    {"name": "ein"},
+                    {"name": "org_name"},
+                ])
+            return FakeResult([
+                {"match_id": None, "ein": "111", "org_name": "Org"},
+                {"match_id": None, "ein": "222", "org_name": "Org2"},
+            ])
+
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    columns, rows = _read_temp_output_rows(FakeConn(), "dummy")
+    assert columns == ["ein", "org_name"]
+    assert rows == [("111", "Org"), ("222", "Org2")]
 
 
 def test_build_donor_address_indexes_persists_cache(tmp_path: Path):

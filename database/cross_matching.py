@@ -89,6 +89,7 @@ _DONOR_ADDRESS_INDEX_TABLE = "cross_matching_donor_address_index"
 _DONOR_ADDRESS_INDEX_JOB = "_donor_address_index"
 _ORG_ADDRESS_PROGRESS_EVERY = 5000
 _ORG_DONOR_NAME_PREFILTER_THRESHOLD = 0.20
+_IDENTITY_LIKE_COLUMNS = {"match_id", "id", "rowid_local"}
 
 
 def _is_postgres_connection(conn: sqlite3.Connection) -> bool:
@@ -345,6 +346,18 @@ def _read_temp_output_rows(conn: sqlite3.Connection, table_name: str) -> tuple[l
         tuple(row[column] for column in columns)
         for row in conn.execute(f"SELECT * FROM {table_name}").fetchall()
     ]
+
+    if rows and columns:
+        keep_indexes: list[int] = []
+        for idx, column in enumerate(columns):
+            if column in _IDENTITY_LIKE_COLUMNS and all(r[idx] is None for r in rows):
+                continue
+            keep_indexes.append(idx)
+
+        if len(keep_indexes) != len(columns):
+            columns = [columns[idx] for idx in keep_indexes]
+            rows = [tuple(r[idx] for idx in keep_indexes) for r in rows]
+
     return columns, rows
 
 
