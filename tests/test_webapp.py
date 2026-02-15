@@ -174,6 +174,93 @@ class TestWebApp:
         response = client.get('/donors/')
         assert response.status_code == 200
 
+    def test_openbook_list_page_loads(self, app, client):
+        """OpenBook list route should render matched vendor aggregates."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+            ("TEST VENDOR LLC", "expenditures"),
+        )
+        seed_id = conn.execute(
+            "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+            ("TEST VENDOR LLC",),
+        ).fetchone()["seed_id"]
+        conn.execute(
+            """
+            INSERT INTO openbook_vendor_match (
+                seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence, search_term_used
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (seed_id, "TEST VENDOR", "Test Vendor", "exact", 1.0, "TEST VENDOR"),
+        )
+        conn.execute(
+            """
+            INSERT INTO openbook_contracts_raw (
+                openbook_vendor_key, vendor_label, fiscal_year, agency_name, contract_number, award_amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("TEST VENDOR", "Test Vendor", 2026, "Agency A", "CN-1", 12345.67, "https://example.com", "hash-contract-1"),
+        )
+        conn.execute(
+            """
+            INSERT INTO openbook_contributions_raw (
+                openbook_vendor_key, contributor_name, recipient_name, contribution_date, amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("TEST VENDOR", "Donor A", "Recipient A", "2026-01-01", 250.0, "https://example.com", "hash-contrib-1"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/openbook/')
+        assert response.status_code == 200
+        assert b'OpenBook Vendor Matches' in response.data
+        assert b'Test Vendor' in response.data
+
+    def test_openbook_detail_page_loads(self, app, client):
+        """OpenBook detail route should render contracts, provenance, and contributions."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+            ("ANOTHER VENDOR", "lobbying"),
+        )
+        seed_id = conn.execute(
+            "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+            ("ANOTHER VENDOR",),
+        ).fetchone()["seed_id"]
+        conn.execute(
+            """
+            INSERT INTO openbook_vendor_match (
+                seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence, search_term_used
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (seed_id, "ANOTHER VENDOR", "Another Vendor", "prefix", 0.9, "ANOTHER VENDOR"),
+        )
+        conn.execute(
+            """
+            INSERT INTO openbook_contracts_raw (
+                openbook_vendor_key, vendor_label, fiscal_year, agency_name, contract_number, award_amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("ANOTHER VENDOR", "Another Vendor", 2025, "Agency B", "CN-2", 5000.0, "https://example.com", "hash-contract-2"),
+        )
+        conn.execute(
+            """
+            INSERT INTO openbook_contributions_raw (
+                openbook_vendor_key, contributor_name, recipient_name, contribution_date, amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("ANOTHER VENDOR", "Donor B", "Recipient B", "2025-04-10", 100.0, "https://example.com", "hash-contrib-2"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/openbook/ANOTHER%20VENDOR')
+        assert response.status_code == 200
+        assert b'Another Vendor' in response.data
+        assert b'Seed Provenance' in response.data
+        assert b'CN-2' in response.data
+
     def test_reports_page_loads(self, client):
         """Test that the reports page loads."""
         response = client.get('/reports/')

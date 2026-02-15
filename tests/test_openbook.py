@@ -10,6 +10,8 @@ from scraper.openbook_scraper import (
     OpenBookScraper,
     _HttpSession,
     _pick_best_match,
+    _score_all_matches,
+    generate_search_terms,
     parse_contracts_html,
     parse_contract_detail_html,
     parse_contributions_html,
@@ -772,3 +774,281 @@ class TestRawExtractionPostgresCompat:
             "SELECT COUNT(*) as cnt FROM raw_extractions WHERE source_identifier = 'key1'"
         ).fetchone()["cnt"]
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_search_terms tests
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateSearchTerms:
+    """Tests for smart search term generation from vendor names."""
+
+    def test_person_name_last_first(self):
+        """SMITH, JOHN -> ['SMITH']"""
+        result = generate_search_terms("SMITH, JOHN")
+        assert "SMITH" in result
+        assert "JOHN" not in result
+
+    def test_person_name_last_first_middle(self):
+        """SMITH, JOHN A -> ['SMITH']"""
+        result = generate_search_terms("SMITH, JOHN A")
+        assert "SMITH" in result
+        assert len(result) >= 1
+
+    def test_person_vs_company_comma_before_suffix(self):
+        """CATERPILLAR, INC -> treated as company, not person."""
+        result = generate_search_terms("CATERPILLAR, INC")
+        assert "CATERPILLAR" in result
+        # Should NOT treat "INC" as a first name
+
+    def test_company_suffix_stripping(self):
+        """COMCAST OF ILLINOIS III INC -> primary is COMCAST."""
+        result = generate_search_terms("COMCAST OF ILLINOIS III INC")
+        assert result[0] == "COMCAST"
+
+    def test_llc_suffix_stripping(self):
+        """ACME CONSULTING LLC -> primary is ACME CONSULTING (2 tokens kept)."""
+        result = generate_search_terms("ACME CONSULTING LLC")
+        assert result[0] == "ACME CONSULTING"
+
+    def test_corp_suffix_stripping(self):
+        """WIDGET MANUFACTURING CORP -> primary is WIDGET MANUFACTURING (2 tokens kept)."""
+        result = generate_search_terms("WIDGET MANUFACTURING CORP")
+        assert result[0] == "WIDGET MANUFACTURING"
+
+    def test_geographic_removal(self):
+        """AT&T OF ILLINOIS -> AT&T."""
+        result = generate_search_terms("AT&T OF ILLINOIS")
+        assert "AT&T" in result
+
+    def test_short_passthrough(self):
+        """DELOITTE -> ['DELOITTE'] (no stripping needed)."""
+        result = generate_search_terms("DELOITTE")
+        assert result == ["DELOITTE"]
+
+    def test_two_word_passthrough(self):
+        """BLUE CROSS -> kept as is."""
+        result = generate_search_terms("BLUE CROSS")
+        assert "BLUE CROSS" in result
+
+    def test_long_name_uses_two_token_primary(self):
+        """BLUE CROSS & BLUE SHIELD -> primary should be BLUE CROSS (not BLUE)."""
+        result = generate_search_terms("BLUE CROSS & BLUE SHIELD")
+        assert result[0] == "BLUE CROSS"
+
+    def test_chicago_authority_uses_two_token_primary(self):
+        """CHICAGO TRANSIT AUTHORITY -> primary should keep two tokens for precision."""
+        result = generate_search_terms("CHICAGO TRANSIT AUTHORITY")
+        assert result[0] == "CHICAGO TRANSIT"
+
+    def test_abbreviation_expansion_comed(self):
+        """COMED -> includes COMMONWEALTH EDISON."""
+        result = generate_search_terms("COMED")
+        assert "COMED" in result
+        assert "COMMONWEALTH EDISON" in result
+
+    def test_abbreviation_expansion_bcbs(self):
+        """BCBS -> includes BLUE CROSS BLUE SHIELD."""
+        result = generate_search_terms("BCBS")
+        assert "BCBS" in result
+        assert "BLUE CROSS BLUE SHIELD" in result
+
+    def test_empty_string(self):
+        result = generate_search_terms("")
+        assert result == []
+
+    def test_whitespace_only(self):
+        result = generate_search_terms("   ")
+        assert result == []
+
+    def test_all_suffix_fallback(self):
+        """If everything is a suffix, fall back to first token."""
+        result = generate_search_terms("INC LLC CORP")
+        assert len(result) >= 1
+        assert result[0] == "INC"
+
+    def test_no_duplicates(self):
+        """Output list should have no duplicates."""
+        result = generate_search_terms("DELOITTE")
+        assert len(result) == len(set(result))
+
+    def test_ampersand_preserved(self):
+        """AT&T SERVICES INC -> AT&T in result."""
+        result = generate_search_terms("AT&T SERVICES INC")
+        assert "AT&T" in result
+
+    def test_min_length_filter(self):
+        """Terms shorter than 3 chars should be filtered out."""
+        # "AB" as a seed should return empty or only valid terms
+        result = generate_search_terms("AB")
+        assert all(len(t) >= 3 for t in result)
+
+    def test_original_included_as_fallback(self):
+        """Original name (cleaned) should be included if different from primary."""
+        result = generate_search_terms("COMCAST OF ILLINOIS III INC")
+        # Primary is "COMCAST", original cleaned should also be present
+        assert "COMCAST" in result
+        assert any("COMCAST" in t and t != "COMCAST" for t in result)
+
+
+# ---------------------------------------------------------------------------
+# _score_all_matches tests
+# ---------------------------------------------------------------------------
+
+
+class TestScoreAllMatches:
+    """Tests for _score_all_matches() that returns all results above threshold."""
+
+    def test_exact_match_scores_one(self):
+        suggestions = [
+            {"id": "COMCAST CORPORATION", "value": "Comcast Corporation"},
+        ]
+        results = _score_all_matches("COMCAST CORPORATION", suggestions, "COMCAST")
+        assert len(results) >= 1
+        exact = [r for r in results if r["confidence"] == 1.0]
+        assert len(exact) == 1
+
+    def test_multiple_suggestions_all_scored(self):
+        suggestions = [
+            {"id": "COMCAST CORPORATION", "value": "Comcast Corporation"},
+            {"id": "COMCAST OF ILLINOIS III INC", "value": "Comcast of Illinois III Inc"},
+            {"id": "COMCAST BUSINESS COMM", "value": "Comcast Business Comm"},
+        ]
+        # With dual scoring (seed + search_term), all COMCAST variants match search_term "COMCAST"
+        results = _score_all_matches("COMCAST CORPORATION", suggestions, "COMCAST")
+        assert len(results) == 3  # All three prefix-match against "COMCAST"
+
+    def test_below_threshold_excluded(self):
+        suggestions = [
+            {"id": "TOTALLY DIFFERENT COMPANY", "value": "Totally Different Company"},
+        ]
+        results = _score_all_matches("COMCAST", suggestions, "COMCAST", min_confidence=0.3)
+        assert len(results) == 0
+
+    def test_sorted_by_confidence_descending(self):
+        suggestions = [
+            {"id": "COMCAST BUSINESS COMM LLC", "value": "Comcast Business Comm LLC"},
+            {"id": "COMCAST CORPORATION", "value": "Comcast Corporation"},
+            {"id": "COMCAST OF ILLINOIS", "value": "Comcast of Illinois"},
+        ]
+        results = _score_all_matches("COMCAST CORPORATION", suggestions, "COMCAST")
+        confidences = [r["confidence"] for r in results]
+        assert confidences == sorted(confidences, reverse=True)
+
+    def test_search_term_recorded(self):
+        suggestions = [
+            {"id": "COMCAST CORPORATION", "value": "Comcast Corporation"},
+        ]
+        results = _score_all_matches("COMCAST CORPORATION", suggestions, "COMCAST")
+        assert all(r["search_term"] == "COMCAST" for r in results)
+
+    def test_empty_suggestions(self):
+        results = _score_all_matches("ANYTHING", [], "ANYTHING")
+        assert results == []
+
+    def test_none_suggestions(self):
+        results = _score_all_matches("ANYTHING", None, "ANYTHING")
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# resolve_all_matches_http tests (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAllMatchesHTTP:
+    """Tests for resolve_all_matches_http() with mocked HTTP responses."""
+
+    @pytest.fixture
+    def db_conn(self, tmp_path):
+        db_path = str(tmp_path / "test_resolve_all.db")
+        init_db(db_path)
+        conn = get_db(db_path)
+        yield conn
+        conn.close()
+
+    def test_broad_search_returns_multiple(self, db_conn, monkeypatch):
+        """Searching 'COMCAST' should return multiple vendor matches."""
+        import json as _json
+        from scraper import openbook_scraper
+
+        fake_suggestions = _json.dumps([
+            {"id": "COMCAST CORPORATION", "value": "Comcast Corporation"},
+            {"id": "COMCAST OF ILLINOIS III INC", "value": "Comcast of Illinois III Inc"},
+            {"id": "COMCAST BUSINESS COMM", "value": "Comcast Business Comm"},
+        ])
+
+        class FakeSession:
+            timeout = 30
+            def get(self, url):
+                return fake_suggestions
+
+        scraper = OpenBookScraper(db_conn, headless=True)
+        # Disable rate limiter waits for tests
+        monkeypatch.setattr(scraper.rate_limiter, "wait", lambda: None)
+        monkeypatch.setattr(scraper.rate_limiter, "record_success", lambda: None)
+
+        results = scraper.resolve_all_matches_http(
+            "COMCAST OF ILLINOIS III INC", FakeSession()
+        )
+        assert len(results) >= 2
+        vendor_keys = [r["vendor_key"] for r in results]
+        assert "COMCAST CORPORATION" in vendor_keys
+
+    def test_abbreviation_expansion(self, db_conn, monkeypatch):
+        """COMED -> no results, but COMMONWEALTH EDISON -> results."""
+        import json as _json
+
+        call_log = []
+
+        def fake_get(url):
+            call_log.append(url)
+            if "COMMONWEALTH" in url or "EDISON" in url:
+                return _json.dumps([
+                    {"id": "COMMONWEALTH EDISON CO", "value": "Commonwealth Edison Co"},
+                ])
+            return _json.dumps([])
+
+        class FakeSession:
+            timeout = 30
+            def get(self, url):
+                return fake_get(url)
+
+        scraper = OpenBookScraper(db_conn, headless=True)
+        monkeypatch.setattr(scraper.rate_limiter, "wait", lambda: None)
+        monkeypatch.setattr(scraper.rate_limiter, "record_success", lambda: None)
+
+        results = scraper.resolve_all_matches_http("COMED", FakeSession())
+        assert len(results) >= 1
+        assert any("COMMONWEALTH EDISON" in r["vendor_key"] for r in results)
+
+    def test_person_name_resolution(self, db_conn, monkeypatch):
+        """SMITH, JOHN -> searches 'SMITH' (last name only)."""
+        import json as _json
+
+        searched_terms = []
+
+        def fake_get(url):
+            # Extract the search term from the URL
+            import urllib.parse
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "term" in qs:
+                searched_terms.append(qs["term"][0])
+            return _json.dumps([
+                {"id": "SMITH ENTERPRISES", "value": "Smith Enterprises"},
+            ])
+
+        class FakeSession:
+            timeout = 30
+            def get(self, url):
+                return fake_get(url)
+
+        scraper = OpenBookScraper(db_conn, headless=True)
+        monkeypatch.setattr(scraper.rate_limiter, "wait", lambda: None)
+        monkeypatch.setattr(scraper.rate_limiter, "record_success", lambda: None)
+
+        results = scraper.resolve_all_matches_http("SMITH, JOHN", FakeSession())
+        # Should have searched "SMITH" not "SMITH, JOHN"
+        assert any("SMITH" == t for t in searched_terms)

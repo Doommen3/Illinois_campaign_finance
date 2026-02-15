@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}OpenBook Vendor Detail - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>{{ vendor.openbook_vendor_label or vendor.openbook_vendor_key }}</h1>
+<p class="subtitle">{{ vendor.openbook_vendor_key }}</p>
+<p class="help-text">This page combines OpenBook contracts and contribution records with in-platform seed provenance so you can trace which expenditure payees or lobbying entities produced this resolved vendor key.</p>
+
+<p>
+    <a class="btn btn-small btn-success" href="{{ url_for('openbook.list_vendors') }}">Back to OpenBook vendors</a>
+</p>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Seed Links</h3>
+        <p class="stat-value">{{ vendor.seed_count }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Best Confidence</h3>
+        <p class="stat-value">{{ '%.3f'|format(vendor.best_confidence or 0) }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contracts</h3>
+        <p class="stat-value">{{ totals.contract_count }}</p>
+        <p class="stat-detail">{{ format_currency(totals.award_total) }} total awards</p>
+    </div>
+    <div class="stat-card">
+        <h3>Warrant Rows</h3>
+        <p class="stat-value">{{ totals.warrant_count }}</p>
+        <p class="stat-detail">{{ format_currency(totals.warrant_total) }} total payments</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contributions</h3>
+        <p class="stat-value">{{ totals.contribution_count }}</p>
+        <p class="stat-detail">{{ format_currency(totals.contribution_total) }} total</p>
+    </div>
+</div>
+
+<h2>Seed Provenance</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Seed Text</th>
+            <th>Source</th>
+            <th>Best Confidence</th>
+            <th>Search Term Used</th>
+            <th>Related Link</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in seed_links %}
+        <tr>
+            <td>{{ row.seed_text }}</td>
+            <td>{{ row.seed_source }}</td>
+            <td>{{ '%.3f'|format(row.best_confidence or 0) }}</td>
+            <td>{{ row.search_term_used or '-' }}</td>
+            <td>
+                {% if row.seed_source == 'lobbying' and row.lobbying_entity_id %}
+                <a href="{{ url_for('lobbying.entity_detail', entity_id=row.lobbying_entity_id) }}">Lobbying entity</a>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No seed links found for this vendor key.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Contracts</h2>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Fiscal Year</th>
+                <th>Agency</th>
+                <th>Contract #</th>
+                <th>Award Amount</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in contracts %}
+            <tr>
+                <td>{{ row.fiscal_year or '-' }}</td>
+                <td>{{ row.agency_name or '-' }}</td>
+                <td>{{ row.contract_number or '-' }}</td>
+                <td>{{ format_currency(row.award_amount or 0) }}</td>
+                <td>
+                    {% if row.detail_url %}
+                    <a href="{{ row.detail_url }}" target="_blank" rel="noopener noreferrer">Open</a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No contracts scraped for this vendor yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h2>Contract Warrant Details</h2>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Contract #</th>
+                <th>Fiscal Year</th>
+                <th>Issue Date</th>
+                <th>Payment Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in warrants %}
+            <tr>
+                <td>{{ row.contract_number or '-' }}</td>
+                <td>{{ row.fiscal_year or '-' }}</td>
+                <td>{{ row.issue_date or '-' }}</td>
+                <td>{{ format_currency(row.payment_amount or 0) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No warrant-level payment rows scraped yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h2>Contributions</h2>
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Contributor</th>
+                <th>Recipient</th>
+                <th>Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in contributions %}
+            <tr>
+                <td>{{ row.contribution_date or '-' }}</td>
+                <td>{{ row.contributor_name or '-' }}</td>
+                <td>{{ row.recipient_name or '-' }}</td>
+                <td>{{ format_currency(row.amount or 0) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No contribution rows scraped for this vendor yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

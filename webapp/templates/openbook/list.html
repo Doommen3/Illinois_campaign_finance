@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}OpenBook Vendors - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>OpenBook Vendor Matches</h1>
+<p class="subtitle">{{ total }} resolved OpenBook vendor keys from campaign and lobbying seeds</p>
+<p class="help-text">OpenBook vendors are resolved from expenditure payees, lobbying entities, and other in-platform sources via autosuggest matching. Smart search stores multiple candidate vendors per seed and records the search term used for traceability.</p>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Matched Vendors</h3>
+        <p class="stat-value">{{ summary.vendors_matched }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contracts</h3>
+        <p class="stat-value">{{ summary.contracts_total }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Total Award Amount</h3>
+        <p class="stat-value">{{ format_currency(summary.award_total) }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Contributions</h3>
+        <p class="stat-value">{{ summary.contributions_total }}</p>
+    </div>
+</div>
+
+<form action="{{ url_for('openbook.list_vendors') }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search OpenBook vendor keys..." value="{{ query }}">
+    <button type="submit">Search</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Vendor</th>
+            <th>Seed Links</th>
+            <th>Best Confidence</th>
+            <th>Contracts</th>
+            <th>Total Awards</th>
+            <th>Contributions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in vendors %}
+        <tr>
+            <td>
+                <a href="{{ url_for('openbook.vendor_detail', vendor_key=row.openbook_vendor_key) }}">
+                    {{ row.openbook_vendor_label or row.openbook_vendor_key }}
+                </a>
+                <div class="stat-detail">{{ row.openbook_vendor_key }}</div>
+            </td>
+            <td>{{ row.seed_count }}</td>
+            <td>{{ '%.3f'|format(row.best_confidence or 0) }}</td>
+            <td>{{ row.contract_count }}</td>
+            <td>{{ format_currency(row.total_award_amount) }}</td>
+            <td>{{ row.contribution_count }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No OpenBook vendors found.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('openbook.list_vendors', page=page-1, q=query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('openbook.list_vendors', page=page+1, q=query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

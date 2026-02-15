@@ -9,6 +9,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **IL Secretary of State Lobbying** — Active lobbying entities/clients plus daily lobbyist-entity-client extracts (supports both `ENTITY_ID`/`ENTITY_NAME` and `ENT_ID`/`ENT_NAME` source headers)
 - **IRS 527 Political Organizations** — Organization registrations, periodic reports, directors, related organizations, expenditures, and election authority filings from IRS Form 8871/8872
 - **City of Chicago Open Data (Socrata)** — Contracts, payments, lobbyist contributions, and lobbying activity ingested via SODA API pagination (Phase 1)
+- **OpenBook Illinois Comptroller** — State contract data and campaign contribution records via HTTP autosuggest API + search scraping, with smart search term generation (suffix/geo stripping, person-name detection, abbreviation expansion)
 
 ## Features
 
@@ -116,6 +117,12 @@ python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/p
 # Import City of Chicago Phase 1 datasets from Socrata API
 # Uses SOCRATA_APP_TOKEN from environment unless --app-token is provided
 python run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert
+
+# Import OpenBook Comptroller vendor contracts (smart search enabled by default)
+python run.py import-openbook-batch --generate-seeds --max-vendors 50
+# Disable smart search to use raw vendor names verbatim
+python run.py import-openbook-batch --no-smart-search --max-vendors 50
+# OpenBook web routes: /openbook/ and /openbook/<vendor_key>
 
 # Run cross-matching across all data sources
 python run.py run-cross-matching --only all --parallel --workers 4
@@ -225,10 +232,12 @@ Visit `http://localhost:5000` to access the dashboard.
 
 ```
 ├── cli/                    CLI commands (init, scrape, import, analytics)
-├── scraper/                Playwright-based async scrapers
+├── scraper/                Playwright-based async scrapers + HTTP scrapers
 │   ├── main_list_scraper   ISBE main report list scraper
 │   ├── committee_scraper   Committee detail + D-2 filing scraper
 │   ├── detail_scraper      A-1 itemized contribution scraper
+│   ├── openbook_scraper    OpenBook Comptroller vendor contracts + contributions
+│   ├── comptroller_contracts Comptroller State Contracts DataTables scraper
 │   ├── rate_limiter        Configurable rate limiting with backoff
 │   └── state_manager       Resumable scrape progress tracking
 ├── database/               Data layer
@@ -241,7 +250,7 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── irs527_loader.py    IRS 527 FullDataFile pipe-delimited loader
 │   └── cross_matching.py   Cross-matching engine (lobbying, 527, campaign finance)
 ├── webapp/                 Flask web application
-│   ├── routes/             15 route modules (dashboard, analytics, federal finance, lobbying, 527, etc.)
+│   ├── routes/             16 route modules (dashboard, analytics, federal finance, lobbying, 527, OpenBook, etc.)
 │   └── templates/          50+ Jinja2 templates (incl. tabbed detail views)
 ├── scripts/                Automation scripts
 │   ├── sync-fec.sh         Weekly FEC data sync wrapper
@@ -266,6 +275,11 @@ If you want a faster pre-deploy gate, run this subset first:
 ```bash
 pytest -q tests/test_federal_fec.py tests/test_lobbying_routes.py tests/test_uiux_improvements.py tests/test_webapp.py::TestWebApp::test_federal_finance_page_loads_with_synced_rows
 ```
+
+OpenBook smart-search validation snapshot (10 seeds):
+- `--no-smart-search`: ~26.9s, 7 resolved seeds, 7 total matches (1.0 matches/resolved seed)
+- smart-search default: ~195.1s, 13 resolved seeds, 997 total matches (76.7 matches/resolved seed)
+- Smart search increases coverage but can broaden candidate sets; default match threshold is 0.4.
 
 For scraper/live checks, run integration tests separately:
 

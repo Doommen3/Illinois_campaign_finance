@@ -253,7 +253,9 @@ def clean_data_command(apply, scope):
               help='Run seed generation before batch import')
 @click.option('--min-amount', type=float, default=None,
               help='Minimum amount for inline seed generation')
-def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount):
+@click.option('--no-smart-search', is_flag=True, default=False,
+              help='Disable smart search term generation (use raw seed text)')
+def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount, no_smart_search):
     """Batch-resolve and scrape all pending OpenBook vendor seeds via HTTP."""
     conn = get_db(config.DATABASE_TARGET)
     max_errs = max_consecutive_errors if max_consecutive_errors is not None else config.OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS
@@ -270,6 +272,8 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
     def progress_callback(msg):
         click.echo(f'  {msg}')
 
+    use_smart_search = not no_smart_search
+
     try:
         if generate_seeds:
             min_amt = min_amount if min_amount is not None else config.OPENBOOK_SEED_MIN_AMOUNT
@@ -282,7 +286,8 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
             click.echo(f'  Seeds generated: {seed_stats.get("total_new_seeds", 0)} new')
 
         click.echo(f'Starting OpenBook batch import (max_vendors={max_vendors or "all"}, '
-                   f'pick_first={pick_first}, with_details={with_details}, '
+                   f'pick_first={pick_first}, smart_search={use_smart_search}, '
+                   f'with_details={with_details}, '
                    f'max_consecutive_errors={max_errs})...')
 
         summary = scraper.import_batch(
@@ -291,6 +296,7 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
             with_details=with_details,
             max_detail_error_retries=max_detail_error_retries,
             max_consecutive_errors=max_errs,
+            use_smart_search=use_smart_search,
             progress_callback=progress_callback,
         )
 

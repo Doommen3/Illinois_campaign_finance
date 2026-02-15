@@ -159,10 +159,19 @@
         <p class="stat-value">{{ stats.federal_matched_donors }}</p>
     </div>
     <div class="stat-card">
+        <h3>OpenBook Vendors Matched</h3>
+        <p class="stat-value">{{ stats.openbook_vendors_matched }}</p>
+        <p class="stat-detail">{{ stats.openbook_contracts_total }} contracts · {{ format_currency(stats.openbook_award_total) }}</p>
+    </div>
+    <div class="stat-card">
         <h3>Archived Local Filings</h3>
         <p class="stat-value">{{ stats.local_archived_filings }}</p>
     </div>
 </div>
+
+<p>
+    <a class="btn btn-primary" href="{{ url_for('openbook.list_vendors') }}">OpenBook Vendor Explorer</a>
+</p>
 
 <div class="status-section">
     <h2>527 Dark Money Summary</h2>

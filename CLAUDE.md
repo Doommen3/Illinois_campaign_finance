@@ -40,6 +40,8 @@ python run.py runserver --port 5000
 | `database/cross_matching.py` | Jaccard-based cross-dataset matching engine |
 | `database/irs527_loader.py` | IRS 527 FullDataFile parser |
 | `database/federal_fec.py` | FEC API integration |
+| `scraper/openbook_scraper.py` | OpenBook Comptroller scraper + smart search |
+| `scraper/comptroller_contracts.py` | Comptroller State Contracts DataTables scraper |
 | `webapp/routes/` | 15 Flask route modules |
 | `webapp/templates/` | 50+ Jinja2 templates |
 | `tests/` | pytest suite |
@@ -51,6 +53,7 @@ python run.py runserver --port 5000
 3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
 5. **City of Chicago (Socrata)** - Contracts, payments, lobbyist contributions, and lobbying activity (Phase 1 API ingest)
+6. **OpenBook Illinois Comptroller** - State contract data and campaign contribution records via HTTP autosuggest API + search scraping (`scraper/openbook_scraper.py`)
 
 ### Cross-Matching Engine
 
@@ -183,6 +186,7 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 - Always verify actual server paths, service names, and directory structures before generating deployment commands — never assume defaults.
 - Use `python3` (not `python`) in all server scripts and systemd files.
 - **Long-running server tasks (>10 minutes)**: Do NOT run these autonomously via Claude. Instead, provide the user with the exact command to run so they can execute it themselves, watch the output, and see it through to completion. Examples: `run-cross-matching --only all`, `import-irs527`, `refresh-analytics` on large datasets. Always estimate the runtime before handing off.
+   - **Exception (OpenBook only):** Long-running OpenBook scrape/import commands (for example `import-openbook-batch` and related OpenBook scraping flows) are allowed to run autonomously via Claude when explicitly requested.
 - For long-running server tasks, provide the fastest validated safe command first (including flags like incremental mode), then provide fallback/recovery commands.
 - Runtime DB selection: if `DATABASE_URL` is set, the web app targets PostgreSQL at runtime; if unset, it falls back to `DATABASE_PATH` (SQLite).
 - Safe runtime cutover policy:
@@ -327,6 +331,33 @@ Phase 1 datasets imported:
 - `p9p7-vfqc` (Lobbyist Contributions)
 - `pahz-egmi` (Lobbying Activity)
 
+### OpenBook batch import (smart search, default)
+```bash
+python run.py import-openbook-batch --generate-seeds --max-vendors 20
+```
+
+Smart search (default) generates shorter search terms from verbose vendor names
+(e.g., "COMCAST OF ILLINOIS III INC" → searches "COMCAST") and stores ALL
+matching vendors per seed. Disable with `--no-smart-search` to fall back to
+verbatim single-match resolution.
+
+Key functions in `scraper/openbook_scraper.py`:
+- `generate_search_terms(name)` — strips suffixes/geo/roman numerals, detects
+  person names ("SMITH, JOHN" → "SMITH"), expands abbreviations via
+  `_ABBREVIATION_ALIASES` (COMED → COMMONWEALTH EDISON, etc.)
+- `_score_all_matches()` — scores suggestions against both seed text and search
+  term (max confidence), returns all above threshold (default 0.4)
+- `resolve_all_matches_http()` — queries autosuggest for each generated term,
+  deduplicates by vendor_key, returns scored matches
+- `openbook_vendor_match.search_term_used` column tracks which term produced
+  each match
+- Web routes:
+  - `/openbook/` — resolved vendor directory with contract/contribution aggregates
+  - `/openbook/<vendor_key>` — vendor detail with seed provenance + contracts/warrants/contributions
+- Cross-matching note: OpenBook currently uses `openbook_vendor_seed -> openbook_vendor_match`
+  as the canonical linkage to source datasets (expenditures/lobbying/FEC), and
+  vendor detail surfaces that provenance directly.
+
 ### Run cross-matching
 ```bash
 python run.py run-cross-matching --only all
@@ -353,3 +384,9 @@ python run.py refresh-analytics --with-snapshot
    - `lobbying_lobbyists` — lobbyist profile/contact/status rows
    - `lobbying_lobbyist_registrations` — lobbyist↔entity↔client/year registrations (nullable client for unassigned rows)
 - All IRS 527 tables prefixed with `irs527_`
+- OpenBook tables:
+   - `openbook_vendor_seed` — candidate vendor names from expenditures/lobbying/FEC
+   - `openbook_vendor_match` — autosuggest matches (supports multiple matches per seed via `UNIQUE(seed_id, openbook_vendor_key)`; `search_term_used` tracks which smart-search term produced each match)
+   - `openbook_contracts_raw`, `openbook_contract_warrants`, `openbook_contract_detail_status` — scraped contract data
+   - `openbook_contributions_raw` — scraped campaign contribution data
+   - `openbook_scrape_runs` — batch run metadata

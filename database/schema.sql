@@ -1308,6 +1308,7 @@ CREATE TABLE IF NOT EXISTS openbook_vendor_match (
     openbook_vendor_label TEXT NOT NULL,
     match_method TEXT NOT NULL,   -- 'exact', 'prefix', 'fuzzy', 'pick_first'
     confidence REAL NOT NULL,     -- 0.0-1.0
+    search_term_used TEXT,        -- which search term produced this match
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(seed_id, openbook_vendor_key)
 );
@@ -1410,6 +1411,68 @@ CREATE TABLE IF NOT EXISTS openbook_scrape_runs (
     match_count INTEGER DEFAULT 0,
     contract_rows INTEGER DEFAULT 0,
     contribution_rows INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    notes TEXT
+);
+
+-- ============================================================
+-- Comptroller State Contracts tables
+-- (https://illinoiscomptroller.gov/financial-reports-data/find-a-report/state-contracts)
+-- ============================================================
+
+-- Search results from Comptroller State Contracts page
+CREATE TABLE IF NOT EXISTS comptroller_state_contracts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_term TEXT NOT NULL,
+    vendor_name TEXT NOT NULL,
+    agency_contract_number TEXT,
+    ctd_url TEXT,
+    detail_url TEXT,
+    payments_amount REAL,
+    source_url TEXT NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    row_hash TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_comptroller_contracts_vendor
+    ON comptroller_state_contracts(vendor_name);
+CREATE INDEX IF NOT EXISTS idx_comptroller_contracts_number
+    ON comptroller_state_contracts(agency_contract_number);
+CREATE INDEX IF NOT EXISTS idx_comptroller_contracts_search_term
+    ON comptroller_state_contracts(search_term);
+
+-- Contract detail data from individual contract pages
+CREATE TABLE IF NOT EXISTS comptroller_contract_details (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agency_contract_number TEXT NOT NULL UNIQUE,
+    vendor_name TEXT,
+    agency TEXT,
+    description TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    current_contract_amount REAL,
+    award_type TEXT,
+    class_subclass TEXT,
+    expenditure_authority TEXT,
+    source_url TEXT NOT NULL,
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    row_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_comptroller_details_vendor
+    ON comptroller_contract_details(vendor_name);
+
+-- Scrape run metadata for tracking and resumability
+CREATE TABLE IF NOT EXISTS comptroller_scrape_runs (
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    mode TEXT NOT NULL,
+    vendors_searched INTEGER DEFAULT 0,
+    contracts_found INTEGER DEFAULT 0,
+    details_scraped INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0,
     notes TEXT
 );

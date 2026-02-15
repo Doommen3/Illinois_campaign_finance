@@ -143,6 +143,251 @@ def _pick_best_match(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Smart search term generation
+# ---------------------------------------------------------------------------
+
+_STRIP_SUFFIXES = {
+    "INC", "LLC", "CORP", "CORPORATION", "CO", "LTD", "LP", "LLP",
+    "INCORPORATED", "LIMITED", "COMPANY", "GROUP", "HOLDINGS",
+    "ENTERPRISES", "SERVICES", "PARTNERS", "PARTNERSHIP",
+}
+
+_STRIP_GEO = {"OF", "ILLINOIS", "CHICAGO", "SPRINGFIELD", "IL"}
+
+_ROMAN_NUMERALS = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+
+_ABBREVIATION_ALIASES: Dict[str, List[str]] = {
+    "COMED": ["COMMONWEALTH EDISON"],
+    "BCBS": ["BLUE CROSS BLUE SHIELD"],
+    "CTA": ["CHICAGO TRANSIT AUTHORITY"],
+    "ATT": ["AT&T"],
+    "IBM": ["INTERNATIONAL BUSINESS MACHINES"],
+    "CDW": ["CDW GOVERNMENT"],
+    "IDOT": ["ILLINOIS DEPARTMENT OF TRANSPORTATION"],
+    "IDPH": ["ILLINOIS DEPARTMENT OF PUBLIC HEALTH"],
+    "IDHS": ["ILLINOIS DEPARTMENT OF HUMAN SERVICES"],
+    "RTA": ["REGIONAL TRANSPORTATION AUTHORITY"],
+    "METRA": ["METROPOLITAN RAIL"],
+    "PACE": ["PACE SUBURBAN BUS"],
+    "NICOR": ["NORTHERN ILLINOIS GAS"],
+    "AMEREN": ["AMEREN ILLINOIS"],
+    "UI": ["UNIVERSITY OF ILLINOIS"],
+    "SIU": ["SOUTHERN ILLINOIS UNIVERSITY"],
+    "UIC": ["UNIVERSITY OF ILLINOIS CHICAGO"],
+    "ISBE": ["ILLINOIS STATE BOARD OF EDUCATION"],
+    "CPS": ["CHICAGO PUBLIC SCHOOLS", "CHICAGO BOARD OF EDUCATION"],
+    "CMS": ["ILLINOIS DEPARTMENT OF CENTRAL MANAGEMENT SERVICES"],
+    "IDNR": ["ILLINOIS DEPARTMENT OF NATURAL RESOURCES"],
+    "IDOA": ["ILLINOIS DEPARTMENT OF AGRICULTURE"],
+    "IDES": ["ILLINOIS DEPARTMENT OF EMPLOYMENT SECURITY"],
+    "IDOC": ["ILLINOIS DEPARTMENT OF CORRECTIONS"],
+    "IDFPR": ["ILLINOIS DEPARTMENT OF FINANCIAL AND PROFESSIONAL REGULATION"],
+    "DCFS": ["ILLINOIS DEPARTMENT OF CHILDREN AND FAMILY SERVICES"],
+    "DCEO": ["ILLINOIS DEPARTMENT OF COMMERCE AND ECONOMIC OPPORTUNITY"],
+    "IEMA": ["ILLINOIS EMERGENCY MANAGEMENT AGENCY"],
+    "MWRD": ["METROPOLITAN WATER RECLAMATION DISTRICT"],
+    "CDB": ["ILLINOIS CAPITAL DEVELOPMENT BOARD"],
+}
+
+
+def generate_search_terms(name: str) -> List[str]:
+    """Generate smart search terms from a vendor/person name.
+
+    Returns a deduplicated list of search terms ordered by specificity:
+    [primary_identifier, *alias_expansions, original_if_different].
+
+    Examples:
+        "COMCAST OF ILLINOIS III INC" -> ["COMCAST", "COMCAST OF ILLINOIS III INC"]
+        "SMITH, JOHN" -> ["SMITH"]
+        "COMED" -> ["COMED", "COMMONWEALTH EDISON"]
+        "DELOITTE" -> ["DELOITTE"]
+    """
+    if not name:
+        return []
+
+    cleaned = re.sub(r"\s+", " ", name.strip().upper())
+    if not cleaned:
+        return []
+
+    terms: List[str] = []
+
+    # --- Person detection ---
+    # If comma present and part after comma is NOT a known suffix, treat as person
+    if "," in cleaned:
+        parts = cleaned.split(",", 1)
+        before_comma = parts[0].strip()
+        after_comma = parts[1].strip()
+
+        # Check if after-comma part is a known company suffix (e.g., "CATERPILLAR, INC")
+        after_tokens = after_comma.split()
+        is_suffix = all(t in _STRIP_SUFFIXES for t in after_tokens) if after_tokens else False
+
+        if not is_suffix and after_tokens:
+            # Person name: "SMITH, JOHN" -> extract last name
+            last_name = before_comma
+            if len(last_name) >= 3:
+                terms.append(last_name)
+            return _dedupe_filter(terms)
+        else:
+            # Company with comma before suffix: strip suffix, continue
+            cleaned = before_comma
+
+    # --- Suffix / geo / roman stripping ---
+    tokens = cleaned.split()
+    significant: List[str] = []
+    hit_significant = False
+
+    for token in reversed(tokens):
+        if not hit_significant:
+            if token in _STRIP_SUFFIXES or token in _ROMAN_NUMERALS:
+                continue
+            if token in _STRIP_GEO and not significant:
+                continue
+            hit_significant = True
+        significant.append(token)
+
+    significant.reverse()
+
+    if not significant:
+        # Everything was stripped — fall back to first token of original
+        fallback = tokens[0] if tokens else ""
+        if fallback:
+            terms.append(fallback)
+        return _dedupe_filter(terms)
+
+    # Remove geographic phrases from middle/end ("OF ILLINOIS" etc.)
+    result: List[str] = []
+    skip_next = False
+    for i, token in enumerate(significant):
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "OF" and i + 1 < len(significant) and significant[i + 1] in _STRIP_GEO:
+            skip_next = True
+            continue
+        result.append(token)
+
+    if not result:
+        result = [significant[0]] if significant else []
+
+    # --- Primary identifier ---
+    if len(result) <= 2:
+        primary = " ".join(result)
+    elif len(result) == 4 and result[0] == result[2]:
+        # Pattern like "BLUE CROSS BLUE SHIELD" — keep all 4
+        primary = " ".join(result)
+    else:
+        # Avoid overly broad one-word searches for long names ("BLUE", "CHICAGO").
+        primary = " ".join(result[:2])
+
+    if primary:
+        terms.append(primary)
+
+    # --- Abbreviation expansion ---
+    # Check both the primary and the original cleaned name
+    for check_term in [primary, cleaned]:
+        normalized_key = re.sub(r"[&]", "", check_term).replace(" ", "")
+        if check_term in _ABBREVIATION_ALIASES:
+            terms.extend(_ABBREVIATION_ALIASES[check_term])
+        elif normalized_key in _ABBREVIATION_ALIASES:
+            terms.extend(_ABBREVIATION_ALIASES[normalized_key])
+
+    # --- Include original as fallback ---
+    original_cleaned = re.sub(r"\s+", " ", name.strip().upper())
+    if original_cleaned and original_cleaned != primary:
+        terms.append(original_cleaned)
+
+    return _dedupe_filter(terms)
+
+
+def _dedupe_filter(terms: List[str]) -> List[str]:
+    """Remove duplicates and terms shorter than 3 chars."""
+    seen: set = set()
+    result: List[str] = []
+    for t in terms:
+        t = t.strip()
+        if len(t) < 3:
+            continue
+        if t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result
+
+
+def _score_one(reference: str, candidate_key: str) -> Tuple[str, float]:
+    """Score a single candidate against a reference string.
+
+    Returns (method, confidence).
+    """
+    upper_ref = reference.upper().strip()
+    upper_cand = candidate_key.upper().strip()
+
+    if upper_cand == upper_ref:
+        return "exact", 1.0
+    if upper_cand.startswith(upper_ref):
+        return "prefix", 0.9
+    if upper_ref.startswith(upper_cand):
+        return "prefix", 0.85
+
+    ref_tokens = set(upper_ref.split())
+    cand_tokens = set(upper_cand.split())
+    if ref_tokens and cand_tokens:
+        intersection = len(ref_tokens & cand_tokens)
+        union = len(ref_tokens | cand_tokens)
+        score = intersection / union if union > 0 else 0.0
+    else:
+        score = 0.0
+    return "fuzzy", round(score, 3)
+
+
+def _score_all_matches(
+    seed_text: str,
+    suggestions: Optional[List[Dict[str, str]]],
+    search_term: str,
+    min_confidence: float = 0.4,
+) -> List[Dict[str, Any]]:
+    """Score ALL autosuggest results against the seed text AND search term.
+
+    Scores each suggestion against both the original seed text and the search
+    term, taking the maximum confidence.  This ensures that suggestions matching
+    the search term well (e.g., "COMCAST CORPORATION" for search term "COMCAST")
+    are kept even when the full seed text has many noise tokens.
+
+    Returns all results above min_confidence, sorted by confidence descending.
+    Each result dict: {vendor_key, vendor_label, match_method, confidence, search_term}.
+    """
+    if not suggestions:
+        return []
+
+    results: List[Dict[str, Any]] = []
+
+    for s in suggestions:
+        vendor_key = s["id"].strip()
+        vendor_label = s["value"]
+
+        # Score against both seed text and search term, take max
+        method_seed, conf_seed = _score_one(seed_text, vendor_key)
+        method_term, conf_term = _score_one(search_term, vendor_key)
+
+        if conf_seed >= conf_term:
+            method, confidence = method_seed, conf_seed
+        else:
+            method, confidence = method_term, conf_term
+
+        if confidence >= min_confidence:
+            results.append({
+                "vendor_key": vendor_key,
+                "vendor_label": vendor_label,
+                "match_method": method,
+                "confidence": confidence,
+                "search_term": search_term,
+            })
+
+    results.sort(key=lambda r: r["confidence"], reverse=True)
+    return results
+
+
 def parse_contracts_html(html: str, vendor_key: str) -> List[Dict[str, Any]]:
     """Parse contract rows from the OpenBook contracts results HTML.
 
@@ -409,6 +654,7 @@ class OpenBookScraper:
                            openbook_vendor_label TEXT NOT NULL,
                            match_method TEXT NOT NULL,
                            confidence DOUBLE PRECISION NOT NULL,
+                           search_term_used TEXT,
                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE(seed_id, openbook_vendor_key)
                        )"""
@@ -512,6 +758,7 @@ class OpenBookScraper:
                            openbook_vendor_label TEXT NOT NULL,
                            match_method TEXT NOT NULL,
                            confidence REAL NOT NULL,
+                           search_term_used TEXT,
                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                            UNIQUE(seed_id, openbook_vendor_key)
                        )"""
@@ -598,6 +845,16 @@ class OpenBookScraper:
                        )"""
                 )
             self.conn.commit()
+
+            # Safe migration: add search_term_used column if missing (existing DBs)
+            try:
+                self.conn.execute(
+                    "ALTER TABLE openbook_vendor_match ADD COLUMN search_term_used TEXT"
+                )
+                self.conn.commit()
+            except Exception:
+                pass  # Column already exists
+
         except Exception as e:
             logger.warning("Could not ensure OpenBook tables: %s", e)
 
@@ -704,6 +961,81 @@ class OpenBookScraper:
         if result is None:
             logger.info("No confident match for '%s' among %d suggestions", term, len(suggestions))
         return result
+
+    def resolve_all_matches_http(
+        self,
+        seed_text: str,
+        session: _HttpSession,
+        search_terms: Optional[List[str]] = None,
+        min_confidence: float = 0.4,
+    ) -> List[Dict[str, Any]]:
+        """Resolve a seed to ALL matching vendors via smart search terms.
+
+        For each search term, queries the autosuggest API and scores all
+        results. Returns deduplicated matches sorted by confidence descending.
+        """
+        if search_terms is None:
+            search_terms = generate_search_terms(seed_text)
+
+        if not search_terms:
+            logger.warning("No search terms generated for '%s'", seed_text)
+            return []
+
+        # Collect all suggestions across all search terms, deduped by vendor_key
+        all_suggestions: Dict[str, Dict[str, str]] = {}
+        term_for_suggestion: Dict[str, str] = {}
+
+        for term in search_terms:
+            term_truncated = term.strip()[:60]
+            if len(term_truncated) < 3:
+                continue
+
+            url = f"{AUTOSUGGEST_URL}?method=getVendors&returnformat=json&term={quote(term_truncated)}"
+
+            self.rate_limiter.wait()
+            try:
+                resp = session.get(url)
+                self.rate_limiter.record_success()
+            except Exception as e:
+                self.rate_limiter.record_error()
+                logger.error("HTTP autosuggest fetch failed for term '%s': %s", term_truncated, e)
+                continue
+
+            try:
+                suggestions = json.loads(resp)
+            except (json.JSONDecodeError, TypeError):
+                logger.error("Invalid JSON from autosuggest for term '%s'", term_truncated)
+                continue
+
+            if not suggestions:
+                continue
+
+            for s in suggestions:
+                vk = s["id"].strip()
+                if vk not in all_suggestions:
+                    all_suggestions[vk] = s
+                    term_for_suggestion[vk] = term_truncated
+
+        if not all_suggestions:
+            logger.info("No autosuggest results for '%s' (tried: %s)", seed_text, search_terms)
+            return []
+
+        # Score all collected suggestions against the seed text
+        unique_suggestions = list(all_suggestions.values())
+        scored: List[Dict[str, Any]] = []
+
+        for s in unique_suggestions:
+            vk = s["id"].strip()
+            search_term_used = term_for_suggestion.get(vk, search_terms[0])
+            results = _score_all_matches(seed_text, [s], search_term_used, min_confidence)
+            scored.extend(results)
+
+        scored.sort(key=lambda r: r["confidence"], reverse=True)
+        logger.info(
+            "Resolved '%s' -> %d matches (searched: %s)",
+            seed_text, len(scored), ", ".join(search_terms),
+        )
+        return scored
 
     # ------------------------------------------------------------------
     # HTTP-based contract/contribution search (no Playwright needed)
@@ -942,7 +1274,11 @@ class OpenBookScraper:
         return cur.lastrowid
 
     def _ensure_match(self, seed_id: int, match_info: Dict[str, Any]) -> int:
-        """Insert or get vendor match record. Returns match_id."""
+        """Insert or get vendor match record. Returns match_id.
+
+        match_info may optionally include 'search_term' which is stored
+        in the search_term_used column.
+        """
         row = self.conn.execute(
             "SELECT match_id FROM openbook_vendor_match WHERE seed_id = ? AND openbook_vendor_key = ?",
             (seed_id, match_info["vendor_key"]),
@@ -950,11 +1286,13 @@ class OpenBookScraper:
         if row:
             return row["match_id"] if hasattr(row, "keys") else row[0]
 
+        search_term_used = match_info.get("search_term")
+
         if self._is_postgres():
             row = self.conn.execute(
                 """INSERT INTO openbook_vendor_match
-                   (seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence)
-                   VALUES (?, ?, ?, ?, ?)
+                   (seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence, search_term_used)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    RETURNING match_id""",
                 (
                     seed_id,
@@ -962,6 +1300,7 @@ class OpenBookScraper:
                     match_info["vendor_label"],
                     match_info["match_method"],
                     match_info["confidence"],
+                    search_term_used,
                 ),
             ).fetchone()
             self.conn.commit()
@@ -969,14 +1308,15 @@ class OpenBookScraper:
 
         cur = self.conn.execute(
             """INSERT INTO openbook_vendor_match
-               (seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence)
-               VALUES (?, ?, ?, ?, ?)""",
+               (seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence, search_term_used)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 seed_id,
                 match_info["vendor_key"],
                 match_info["vendor_label"],
                 match_info["match_method"],
                 match_info["confidence"],
+                search_term_used,
             ),
         )
         self.conn.commit()
@@ -1711,11 +2051,14 @@ class OpenBookScraper:
         with_details: bool = True,
         max_detail_error_retries: int = 2,
         max_consecutive_errors: int = 10,
+        use_smart_search: bool = True,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Batch-resolve and scrape all pending seeds.
 
         Phase 1: Resolve unmatched seeds to OpenBook vendor keys.
+            When use_smart_search=True, generates smart search terms and
+            stores ALL matching vendors per seed.
         Phase 2: Scrape contracts + contributions for resolved-but-unscraped vendors
         via Playwright (default) or HTTP fallback.
 
@@ -1761,19 +2104,41 @@ class OpenBookScraper:
                 progress_callback(f"[{idx}/{len(unresolved)}] Resolving: {seed_text}")
 
             try:
-                match_info = self.resolve_vendor_http(seed_text, session, pick_first=pick_first)
-                if match_info:
-                    self._ensure_match(seed_id, match_info)
-                    total_resolved += 1
-                    logger.info(
-                        "Resolved '%s' -> '%s' (%s, %.3f)",
-                        seed_text, match_info["vendor_key"],
-                        match_info["match_method"], match_info["confidence"],
-                    )
+                if use_smart_search:
+                    # Smart search: generate terms, resolve all matches
+                    matches = self.resolve_all_matches_http(seed_text, session)
+                    if matches:
+                        for m in matches:
+                            self._ensure_match(seed_id, m)
+                        total_resolved += 1
+                        search_terms = list({m["search_term"] for m in matches})
+                        logger.info(
+                            "Resolved '%s' -> %d matches (searched: %s)",
+                            seed_text, len(matches), ", ".join(search_terms),
+                        )
+                        if progress_callback:
+                            progress_callback(
+                                f"  -> {len(matches)} matches (searched: {', '.join(search_terms)})"
+                            )
+                    else:
+                        self._record_no_match(seed_id)
+                        total_no_match += 1
+                        logger.info("No match for '%s'", seed_text)
                 else:
-                    self._record_no_match(seed_id)
-                    total_no_match += 1
-                    logger.info("No match for '%s'", seed_text)
+                    # Legacy single-match mode
+                    match_info = self.resolve_vendor_http(seed_text, session, pick_first=pick_first)
+                    if match_info:
+                        self._ensure_match(seed_id, match_info)
+                        total_resolved += 1
+                        logger.info(
+                            "Resolved '%s' -> '%s' (%s, %.3f)",
+                            seed_text, match_info["vendor_key"],
+                            match_info["match_method"], match_info["confidence"],
+                        )
+                    else:
+                        self._record_no_match(seed_id)
+                        total_no_match += 1
+                        logger.info("No match for '%s'", seed_text)
                 consecutive_errors = 0
             except Exception as e:
                 total_errors += 1

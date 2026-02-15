@@ -303,6 +303,9 @@ def _get_candidate_stats(conn):
         'federal_independent_expenditures': 0,
         'federal_independent_expenditure_total': 0.0,
         'federal_matched_donors': 0,
+        'openbook_vendors_matched': 0,
+        'openbook_contracts_total': 0,
+        'openbook_award_total': 0.0,
     }
 
     if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
@@ -435,6 +438,29 @@ def _get_candidate_stats(conn):
                 SELECT COUNT(DISTINCT federal_donor_entity_key || '|' || local_donor_key) AS count
                 FROM fec_local_donor_matches
                 """,
+                default=0,
+            )
+        )
+    if _table_exists(conn, "openbook_vendor_match"):
+        stats['openbook_vendors_matched'] = int(
+            _scalar(
+                conn,
+                """
+                SELECT COUNT(DISTINCT openbook_vendor_key) AS count
+                FROM openbook_vendor_match
+                WHERE match_method != 'no_match' AND openbook_vendor_key != ''
+                """,
+                default=0,
+            )
+        )
+    if _table_exists(conn, "openbook_contracts_raw"):
+        stats['openbook_contracts_total'] = int(
+            _scalar(conn, "SELECT COUNT(*) AS count FROM openbook_contracts_raw", default=0)
+        )
+        stats['openbook_award_total'] = float(
+            _scalar(
+                conn,
+                "SELECT COALESCE(SUM(award_amount), 0) AS total FROM openbook_contracts_raw",
                 default=0,
             )
         )
