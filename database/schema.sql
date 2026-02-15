@@ -1286,3 +1286,130 @@ CREATE INDEX IF NOT EXISTS idx_irs527_org_address_score
     ON irs527_org_address_matches(address_score DESC);
 CREATE INDEX IF NOT EXISTS idx_irs527_org_address_ein
     ON irs527_org_address_matches(ein);
+
+-- ============================================================
+-- OpenBook Illinois Comptroller tables
+-- ============================================================
+
+-- Seed vendors from our existing data (expenditures, lobbying, etc.)
+CREATE TABLE IF NOT EXISTS openbook_vendor_seed (
+    seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seed_text TEXT NOT NULL,
+    seed_source TEXT NOT NULL,  -- 'expenditures', 'lobbying', 'chicago', 'fec', 'manual'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(seed_text, seed_source)
+);
+
+-- Matched OpenBook vendor identities from autosuggest API
+CREATE TABLE IF NOT EXISTS openbook_vendor_match (
+    match_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seed_id INTEGER NOT NULL REFERENCES openbook_vendor_seed(seed_id),
+    openbook_vendor_key TEXT NOT NULL,
+    openbook_vendor_label TEXT NOT NULL,
+    match_method TEXT NOT NULL,   -- 'exact', 'prefix', 'fuzzy', 'pick_first'
+    confidence REAL NOT NULL,     -- 0.0-1.0
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(seed_id, openbook_vendor_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_openbook_vendor_match_vendor_key
+    ON openbook_vendor_match(openbook_vendor_key);
+
+-- Raw contract rows from OpenBook search results
+CREATE TABLE IF NOT EXISTS openbook_contracts_raw (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    openbook_vendor_key TEXT NOT NULL,
+    vendor_label TEXT NOT NULL,
+    fiscal_year INTEGER,
+    agency_code TEXT,
+    agency_name TEXT,
+    contract_number TEXT,
+    award_amount REAL,
+    detail_url TEXT,
+    source_url TEXT NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    row_hash TEXT NOT NULL,
+    UNIQUE(openbook_vendor_key, contract_number, fiscal_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_openbook_contracts_vendor_key
+    ON openbook_contracts_raw(openbook_vendor_key);
+CREATE INDEX IF NOT EXISTS idx_openbook_contracts_fiscal_year
+    ON openbook_contracts_raw(fiscal_year);
+CREATE INDEX IF NOT EXISTS idx_openbook_contracts_agency
+    ON openbook_contracts_raw(agency_name);
+
+-- Contract detail popup warrant rows (Issue Date / Payment Amount)
+CREATE TABLE IF NOT EXISTS openbook_contract_warrants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    openbook_vendor_key TEXT NOT NULL,
+    contract_number TEXT NOT NULL,
+    fiscal_year INTEGER,
+    issue_date TEXT,
+    payment_amount REAL,
+    detail_url TEXT,
+    source_url TEXT NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    row_hash TEXT NOT NULL,
+    UNIQUE(row_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_openbook_contract_warrants_vendor
+    ON openbook_contract_warrants(openbook_vendor_key);
+CREATE INDEX IF NOT EXISTS idx_openbook_contract_warrants_contract
+    ON openbook_contract_warrants(contract_number, fiscal_year);
+
+-- Contract detail scrape status (prevents endless retries for empty popups)
+CREATE TABLE IF NOT EXISTS openbook_contract_detail_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    openbook_vendor_key TEXT NOT NULL,
+    contract_number TEXT NOT NULL,
+    fiscal_year INTEGER,
+    detail_url TEXT,
+    status TEXT NOT NULL, -- has_data, no_data, error
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    warrant_row_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_attempted_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(openbook_vendor_key, contract_number, fiscal_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_openbook_contract_detail_status_state
+    ON openbook_contract_detail_status(status, attempt_count);
+
+-- Raw contribution rows from OpenBook (Contributed By / Employees Of tabs)
+CREATE TABLE IF NOT EXISTS openbook_contributions_raw (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    openbook_vendor_key TEXT NOT NULL,
+    contributor_name TEXT,
+    contributor_first_name TEXT,
+    recipient_name TEXT,
+    employer TEXT,
+    contribution_date TEXT,
+    amount REAL,
+    source_url TEXT NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    row_hash TEXT NOT NULL,
+    UNIQUE(row_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_openbook_contributions_vendor_key
+    ON openbook_contributions_raw(openbook_vendor_key);
+
+-- Scrape run metadata for tracking and resumability
+CREATE TABLE IF NOT EXISTS openbook_scrape_runs (
+    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    mode TEXT NOT NULL,           -- 'vendor_poc', 'targeted_batch'
+    seed_count INTEGER DEFAULT 0,
+    match_count INTEGER DEFAULT 0,
+    contract_rows INTEGER DEFAULT 0,
+    contribution_rows INTEGER DEFAULT 0,
+    error_count INTEGER DEFAULT 0,
+    notes TEXT
+);

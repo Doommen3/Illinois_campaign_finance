@@ -52,6 +52,7 @@ from database.cross_matching import (
 from scraper.main_list_scraper import MainListScraper
 from scraper.detail_scraper import DetailScraper
 from scraper.committee_scraper import CommitteeReportScraper, D2DetailScraper, CommitteeUrlSeeder
+from scraper.openbook_scraper import OpenBookScraper
 from scraper.rate_limiter import RateLimiter
 import config
 
@@ -241,64 +242,67 @@ def clean_data_command(apply, scope):
         conn.close()
 
 
-@cli.command('data-quality')
-def data_quality_command():
-    """Show data quality and completeness metrics."""
-    conn = get_db(config.DATABASE_PATH)
+@cli.command('import-openbook-batch')
+@click.option('--max-vendors', type=int, default=None,
+              help='Stop after N vendors (default: process all pending)')
+@click.option('--pick-first', is_flag=True,
+              help='If no exact/prefix/fuzzy match, use first autosuggest result')
+@click.option('--max-consecutive-errors', type=int, default=None,
+              help='Stop after N consecutive errors (default from config)')
+@click.option('--generate-seeds/--skip-seeds', default=False, show_default=True,
+              help='Run seed generation before batch import')
+@click.option('--min-amount', type=float, default=None,
+              help='Minimum amount for inline seed generation')
+def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount):
+    """Batch-resolve and scrape all pending OpenBook vendor seeds via HTTP."""
+    conn = get_db(config.DATABASE_TARGET)
+    max_errs = max_consecutive_errors if max_consecutive_errors is not None else config.OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS
+    with_details = config.OPENBOOK_BATCH_WITH_DETAILS
+    max_detail_error_retries = config.OPENBOOK_DETAIL_MAX_ERROR_RETRIES
+
+    rate_limiter = RateLimiter(
+        requests_per_minute=config.OPENBOOK_BATCH_RPM,
+        min_delay=config.OPENBOOK_BATCH_MIN_DELAY,
+        max_delay=config.OPENBOOK_BATCH_MAX_DELAY,
+    )
+    scraper = OpenBookScraper(conn, rate_limiter)
+
+    def progress_callback(msg):
+        click.echo(f'  {msg}')
+
     try:
-        summary = data_quality_summary(conn)
+        if generate_seeds:
+            min_amt = min_amount if min_amount is not None else config.OPENBOOK_SEED_MIN_AMOUNT
+            click.echo(f'Generating seeds first (min_amount={min_amt})...')
+            seed_stats = OpenBookScraper.generate_seeds(
+                conn,
+                min_amount=min_amt,
+                limit_per_source=config.OPENBOOK_SEED_LIMIT_PER_SOURCE,
+            )
+            click.echo(f'  Seeds generated: {seed_stats.get("total_new_seeds", 0)} new')
 
-        click.echo('Totals:')
-        for key, value in summary['totals'].items():
+        click.echo(f'Starting OpenBook batch import (max_vendors={max_vendors or "all"}, '
+                   f'pick_first={pick_first}, with_details={with_details}, '
+                   f'max_consecutive_errors={max_errs})...')
+
+        summary = scraper.import_batch(
+            max_vendors=max_vendors,
+            pick_first=pick_first,
+            with_details=with_details,
+            max_detail_error_retries=max_detail_error_retries,
+            max_consecutive_errors=max_errs,
+            progress_callback=progress_callback,
+        )
+
+        click.echo('\n--- OpenBook Batch Import Summary ---')
+        for key, value in summary.items():
             click.echo(f'  {key}: {value}')
-
-        click.echo('\nQuality Flags:')
-        for key, value in summary['quality_flags'].items():
-            click.echo(f'  {key}: {value}')
-
-        click.echo('\nRaw Extractions By Source:')
-        if summary['raw_extractions_by_source']:
-            for key, value in summary['raw_extractions_by_source'].items():
-                click.echo(f'  {key}: {value}')
-        else:
-            click.echo('  none')
 
     except Exception as e:
-        click.echo(f'Error generating data quality summary: {e}', err=True)
+        click.echo(f'Error during OpenBook batch import: {e}', err=True)
         sys.exit(1)
     finally:
         conn.close()
-
-
-@cli.command('normalize-bulk-receipt-dates')
-@click.option('--apply', is_flag=True, help='Apply changes (default is dry-run)')
-def normalize_bulk_receipt_dates_command(apply):
-    """Normalize bulk receipt dates to YYYY-MM-DD and preserve raw datetime values."""
-    conn = get_db(config.DATABASE_PATH)
-    try:
-        stats = normalize_bulk_receipt_dates(conn, apply=apply)
-        if not stats['table_exists']:
-            click.echo('bulk_receipts_clean table not found; nothing to normalize.')
-            return
-
-        click.echo('Bulk receipt date normalization:')
-        for key, value in stats.items():
-            click.echo(f'  {key}: {value}')
-
-        if not apply:
-            click.echo('Dry-run complete. Re-run with --apply to execute changes.')
-    except Exception as e:
-        click.echo(f'Error normalizing bulk receipt dates: {e}', err=True)
-        sys.exit(1)
-    finally:
-        conn.close()
-
-
-@cli.command('requeue-details')
-@click.option('--missing-transaction-date', is_flag=True,
-              help='Only requeue reports with contributions missing transaction_date')
-@click.option('--limit', type=int, default=None,
-              help='Limit number of reports to requeue')
 @click.option('--apply', is_flag=True,
               help='Apply changes (default is dry-run)')
 def requeue_details_command(missing_transaction_date, limit, apply):
@@ -1647,6 +1651,62 @@ def run_cross_matching_command(threshold, only_match, parallel, workers, increme
     finally:
         if conn is not None:
             conn.close()
+
+
+@cli.command('import-openbook-vendor')
+@click.option('--vendor-name', required=True, help='Vendor name to search on OpenBook')
+@click.option('--max-contract-pages', default=5, type=int, show_default=True,
+              help='Max contract result pages to scrape')
+@click.option('--max-contribution-pages', default=5, type=int, show_default=True,
+              help='Max contribution result pages to scrape')
+@click.option('--headless/--no-headless', default=True, show_default=True,
+              help='Run browser in headless mode')
+@click.option('--pick-first', is_flag=True,
+              help='If no exact/prefix/fuzzy match, use first autosuggest result')
+def import_openbook_vendor_command(vendor_name, max_contract_pages, max_contribution_pages, headless, pick_first):
+    """Import contracts and contributions for a single vendor from OpenBook IL Comptroller."""
+    click.echo(f'Searching OpenBook for vendor: {vendor_name}')
+
+    conn = get_db(config.DATABASE_PATH)
+    rate_limiter = RateLimiter(
+        requests_per_minute=30,
+        min_delay=1.0,
+        max_delay=2.0,
+    )
+    scraper = OpenBookScraper(conn, rate_limiter, headless=headless)
+
+    def progress_callback(msg):
+        click.echo(f'  {msg}')
+
+    try:
+        summary = asyncio.run(scraper.import_vendor(
+            vendor_name=vendor_name,
+            max_contract_pages=max_contract_pages,
+            max_contribution_pages=max_contribution_pages,
+            pick_first=pick_first,
+            progress_callback=progress_callback,
+        ))
+
+        click.echo('\n--- OpenBook Import Summary ---')
+        click.echo(f'  Vendor name:      {summary["vendor_name"]}')
+        click.echo(f'  Matched key:      {summary["vendor_key"] or "(no match)"}')
+        click.echo(f'  Matched label:    {summary["vendor_label"] or "N/A"}')
+        click.echo(f'  Match method:     {summary["match_method"] or "N/A"}')
+        click.echo(f'  Confidence:       {summary["confidence"] or "N/A"}')
+        click.echo(f'  Contracts:        {summary["contracts_inserted"]} inserted, {summary["contracts_updated"]} updated')
+        click.echo(f'  Contributions:    {summary["contributions_inserted"]} inserted, {summary["contributions_updated"]} updated')
+        click.echo(f'  Pages visited:    {summary["pages_visited"]}')
+
+        if summary['errors']:
+            click.echo(f'  Errors ({len(summary["errors"])}):')
+            for err in summary['errors']:
+                click.echo(f'    - {err}')
+
+    except Exception as e:
+        click.echo(f'Error importing from OpenBook: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
 
 
 @cli.command('runserver')
