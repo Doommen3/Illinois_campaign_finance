@@ -1916,8 +1916,8 @@ def get_reconciliation_outliers(
             last_receipt_date,
             is_archived
         FROM bulk_d2_receipts_recon
-        WHERE ABS(COALESCE(receipts_minus_d2_total, 0)) >= ?
-        ORDER BY ABS(COALESCE(receipts_minus_d2_total, 0)) DESC
+        WHERE ABS(COALESCE(CAST(receipts_minus_d2_total AS DOUBLE PRECISION), 0.0)) >= ?
+        ORDER BY ABS(COALESCE(CAST(receipts_minus_d2_total AS DOUBLE PRECISION), 0.0)) DESC
         LIMIT ?
         """,
         (float(min_abs_diff), max(1, int(limit))),
