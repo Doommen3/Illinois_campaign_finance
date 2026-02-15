@@ -249,9 +249,24 @@ Environment variables (set in `.env` or export directly):
 | `FEDERAL_NETWORKS_CACHE_TTL_SECONDS` | `600` | Cache TTL for federal network/overlap graphs |
 | `FEDERAL_DONOR_INTEL_CACHE_TTL_SECONDS` | `600` | Cache TTL for donor segmentation/influence |
 | `FEDERAL_MATCHING_CACHE_TTL_SECONDS` | `600` | Cache TTL for matching diagnostics |
+| `ROUTE_PERF_CACHE_ENABLED` | `true` | Enable in-process cache for expensive route payloads (dashboard/relationships/527 dark-money) |
+| `DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS` | `180` | Cache TTL for homepage relationship insights panel |
+| `DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS` | `180` | Cache TTL for homepage candidate summary stats |
+| `DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS` | `180` | Cache TTL for homepage top donor table |
+| `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS` | `180` | Cache TTL for `/analytics/relationships` network payload |
+| `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS` | `180` | Cache TTL for `/527/dark-money` summary stats payload |
+| `DASHBOARD_PREWARM_ENABLED` | `true` | Prewarm homepage cache blocks in a startup background thread |
 | `LOCAL_DATA_STALE_DAYS` | `45` | Freshness warning threshold for local data |
 | `FEDERAL_DATA_STALE_DAYS` | `14` | Freshness warning threshold for federal data |
 | `RATE_LIMIT_RPM` | `30` | Scraper requests per minute |
+
+## Route Performance Notes (2026-02)
+
+- Added route-level TTL caching for three heavy pages: `/`, `/analytics/relationships`, and `/527/dark-money`.
+- Homepage now reuses cached insights and top-donor datasets; top donors prefer `analytics_donor_summary` for faster reads when available.
+- Added startup prewarm (`DASHBOARD_PREWARM_ENABLED`) to reduce first-visit latency after process restart.
+- Added `irs527_contributor_rollup` population in the IRS 527 loader path so dark-money and contribution-facing summaries avoid repeated full-table scans.
+- Expected behavior: first request after cache expiry/restart can still be slower; subsequent warm requests should be significantly faster.
 
 ## Server Deployment
 

@@ -69,6 +69,27 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 
 **Why not numpy/scipy?** The Jaccard similarity on small token sets (3–8 tokens per name) is more efficient with Python set operations and inverted-index pruning than sparse matrix multiplication. The inverted index already reduces the 6.3B-pair search space by 100–144x. NumPy would add a dependency for marginal gains at current scale. If donor tables grow 10x+, scipy sparse matrix Jaccard could be considered.
 
+### Route Performance Caching (2026-02)
+
+- Heavy routes with in-process TTL caching:
+   - `/` (homepage candidate stats, top donors, and dashboard insights)
+   - `/analytics/relationships`
+   - `/527/dark-money` (summary stats)
+- Config flags in `config.py`:
+   - `ROUTE_PERF_CACHE_ENABLED`
+   - `DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS`
+   - `DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS`
+   - `DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS`
+   - `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS`
+   - `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS`
+   - `DASHBOARD_PREWARM_ENABLED`
+- Homepage donor query fast path uses `analytics_donor_summary` (fallback remains legacy donor totals query if the summary table is absent).
+- 527 contribution ingest now populates `irs527_contributor_rollup` to reduce expensive recomputation for contribution summary metrics.
+- Benchmarking guidance:
+   - Always measure at least one **cold** pass and one **warm** pass.
+   - For reliable warm numbers, run 2-3 warm passes and use median.
+   - In tests, route perf cache is disabled by default under `TESTING` unless explicitly enabled in a test config.
+
 ## Testing
 
 - Run all tests: `pytest -q`
