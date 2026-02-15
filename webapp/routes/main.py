@@ -4,6 +4,7 @@ import csv
 from datetime import datetime
 from io import StringIO
 import sqlite3
+import threading
 import time
 
 from flask import Blueprint, Response, render_template, request, current_app
@@ -11,6 +12,22 @@ from flask import Blueprint, Response, render_template, request, current_app
 from database.models import Committee, Report, Donor, Contribution
 
 main_bp = Blueprint('main', __name__)
+
+_dashboard_insights_cache = {
+    "value": None,
+    "expires_at": 0.0,
+}
+_dashboard_insights_cache_lock = threading.Lock()
+_candidate_stats_cache = {
+    "value": None,
+    "expires_at": 0.0,
+}
+_candidate_stats_cache_lock = threading.Lock()
+_top_donors_cache = {
+    "value": None,
+    "expires_at": 0.0,
+}
+_top_donors_cache_lock = threading.Lock()
 
 SEARCH_TYPES = {
     "all",
@@ -104,6 +121,75 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
     response = Response(output.getvalue(), mimetype='text/csv')
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
     return response
+
+
+def _build_dashboard_insights(conn) -> dict:
+    insights = _get_dashboard_insights(conn)
+
+    return insights
+
+
+def _get_dashboard_insights(conn) -> dict:
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    if not cache_enabled:
+        return _build_dashboard_insights(conn)
+
+    ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180)))
+    now = time.monotonic()
+    with _dashboard_insights_cache_lock:
+        if (
+            _dashboard_insights_cache.get("value") is not None
+            and float(_dashboard_insights_cache.get("expires_at", 0.0)) > now
+        ):
+            return _dashboard_insights_cache["value"]
+
+    insights = _build_dashboard_insights(conn)
+    with _dashboard_insights_cache_lock:
+        _dashboard_insights_cache["value"] = insights
+        _dashboard_insights_cache["expires_at"] = now + float(ttl_seconds)
+    return insights
+
+
+def warm_dashboard_insights_cache(database_path: str, ttl_seconds: int = 180) -> None:
+    if ttl_seconds <= 0:
+        return
+    from database.connection import get_db
+
+    conn = get_db(database_path)
+    try:
+        insights = _build_dashboard_insights(conn)
+        with _dashboard_insights_cache_lock:
+            _dashboard_insights_cache["value"] = insights
+            _dashboard_insights_cache["expires_at"] = time.monotonic() + float(ttl_seconds)
+    finally:
+        conn.close()
+
+
+def warm_dashboard_home_cache(
+    database_path: str,
+    insights_ttl_seconds: int = 180,
+    candidate_stats_ttl_seconds: int = 180,
+    top_donors_ttl_seconds: int = 180,
+) -> None:
+    from database.connection import get_db
+
+    conn = get_db(database_path)
+    try:
+        insights = _build_dashboard_insights(conn)
+        stats = _get_candidate_stats(conn)
+        donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+        now = time.monotonic()
+        with _dashboard_insights_cache_lock:
+            _dashboard_insights_cache["value"] = insights
+            _dashboard_insights_cache["expires_at"] = now + float(max(15, insights_ttl_seconds))
+        with _candidate_stats_cache_lock:
+            _candidate_stats_cache["value"] = stats
+            _candidate_stats_cache["expires_at"] = now + float(max(15, candidate_stats_ttl_seconds))
+        with _top_donors_cache_lock:
+            _top_donors_cache["value"] = donors
+            _top_donors_cache["expires_at"] = now + float(max(15, top_donors_ttl_seconds))
+    finally:
+        conn.close()
 
 
 def _get_candidate_stats(conn):
@@ -317,6 +403,48 @@ def _get_candidate_stats(conn):
         )
 
     return stats, freshness
+
+
+def _get_candidate_stats_cached(conn):
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    if not cache_enabled:
+        return _get_candidate_stats(conn)
+
+    ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180)))
+    now = time.monotonic()
+    with _candidate_stats_cache_lock:
+        if (
+            _candidate_stats_cache.get("value") is not None
+            and float(_candidate_stats_cache.get("expires_at", 0.0)) > now
+        ):
+            return _candidate_stats_cache["value"]
+
+    value = _get_candidate_stats(conn)
+    with _candidate_stats_cache_lock:
+        _candidate_stats_cache["value"] = value
+        _candidate_stats_cache["expires_at"] = now + float(ttl_seconds)
+    return value
+
+
+def _get_top_donors_cached(conn):
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    if not cache_enabled:
+        return Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+
+    ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180)))
+    now = time.monotonic()
+    with _top_donors_cache_lock:
+        if (
+            _top_donors_cache.get("value") is not None
+            and float(_top_donors_cache.get("expires_at", 0.0)) > now
+        ):
+            return _top_donors_cache["value"]
+
+    value = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+    with _top_donors_cache_lock:
+        _top_donors_cache["value"] = value
+        _top_donors_cache["expires_at"] = now + float(ttl_seconds)
+    return value
 
 
 def _normalize_month_key(value: str | None) -> str | None:
@@ -1707,7 +1835,7 @@ def index():
     """Bulk-first dashboard with local/federal finance entry points."""
     conn = current_app.get_database()
 
-    stats, freshness = _get_candidate_stats(conn)
+    stats, freshness = _get_candidate_stats_cached(conn)
     stats['legacy_reports'] = Report.count(conn)
     stats['legacy_committees'] = Committee.count(conn)
     stats['legacy_donors'] = Donor.count(conn)
@@ -1753,7 +1881,7 @@ def index():
         stats['irs527_total_contributions_received'] = 0
         stats['irs527_contribution_records'] = 0
 
-    top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+    top_donors = _get_top_donors_cached(conn)
 
     insights = {
         "donor_dependent_committees": [],

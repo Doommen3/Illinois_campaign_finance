@@ -266,11 +266,21 @@ def create_app(config=None):
             "FEDERAL_MATCHING_CACHE_TTL_SECONDS": int(app_config.FEDERAL_MATCHING_CACHE_TTL_SECONDS),
             "LOCAL_DATA_STALE_DAYS": int(app_config.LOCAL_DATA_STALE_DAYS),
             "FEDERAL_DATA_STALE_DAYS": int(app_config.FEDERAL_DATA_STALE_DAYS),
+            "DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS),
+            "DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS),
+            "DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS),
+            "ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS),
+            "IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS": int(app_config.IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS),
+            "DASHBOARD_PREWARM_ENABLED": _as_bool(app_config.DASHBOARD_PREWARM_ENABLED),
+            "ROUTE_PERF_CACHE_ENABLED": _as_bool(app_config.ROUTE_PERF_CACHE_ENABLED),
         }
     )
 
     if config:
         app.config.update(config)
+
+    if app.config.get("TESTING") and (not config or "ROUTE_PERF_CACHE_ENABLED" not in config):
+        app.config["ROUTE_PERF_CACHE_ENABLED"] = False
 
     app.config["API_KEYS"] = _normalize_api_keys(app.config.get("API_KEYS"))
     app.config["API_REQUIRE_KEY"] = _as_bool(app.config.get("API_REQUIRE_KEY"))
@@ -403,6 +413,22 @@ def create_app(config=None):
         return ("Review needed", "confidence-review")
 
     app.jinja_env.filters['confidence_label'] = confidence_label
+
+    if _as_bool(app.config.get("DASHBOARD_PREWARM_ENABLED", True)):
+        def _prewarm_dashboard_cache() -> None:
+            try:
+                from webapp.routes.main import warm_dashboard_home_cache
+
+                warm_dashboard_home_cache(
+                    app.config['DATABASE_PATH'],
+                    insights_ttl_seconds=max(15, int(app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180))),
+                    candidate_stats_ttl_seconds=max(15, int(app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180))),
+                    top_donors_ttl_seconds=max(15, int(app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180))),
+                )
+            except Exception:
+                return
+
+        threading.Thread(target=_prewarm_dashboard_cache, daemon=True).start()
 
     # Context processors
     @app.context_processor

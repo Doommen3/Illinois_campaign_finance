@@ -1,6 +1,7 @@
 """Analytics dashboard routes."""
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import time
 
 from flask import Blueprint, current_app, render_template, request
 
@@ -28,6 +29,12 @@ FULL_SNAPSHOT_TTL_SECONDS = 900
 _snapshot_executor = ThreadPoolExecutor(max_workers=1)
 _snapshot_lock = threading.Lock()
 _running_snapshot_keys: set[str] = set()
+_relationships_cache = {
+    "payload": None,
+    "expires_at": 0.0,
+    "key": None,
+}
+_relationships_cache_lock = threading.Lock()
 
 
 def _is_true_arg(value: str | None) -> bool:
@@ -491,38 +498,71 @@ def relationships():
     min_shared_amount = max(request.args.get("min_shared_amount", 5000.0, type=float) or 5000.0, 0.0)
     min_shared_targets = max(request.args.get("min_shared_targets", 2, type=int) or 2, 1)
     min_shared_donors = max(request.args.get("min_shared_donors", 2, type=int) or 2, 1)
+    relationships_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 300)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    cache_key = (
+        donor_limit,
+        committee_limit,
+        candidate_limit,
+        client_limit,
+        org_limit,
+        edge_limit,
+        round(min_shared_amount, 2),
+        min_shared_targets,
+        min_shared_donors,
+    )
+    now = time.monotonic()
 
-    donor_cogiving = get_donor_cogiving_network(
-        conn,
-        donor_limit=donor_limit,
-        edge_limit=edge_limit,
-        min_shared_amount=min_shared_amount,
-        min_shared_targets=min_shared_targets,
-    )
-    committee_similarity = get_committee_similarity_network(
-        conn,
-        committee_limit=committee_limit,
-        edge_limit=edge_limit,
-        min_shared_donors=min_shared_donors,
-        min_shared_amount=min_shared_amount,
-    )
-    candidate_competition = get_candidate_competition_networks(
-        conn,
-        candidate_limit=candidate_limit,
-        edge_limit=edge_limit,
-        min_shared_donors=min_shared_donors,
-        min_shared_amount=min_shared_amount,
-    )
-    lobbying_influence = get_lobbying_influence_graph(
-        conn,
-        client_limit=client_limit,
-        edge_limit=edge_limit,
-    )
-    ecosystem_527 = get_irs527_ecosystem_graph(
-        conn,
-        org_limit=org_limit,
-        edge_limit=edge_limit,
-    )
+    payload = None
+    if cache_enabled and not refresh_requested:
+        with _relationships_cache_lock:
+            if (
+                _relationships_cache.get("payload") is not None
+                and _relationships_cache.get("key") == cache_key
+                and float(_relationships_cache.get("expires_at", 0.0)) > now
+            ):
+                payload = _relationships_cache.get("payload")
+
+    if payload is None:
+        payload = {
+            "donor_cogiving": get_donor_cogiving_network(
+                conn,
+                donor_limit=donor_limit,
+                edge_limit=edge_limit,
+                min_shared_amount=min_shared_amount,
+                min_shared_targets=min_shared_targets,
+            ),
+            "committee_similarity": get_committee_similarity_network(
+                conn,
+                committee_limit=committee_limit,
+                edge_limit=edge_limit,
+                min_shared_donors=min_shared_donors,
+                min_shared_amount=min_shared_amount,
+            ),
+            "candidate_competition": get_candidate_competition_networks(
+                conn,
+                candidate_limit=candidate_limit,
+                edge_limit=edge_limit,
+                min_shared_donors=min_shared_donors,
+                min_shared_amount=min_shared_amount,
+            ),
+            "lobbying_influence": get_lobbying_influence_graph(
+                conn,
+                client_limit=client_limit,
+                edge_limit=edge_limit,
+            ),
+            "ecosystem_527": get_irs527_ecosystem_graph(
+                conn,
+                org_limit=org_limit,
+                edge_limit=edge_limit,
+            ),
+        }
+        if cache_enabled:
+            with _relationships_cache_lock:
+                _relationships_cache["payload"] = payload
+                _relationships_cache["key"] = cache_key
+                _relationships_cache["expires_at"] = now + float(relationships_cache_ttl)
 
     return render_template(
         "analytics/relationships.html",
@@ -539,9 +579,9 @@ def relationships():
         min_shared_amount=min_shared_amount,
         min_shared_targets=min_shared_targets,
         min_shared_donors=min_shared_donors,
-        donor_cogiving=donor_cogiving,
-        committee_similarity=committee_similarity,
-        candidate_competition=candidate_competition,
-        lobbying_influence=lobbying_influence,
-        ecosystem_527=ecosystem_527,
+        donor_cogiving=payload["donor_cogiving"],
+        committee_similarity=payload["committee_similarity"],
+        candidate_competition=payload["candidate_competition"],
+        lobbying_influence=payload["lobbying_influence"],
+        ecosystem_527=payload["ecosystem_527"],
     )

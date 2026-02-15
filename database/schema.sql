@@ -1044,6 +1044,16 @@ CREATE TABLE IF NOT EXISTS irs527_contribution_rollup (
 CREATE INDEX IF NOT EXISTS idx_irs527_contribution_rollup_amount
     ON irs527_contribution_rollup(total_amount DESC);
 
+CREATE TABLE IF NOT EXISTS irs527_contributor_rollup (
+    contributor_name TEXT PRIMARY KEY,
+    total_amount REAL NOT NULL DEFAULT 0,
+    contribution_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_irs527_contributor_rollup_amount
+    ON irs527_contributor_rollup(total_amount DESC);
+
 -- 527 Director -> Candidate name matches
 CREATE TABLE IF NOT EXISTS irs527_director_candidate_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,

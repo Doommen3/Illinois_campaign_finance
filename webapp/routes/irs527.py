@@ -1,7 +1,13 @@
 """IRS 527 Political Organization routes."""
+import threading
+import time
+
 from flask import Blueprint, render_template, request, current_app, abort
 
 irs527_bp = Blueprint('irs527', __name__)
+
+_dark_money_stats_cache = {"value": None, "expires_at": 0.0}
+_dark_money_stats_cache_lock = threading.Lock()
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -24,6 +30,68 @@ def _scalar(conn, sql, params=(), default=0):
         return default
     value = row[keys[0]]
     return default if value is None else value
+
+
+def _get_dark_money_contribution_stats(conn) -> dict:
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    if not cache_enabled:
+        ttl_seconds = 0
+    else:
+        ttl_seconds = max(15, int(current_app.config.get("IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS", 180)))
+    now = time.monotonic()
+
+    if cache_enabled:
+        with _dark_money_stats_cache_lock:
+            if (
+                _dark_money_stats_cache.get("value") is not None
+                and float(_dark_money_stats_cache.get("expires_at", 0.0)) > now
+            ):
+                return _dark_money_stats_cache["value"]
+
+    contribution_stats = {"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []}
+
+    if _table_exists(conn, "irs527_contribution_rollup"):
+        contribution_stats["total_amount"] = float(_scalar(
+            conn, "SELECT COALESCE(SUM(total_amount), 0) FROM irs527_contribution_rollup", default=0))
+        contribution_stats["row_count"] = int(_scalar(
+            conn, "SELECT COALESCE(SUM(contribution_count), 0) FROM irs527_contribution_rollup", default=0))
+    if contribution_stats["row_count"] <= 0 and _table_exists(conn, "irs527_contributions"):
+        contribution_stats["total_amount"] = float(_scalar(
+            conn, "SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions", default=0))
+        contribution_stats["row_count"] = int(_scalar(
+            conn, "SELECT COUNT(*) FROM irs527_contributions", default=0))
+
+    if _table_exists(conn, "irs527_contributor_rollup"):
+        contribution_stats["unique_contributors"] = int(_scalar(
+            conn, "SELECT COUNT(*) FROM irs527_contributor_rollup", default=0))
+        contribution_stats["top_contributors"] = conn.execute(
+            """
+            SELECT contributor_name, total_amount, contribution_count AS cnt
+            FROM irs527_contributor_rollup
+            ORDER BY total_amount DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    if contribution_stats["unique_contributors"] <= 0 and _table_exists(conn, "irs527_contributions"):
+        contribution_stats["unique_contributors"] = int(_scalar(
+            conn, "SELECT COUNT(DISTINCT contributor_name) FROM irs527_contributions", default=0))
+        contribution_stats["top_contributors"] = conn.execute(
+            """
+            SELECT contributor_name, SUM(amount) AS total_amount, COUNT(*) AS cnt
+            FROM irs527_contributions
+            WHERE contributor_name IS NOT NULL AND contributor_name != ''
+            GROUP BY contributor_name
+            ORDER BY total_amount DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    if cache_enabled:
+        with _dark_money_stats_cache_lock:
+            _dark_money_stats_cache["value"] = contribution_stats
+            _dark_money_stats_cache["expires_at"] = now + float(ttl_seconds)
+
+    return contribution_stats
 
 
 @irs527_bp.route('/')
@@ -284,24 +352,7 @@ def dark_money():
     ).fetchall()
 
     # Contribution stats
-    contribution_stats = {"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []}
-    if _table_exists(conn, "irs527_contributions"):
-        contribution_stats["total_amount"] = float(_scalar(
-            conn, "SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions", default=0))
-        contribution_stats["unique_contributors"] = int(_scalar(
-            conn, "SELECT COUNT(DISTINCT contributor_name) FROM irs527_contributions", default=0))
-        contribution_stats["row_count"] = int(_scalar(
-            conn, "SELECT COUNT(*) FROM irs527_contributions", default=0))
-        contribution_stats["top_contributors"] = conn.execute(
-            """
-            SELECT contributor_name, SUM(amount) AS total_amount, COUNT(*) AS cnt
-            FROM irs527_contributions
-            WHERE contributor_name IS NOT NULL AND contributor_name != ''
-            GROUP BY contributor_name
-            ORDER BY total_amount DESC
-            LIMIT 10
-            """
-        ).fetchall()
+    contribution_stats = _get_dark_money_contribution_stats(conn)
 
     return render_template('irs527/dark_money.html', matches=matches, total=total,
                            page=page, total_pages=total_pages,
