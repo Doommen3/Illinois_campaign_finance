@@ -28,6 +28,16 @@ from urllib.request import Request, urlopen
 PARSER_VERSION = "fec_sync_v1"
 
 
+def _is_postgres_connection(conn: sqlite3.Connection) -> bool:
+    return conn.__class__.__name__ == "PostgresCompatConnection"
+
+
+def _distinct_concat_aggregate_sql(conn: sqlite3.Connection, expression_sql: str) -> str:
+    if _is_postgres_connection(conn):
+        return f"STRING_AGG(DISTINCT {expression_sql}, ',')"
+    return f"GROUP_CONCAT(DISTINCT {expression_sql})"
+
+
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -5823,6 +5833,19 @@ def get_federal_race_outside_spending(
         [int(cycle), *where_params],
     ).fetchone()
 
+    committee_candidate_names_agg = _distinct_concat_aggregate_sql(
+        conn,
+        "COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)",
+    )
+    payee_committee_names_agg = _distinct_concat_aggregate_sql(
+        conn,
+        "COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee')",
+    )
+    payee_candidate_names_agg = _distinct_concat_aggregate_sql(
+        conn,
+        "COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)",
+    )
+
     top_committees_rows = conn.execute(
         f"""
         SELECT
@@ -5830,9 +5853,7 @@ def get_federal_race_outside_spending(
             COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee') AS committee_name,
             COUNT(*) AS transaction_count,
             COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
-            GROUP_CONCAT(
-                DISTINCT COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)
-            ) AS candidate_names
+            {committee_candidate_names_agg} AS candidate_names
         FROM fec_schedule_e_independent_expenditures se
         {candidate_join_sql}
         WHERE {where_sql}
@@ -5850,12 +5871,8 @@ def get_federal_race_outside_spending(
             COALESCE(NULLIF(se.payee_state, ''), '') AS payee_state,
             COUNT(*) AS transaction_count,
             COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
-            GROUP_CONCAT(
-                DISTINCT COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee')
-            ) AS committee_names,
-            GROUP_CONCAT(
-                DISTINCT COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)
-            ) AS candidate_names
+            {payee_committee_names_agg} AS committee_names,
+            {payee_candidate_names_agg} AS candidate_names
         FROM fec_schedule_e_independent_expenditures se
         {candidate_join_sql}
         WHERE {where_sql}
@@ -6740,13 +6757,17 @@ def get_federal_multilayer_network_graph(
             )
 
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        support_oppose_values_agg = _distinct_concat_aggregate_sql(
+            conn,
+            "COALESCE(se.support_oppose_indicator, '')",
+        )
         schedule_e_rows = conn.execute(
-            """
+            f"""
             SELECT
                 se.candidate_id,
                 se.committee_id,
                 COALESCE(MAX(se.committee_name), se.committee_id, 'Unknown IE Committee') AS committee_name,
-                GROUP_CONCAT(DISTINCT COALESCE(se.support_oppose_indicator, '')) AS support_oppose_values,
+                {support_oppose_values_agg} AS support_oppose_values,
                 COUNT(*) AS row_count,
                 COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
                 MIN(se.expenditure_date) AS earliest_date,

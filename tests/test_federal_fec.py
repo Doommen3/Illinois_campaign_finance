@@ -54,6 +54,55 @@ def _normalize_sql(sql: str) -> str:
     return " ".join(sql.split())
 
 
+class _StaticResult:
+    def __init__(self, *, rows=None, row=None):
+        self._rows = rows or []
+        self._row = row
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._row
+
+
+class _OutsideSpendingCaptureConn:
+    def __init__(self):
+        self.sql_history: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.sql_history.append(sql)
+        normalized = " ".join(sql.split()).lower()
+        if "from fec_candidate_match m" in normalized:
+            return _StaticResult(
+                rows=[
+                    {
+                        "candidate_id": "H2IL00001",
+                        "candidate_name": "Candidate One",
+                        "office_code": "H",
+                        "fec_office": "H",
+                        "office": "U.S. House",
+                        "district_code": "01",
+                        "fec_district": "01",
+                        "district": "01",
+                    }
+                ]
+            )
+        if "count(*) as transaction_count" in normalized and "fec_schedule_e_independent_expenditures" in normalized:
+            return _StaticResult(
+                row={"transaction_count": 0, "total_amount": 0.0, "latest_expenditure_date": None}
+            )
+        if "group by se.committee_id" in normalized:
+            return _StaticResult(rows=[])
+        if "group by payee_name, payee_state" in normalized:
+            return _StaticResult(rows=[])
+        if "select se.sub_id" in normalized:
+            return _StaticResult(rows=[])
+        if "select count(*) as count" in normalized and "fec_schedule_e_independent_expenditures" in normalized:
+            return _StaticResult(row={"count": 0})
+        return _StaticResult(rows=[], row=None)
+
+
 def test_federal_edge_rows_groups_by_fallback_expression_not_alias_only():
     conn = _CaptureExecuteConn()
     federal_fec_module._federal_edge_rows(conn, cycle=2026)
@@ -74,6 +123,26 @@ def test_federal_network_graph_groups_by_fallback_expression_not_alias_only(monk
     federal_fec_module.get_federal_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=10)
     normalized = _normalize_sql(conn.sql)
     assert "GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id" in normalized
+
+
+def test_race_outside_spending_uses_string_agg_for_postgres(monkeypatch):
+    class PostgresCompatConnection(_OutsideSpendingCaptureConn):
+        pass
+
+    conn = PostgresCompatConnection()
+    monkeypatch.setattr(federal_fec_module, "_table_exists", lambda _conn, _table: True)
+
+    federal_fec_module.get_federal_race_outside_spending(
+        conn,
+        cycle=2026,
+        office_code="H",
+        district_code="01",
+        limit=25,
+        aggregate_limit=10,
+    )
+
+    rendered_sql = "\n".join(conn.sql_history)
+    assert "STRING_AGG(" in rendered_sql
 
 
 class FakeFecClient:
