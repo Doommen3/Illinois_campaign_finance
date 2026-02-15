@@ -119,6 +119,7 @@ def _seed_analytics_dataset(conn):
             office_sought TEXT,
             district_type TEXT,
             district TEXT,
+            election_cycle INTEGER,
             candidate_party_affiliation TEXT,
             committee_id_sbe INTEGER,
             committee_name TEXT,
@@ -135,11 +136,11 @@ def _seed_analytics_dataset(conn):
     conn.execute(
         """
         INSERT INTO bulk_candidate_committee_finance_agg (
-            candidate_id, candidate_full_name, office_sought, district_type, district,
+            candidate_id, candidate_full_name, office_sought, district_type, district, election_cycle,
             candidate_party_affiliation, committee_id_sbe, committee_name, committee_type,
             committee_party_affiliation, filing_count, sum_total_receipts,
             sum_total_expenditures, max_ending_funds_available, archived_filing_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             901,
@@ -147,6 +148,7 @@ def _seed_analytics_dataset(conn):
             "Governor",
             "Statewide",
             "At-Large",
+            2026,
             "Independent",
             1001,
             "Committee One",
@@ -158,6 +160,110 @@ def _seed_analytics_dataset(conn):
             8000.0,
             0,
         ),
+    )
+    conn.execute(
+        """
+        INSERT INTO bulk_candidate_committee_finance_agg (
+            candidate_id, candidate_full_name, office_sought, district_type, district, election_cycle,
+            candidate_party_affiliation, committee_id_sbe, committee_name, committee_type,
+            committee_party_affiliation, filing_count, sum_total_receipts,
+            sum_total_expenditures, max_ending_funds_available, archived_filing_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            902,
+            "Candidate Beta",
+            "Governor",
+            "Statewide",
+            "At-Large",
+            2026,
+            "Independent",
+            1002,
+            "Committee Two",
+            "Political Action",
+            "Independent",
+            3,
+            7500.0,
+            2000.0,
+            5500.0,
+            0,
+        ),
+    )
+
+    conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
+    conn.execute(
+        """
+        CREATE TABLE bulk_receipts_clean (
+            committee_id_sbe INTEGER,
+            contributed_by TEXT,
+            d2_part_code TEXT,
+            filed_doc_id INTEGER,
+            is_archived INTEGER,
+            amount REAL,
+            received_date TEXT,
+            received_datetime_raw TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO bulk_receipts_clean (
+            committee_id_sbe, contributed_by, d2_part_code, filed_doc_id, is_archived, amount, received_date, received_datetime_raw
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1001, "Donor One", "1A", 50001, 0, 5000.0, "2026-01-05", "2026-01-05 12:00:00"),
+            (1001, "Donor Two", "1A", 50002, 0, 2000.0, "2026-01-06", "2026-01-06 12:00:00"),
+            (1002, "Donor One", "1A", 50003, 0, 3000.0, "2026-01-07", "2026-01-07 12:00:00"),
+        ],
+    )
+
+    conn.execute("DROP TABLE IF EXISTS bulk_d2_totals_clean")
+    conn.execute(
+        """
+        CREATE TABLE bulk_d2_totals_clean (
+            filed_doc_id INTEGER,
+            is_archived INTEGER
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO bulk_d2_totals_clean (filed_doc_id, is_archived)
+        VALUES (?, ?)
+        """,
+        [
+            (50001, 0),
+            (50002, 0),
+            (50003, 0),
+        ],
+    )
+
+    conn.execute("DROP TABLE IF EXISTS bulk_expenditures_clean")
+    conn.execute(
+        """
+        CREATE TABLE bulk_expenditures_clean (
+            committee_id_sbe INTEGER,
+            payee_last_or_business_name TEXT,
+            candidate_name TEXT,
+            d2_part_code TEXT,
+            is_archived INTEGER,
+            amount REAL,
+            expended_date TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO bulk_expenditures_clean (
+            committee_id_sbe, payee_last_or_business_name, candidate_name, d2_part_code, is_archived, amount, expended_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1001, "Vendor One", "Candidate Alpha", "9A", 0, 1500.0, "2026-01-08"),
+            (1001, "Vendor One", "Candidate Alpha", "1A", 0, 999.0, "2026-01-08"),
+            (1001, "Vendor One", "Candidate Alpha", "9A", 1, 888.0, "2026-01-08"),
+        ],
     )
 
     d2_report_id = conn.execute(
@@ -757,6 +863,15 @@ def test_analytics_dashboard_route_loads(analytics_client):
     assert b"Donor-flow source" in response.data
     assert b'name="date_from"' in response.data
     assert b'name="date_to"' in response.data
+    assert b"Top State Races" in response.data
+    assert b"Outside Spending (E)" in response.data
+    assert b"Outside Pressure Ratio" in response.data
+    assert b"Top Candidate Share" in response.data
+    assert b"Governor - Statewide At-Large" in response.data
+    assert b"$10,000.00" in response.data
+    assert b"$1,500.00" in response.data
+    assert b"15.0%" in response.data
+    assert b"62.5%" in response.data
 
     pages = [
         (

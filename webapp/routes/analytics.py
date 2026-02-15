@@ -16,6 +16,7 @@ from database.analytics import (
     get_lobbying_influence_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
+    get_state_race_analytics,
     get_state_federal_overlap_graph,
     get_time_series,
     get_vendor_expenditure_network,
@@ -39,6 +40,14 @@ _relationships_cache_lock = threading.Lock()
 
 def _is_true_arg(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def _empty_network() -> dict:
@@ -343,6 +352,22 @@ def dashboard():
         )
 
     latest_time_point = time_series[-1] if time_series else None
+    election_cycle = request.args.get("election_cycle", type=int)
+    state_race_table_available = all(
+        _table_exists(conn, table_name)
+        for table_name in (
+            "bulk_candidate_committee_finance_agg",
+            "bulk_receipts_clean",
+            "bulk_expenditures_clean",
+        )
+    )
+    state_race_analytics = get_state_race_analytics(
+        conn,
+        limit=12,
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        election_cycle=election_cycle,
+    )
 
     return render_template(
         "analytics/overview.html",
@@ -355,6 +380,8 @@ def dashboard():
         nlp_summary=nlp_summary,
         reconciliation=reconciliation,
         latest_time_point=latest_time_point,
+        state_race_table_available=state_race_table_available,
+        state_race_analytics=state_race_analytics,
     )
 
 

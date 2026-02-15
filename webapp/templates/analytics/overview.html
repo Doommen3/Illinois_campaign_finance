@@ -82,6 +82,44 @@
 </div>
 
 <div class="status-section">
+    <h2>Top State Races</h2>
+    {% if not state_race_table_available %}
+    <p>State race bulk tables are not available yet.</p>
+    {% else %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Race</th>
+                <th>Candidates</th>
+                <th>Donors</th>
+                <th>Contributions</th>
+                <th>Total Amount</th>
+                <th>Outside Spending (E)</th>
+                <th>Outside Pressure Ratio</th>
+                <th>Top Candidate Share</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in state_race_analytics %}
+            <tr>
+                <td>{{ row.race_label }}</td>
+                <td>{{ row.candidate_count }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ format_currency(row.outside_spending_total) }}</td>
+                <td>{{ (row.outside_pressure_ratio * 100)|round(2) }}%</td>
+                <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">No state race analytics rows found for current filters.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<div class="status-section">
     <h2>Trend Visuals</h2>
     <p class="subtitle">Interactive monthly trend line and month-over-month change profile.</p>
     <div class="two-column">

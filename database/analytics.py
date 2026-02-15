@@ -1941,6 +1941,259 @@ def get_reconciliation_outliers(
     ]
 
 
+def get_state_race_analytics(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 12,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    election_cycle: int | None = None,
+) -> list[dict]:
+    """Return state race-level analytics using bulk ISBE tables when available."""
+    required_tables = {
+        "bulk_candidate_committee_finance_agg",
+        "bulk_receipts_clean",
+        "bulk_expenditures_clean",
+    }
+    if not all(_table_exists(conn, table_name) for table_name in required_tables):
+        return []
+
+    has_cycle = _column_exists(conn, "bulk_candidate_committee_finance_agg", "election_cycle")
+    resolved_cycle = election_cycle
+    if has_cycle and resolved_cycle is None:
+        cycle_row = conn.execute(
+            """
+            SELECT MAX(election_cycle) AS max_cycle
+            FROM bulk_candidate_committee_finance_agg
+            WHERE election_cycle IS NOT NULL
+            """
+        ).fetchone()
+        if cycle_row and cycle_row["max_cycle"] is not None:
+            try:
+                resolved_cycle = int(cycle_row["max_cycle"])
+            except (TypeError, ValueError):
+                resolved_cycle = None
+
+    where_parts: list[str] = []
+    where_params: list[object] = []
+    if has_cycle and resolved_cycle is not None:
+        where_parts.append("election_cycle = ?")
+        where_params.append(int(resolved_cycle))
+    candidate_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+    candidate_rows = conn.execute(
+        f"""
+        SELECT
+            CAST(candidate_id AS TEXT) AS candidate_id,
+            TRIM(COALESCE(candidate_full_name, '')) AS candidate_full_name,
+            TRIM(COALESCE(office_sought, '')) AS office_sought,
+            TRIM(COALESCE(district_type, '')) AS district_type,
+            TRIM(COALESCE(district, '')) AS district,
+            CAST(committee_id_sbe AS TEXT) AS committee_id_sbe,
+            COALESCE(SUM(sum_total_receipts), 0.0) AS candidate_receipts_total
+        FROM bulk_candidate_committee_finance_agg
+        {candidate_where}
+        GROUP BY candidate_id, candidate_full_name, office_sought, district_type, district, committee_id_sbe
+        """,
+        where_params,
+    ).fetchall()
+
+    if not candidate_rows:
+        return []
+
+    races: dict[str, dict] = {}
+    committee_to_races: dict[str, set[str]] = defaultdict(set)
+    candidate_name_to_races: dict[str, set[str]] = defaultdict(set)
+
+    for row in candidate_rows:
+        office_sought = row["office_sought"] or "Unknown Office"
+        district_type = row["district_type"] or "Unknown District Type"
+        district = row["district"] or ""
+        race_key = f"{office_sought}|{district_type}|{district}"
+        race_label = f"{office_sought} - {district_type}{(' ' + district) if district else ''}"
+
+        race = races.setdefault(
+            race_key,
+            {
+                "race_label": race_label,
+                "candidate_ids": set(),
+                "candidate_receipts": defaultdict(float),
+                "candidate_receipts_total": 0.0,
+                "donor_count": 0,
+                "contribution_count": 0,
+                "total_amount": 0.0,
+                "outside_spending_total": 0.0,
+            },
+        )
+
+        candidate_id = (row["candidate_id"] or "").strip()
+        candidate_name = (row["candidate_full_name"] or "").strip()
+        if candidate_id:
+            race["candidate_ids"].add(candidate_id)
+
+        receipts_total = float(row["candidate_receipts_total"] or 0.0)
+        if candidate_id:
+            race["candidate_receipts"][candidate_id] += receipts_total
+        else:
+            fallback_key = candidate_name or "unknown"
+            race["candidate_receipts"][fallback_key] += receipts_total
+        race["candidate_receipts_total"] += receipts_total
+
+        committee_id = (row["committee_id_sbe"] or "").strip()
+        if committee_id:
+            committee_to_races[committee_id].add(race_key)
+
+        if candidate_name:
+            candidate_name_to_races[candidate_name.upper()].add(race_key)
+
+    receipts_date_column_exists = _column_exists(conn, "bulk_receipts_clean", "received_date")
+    donor_name_candidates: list[str] = []
+    if _column_exists(conn, "bulk_receipts_clean", "contributed_by"):
+        donor_name_candidates.append("NULLIF(TRIM(r.contributed_by), '')")
+    first_name_exists = _column_exists(conn, "bulk_receipts_clean", "first_name")
+    last_name_exists = _column_exists(conn, "bulk_receipts_clean", "last_or_business_name")
+    if first_name_exists and last_name_exists:
+        donor_name_candidates.append(
+            "NULLIF(TRIM(COALESCE(r.first_name, '') || "
+            "CASE WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_or_business_name, '') <> '' THEN ' ' ELSE '' END || "
+            "COALESCE(r.last_or_business_name, '')), '')"
+        )
+    elif last_name_exists:
+        donor_name_candidates.append("NULLIF(TRIM(r.last_or_business_name), '')")
+    elif first_name_exists:
+        donor_name_candidates.append("NULLIF(TRIM(r.first_name), '')")
+    if _column_exists(conn, "bulk_receipts_clean", "bulk_row_id"):
+        donor_name_candidates.append("CAST(r.bulk_row_id AS TEXT)")
+    donor_key_expr = "COALESCE(" + ", ".join(donor_name_candidates + ["'unknown'"]) + ")"
+
+    receipt_where_parts = ["r.committee_id_sbe IS NOT NULL"]
+    receipt_params: list[object] = []
+    if receipts_date_column_exists and date_from:
+        receipt_where_parts.append("r.received_date >= ?")
+        receipt_params.append(date_from)
+    if receipts_date_column_exists and date_to:
+        receipt_where_parts.append("r.received_date <= ?")
+        receipt_params.append(date_to)
+
+    receipt_rows = conn.execute(
+        f"""
+        SELECT
+            CAST(r.committee_id_sbe AS TEXT) AS committee_id_sbe,
+            COUNT(*) AS contribution_count,
+            COUNT(DISTINCT {donor_key_expr}) AS donor_count,
+            COALESCE(SUM(COALESCE(r.amount, 0.0)), 0.0) AS total_amount
+        FROM bulk_receipts_clean r
+        WHERE {' AND '.join(receipt_where_parts)}
+        GROUP BY r.committee_id_sbe
+        """,
+        receipt_params,
+    ).fetchall()
+
+    for row in receipt_rows:
+        committee_id = (row["committee_id_sbe"] or "").strip()
+        if not committee_id:
+            continue
+        for race_key in committee_to_races.get(committee_id, set()):
+            race = races.get(race_key)
+            if not race:
+                continue
+            race["contribution_count"] += int(row["contribution_count"] or 0)
+            race["total_amount"] += float(row["total_amount"] or 0.0)
+            race.setdefault("_donor_count_by_race", 0)
+
+    race_donor_counts: dict[str, int] = defaultdict(int)
+    donor_rows = conn.execute(
+        f"""
+        SELECT
+            CAST(r.committee_id_sbe AS TEXT) AS committee_id_sbe,
+            {donor_key_expr} AS donor_key
+        FROM bulk_receipts_clean r
+        WHERE {' AND '.join(receipt_where_parts)}
+        """,
+        receipt_params,
+    ).fetchall()
+    race_donor_sets: dict[str, set[str]] = defaultdict(set)
+    for row in donor_rows:
+        committee_id = (row["committee_id_sbe"] or "").strip()
+        donor_key = (row["donor_key"] or "").strip()
+        if not committee_id or not donor_key:
+            continue
+        for race_key in committee_to_races.get(committee_id, set()):
+            race_donor_sets[race_key].add(donor_key)
+    for race_key, donors in race_donor_sets.items():
+        race_donor_counts[race_key] = len(donors)
+
+    expenditure_part_exists = _column_exists(conn, "bulk_expenditures_clean", "d2_part_code")
+    expenditure_amount_exists = _column_exists(conn, "bulk_expenditures_clean", "amount")
+    expenditure_candidate_exists = _column_exists(conn, "bulk_expenditures_clean", "candidate_name")
+    if expenditure_part_exists and expenditure_amount_exists and expenditure_candidate_exists:
+        is_archived_exists = _column_exists(conn, "bulk_expenditures_clean", "is_archived")
+        expended_date_exists = _column_exists(conn, "bulk_expenditures_clean", "expended_date")
+        exp_where_parts = ["COALESCE(e.d2_part_code, '') LIKE '9%'"]
+        exp_params: list[object] = []
+        if is_archived_exists:
+            exp_where_parts.append("COALESCE(e.is_archived, 0) = 0")
+        if expended_date_exists and date_from:
+            exp_where_parts.append("e.expended_date >= ?")
+            exp_params.append(date_from)
+        if expended_date_exists and date_to:
+            exp_where_parts.append("e.expended_date <= ?")
+            exp_params.append(date_to)
+
+        outside_rows = conn.execute(
+            f"""
+            SELECT
+                UPPER(TRIM(COALESCE(e.candidate_name, ''))) AS candidate_name_key,
+                COALESCE(SUM(COALESCE(e.amount, 0.0)), 0.0) AS total_amount
+            FROM bulk_expenditures_clean e
+            WHERE {' AND '.join(exp_where_parts)}
+            GROUP BY candidate_name_key
+            """,
+            exp_params,
+        ).fetchall()
+        for row in outside_rows:
+            candidate_name_key = (row["candidate_name_key"] or "").strip()
+            if not candidate_name_key:
+                continue
+            for race_key in candidate_name_to_races.get(candidate_name_key, set()):
+                race = races.get(race_key)
+                if race:
+                    race["outside_spending_total"] += float(row["total_amount"] or 0.0)
+
+    output: list[dict] = []
+    for race_key, race in races.items():
+        total_amount = float(race["total_amount"] or 0.0)
+        outside_spending_total = float(race["outside_spending_total"] or 0.0)
+        candidate_receipts_total = float(race["candidate_receipts_total"] or 0.0)
+        top_candidate_amount = max((float(v or 0.0) for v in race["candidate_receipts"].values()), default=0.0)
+
+        outside_pressure_ratio = (outside_spending_total / total_amount) if total_amount > 0 else 0.0
+        top_candidate_share = (top_candidate_amount / candidate_receipts_total) if candidate_receipts_total > 0 else 0.0
+
+        output.append(
+            {
+                "race_label": race["race_label"],
+                "candidate_count": len(race["candidate_ids"]),
+                "donor_count": int(race_donor_counts.get(race_key, 0)),
+                "contribution_count": int(race["contribution_count"] or 0),
+                "total_amount": round(total_amount, 2),
+                "outside_spending_total": round(outside_spending_total, 2),
+                "outside_pressure_ratio": round(outside_pressure_ratio, 4),
+                "top_candidate_share": round(top_candidate_share, 4),
+            }
+        )
+
+    output.sort(
+        key=lambda row: (
+            float(row["total_amount"] or 0.0),
+            int(row["contribution_count"] or 0),
+            row["race_label"],
+        ),
+        reverse=True,
+    )
+    return output[: max(1, int(limit))]
+
+
 def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:
     """Describe analytics inputs currently available/used."""
     donor_source = _donor_flow_source(conn)
