@@ -5634,6 +5634,319 @@ def get_federal_race_analytics(
     return output[: max(1, int(limit))]
 
 
+def get_federal_race_outside_spending(
+    conn: sqlite3.Connection,
+    *,
+    cycle: int,
+    office_code: str,
+    district_code: str,
+    limit: int = 100,
+    offset: int = 0,
+    sort: str = "date",
+    dir: str = "desc",
+    support_oppose: str = "",
+    search: str = "",
+    aggregate_limit: int = 15,
+) -> dict:
+    """Return race-level Schedule E drilldown data with filters and pagination."""
+    office_filter = _canonical_office_code(office_code)
+    if not office_filter:
+        return {
+            "race": {
+                "office_code": "",
+                "district_code": "",
+                "race_label": "Unknown Race",
+                "candidate_count": 0,
+                "transaction_count": 0,
+                "total_amount": 0.0,
+                "latest_expenditure_date": None,
+            },
+            "top_committees": [],
+            "top_payees": [],
+            "rows": [],
+            "total_rows": 0,
+        }
+
+    district_raw = _clean_text(district_code).upper()
+    if office_filter == "H":
+        district_filter = _normalize_district_filter(office_filter, district_raw)
+        if district_raw == "NA" and not district_filter:
+            district_filter = "NA"
+    else:
+        district_filter = "NA"
+
+    district_for_label = district_filter if district_filter and district_filter != "NA" else "STATEWIDE"
+    race_label = f"{_office_display_label(office_filter)} - {_district_display_label(office_filter, district_for_label)}"
+
+    if not _table_exists(conn, "fec_candidate_match"):
+        return {
+            "race": {
+                "office_code": office_filter,
+                "district_code": district_filter or "NA",
+                "race_label": race_label,
+                "candidate_count": 0,
+                "transaction_count": 0,
+                "total_amount": 0.0,
+                "latest_expenditure_date": None,
+            },
+            "top_committees": [],
+            "top_payees": [],
+            "rows": [],
+            "total_rows": 0,
+        }
+
+    candidate_rows = conn.execute(
+        """
+        SELECT DISTINCT
+            m.fec_candidate_id AS candidate_id,
+            COALESCE(m.fec_name, m.candidate_name, m.fec_candidate_id) AS candidate_name,
+            m.office_code,
+            m.fec_office,
+            m.office,
+            m.district_code,
+            m.fec_district,
+            m.district
+        FROM fec_candidate_match m
+        WHERE m.fec_candidate_id IS NOT NULL
+          AND m.cycle = ?
+        """,
+        (int(cycle),),
+    ).fetchall()
+
+    candidate_names: dict[str, str] = {}
+    scoped_candidate_ids: list[str] = []
+    for row in candidate_rows:
+        candidate_id = _clean_text(row["candidate_id"])
+        if not candidate_id or candidate_id in candidate_names:
+            continue
+        row_office_code = _canonical_office_code(row["office_code"], row["fec_office"], row["office"])
+        row_district_code = _canonical_district_code(row_office_code, row["district_code"], row["fec_district"], row["district"])
+        row_race_district = row_district_code if row_office_code == "H" and row_district_code else "NA"
+
+        if row_office_code != office_filter:
+            continue
+        if district_filter and row_race_district != district_filter:
+            continue
+
+        candidate_names[candidate_id] = _clean_text(row["candidate_name"]) or candidate_id
+        scoped_candidate_ids.append(candidate_id)
+
+    if not scoped_candidate_ids or not _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        return {
+            "race": {
+                "office_code": office_filter,
+                "district_code": district_filter or "NA",
+                "race_label": race_label,
+                "candidate_count": len(scoped_candidate_ids),
+                "transaction_count": 0,
+                "total_amount": 0.0,
+                "latest_expenditure_date": None,
+            },
+            "top_committees": [],
+            "top_payees": [],
+            "rows": [],
+            "total_rows": 0,
+        }
+
+    candidate_placeholders = ",".join("?" for _ in scoped_candidate_ids)
+    candidate_join_sql = (
+        """
+        LEFT JOIN (
+            SELECT
+                fec_candidate_id AS candidate_id,
+                MAX(COALESCE(NULLIF(fec_name, ''), NULLIF(candidate_name, ''), fec_candidate_id)) AS candidate_name
+            FROM fec_candidate_match
+            WHERE cycle = ?
+            GROUP BY fec_candidate_id
+        ) cm
+          ON cm.candidate_id = se.candidate_id
+        """
+    )
+
+    where_parts = [
+        "se.cycle = ?",
+        f"se.candidate_id IN ({candidate_placeholders})",
+    ]
+    where_params: list[Any] = [int(cycle), *scoped_candidate_ids]
+
+    support_oppose_filter = _clean_text(support_oppose).upper()
+    if support_oppose_filter in {"S", "O"}:
+        where_parts.append("COALESCE(se.support_oppose_indicator, '') = ?")
+        where_params.append(support_oppose_filter)
+
+    search_text = _clean_text(search)
+    if search_text:
+        search_like = f"%{search_text.lower()}%"
+        where_parts.append(
+            "(" 
+            "LOWER(COALESCE(se.committee_name, '')) LIKE ? OR "
+            "LOWER(COALESCE(se.payee_name, '')) LIKE ? OR "
+            "LOWER(COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id, '')) LIKE ? OR "
+            "LOWER(COALESCE(se.category_code_full, '')) LIKE ?"
+            ")"
+        )
+        where_params.extend([search_like, search_like, search_like, search_like])
+
+    where_sql = " AND ".join(where_parts)
+
+    sort_field = _clean_text(sort).lower() or "date"
+    sort_dir = "ASC" if _clean_text(dir).lower() == "asc" else "DESC"
+    sort_columns = {
+        "date": "se.expenditure_date",
+        "amount": "se.expenditure_amount",
+        "support_oppose": "se.support_oppose_indicator",
+        "committee": "se.committee_name",
+        "payee": "se.payee_name",
+        "candidate": "COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)",
+        "category": "se.category_code_full",
+    }
+    order_column = sort_columns.get(sort_field, "se.expenditure_date")
+    order_sql = f"{order_column} {sort_dir}, se.sub_id DESC"
+
+    metric_row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS transaction_count,
+            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
+            MAX(se.expenditure_date) AS latest_expenditure_date
+        FROM fec_schedule_e_independent_expenditures se
+        {candidate_join_sql}
+        WHERE {where_sql}
+        """,
+        [int(cycle), *where_params],
+    ).fetchone()
+
+    top_committees_rows = conn.execute(
+        f"""
+        SELECT
+            se.committee_id,
+            COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee') AS committee_name,
+            COUNT(*) AS transaction_count,
+            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount
+        FROM fec_schedule_e_independent_expenditures se
+        {candidate_join_sql}
+        WHERE {where_sql}
+        GROUP BY se.committee_id, committee_name
+        ORDER BY total_amount DESC, transaction_count DESC, committee_name ASC
+        LIMIT ?
+        """,
+        [int(cycle), *where_params, max(1, int(aggregate_limit))],
+    ).fetchall()
+
+    top_payees_rows = conn.execute(
+        f"""
+        SELECT
+            COALESCE(NULLIF(se.payee_name, ''), 'Unknown Payee') AS payee_name,
+            COALESCE(NULLIF(se.payee_state, ''), '') AS payee_state,
+            COUNT(*) AS transaction_count,
+            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount
+        FROM fec_schedule_e_independent_expenditures se
+        {candidate_join_sql}
+        WHERE {where_sql}
+        GROUP BY payee_name, payee_state
+        ORDER BY total_amount DESC, transaction_count DESC, payee_name ASC
+        LIMIT ?
+        """,
+        [int(cycle), *where_params, max(1, int(aggregate_limit))],
+    ).fetchall()
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            se.sub_id,
+            se.cycle,
+            se.candidate_id,
+            COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id) AS candidate_name,
+            se.expenditure_date,
+            se.support_oppose_indicator,
+            se.committee_id,
+            COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee') AS committee_name,
+            COALESCE(NULLIF(se.payee_name, ''), 'Unknown Payee') AS payee_name,
+            se.payee_city,
+            se.payee_state,
+            se.payee_zip,
+            se.category_code,
+            se.category_code_full,
+            se.report_type,
+            se.line_number,
+            se.expenditure_amount,
+            se.memo_text,
+            se.expenditure_description
+        FROM fec_schedule_e_independent_expenditures se
+        {candidate_join_sql}
+        WHERE {where_sql}
+        ORDER BY {order_sql}
+        LIMIT ? OFFSET ?
+        """,
+        [int(cycle), *where_params, max(1, int(limit)), max(0, int(offset))],
+    ).fetchall()
+
+    total_rows_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM fec_schedule_e_independent_expenditures se
+        {candidate_join_sql}
+        WHERE {where_sql}
+        """,
+        [int(cycle), *where_params],
+    ).fetchone()
+
+    return {
+        "race": {
+            "office_code": office_filter,
+            "district_code": district_filter or "NA",
+            "race_label": race_label,
+            "candidate_count": len(scoped_candidate_ids),
+            "transaction_count": int(metric_row["transaction_count"] or 0) if metric_row else 0,
+            "total_amount": float(metric_row["total_amount"] or 0.0) if metric_row else 0.0,
+            "latest_expenditure_date": metric_row["latest_expenditure_date"] if metric_row else None,
+        },
+        "top_committees": [
+            {
+                "committee_id": row["committee_id"],
+                "committee_name": row["committee_name"],
+                "transaction_count": int(row["transaction_count"] or 0),
+                "total_amount": float(row["total_amount"] or 0.0),
+            }
+            for row in top_committees_rows
+        ],
+        "top_payees": [
+            {
+                "payee_name": row["payee_name"],
+                "payee_state": row["payee_state"],
+                "transaction_count": int(row["transaction_count"] or 0),
+                "total_amount": float(row["total_amount"] or 0.0),
+            }
+            for row in top_payees_rows
+        ],
+        "rows": [
+            {
+                "sub_id": row["sub_id"],
+                "cycle": int(row["cycle"] or 0),
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or candidate_names.get(row["candidate_id"], row["candidate_id"]),
+                "expenditure_date": row["expenditure_date"],
+                "support_oppose_indicator": row["support_oppose_indicator"],
+                "committee_id": row["committee_id"],
+                "committee_name": row["committee_name"],
+                "payee_name": row["payee_name"],
+                "payee_city": row["payee_city"],
+                "payee_state": row["payee_state"],
+                "payee_zip": row["payee_zip"],
+                "category_code": row["category_code"],
+                "category_code_full": row["category_code_full"],
+                "report_type": row["report_type"],
+                "line_number": row["line_number"],
+                "expenditure_amount": float(row["expenditure_amount"] or 0.0),
+                "memo_text": row["memo_text"],
+                "expenditure_description": row["expenditure_description"],
+            }
+            for row in rows
+        ],
+        "total_rows": int(total_rows_row["count"] or 0) if total_rows_row else 0,
+    }
+
+
 def get_federal_network_graph(
     conn: sqlite3.Connection,
     cycle: int | None = None,

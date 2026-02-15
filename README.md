@@ -529,6 +529,7 @@ Notes:
 | `/federal-finance/geography` | Geographic concentration analysis (states, cities, HHI per race) |
 | `/federal-finance/matching` | Federal/local donor matching diagnostics, overlap analysis, and local-vs-federal bubble scatter |
 | `/federal-finance/<candidate_id>` | Federal candidate detail with tabbed A/B/E drilldowns |
+| `/federal-finance/races/<office_code>/<district_code>/outside-spending` | Race-level Schedule E drilldown with filters, sorting, pagination, and itemized transactions |
 | `/federal-finance/committees/<committee_id>/receipts` | Itemized Schedule A receipts for one committee, used to explain transfer-source provenance |
 | `/admin/` | Consolidated admin hub (requires login) — links to all data tools |
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
@@ -549,6 +550,7 @@ Notes:
 CSV exports:
 - Candidate detail Schedule B: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_b`
 - Candidate detail Schedule E: `/federal-finance/<candidate_id>?cycle=2026&format=csv&table=schedule_e`
+- Race-level Schedule E: `/federal-finance/races/<office_code>/<district_code>/outside-spending?cycle=2026&format=csv`
 - Live feed Schedule B: `/live-feed?format=csv&table=schedule_b`
 - Live feed Schedule E: `/live-feed?format=csv&table=schedule_e`
 - Candidate/committee itemized receipts: `/candidate-finance/<candidate_id>/<committee_id>/itemized?format=csv`

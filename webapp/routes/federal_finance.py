@@ -24,6 +24,7 @@ from database.federal_fec import (
     get_federal_local_overlap_network,
     get_federal_network_graph,
     get_federal_race_analytics,
+    get_federal_race_outside_spending,
     get_federal_view_snapshot,
     get_top_donor_entities,
     list_federal_candidates,
@@ -983,6 +984,119 @@ def federal_committee_receipts(committee_id: str):
         receipt_pages=receipt_pages,
         receipt_sort=receipt_sort,
         receipt_dir=receipt_dir,
+    )
+
+
+@federal_finance_bp.route('/races/<office_code>/<district_code>/outside-spending')
+def federal_race_outside_spending(office_code: str, district_code: str):
+    """Race-level Schedule E independent expenditure drilldown."""
+    conn = current_app.get_database()
+    cycle = request.args.get('cycle', 2026, type=int)
+    output_format = request.args.get('format', 'html', type=str).strip().lower()
+
+    page = max(request.args.get('page', 1, type=int), 1)
+    per_page = 100
+    offset = (page - 1) * per_page
+
+    sort_by = request.args.get('sort', 'date', type=str).strip().lower()
+    sort_dir = request.args.get('dir', 'desc', type=str).strip().lower()
+    support_oppose = request.args.get('support_oppose', '', type=str).strip().upper()
+    query = request.args.get('q', '', type=str).strip()
+
+    if sort_by not in {'date', 'amount', 'support_oppose', 'committee', 'payee', 'candidate', 'category'}:
+        sort_by = 'date'
+    if sort_dir not in {'asc', 'desc'}:
+        sort_dir = 'desc'
+    if support_oppose not in {'', 'S', 'O'}:
+        support_oppose = ''
+
+    detail = get_federal_race_outside_spending(
+        conn,
+        cycle=cycle,
+        office_code=office_code,
+        district_code=district_code,
+        limit=500000 if output_format == 'csv' else per_page,
+        offset=0 if output_format == 'csv' else offset,
+        sort=sort_by,
+        dir=sort_dir,
+        support_oppose=support_oppose,
+        search=query,
+    )
+
+    race = detail.get('race', {})
+
+    if output_format == 'csv':
+        csv_rows = [
+            [
+                row.get('sub_id'),
+                row.get('cycle'),
+                row.get('candidate_id'),
+                row.get('candidate_name'),
+                row.get('expenditure_date'),
+                row.get('support_oppose_indicator'),
+                row.get('committee_id'),
+                row.get('committee_name'),
+                row.get('payee_name'),
+                row.get('payee_city'),
+                row.get('payee_state'),
+                row.get('payee_zip'),
+                row.get('category_code'),
+                row.get('category_code_full'),
+                row.get('report_type'),
+                row.get('line_number'),
+                row.get('expenditure_amount'),
+                row.get('expenditure_description'),
+                row.get('memo_text'),
+            ]
+            for row in detail.get('rows', [])
+        ]
+        district_slug = race.get('district_code') or district_code or 'NA'
+        return _csv_response(
+            csv_rows,
+            [
+                'sub_id',
+                'cycle',
+                'candidate_id',
+                'candidate_name',
+                'expenditure_date',
+                'support_oppose_indicator',
+                'committee_id',
+                'committee_name',
+                'payee_name',
+                'payee_city',
+                'payee_state',
+                'payee_zip',
+                'category_code',
+                'category_code_full',
+                'report_type',
+                'line_number',
+                'expenditure_amount',
+                'expenditure_description',
+                'memo_text',
+            ],
+            filename=f"federal_race_{office_code.upper()}_{district_slug}_schedule_e.csv",
+        )
+
+    total_rows = int(detail.get('total_rows') or 0)
+    total_pages = (total_rows + per_page - 1) // per_page if total_rows else 0
+
+    return render_template(
+        'federal_finance/race_outside_spending.html',
+        active_page='overview',
+        cycle=cycle,
+        office_code=office_code.upper(),
+        district_code=race.get('district_code') or district_code,
+        race=race,
+        top_committees=detail.get('top_committees', []),
+        top_payees=detail.get('top_payees', []),
+        rows=detail.get('rows', []),
+        page=page,
+        total_rows=total_rows,
+        total_pages=total_pages,
+        sort=sort_by,
+        dir=sort_dir,
+        support_oppose=support_oppose,
+        q=query,
     )
 
 

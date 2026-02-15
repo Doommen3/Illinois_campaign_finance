@@ -218,6 +218,7 @@ Backups retained: 3 most recent in `data/backups/`.
 After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). Critical routes:
 - `/`, `/search?q=Chicago`, `/candidates`
 - `/federal-finance/`, `/analytics/`, `/lobbying/`, `/527/`
+- `/federal-finance/races/H/01/outside-spending?cycle=2026`
 - `/527/dark-money`, `/527/<ein>`
 
 ## Common Operations

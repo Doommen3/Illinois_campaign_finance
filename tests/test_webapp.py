@@ -727,6 +727,7 @@ class TestWebApp:
         assert b'Schedule E Rows' in overview.data
         assert b'Outside Spending (E)' in overview.data
         assert b'Outside Pressure Ratio' in overview.data
+        assert b'/federal-finance/races/H/01/outside-spending?cycle=2026' in overview.data
         assert b'$625.00 total disbursed' in overview.data
         assert b'$640.75 total independent expenditures' in overview.data
         assert b'$425.00' in overview.data
@@ -836,6 +837,18 @@ class TestWebApp:
         assert detail_sorted.status_code == 200
         assert b'schedule_b_sort=amount' in detail_sorted.data
         assert b'schedule_e_sort=amount' in detail_sorted.data
+
+        race_outside = client.get('/federal-finance/races/H/01/outside-spending?cycle=2026')
+        assert race_outside.status_code == 200
+        assert b'Independent Expenditures (Schedule E)' in race_outside.data
+        assert b'INDEPENDENT EXPENDITURE PAC' in race_outside.data
+        assert b'AD CREATIVE STUDIO' in race_outside.data
+
+        race_outside_csv = client.get('/federal-finance/races/H/01/outside-spending?cycle=2026&format=csv')
+        assert race_outside_csv.status_code == 200
+        assert race_outside_csv.mimetype == 'text/csv'
+        assert b'sub_id,cycle,candidate_id,candidate_name,expenditure_date' in race_outside_csv.data
+        assert b'se-1' in race_outside_csv.data
 
         live_feed = client.get('/live-feed?local_limit=20&federal_limit=20&schedule_b_limit=20&schedule_e_limit=20')
         assert live_feed.status_code == 200

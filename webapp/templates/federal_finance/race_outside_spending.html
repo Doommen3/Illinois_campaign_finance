@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Race Outside Spending (Schedule E) - Illinois Campaign Finance Tracker{% endblock %}
+
+{% macro sort_link(field, label) -%}
+<a href="{{ url_for(
+    'federal_finance.federal_race_outside_spending',
+    office_code=office_code,
+    district_code=district_code,
+    cycle=cycle,
+    page=1,
+    sort=field,
+    dir='asc' if sort != field or dir == 'desc' else 'desc',
+    support_oppose=support_oppose,
+    q=q
+) }}">
+    {{ label }}{% if sort == field %} ({{ dir }}){% endif %}
+</a>
+{%- endmacro %}
+
+{% block content %}
+<h1>Race Outside Spending (E)</h1>
+<p class="subtitle">Itemized independent expenditures across all candidates in this race.</p>
+
+{% include "federal_finance/_subnav.html" %}
+
+<div class="status-section">
+    <p><strong>Race:</strong> {{ race.race_label if race and race.race_label else (office_code ~ ' / ' ~ district_code) }}</p>
+    <p><strong>Candidates:</strong> {{ race.candidate_count if race else 0 }}</p>
+    <p><strong>Total Schedule E Amount:</strong> {{ format_currency(race.total_amount if race else 0.0) }}</p>
+    <p><strong>Transaction Count:</strong> {{ race.transaction_count if race else 0 }}</p>
+    <p><strong>Latest Expenditure Date:</strong> {{ race.latest_expenditure_date if race and race.latest_expenditure_date else '-' }}</p>
+</div>
+
+<form class="search-form" method="get" action="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code) }}">
+    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    <select name="support_oppose">
+        <option value="" {% if not support_oppose %}selected{% endif %}>All S/O</option>
+        <option value="S" {% if support_oppose == 'S' %}selected{% endif %}>Support (S)</option>
+        <option value="O" {% if support_oppose == 'O' %}selected{% endif %}>Oppose (O)</option>
+    </select>
+    <input type="text" name="q" value="{{ q }}" placeholder="Search committee, payee, candidate, category">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="dir" value="{{ dir }}">
+    <button type="submit">Apply Filters</button>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code, cycle=cycle) }}">Clear</a>
+</form>
+
+<div class="status-section">
+    <h2>Top IE Committees</h2>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Committee ID</th>
+                    <th>Committee Name</th>
+                    <th>Transactions</th>
+                    <th>Total Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_committees %}
+                <tr>
+                    <td>{{ row.committee_id if row.committee_id else '-' }}</td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.transaction_count }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">No committee rows found for this filter.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Top Payees</h2>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Payee</th>
+                    <th>State</th>
+                    <th>Transactions</th>
+                    <th>Total Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_payees %}
+                <tr>
+                    <td>{{ row.payee_name if row.payee_name else '-' }}</td>
+                    <td>{{ row.payee_state if row.payee_state else '-' }}</td>
+                    <td>{{ row.transaction_count }}</td>
+                    <td>{{ format_currency(row.total_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">No payee rows found for this filter.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Independent Expenditures (Schedule E)</h2>
+    <p class="subtitle">
+        Showing {{ rows|length }} of {{ total_rows }} rows
+        -
+        <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code, cycle=cycle, format='csv', sort=sort, dir=dir, support_oppose=support_oppose, q=q) }}">Export CSV</a>
+    </p>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>{{ sort_link('date', 'Date') }}</th>
+                    <th>{{ sort_link('support_oppose', 'Support/Oppose') }}</th>
+                    <th>{{ sort_link('candidate', 'Candidate') }}</th>
+                    <th>{{ sort_link('committee', 'Committee') }}</th>
+                    <th>{{ sort_link('payee', 'Payee') }}</th>
+                    <th>Location</th>
+                    <th>{{ sort_link('category', 'Category') }}</th>
+                    <th>Report/Line</th>
+                    <th>{{ sort_link('amount', 'Amount') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td>{{ row.expenditure_date if row.expenditure_date else '-' }}</td>
+                    <td>{{ row.support_oppose_indicator if row.support_oppose_indicator else '-' }}</td>
+                    <td>
+                        {% if row.candidate_id %}
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name if row.candidate_name else row.candidate_id }}</a>
+                        {% else %}
+                        {{ row.candidate_name if row.candidate_name else '-' }}
+                        {% endif %}
+                    </td>
+                    <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.payee_name if row.payee_name else '-' }}</td>
+                    <td>{{ row.payee_city if row.payee_city else '' }}{% if row.payee_city and row.payee_state %}, {% endif %}{{ row.payee_state if row.payee_state else '' }} {{ row.payee_zip if row.payee_zip else '' }}</td>
+                    <td>{{ row.category_code_full if row.category_code_full else (row.category_code if row.category_code else '-') }}</td>
+                    <td>{{ row.report_type if row.report_type else '-' }}{% if row.line_number %} / {{ row.line_number }}{% endif %}</td>
+                    <td>{{ format_currency(row.expenditure_amount) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9">No Schedule E rows found for this race/filter.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if total_pages > 1 %}
+    <nav class="pagination">
+        {% if page > 1 %}
+        <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code, cycle=cycle, page=page-1, sort=sort, dir=dir, support_oppose=support_oppose, q=q) }}">&laquo; Previous</a>
+        {% endif %}
+
+        <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+        {% if page < total_pages %}
+        <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code, cycle=cycle, page=page+1, sort=sort, dir=dir, support_oppose=support_oppose, q=q) }}">Next &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+</div>
+{% endblock %}

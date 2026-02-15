@@ -85,13 +85,18 @@
         </thead>
         <tbody>
             {% for row in race_analytics %}
+            {% set race_district_slug = row.district_code if row.office_code == 'H' and row.district_code else 'NA' %}
             <tr>
-                <td>{{ row.race_label }}</td>
+                <td>
+                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, cycle=cycle) }}">{{ row.race_label }}</a>
+                </td>
                 <td>{{ row.candidate_count }}</td>
                 <td>{{ row.donor_count }}</td>
                 <td>{{ row.contribution_count }}</td>
                 <td>{{ format_currency(row.total_amount) }}</td>
-                <td>{{ format_currency(row.outside_spending_total) }}</td>
+                <td>
+                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, cycle=cycle) }}">{{ format_currency(row.outside_spending_total) }}</a>
+                </td>
                 <td>{{ (row.outside_pressure_ratio * 100)|round(2) }}%</td>
                 <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
             </tr>
