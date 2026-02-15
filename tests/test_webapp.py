@@ -1512,6 +1512,55 @@ class TestWebApp:
         assert b"Donor Keys" in donor_keys.data
         assert b"bulk-search-key-1" in donor_keys.data
 
+    def test_d2_reconciliation_handles_text_numeric_columns(self, app, client):
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS bulk_d2_receipts_recon")
+        conn.execute(
+            """
+            CREATE TABLE bulk_d2_receipts_recon (
+                d2_totals_record_id INTEGER,
+                committee_id_sbe INTEGER,
+                committee_name TEXT,
+                filed_doc_id INTEGER,
+                d2_total_receipts TEXT,
+                d2_total_expenditures TEXT,
+                ending_funds_available TEXT,
+                is_archived INTEGER,
+                receipt_row_count TEXT,
+                receipts_amount_sum TEXT,
+                first_receipt_date TEXT,
+                last_receipt_date TEXT,
+                receipts_minus_d2_total TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO bulk_d2_receipts_recon (
+                d2_totals_record_id,
+                committee_id_sbe,
+                committee_name,
+                filed_doc_id,
+                d2_total_receipts,
+                d2_total_expenditures,
+                ending_funds_available,
+                is_archived,
+                receipt_row_count,
+                receipts_amount_sum,
+                first_receipt_date,
+                last_receipt_date,
+                receipts_minus_d2_total
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, 101, "Committee A", 9001, "1000.50", "500.25", "250.10", 0, "3", "900.00", "2026-01-01", "2026-01-31", "-100.50"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/d2-reconciliation/')
+        assert response.status_code == 200
+        assert b'Committee A' in response.data
+
     def test_compare_page_candidate_mode(self, app, client):
         """Test compare route renders side-by-side candidate overlap when bulk tables exist."""
         conn = get_db(app.config['DATABASE_PATH'])

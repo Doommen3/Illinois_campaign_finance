@@ -3368,21 +3368,48 @@ class D2ReceiptsRecon:
         params.extend([limit, offset])
 
         rows = conn.execute(query, params).fetchall()
+
+        def _to_float(value: object, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return default
+                value = stripped
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _to_int(value: object, default: int = 0) -> int:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return default
+                value = stripped
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return default
+
         return [
             cls(
                 d2_totals_record_id=row["d2_totals_record_id"],
                 committee_id_sbe=row["committee_id_sbe"],
                 committee_name=row["committee_name"],
                 filed_doc_id=row["filed_doc_id"],
-                d2_total_receipts=row["d2_total_receipts"] or 0.0,
-                d2_total_expenditures=row["d2_total_expenditures"] or 0.0,
-                ending_funds_available=row["ending_funds_available"] or 0.0,
+                d2_total_receipts=_to_float(row["d2_total_receipts"]),
+                d2_total_expenditures=_to_float(row["d2_total_expenditures"]),
+                ending_funds_available=_to_float(row["ending_funds_available"]),
                 is_archived=row["is_archived"],
-                receipt_row_count=row["receipt_row_count"] or 0,
-                receipts_amount_sum=row["receipts_amount_sum"] or 0.0,
+                receipt_row_count=_to_int(row["receipt_row_count"]),
+                receipts_amount_sum=_to_float(row["receipts_amount_sum"]),
                 first_receipt_date=row["first_receipt_date"],
                 last_receipt_date=row["last_receipt_date"],
-                receipts_minus_d2_total=row["receipts_minus_d2_total"] or 0.0,
+                receipts_minus_d2_total=_to_float(row["receipts_minus_d2_total"]),
             )
             for row in rows
         ]
