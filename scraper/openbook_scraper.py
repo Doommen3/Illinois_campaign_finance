@@ -924,6 +924,16 @@ class OpenBookScraper:
         if row:
             return row["seed_id"] if hasattr(row, "keys") else row[0]
 
+        if self._is_postgres():
+            row = self.conn.execute(
+                """INSERT INTO openbook_vendor_seed (seed_text, seed_source)
+                   VALUES (?, ?)
+                   RETURNING seed_id""",
+                (vendor_name, source),
+            ).fetchone()
+            self.conn.commit()
+            return row["seed_id"] if hasattr(row, "keys") else row[0]
+
         cur = self.conn.execute(
             "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
             (vendor_name, source),
@@ -938,6 +948,23 @@ class OpenBookScraper:
             (seed_id, match_info["vendor_key"]),
         ).fetchone()
         if row:
+            return row["match_id"] if hasattr(row, "keys") else row[0]
+
+        if self._is_postgres():
+            row = self.conn.execute(
+                """INSERT INTO openbook_vendor_match
+                   (seed_id, openbook_vendor_key, openbook_vendor_label, match_method, confidence)
+                   VALUES (?, ?, ?, ?, ?)
+                   RETURNING match_id""",
+                (
+                    seed_id,
+                    match_info["vendor_key"],
+                    match_info["vendor_label"],
+                    match_info["match_method"],
+                    match_info["confidence"],
+                ),
+            ).fetchone()
+            self.conn.commit()
             return row["match_id"] if hasattr(row, "keys") else row[0]
 
         cur = self.conn.execute(
@@ -1467,6 +1494,14 @@ class OpenBookScraper:
 
     def create_run(self, mode: str = "vendor_poc") -> int:
         """Create a scrape run record. Returns run_id."""
+        if self._is_postgres():
+            row = self.conn.execute(
+                "INSERT INTO openbook_scrape_runs (mode) VALUES (?) RETURNING run_id",
+                (mode,),
+            ).fetchone()
+            self.conn.commit()
+            return row["run_id"] if hasattr(row, "keys") else row[0]
+
         cur = self.conn.execute(
             "INSERT INTO openbook_scrape_runs (mode) VALUES (?)",
             (mode,),
@@ -1565,7 +1600,7 @@ class OpenBookScraper:
                     """SELECT DISTINCT UPPER(TRIM(entity_name)) AS name
                        FROM lobbying_entities
                        WHERE entity_name IS NOT NULL AND entity_name != ''
-                       ORDER BY entity_name
+                       ORDER BY name
                        LIMIT ?""",
                     (limit_per_source,),
                 ).fetchall()
