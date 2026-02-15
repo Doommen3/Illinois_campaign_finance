@@ -118,6 +118,33 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - Prefer `INSERT OR REPLACE` for idempotent upserts.
 - Use chunked batch inserts (`_chunked()` helper) for large data loads.
 
+## New Dataset Integration Workflow (Required)
+
+Whenever adding a new data source (or major new columns), always evaluate integration across the entire platform:
+
+1. **Schema + Loader + QA**
+   - Add/adjust schema tables and indexes in `database/schema.sql`.
+   - Implement loader parsing + idempotent upserts.
+   - Add post-import QA metrics (null/malformed counts, min/max valid dates, freshness windows).
+
+2. **Cross-Matching Expansion (Mandatory Review)**
+   - Explicitly review whether the new data should be matched against existing donors, committees, candidates, lobbying entities/clients, vendors, and 527 entities.
+   - If yes, add/update match jobs in `database/cross_matching.py`, with thresholds and tests.
+   - Persist match output in dedicated tables and expose summary counts where useful.
+
+3. **Analytics + Visualization Integration**
+   - Check where the new data belongs in existing dashboards/routes (`/analytics`, `/federal-finance`, `/lobbying`, `/527`, homepage cards).
+   - Evaluate whether to add new visualizations (network edges, Sankey/alluvial, time-series, geo, concentration, anomaly panels).
+   - Add help-text/methodology notes for any new metric semantics.
+
+4. **Full-System Validation**
+   - Run targeted tests first, then full suite (`pytest -q`).
+   - Validate impacted routes render and load with realistic data volumes.
+   - Update docs (`README.md`, `CLAUDE.md`, and runbooks) with commands/config/caveats.
+   - Check performance impact and add caching/materialization changes when needed.
+
+Do not treat dataset ingestion as complete until all four workflow areas are addressed.
+
 ## Deployment
 
 - When asked about deployment, always assume REMOTE/PRODUCTION server unless explicitly told otherwise.

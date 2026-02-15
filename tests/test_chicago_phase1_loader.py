@@ -143,6 +143,10 @@ def test_import_chicago_phase1_parses_and_persists_rows(tmp_path: Path):
     assert stats["payments_rows"] == 1
     assert stats["lobbyist_contributions_rows"] == 1
     assert stats["lobbying_activity_rows"] == 1
+    assert stats["qa"]["chicago_contracts_raw.approval_date"]["malformed_rows"] == 0
+    assert stats["qa"]["chicago_payments_raw.check_date"]["malformed_rows"] == 0
+    assert stats["qa"]["chicago_lobbyist_contributions_raw.contribution_date"]["malformed_rows"] == 0
+    assert stats["qa"]["chicago_lobbying_activity_raw.period_end"]["malformed_rows"] == 0
 
     contract = conn.execute(
         "SELECT purchase_order_contract_number, vendor_name, award_amount FROM chicago_contracts_raw WHERE socrata_row_id = '1'"
@@ -190,6 +194,43 @@ def test_import_chicago_phase1_malformed_numeric_is_tolerated(tmp_path: Path):
         "SELECT award_amount FROM chicago_contracts_raw WHERE socrata_row_id = '1'"
     ).fetchone()
     assert row["award_amount"] is None
+    conn.close()
+
+
+def test_import_chicago_phase1_date_qa_flags_malformed_rows(tmp_path: Path):
+    conn = _init_conn(tmp_path)
+    fetcher = _StubFetcher(
+        {
+            "p9p7-vfqc": [
+                {
+                    "socrata_row_id": "bad-date-row",
+                    "contribution_id": "10",
+                    "contribution_date": "0020-08-11",
+                    "recipient": "Committee Example",
+                    "amount": "500",
+                    "lobbyist_id": "7001",
+                    "lobbyist_first_name": "Alex",
+                    "lobbyist_last_name": "Smith",
+                    "period_start": "2026-01-01T00:00:00.000",
+                    "period_end": "2026-03-31T00:00:00.000",
+                }
+            ]
+        }
+    )
+
+    stats = import_chicago_phase1(
+        conn,
+        app_token="token",
+        full_refresh=True,
+        row_limit=None,
+        page_limit=50000,
+        fetcher=fetcher,
+    )
+
+    qa = stats["qa"]["chicago_lobbyist_contributions_raw.contribution_date"]
+    assert qa["total_rows"] == 1
+    assert qa["malformed_rows"] == 1
+    assert qa["max_valid_date"] is None
     conn.close()
 
 

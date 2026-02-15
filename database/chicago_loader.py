@@ -287,6 +287,57 @@ def _upsert_rows(conn: sqlite3.Connection, query: str, rows: list[tuple]) -> int
     return inserted
 
 
+def _date_quality_summary(
+    conn: sqlite3.Connection,
+    table_name: str,
+    field_name: str,
+    *,
+    min_valid_date: str = "1900-01-01",
+) -> dict[str, int | str | None]:
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS total_rows,
+            SUM(CASE WHEN {field_name} IS NULL OR TRIM({field_name}) = '' THEN 1 ELSE 0 END) AS missing_rows,
+            SUM(
+                CASE
+                    WHEN {field_name} IS NULL OR TRIM({field_name}) = '' THEN 0
+                    WHEN {field_name} GLOB '????-??-??' = 0 OR {field_name} < ? THEN 1
+                    ELSE 0
+                END
+            ) AS malformed_rows,
+            MIN(
+                CASE
+                    WHEN {field_name} IS NOT NULL
+                        AND TRIM({field_name}) != ''
+                        AND {field_name} GLOB '????-??-??'
+                        AND {field_name} >= ?
+                    THEN {field_name}
+                END
+            ) AS min_valid_date,
+            MAX(
+                CASE
+                    WHEN {field_name} IS NOT NULL
+                        AND TRIM({field_name}) != ''
+                        AND {field_name} GLOB '????-??-??'
+                        AND {field_name} >= ?
+                    THEN {field_name}
+                END
+            ) AS max_valid_date
+        FROM {table_name}
+        """,
+        (min_valid_date, min_valid_date, min_valid_date),
+    ).fetchone()
+
+    return {
+        "total_rows": int(row["total_rows"] or 0),
+        "missing_rows": int(row["missing_rows"] or 0),
+        "malformed_rows": int(row["malformed_rows"] or 0),
+        "min_valid_date": row["min_valid_date"],
+        "max_valid_date": row["max_valid_date"],
+    }
+
+
 def import_chicago_phase1(
     conn: sqlite3.Connection,
     *,
@@ -507,6 +558,35 @@ def import_chicago_phase1(
         "lobbyist_contributions_rows": contributions_upserted,
         "lobbying_activity_rows": activity_upserted,
     }
+
+    qa = {
+        "chicago_contracts_raw.approval_date": _date_quality_summary(
+            conn,
+            "chicago_contracts_raw",
+            "approval_date",
+        ),
+        "chicago_payments_raw.check_date": _date_quality_summary(
+            conn,
+            "chicago_payments_raw",
+            "check_date",
+        ),
+        "chicago_lobbyist_contributions_raw.contribution_date": _date_quality_summary(
+            conn,
+            "chicago_lobbyist_contributions_raw",
+            "contribution_date",
+        ),
+        "chicago_lobbying_activity_raw.period_end": _date_quality_summary(
+            conn,
+            "chicago_lobbying_activity_raw",
+            "period_end",
+        ),
+    }
+    stats["qa"] = qa
+
+    malformed_total = sum(entry["malformed_rows"] for entry in qa.values())
+    if malformed_total:
+        logger.warning("Chicago phase1 date QA detected malformed rows: %d", malformed_total)
+
     logger.info("Chicago phase1 import complete: %s", stats)
     return stats
 

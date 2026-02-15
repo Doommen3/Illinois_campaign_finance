@@ -1471,7 +1471,19 @@ def import_chicago_phase1_command(app_token, row_limit, page_limit, full_refresh
         )
         click.echo('Chicago phase1 import completed:')
         for key, value in stats.items():
+            if key == 'qa':
+                continue
             click.echo(f'  {key}: {value}')
+
+        qa = stats.get('qa') or {}
+        if qa:
+            click.echo('  qa:')
+            for label, details in qa.items():
+                click.echo(
+                    f"    {label}: malformed={details.get('malformed_rows', 0)}, "
+                    f"missing={details.get('missing_rows', 0)}, "
+                    f"max_valid_date={details.get('max_valid_date')}"
+                )
     except Exception as e:
         click.echo(f'Error importing Chicago phase1 data: {e}', err=True)
         sys.exit(1)

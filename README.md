@@ -231,6 +231,33 @@ For scraper/live checks, run integration tests separately:
 pytest -q -m integration
 ```
 
+## New Data Integration Checklist (Required)
+
+Whenever a new dataset or new columns are added, treat integration as a full-system task (not just ingestion):
+
+1. **Ingestion + Schema**
+  - Add/adjust raw + cleaned tables in `database/schema.sql`.
+  - Update loader/CLI paths and ensure idempotent upserts.
+  - Add field-level QA checks (nulls, malformed dates/numbers, source freshness windows).
+
+2. **Cross-Matching Review (Always Required)**
+  - Evaluate whether new entities should match to existing donors, committees, candidates, lobbyists, vendors, 527 orgs/directors.
+  - If matching is valuable, add/update jobs in `database/cross_matching.py` and persist results in dedicated match tables.
+  - Document thresholds/methods and add tests for false-positive/false-negative edge cases.
+
+3. **Visualization + UX Integration**
+  - Decide where the dataset adds value in existing pages (`/analytics`, `/federal-finance`, `/lobbying`, `/527`, dashboard cards, detail pages).
+  - Evaluate whether a new visualization is justified (network edge type, time-series, geo, concentration, flow/alluvial).
+  - Add explanatory help text for any new metric/relationship semantics.
+
+4. **Project-Wide Integration Validation**
+  - Run route-level sanity checks for affected pages and verify no template/query regressions.
+  - Run full tests (`pytest -q`) plus targeted module tests for new loaders/routes/matching.
+  - Confirm docs are updated (`README.md`, `CLAUDE.md`, any runbooks) with commands, config, and caveats.
+  - Verify performance impact (cold/warm where relevant) and add caching/materialization updates if needed.
+
+Use this checklist in every data-expansion PR to ensure the new data is fully integrated across ingestion, matching, analytics, and UI.
+
 ## Current Data Scale
 
 | Dataset | Records |
