@@ -341,7 +341,10 @@ def _shadow_output_table_for_worker(conn: sqlite3.Connection, table_name: str) -
 
 def _read_temp_output_rows(conn: sqlite3.Connection, table_name: str) -> tuple[list[str], list[tuple]]:
     columns = [row["name"] for row in conn.execute(f"PRAGMA temp.table_info({table_name})").fetchall()]
-    rows = [tuple(row) for row in conn.execute(f"SELECT * FROM {table_name}").fetchall()]
+    rows = [
+        tuple(row[column] for column in columns)
+        for row in conn.execute(f"SELECT * FROM {table_name}").fetchall()
+    ]
     return columns, rows
 
 
@@ -682,7 +685,7 @@ def match_lobbying_to_donors(conn: sqlite3.Connection, threshold: float = 0.80) 
             conn,
             "lobbying_donor_matches",
             ["client_id", "donor_key", "client_name", "donor_name", "score", "method"],
-            replace=True,
+            replace=False,
         )
         conn.executemany(
             insert_sql,
@@ -824,7 +827,7 @@ def match_527_to_committees(conn: sqlite3.Connection, threshold: float = 0.80) -
             conn,
             "irs527_committee_matches",
             ["ein", "org_name", "committee_id_sbe", "committee_name", "score", "method"],
-            replace=True,
+            replace=False,
         )
         conn.executemany(
             insert_sql,
@@ -1643,7 +1646,7 @@ def match_lobbying_to_527(conn: sqlite3.Connection, threshold: float = 0.80) -> 
             conn,
             "lobbying_527_matches",
             ["client_id", "client_name", "ein", "org_name", "score"],
-            replace=True,
+            replace=False,
         )
         conn.executemany(
             insert_sql,

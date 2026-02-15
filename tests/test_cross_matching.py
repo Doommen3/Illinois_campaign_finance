@@ -308,6 +308,22 @@ def test_build_insert_sql_for_postgres_replace_uses_on_conflict():
     assert "DO UPDATE SET" in sql
 
 
+def test_build_insert_sql_for_postgres_non_replace_is_plain_insert():
+    class PostgresCompatConnection:
+        pass
+
+    sql = _build_insert_sql(
+        PostgresCompatConnection(),
+        "lobbying_donor_matches",
+        ["client_id", "donor_key", "client_name", "donor_name", "score", "method"],
+        replace=False,
+    )
+    assert sql == (
+        "INSERT INTO lobbying_donor_matches "
+        "(client_id, donor_key, client_name, donor_name, score, method) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+
+
 def test_shadow_output_table_for_postgres_uses_public_source():
     class PostgresCompatConnection:
         def __init__(self):
