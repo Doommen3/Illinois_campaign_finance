@@ -124,7 +124,80 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
 
 
 def _build_dashboard_insights(conn) -> dict:
-    insights = _get_dashboard_insights(conn)
+    insights = {
+        "donor_dependent_committees": [],
+        "lobbying_donor_overlap": [],
+        "director_candidates": [],
+        "dark_money_totals": {"total_amount": 0.0, "match_count": 0},
+    }
+
+    if _table_exists(conn, "analytics_donor_committee_agg"):
+        insights["donor_dependent_committees"] = conn.execute(
+            """
+            WITH committee_totals AS (
+                SELECT committee_id, committee_name, SUM(total_amount) AS committee_total
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts'
+                GROUP BY committee_id, committee_name
+            ),
+            ranked AS (
+                SELECT a.committee_id, a.committee_name, a.donor_key, a.donor_name,
+                       a.total_amount AS donor_amount,
+                       t.committee_total,
+                       (a.total_amount * 1.0) / NULLIF(t.committee_total, 0) AS pct_of_total,
+                       ROW_NUMBER() OVER (PARTITION BY a.committee_id ORDER BY a.total_amount DESC) AS rn
+                FROM analytics_donor_committee_agg a
+                JOIN committee_totals t ON t.committee_id = a.committee_id
+                WHERE a.source = 'bulk_receipts'
+            )
+            SELECT committee_id, committee_name, donor_key, donor_name, donor_amount, committee_total, pct_of_total
+            FROM ranked
+            WHERE rn = 1 AND pct_of_total >= 0.30
+            ORDER BY pct_of_total DESC
+            LIMIT 5
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "lobbying_donor_matches") and _table_exists(conn, "analytics_donor_summary"):
+        insights["lobbying_donor_overlap"] = conn.execute(
+            """
+            SELECT ldm.client_id, ldm.client_name, ldm.donor_key, ldm.donor_name, ldm.score,
+                   ads.total_amount
+            FROM lobbying_donor_matches ldm
+            LEFT JOIN analytics_donor_summary ads
+              ON ads.donor_key = ldm.donor_key AND ads.source = 'bulk_receipts'
+            WHERE ldm.score >= 0.80
+            ORDER BY (ads.total_amount IS NULL) ASC, ads.total_amount DESC, ldm.score DESC
+            LIMIT 5
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "irs527_director_candidate_matches"):
+        insights["director_candidates"] = conn.execute(
+            """
+            SELECT ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            FROM irs527_director_candidate_matches
+            WHERE score >= 0.80
+            ORDER BY score DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    if _table_exists(conn, "irs527_expenditures") and _table_exists(conn, "irs527_expenditure_recipient_matches"):
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(e.amount), 0) AS total_amount, COUNT(*) AS match_count
+            FROM irs527_expenditures e
+            JOIN irs527_expenditure_recipient_matches m
+              ON m.ein = e.ein AND m.recipient_name = e.recipient_name
+            WHERE m.score >= 0.80
+            """
+        ).fetchone()
+        if row:
+            insights["dark_money_totals"] = {
+                "total_amount": float(row["total_amount"] or 0.0),
+                "match_count": int(row["match_count"] or 0),
+            }
 
     return insights
 
@@ -177,7 +250,25 @@ def warm_dashboard_home_cache(
     try:
         insights = _build_dashboard_insights(conn)
         stats = _get_candidate_stats(conn)
-        donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+        if _table_exists(conn, "analytics_donor_summary"):
+            donors = conn.execute(
+                """
+                SELECT
+                    donor_name AS name,
+                    donor_key,
+                    source,
+                    total_amount,
+                    contribution_count,
+                    NULL AS entity_id,
+                    NULL AS id
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts'
+                ORDER BY total_amount DESC
+                LIMIT 8
+                """
+            ).fetchall()
+        else:
+            donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
         now = time.monotonic()
         with _dashboard_insights_cache_lock:
             _dashboard_insights_cache["value"] = insights
@@ -429,6 +520,23 @@ def _get_candidate_stats_cached(conn):
 def _get_top_donors_cached(conn):
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
+        if _table_exists(conn, "analytics_donor_summary"):
+            return conn.execute(
+                """
+                SELECT
+                    donor_name AS name,
+                    donor_key,
+                    source,
+                    total_amount,
+                    contribution_count,
+                    NULL AS entity_id,
+                    NULL AS id
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts'
+                ORDER BY total_amount DESC
+                LIMIT 8
+                """
+            ).fetchall()
         return Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180)))
@@ -440,7 +548,25 @@ def _get_top_donors_cached(conn):
         ):
             return _top_donors_cache["value"]
 
-    value = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+    if _table_exists(conn, "analytics_donor_summary"):
+        value = conn.execute(
+            """
+            SELECT
+                donor_name AS name,
+                donor_key,
+                source,
+                total_amount,
+                contribution_count,
+                NULL AS entity_id,
+                NULL AS id
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    else:
+        value = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
     with _top_donors_cache_lock:
         _top_donors_cache["value"] = value
         _top_donors_cache["expires_at"] = now + float(ttl_seconds)
@@ -1882,81 +2008,7 @@ def index():
         stats['irs527_contribution_records'] = 0
 
     top_donors = _get_top_donors_cached(conn)
-
-    insights = {
-        "donor_dependent_committees": [],
-        "lobbying_donor_overlap": [],
-        "director_candidates": [],
-        "dark_money_totals": {"total_amount": 0.0, "match_count": 0},
-    }
-
-    if _table_exists(conn, "analytics_donor_committee_agg"):
-        insights["donor_dependent_committees"] = conn.execute(
-            """
-            WITH committee_totals AS (
-                SELECT committee_id, committee_name, SUM(total_amount) AS committee_total
-                FROM analytics_donor_committee_agg
-                WHERE source = 'bulk_receipts'
-                GROUP BY committee_id, committee_name
-            ),
-            ranked AS (
-                SELECT a.committee_id, a.committee_name, a.donor_key, a.donor_name,
-                       a.total_amount AS donor_amount,
-                       t.committee_total,
-                       (a.total_amount * 1.0) / NULLIF(t.committee_total, 0) AS pct_of_total,
-                       ROW_NUMBER() OVER (PARTITION BY a.committee_id ORDER BY a.total_amount DESC) AS rn
-                FROM analytics_donor_committee_agg a
-                JOIN committee_totals t ON t.committee_id = a.committee_id
-                WHERE a.source = 'bulk_receipts'
-            )
-            SELECT committee_id, committee_name, donor_key, donor_name, donor_amount, committee_total, pct_of_total
-            FROM ranked
-            WHERE rn = 1 AND pct_of_total >= 0.30
-            ORDER BY pct_of_total DESC
-            LIMIT 5
-            """
-        ).fetchall()
-
-    if _table_exists(conn, "lobbying_donor_matches") and _table_exists(conn, "analytics_donor_summary"):
-        insights["lobbying_donor_overlap"] = conn.execute(
-            """
-            SELECT ldm.client_id, ldm.client_name, ldm.donor_key, ldm.donor_name, ldm.score,
-                   ads.total_amount
-            FROM lobbying_donor_matches ldm
-            LEFT JOIN analytics_donor_summary ads
-              ON ads.donor_key = ldm.donor_key AND ads.source = 'bulk_receipts'
-            WHERE ldm.score >= 0.80
-            ORDER BY (ads.total_amount IS NULL) ASC, ads.total_amount DESC, ldm.score DESC
-            LIMIT 5
-            """
-        ).fetchall()
-
-    if _table_exists(conn, "irs527_director_candidate_matches"):
-        insights["director_candidates"] = conn.execute(
-            """
-            SELECT ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
-            FROM irs527_director_candidate_matches
-            WHERE score >= 0.80
-            ORDER BY score DESC
-            LIMIT 10
-            """
-        ).fetchall()
-
-    if _table_exists(conn, "irs527_expenditures") and _table_exists(conn, "irs527_expenditure_recipient_matches"):
-        row = conn.execute(
-            """
-            SELECT COALESCE(SUM(e.amount), 0) AS total_amount, COUNT(*) AS match_count
-            FROM irs527_expenditures e
-            JOIN irs527_expenditure_recipient_matches m
-              ON m.ein = e.ein AND m.recipient_name = e.recipient_name
-            WHERE m.score >= 0.80
-            """
-        ).fetchone()
-        if row:
-            insights["dark_money_totals"] = {
-                "total_amount": float(row["total_amount"] or 0.0),
-                "match_count": int(row["match_count"] or 0),
-            }
+    insights = _get_dashboard_insights(conn)
 
     return render_template('index.html',
                            stats=stats,
