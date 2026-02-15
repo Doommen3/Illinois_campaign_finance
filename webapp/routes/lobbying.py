@@ -26,10 +26,13 @@ def _scalar(conn, sql, params=(), default=0):
         return default
     if not row:
         return default
-    keys = row.keys() if hasattr(row, "keys") else []
-    if not keys:
-        return default
-    value = row[keys[0]]
+    if hasattr(row, "keys"):
+        first_key = next(iter(row.keys()), None)
+        if first_key is None:
+            return default
+        value = row[first_key]
+    else:
+        value = row[0] if len(row) else default
     return default if value is None else value
 
 

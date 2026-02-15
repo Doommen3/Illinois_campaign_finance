@@ -98,10 +98,17 @@ def get_federal_view_snapshot(
     is_fresh = False
     if completed_at:
         try:
-            completed_dt = datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            if isinstance(completed_at, datetime):
+                completed_dt = (
+                    completed_at.replace(tzinfo=timezone.utc)
+                    if completed_at.tzinfo is None
+                    else completed_at.astimezone(timezone.utc)
+                )
+            else:
+                completed_dt = datetime.strptime(str(completed_at), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
             is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
-        except ValueError:
+        except (ValueError, TypeError):
             age_seconds = None
 
     return {

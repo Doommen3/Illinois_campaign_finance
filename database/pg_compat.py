@@ -59,6 +59,11 @@ def _qmark_to_percent_s(sql: str) -> str:
             i += 1
             continue
 
+        if char == "%":
+            out.append("%%")
+            i += 1
+            continue
+
         if char == "?" and not in_single and not in_double:
             out.append("%s")
         else:
