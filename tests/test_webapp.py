@@ -261,6 +261,149 @@ class TestWebApp:
         assert b'Seed Provenance' in response.data
         assert b'CN-2' in response.data
 
+    def test_openbook_list_empty_tables(self, app, client):
+        """OpenBook list renders gracefully when tables exist but have no matched data."""
+        response = client.get('/openbook/')
+        assert response.status_code == 200
+        assert b'No OpenBook vendors found.' in response.data
+
+    def test_openbook_detail_nonexistent_vendor(self, app, client):
+        """OpenBook detail returns 404 for a vendor key not in the database."""
+        response = client.get('/openbook/NONEXISTENT%20VENDOR%20XYZ')
+        assert response.status_code == 404
+
+    def test_openbook_list_search_filter(self, app, client):
+        """OpenBook list ?q= filter returns only matching vendors."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        for seed_text, vendor_key, label in [
+            ("ALPHA CORP", "ALPHA CORP", "Alpha Corp"),
+            ("BETA LLC", "BETA LLC", "Beta LLC"),
+        ]:
+            conn.execute(
+                "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+                (seed_text, "expenditures"),
+            )
+            seed_id = conn.execute(
+                "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+                (seed_text,),
+            ).fetchone()["seed_id"]
+            conn.execute(
+                """INSERT INTO openbook_vendor_match (
+                    seed_id, openbook_vendor_key, openbook_vendor_label,
+                    match_method, confidence, search_term_used
+                ) VALUES (?, ?, ?, 'exact', 1.0, ?)""",
+                (seed_id, vendor_key, label, vendor_key),
+            )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/openbook/?q=ALPHA')
+        assert response.status_code == 200
+        assert b'Alpha Corp' in response.data
+        assert b'Beta LLC' not in response.data
+
+    def test_openbook_detail_empty_contracts(self, app, client):
+        """OpenBook detail renders zero-state tables when vendor has match but no contracts."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+            ("EMPTY VENDOR", "lobbying"),
+        )
+        seed_id = conn.execute(
+            "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+            ("EMPTY VENDOR",),
+        ).fetchone()["seed_id"]
+        conn.execute(
+            """INSERT INTO openbook_vendor_match (
+                seed_id, openbook_vendor_key, openbook_vendor_label,
+                match_method, confidence, search_term_used
+            ) VALUES (?, ?, ?, 'prefix', 0.85, ?)""",
+            (seed_id, "EMPTY VENDOR", "Empty Vendor", "EMPTY VENDOR"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/openbook/EMPTY%20VENDOR')
+        assert response.status_code == 200
+        assert b'Empty Vendor' in response.data
+        assert b'No contracts scraped for this vendor yet.' in response.data
+        assert b'No contribution rows scraped for this vendor yet.' in response.data
+        assert b'No warrant-level payment rows scraped yet.' in response.data
+
+    def test_openbook_dashboard_stats_card(self, app, client):
+        """Homepage dashboard should render OpenBook stats card with correct counts."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+            ("DASH VENDOR", "expenditures"),
+        )
+        seed_id = conn.execute(
+            "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+            ("DASH VENDOR",),
+        ).fetchone()["seed_id"]
+        conn.execute(
+            """INSERT INTO openbook_vendor_match (
+                seed_id, openbook_vendor_key, openbook_vendor_label,
+                match_method, confidence, search_term_used
+            ) VALUES (?, ?, ?, 'exact', 1.0, ?)""",
+            (seed_id, "DASH VENDOR", "Dash Vendor", "DASH VENDOR"),
+        )
+        conn.execute(
+            """INSERT INTO openbook_contracts_raw (
+                openbook_vendor_key, vendor_label, fiscal_year, agency_name,
+                contract_number, award_amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("DASH VENDOR", "Dash Vendor", 2026, "Agency D", "CN-D1", 99000.0, "https://example.com", "hash-dash-1"),
+        )
+        conn.execute(
+            """INSERT INTO openbook_contracts_raw (
+                openbook_vendor_key, vendor_label, fiscal_year, agency_name,
+                contract_number, award_amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("DASH VENDOR", "Dash Vendor", 2025, "Agency D", "CN-D2", 1000.0, "https://example.com", "hash-dash-2"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/')
+        assert response.status_code == 200
+        assert b'OpenBook Vendors Matched' in response.data
+        assert b'2 contracts' in response.data
+
+    def test_openbook_detail_contribution_amounts(self, app, client):
+        """OpenBook detail page renders contribution amounts correctly."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+            ("CONTRIB VENDOR", "expenditures"),
+        )
+        seed_id = conn.execute(
+            "SELECT seed_id FROM openbook_vendor_seed WHERE seed_text = ?",
+            ("CONTRIB VENDOR",),
+        ).fetchone()["seed_id"]
+        conn.execute(
+            """INSERT INTO openbook_vendor_match (
+                seed_id, openbook_vendor_key, openbook_vendor_label,
+                match_method, confidence, search_term_used
+            ) VALUES (?, ?, ?, 'exact', 0.95, ?)""",
+            (seed_id, "CONTRIB VENDOR", "Contrib Vendor", "CONTRIB VENDOR"),
+        )
+        conn.execute(
+            """INSERT INTO openbook_contributions_raw (
+                openbook_vendor_key, contributor_name, recipient_name,
+                contribution_date, amount, source_url, row_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("CONTRIB VENDOR", "Big Donor", "Sen. Smith", "2026-03-15", 5000.0, "https://example.com", "hash-c-1"),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get('/openbook/CONTRIB%20VENDOR')
+        assert response.status_code == 200
+        assert b'Big Donor' in response.data
+        assert b'Sen. Smith' in response.data
+        assert b'2026-03-15' in response.data
+
     def test_reports_page_loads(self, client):
         """Test that the reports page loads."""
         response = client.get('/reports/')
