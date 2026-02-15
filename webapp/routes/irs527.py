@@ -83,9 +83,8 @@ def list_orgs():
             GROUP BY ein
         ) r ON r.ein = o.ein
         LEFT JOIN (
-            SELECT ein, SUM(amount) AS received_contributions
-            FROM irs527_contributions
-            GROUP BY ein
+            SELECT ein, total_amount AS received_contributions
+            FROM irs527_contribution_rollup
         ) rc ON rc.ein = o.ein
         LEFT JOIN (
             SELECT DISTINCT ein FROM irs527_committee_matches

@@ -378,4 +378,15 @@ def test_reload_irs527_contributions_illinois_only(tmp_path: Path):
     assert rows[0]["contributor_name"] == "IL Donor"
     assert rows[0]["amount"] == 1500.0
 
+    rollup = conn.execute(
+        """
+        SELECT ein, total_amount, contribution_count
+        FROM irs527_contribution_rollup
+        WHERE ein = '111111111'
+        """
+    ).fetchone()
+    assert rollup is not None
+    assert rollup["total_amount"] == 1500.0
+    assert rollup["contribution_count"] == 1
+
     conn.close()

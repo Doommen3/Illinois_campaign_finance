@@ -788,6 +788,17 @@ def reload_irs527_contributions(
         "existing_contributions_deleted": 0,
     }
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS irs527_contribution_rollup (
+            ein TEXT PRIMARY KEY,
+            total_amount REAL NOT NULL DEFAULT 0,
+            contribution_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     il_eins: set[str] | None = None
     if illinois_only:
         il_eins = set()
@@ -825,6 +836,7 @@ def reload_irs527_contributions(
         existing = conn.execute("SELECT COUNT(*) AS count FROM irs527_contributions").fetchone()
         stats["existing_contributions_deleted"] = int(existing["count"] or 0) if existing else 0
         conn.execute("DELETE FROM irs527_contributions")
+        conn.execute("DELETE FROM irs527_contribution_rollup")
         conn.commit()
 
     rows: list[tuple] = []
@@ -876,5 +888,21 @@ def reload_irs527_contributions(
                 _flush_rows()
 
     _flush_rows()
+
+    conn.execute("DELETE FROM irs527_contribution_rollup")
+    conn.execute(
+        """
+        INSERT INTO irs527_contribution_rollup (ein, total_amount, contribution_count, updated_at)
+        SELECT
+            ein,
+            COALESCE(SUM(amount), 0) AS total_amount,
+            COUNT(*) AS contribution_count,
+            CURRENT_TIMESTAMP AS updated_at
+        FROM irs527_contributions
+        GROUP BY ein
+        """
+    )
+    conn.commit()
+
     logger.info("IRS 527 contribution rebuild complete: %s", stats)
     return stats

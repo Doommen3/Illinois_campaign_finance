@@ -46,6 +46,12 @@ def app(tmp_path: Path):
         ) VALUES (100, '123456789', 'Test 527 Org', 'Acme Donor', 'Chicago', 'IL', 4321, '2026-02-01')
         """
     )
+    conn.execute(
+        """
+        INSERT INTO irs527_contribution_rollup (ein, total_amount, contribution_count)
+        VALUES ('123456789', 4321, 1)
+        """
+    )
     conn.commit()
     conn.close()
 
