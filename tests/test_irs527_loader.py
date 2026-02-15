@@ -12,6 +12,7 @@ from database.irs527_loader import (
     _parse_election_authority,
     load_irs527_full_file,
     reload_irs527_reports,
+    reload_irs527_contributions,
 )
 
 
@@ -277,5 +278,104 @@ def test_load_irs527_malformed_handling(tmp_path: Path):
     assert stats["malformed_rows"] == 1
     assert stats["orgs"] == 1
     assert stats["headers"] == 1
+
+    conn.close()
+
+
+def test_load_irs527_handles_utf8_bom_header(tmp_path: Path):
+    """UTF-8 BOM-prefixed header should still be parsed as type H."""
+    content = (
+        "\ufeffH|20260208|0641|F|\n"
+        "1|8871|8|0|0|0|364367949|BOM ORG|123 Main||Chicago|IL|60601||email@test.com||"
+        "John|123||Chicago|IL|60601||Jane|123||Chicago|IL|60601||"
+        "123||Chicago|IL|60601|||||Purpose||2001-01-01|0|1\n"
+    )
+    data_path = tmp_path / "test_bom_data.txt"
+    data_path.write_text(content, encoding="utf-8")
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_irs527_full_file(conn, data_path, illinois_only=False)
+
+    assert stats["headers"] == 1
+    assert stats["malformed_rows"] == 0
+    assert stats["orgs"] == 1
+
+    conn.close()
+
+
+def test_load_irs527_contribution_malformed_row_counts(tmp_path: Path):
+    """Malformed type-A contribution row should increment malformed_rows and not load."""
+    content = (
+        "H|20260208|0641|F|\n"
+        "A|BAD_FORM_ID|38295|Test Org|364367949|Contributor|123 Main||Chicago|IL|60601||Emp|500||20030430\n"
+    )
+    data_path = tmp_path / "test_bad_contribution.txt"
+    data_path.write_text(content, encoding="utf-8")
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_irs527_full_file(conn, data_path, illinois_only=False)
+
+    assert stats["headers"] == 1
+    assert stats["contributions"] == 0
+    assert stats["malformed_rows"] == 1
+
+    row_count = conn.execute("SELECT COUNT(*) AS c FROM irs527_contributions").fetchone()["c"]
+    assert row_count == 0
+
+    conn.close()
+
+
+def test_reload_irs527_contributions_illinois_only(tmp_path: Path):
+    content = (
+        "H|20260208|0641|F|\n"
+        "1|8871|8|0|0|0|111111111|IL ORG|123 Main||Chicago|IL|60601||email@test.com||"
+        "John|123||Chicago|IL|60601||Jane|123||Chicago|IL|60601||"
+        "123||Chicago|IL|60601|||||Purpose||2001-01-01|0|1\n"
+        "1|8871|9|0|0|0|222222222|CA ORG|456 Main||LA|CA|90001||email@test.com||"
+        "John|456||LA|CA|90001||Jane|456||LA|CA|90001||"
+        "456||LA|CA|90001|||||Purpose||2001-01-01|0|1\n"
+        "A|100|38295|IL ORG|111111111|IL Donor|123 Main||Chicago|IL|60601||Employer|1500|Occupation|20260201\n"
+        "A|101|38296|CA ORG|222222222|CA Donor|456 Main||LA|CA|90001||Employer|2500|Occupation|20260202\n"
+    )
+    data_path = tmp_path / "test_reload_contributions.txt"
+    data_path.write_text(content, encoding="utf-8")
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    conn.execute(
+        """
+        INSERT INTO irs527_contributions (
+            form_id, ein, org_name, contributor_name, city, state, amount, date
+        ) VALUES (999, 'old', 'Old Org', 'Old Donor', 'Chicago', 'IL', 1, '20200101')
+        """
+    )
+    conn.commit()
+
+    stats = reload_irs527_contributions(
+        conn,
+        data_path,
+        illinois_only=True,
+        replace_existing=True,
+    )
+
+    assert stats["existing_contributions_deleted"] == 1
+    assert stats["contributions_loaded"] == 1
+    assert stats["contributions_skipped"] == 1
+
+    rows = conn.execute(
+        "SELECT ein, contributor_name, amount FROM irs527_contributions ORDER BY form_id"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["ein"] == "111111111"
+    assert rows[0]["contributor_name"] == "IL Donor"
+    assert rows[0]["amount"] == 1500.0
 
     conn.close()

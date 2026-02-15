@@ -9,6 +9,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _strip_bom_prefix(text: str) -> str:
+    return text[1:] if text.startswith("\ufeff") else text
+
+
 def _clean_text(value: str | None) -> Optional[str]:
     if value is None:
         return None
@@ -352,6 +356,7 @@ def load_irs527_full_file(
                 line = line.rstrip("\n\r")
                 if not line:
                     continue
+                line = _strip_bom_prefix(line)
                 fields = line.split("|")
                 record_type = fields[0] if fields else ""
 
@@ -540,6 +545,7 @@ def load_irs527_full_file(
             line = line.rstrip("\n\r")
             if not line:
                 continue
+            line = _strip_bom_prefix(line)
             fields = line.split("|")
             record_type = fields[0] if fields else ""
 
@@ -679,6 +685,7 @@ def reload_irs527_reports(
                 line = line.rstrip("\n\r")
                 if not line:
                     continue
+                line = _strip_bom_prefix(line)
                 fields = line.split("|")
                 record_type = fields[0] if fields else ""
                 if record_type == "1":
@@ -735,6 +742,7 @@ def reload_irs527_reports(
             line = line.rstrip("\n\r")
             if not line:
                 continue
+            line = _strip_bom_prefix(line)
             fields = line.split("|")
             record_type = fields[0] if fields else ""
             if record_type != "2":
@@ -757,4 +765,116 @@ def reload_irs527_reports(
 
     _flush_reports()
     logger.info("IRS 527 report rebuild complete: %s", stats)
+    return stats
+
+
+def reload_irs527_contributions(
+    conn: sqlite3.Connection,
+    file_path: str | Path,
+    *,
+    illinois_only: bool = False,
+    replace_existing: bool = True,
+) -> dict:
+    """Rebuild irs527_contributions from FullDataFile type-A rows only."""
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"IRS 527 file not found: {file_path}")
+
+    stats = {
+        "contributions_loaded": 0,
+        "contributions_skipped": 0,
+        "contributions_malformed": 0,
+        "total_lines": 0,
+        "existing_contributions_deleted": 0,
+    }
+
+    il_eins: set[str] | None = None
+    if illinois_only:
+        il_eins = set()
+        logger.info("First pass: collecting Illinois EINs for contribution rebuild...")
+        with file_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n\r")
+                if not line:
+                    continue
+                line = _strip_bom_prefix(line)
+                fields = line.split("|")
+                record_type = fields[0] if fields else ""
+
+                if record_type == "1":
+                    parsed = _parse_org(fields)
+                    if parsed and _is_illinois_org(parsed):
+                        il_eins.add(parsed[0])
+                elif record_type == "A":
+                    parsed = _parse_contribution(fields)
+                    if parsed:
+                        contributor_state = (parsed[7] or "").strip().upper()
+                        if contributor_state == "IL":
+                            ein = parsed[1]
+                            if ein:
+                                il_eins.add(ein)
+                elif record_type == "B":
+                    parsed = _parse_expenditure(fields)
+                    if parsed and _is_illinois_expenditure(parsed):
+                        ein = parsed[1]
+                        if ein:
+                            il_eins.add(ein)
+        logger.info("Illinois EIN set size for contribution rebuild: %d", len(il_eins))
+
+    if replace_existing:
+        existing = conn.execute("SELECT COUNT(*) AS count FROM irs527_contributions").fetchone()
+        stats["existing_contributions_deleted"] = int(existing["count"] or 0) if existing else 0
+        conn.execute("DELETE FROM irs527_contributions")
+        conn.commit()
+
+    rows: list[tuple] = []
+
+    def _flush_rows() -> None:
+        nonlocal rows
+        if not rows:
+            return
+        for chunk in _chunked(rows):
+            conn.executemany(
+                """
+                INSERT INTO irs527_contributions (
+                    form_id, ein, org_name, contributor_name,
+                    contributor_address, contributor_address_2, city, state, zip, zip_ext,
+                    contributor_employer, amount, contributor_occupation, date
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                chunk,
+            )
+        conn.commit()
+        rows = []
+
+    FLUSH_THRESHOLD = 5000
+
+    with file_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            stats["total_lines"] += 1
+            line = line.rstrip("\n\r")
+            if not line:
+                continue
+            line = _strip_bom_prefix(line)
+
+            fields = line.split("|")
+            record_type = fields[0] if fields else ""
+            if record_type != "A":
+                continue
+
+            parsed = _parse_contribution(fields)
+            if parsed is None:
+                stats["contributions_malformed"] += 1
+                continue
+            if il_eins is not None and parsed[1] not in il_eins:
+                stats["contributions_skipped"] += 1
+                continue
+
+            rows.append(parsed)
+            stats["contributions_loaded"] += 1
+            if len(rows) >= FLUSH_THRESHOLD:
+                _flush_rows()
+
+    _flush_rows()
+    logger.info("IRS 527 contribution rebuild complete: %s", stats)
     return stats

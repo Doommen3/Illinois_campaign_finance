@@ -283,6 +283,11 @@ def create_app(config=None):
         per_minute=app.config.get("API_RATE_LIMIT_PER_MINUTE", DEFAULT_API_RATE_LIMIT_PER_MINUTE)
     )
     app.extensions["api_rate_limiter"] = api_limiter
+    app.extensions["global_data_status_cache"] = {
+        "value": None,
+        "expires_at": 0.0,
+    }
+    app.extensions["global_data_status_cache_lock"] = threading.Lock()
 
     @app.before_request
     def enforce_api_auth_and_rate_limit():
@@ -409,12 +414,27 @@ def create_app(config=None):
 
         data_status = None
         try:
-            conn = get_database()
-            data_status = _build_global_data_status(
-                conn,
-                local_stale_days=app.config.get("LOCAL_DATA_STALE_DAYS", 45),
-                federal_stale_days=app.config.get("FEDERAL_DATA_STALE_DAYS", 14),
-            )
+            ttl_seconds = max(0, int(app.config.get("GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS", 45)))
+            now = time.monotonic()
+            cache = app.extensions.get("global_data_status_cache", {"value": None, "expires_at": 0.0})
+
+            if ttl_seconds > 0 and cache.get("value") is not None and float(cache.get("expires_at", 0.0)) > now:
+                data_status = cache.get("value")
+            else:
+                conn = get_database()
+                data_status = _build_global_data_status(
+                    conn,
+                    local_stale_days=app.config.get("LOCAL_DATA_STALE_DAYS", 45),
+                    federal_stale_days=app.config.get("FEDERAL_DATA_STALE_DAYS", 14),
+                )
+                if ttl_seconds > 0:
+                    lock = app.extensions.get("global_data_status_cache_lock")
+                    if lock is not None:
+                        with lock:
+                            app.extensions["global_data_status_cache"] = {
+                                "value": data_status,
+                                "expires_at": now + float(ttl_seconds),
+                            }
         except Exception:
             data_status = None
 

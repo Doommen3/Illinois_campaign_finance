@@ -67,6 +67,7 @@ def list_orgs():
             o.formation_date,
             COALESCE(r.total_contributions, 0) AS total_contributions,
             COALESCE(r.total_expenditures, 0) AS total_expenditures,
+            COALESCE(rc.received_contributions, 0) AS received_contributions,
             CASE WHEN cm.ein IS NOT NULL THEN 1 ELSE 0 END AS has_committee_match
         FROM (
             SELECT ein, MAX(form_id) AS max_form_id
@@ -81,6 +82,11 @@ def list_orgs():
             FROM irs527_reports
             GROUP BY ein
         ) r ON r.ein = o.ein
+        LEFT JOIN (
+            SELECT ein, SUM(amount) AS received_contributions
+            FROM irs527_contributions
+            GROUP BY ein
+        ) rc ON rc.ein = o.ein
         LEFT JOIN (
             SELECT DISTINCT ein FROM irs527_committee_matches
         ) cm ON cm.ein = o.ein

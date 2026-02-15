@@ -33,7 +33,7 @@ from database.federal_fec import (
 )
 from database.local_donor_entities import rebuild_local_donor_entities
 from database.lobbying_loader import load_lobbying_csv
-from database.irs527_loader import load_irs527_full_file, reload_irs527_reports
+from database.irs527_loader import load_irs527_full_file, reload_irs527_reports, reload_irs527_contributions
 from database.cross_matching import (
     match_lobbying_to_donors,
     match_lobbying_to_expenditure_payees,
@@ -1467,6 +1467,38 @@ def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
             click.echo(f'  {key}: {value}')
     except Exception as e:
         click.echo(f'Error repairing IRS 527 reports: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('repair-irs527-contributions')
+@click.option('--file', 'file_path', required=True,
+              help='Path to IRS 527 FullDataFile.txt')
+@click.option('--illinois-only/--all-states', default=True, show_default=True,
+              help='Limit contribution reload to Illinois-related EINs')
+@click.option('--replace-existing/--append', default=True, show_default=True,
+              help='Delete current irs527_contributions rows before rebuild')
+def repair_irs527_contributions_command(file_path, illinois_only, replace_existing):
+    """Repair irs527_contributions from FullDataFile type-A records."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo(f'Rebuilding IRS 527 contributions from {file_path}...')
+        if illinois_only:
+            click.echo('  Filtering to Illinois-related EINs only.')
+        if replace_existing:
+            click.echo('  Existing irs527_contributions rows will be replaced.')
+        stats = reload_irs527_contributions(
+            conn,
+            Path(file_path),
+            illinois_only=illinois_only,
+            replace_existing=replace_existing,
+        )
+        click.echo('IRS 527 contribution repair completed:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error rebuilding IRS 527 contributions: {e}', err=True)
         sys.exit(1)
     finally:
         conn.close()

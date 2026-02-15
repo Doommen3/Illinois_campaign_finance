@@ -21,6 +21,7 @@
             <th>State</th>
             <th>Total Contributions</th>
             <th>Total Expenditures</th>
+            <th>Contributions Received (A)</th>
             <th>Committee Match</th>
         </tr>
     </thead>
@@ -37,11 +38,12 @@
             <td>{{ org.state or '-' }}</td>
             <td>{{ format_currency(org.total_contributions) }}</td>
             <td>{{ format_currency(org.total_expenditures) }}</td>
+            <td>{{ format_currency(org.received_contributions) }}</td>
             <td>{{ 'Yes' if org.has_committee_match else '-' }}</td>
         </tr>
         {% else %}
         <tr>
-            <td colspan="7">No 527 organizations found.</td>
+            <td colspan="8">No 527 organizations found.</td>
         </tr>
         {% endfor %}
     </tbody>

@@ -1742,6 +1742,17 @@ def index():
     else:
         stats['irs527_director_donor_matches'] = 0
 
+    if _table_exists(conn, "irs527_contributions"):
+        stats['irs527_total_contributions_received'] = float(_scalar(
+            conn, "SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions", default=0
+        ))
+        stats['irs527_unique_contributors'] = int(_scalar(
+            conn, "SELECT COUNT(DISTINCT contributor_name) FROM irs527_contributions WHERE contributor_name IS NOT NULL AND contributor_name != ''", default=0
+        ))
+    else:
+        stats['irs527_total_contributions_received'] = 0
+        stats['irs527_unique_contributors'] = 0
+
     top_donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
     insights = {

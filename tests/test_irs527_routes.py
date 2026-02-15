@@ -39,6 +39,13 @@ def app(tmp_path: Path):
         ) VALUES (100, '123456789', '2026-01-01', '2026-03-31', 'Test 527 Org', 12345, 6789)
         """
     )
+    conn.execute(
+        """
+        INSERT INTO irs527_contributions (
+            form_id, ein, org_name, contributor_name, city, state, amount, date
+        ) VALUES (100, '123456789', 'Test 527 Org', 'Acme Donor', 'Chicago', 'IL', 4321, '2026-02-01')
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -57,6 +64,7 @@ def test_527_list(client):
     assert b'Test 527 Org' in response.data
     assert b'$12,345.00' in response.data
     assert b'$6,789.00' in response.data
+    assert b'$4,321.00' in response.data
 
 
 def test_527_list_search(client):
@@ -71,6 +79,8 @@ def test_527_detail(client):
     assert b'Test 527 Org' in response.data
     assert b'Jane Director' in response.data
     assert b'Recipient Inc' in response.data
+    assert b'Acme Donor' in response.data
+    assert b'Contributions To This Organization' in response.data
 
 
 def test_527_detail_not_found(client):
