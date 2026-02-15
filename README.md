@@ -145,6 +145,32 @@ PostgreSQL runtime mode (web service):
   2. Set `DATABASE_URL=postgresql://...` in the service environment.
   3. Restart web service and run endpoint smoke checks.
   4. If needed, unset `DATABASE_URL` and restart to roll back to SQLite immediately.
+  - Optional short-downtime cutover (simpler and now validated):
+    1. Ensure migration parity check reports `mismatches=0`.
+    2. Deploy latest app code and restart once on SQLite (`./scripts/deploy.sh`).
+    3. Set `DATABASE_URL` in `/srv/illinois_campaign_finance/shared/.env`.
+    4. Restart `ilcf-web.service` (brief downtime window).
+    5. Sweep critical endpoints:
+      - `/`, `/search?q=Chicago`, `/candidates`, `/federal-finance/`, `/analytics/`, `/lobbying/`, `/527/`, `/527/dark-money`
+    6. Confirm app runtime uses PostgreSQL:
+      ```bash
+      sudo -u app bash -lc 'cd /srv/illinois_campaign_finance/app && set -a && source /srv/illinois_campaign_finance/shared/.env && set +a && /srv/illinois_campaign_finance/shared/venv/bin/python3 - <<"PY"
+  from database.connection import get_db
+  conn = get_db()
+  print(type(conn).__name__)
+  row = conn.execute("SELECT current_database() AS db").fetchone()
+  print(row["db"] if isinstance(row, dict) else row[0])
+  conn.close()
+  PY'
+      ```
+      Expected: `PostgresCompatConnection` and `ilcf`.
+    7. If a regression appears, rollback immediately:
+      - Remove (or blank) `DATABASE_URL` in `.env`
+      - `systemctl restart ilcf-web.service`
+  - If a temporary debug server was used, shut it down after cutover:
+    ```bash
+    pkill -f 'run.py runserver --port 5051' || true
+    ```
 
 ### Run Scrapers (Optional)
 ```bash

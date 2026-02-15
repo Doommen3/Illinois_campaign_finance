@@ -190,6 +190,14 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
    2. Keep `DATABASE_PATH` unchanged for rollback.
    3. Add `DATABASE_URL` in service env, restart service, run endpoint sweep.
    4. On any critical regression, remove `DATABASE_URL` and restart immediately.
+- Validated short-downtime cutover mode (allowed and often faster):
+   1. Announce a short maintenance window.
+   2. Deploy latest code (`./scripts/deploy.sh`) before switching DB target.
+   3. Set `DATABASE_URL` in `/srv/illinois_campaign_finance/shared/.env`.
+   4. Restart `ilcf-web.service` and run full endpoint sweep.
+   5. Confirm runtime backend from app context (`PostgresCompatConnection`, `current_database() = ilcf`).
+   6. If any critical route fails, rollback immediately by unsetting `DATABASE_URL` and restarting service.
+- After any debug cutover test, always stop temporary debug servers (`run.py runserver --port 5051`) to avoid stale processes.
 
 ### Server Details
 
