@@ -6,6 +6,7 @@ import logging
 import re
 import sqlite3
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
@@ -51,6 +52,187 @@ def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) 
         return False
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return any(row["name"] == column_name for row in rows)
+
+
+_JOB_OUTPUT_TABLES: dict[str, str] = {
+    "lobbying_donors": "lobbying_donor_matches",
+    "lobbying_expenditures": "lobbying_expenditure_matches",
+    "527_committees": "irs527_committee_matches",
+    "527_expenditures": "irs527_expenditure_recipient_matches",
+    "527_directors": "irs527_director_donor_matches",
+    "527_director_candidates": "irs527_director_candidate_matches",
+    "527_director_addresses": "irs527_director_address_matches",
+    "527_org_addresses": "irs527_org_address_matches",
+    "lobbying_527": "lobbying_527_matches",
+}
+
+_JOB_INPUT_TABLES: dict[str, tuple[str, ...]] = {
+    "lobbying_donors": ("lobbying_clients", "analytics_donor_summary"),
+    "lobbying_expenditures": ("lobbying_clients", "bulk_expenditures_clean"),
+    "527_committees": ("irs527_organizations", "bulk_committees_clean"),
+    "527_expenditures": ("irs527_expenditures", "bulk_committees_clean", "bulk_candidates_clean"),
+    "527_directors": ("irs527_directors", "analytics_donor_summary"),
+    "527_director_candidates": ("irs527_directors", "bulk_candidates_clean", "federal_candidates"),
+    "527_director_addresses": ("irs527_directors", "analytics_donor_summary"),
+    "527_org_addresses": ("irs527_organizations", "bulk_committees_clean", "analytics_donor_summary"),
+    "lobbying_527": ("lobbying_clients", "irs527_organizations"),
+}
+
+
+def _chunked(values: list[tuple], size: int = 5000):
+    for idx in range(0, len(values), size):
+        yield values[idx:idx + size]
+
+
+def _ensure_incremental_state_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cross_matching_job_fingerprints (
+            job_name TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+
+
+def _table_fingerprint(conn: sqlite3.Connection, table_name: str) -> str:
+    if not _table_exists(conn, table_name):
+        return "missing"
+    try:
+        row = conn.execute(f"SELECT COUNT(*) AS c, COALESCE(MAX(rowid), 0) AS m FROM {table_name}").fetchone()
+    except sqlite3.OperationalError:
+        row = conn.execute(f"SELECT COUNT(*) AS c, 0 AS m FROM {table_name}").fetchone()
+    return f"{int(row['c'])}:{int(row['m'])}"
+
+
+def _job_fingerprint(conn: sqlite3.Connection, job_name: str) -> str:
+    parts = []
+    for table_name in _JOB_INPUT_TABLES.get(job_name, ()):
+        parts.append(f"{table_name}={_table_fingerprint(conn, table_name)}")
+    return "|".join(parts)
+
+
+def _get_saved_job_fingerprint(conn: sqlite3.Connection, job_name: str) -> Optional[str]:
+    row = conn.execute(
+        "SELECT fingerprint FROM cross_matching_job_fingerprints WHERE job_name = ?",
+        (job_name,),
+    ).fetchone()
+    return row["fingerprint"] if row else None
+
+
+def _save_job_fingerprint(conn: sqlite3.Connection, job_name: str, fingerprint: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO cross_matching_job_fingerprints (job_name, fingerprint, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(job_name) DO UPDATE SET
+            fingerprint = excluded.fingerprint,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (job_name, fingerprint),
+    )
+    conn.commit()
+
+
+def _job_matches_count(conn: sqlite3.Connection, job_name: str) -> int:
+    table_name = _JOB_OUTPUT_TABLES[job_name]
+    if not _table_exists(conn, table_name):
+        return 0
+    row = conn.execute(f"SELECT COUNT(*) AS c FROM {table_name}").fetchone()
+    return int(row["c"])
+
+
+def _job_is_unchanged(conn: sqlite3.Connection, job_name: str) -> bool:
+    current = _job_fingerprint(conn, job_name)
+    saved = _get_saved_job_fingerprint(conn, job_name)
+    return bool(saved and current == saved)
+
+
+def _shadow_output_table_for_worker(conn: sqlite3.Connection, table_name: str) -> None:
+    conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
+    conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM main.{table_name} WHERE 0")
+    conn.commit()
+
+
+def _read_temp_output_rows(conn: sqlite3.Connection, table_name: str) -> tuple[list[str], list[tuple]]:
+    columns = [row["name"] for row in conn.execute(f"PRAGMA temp.table_info({table_name})").fetchall()]
+    rows = [tuple(row) for row in conn.execute(f"SELECT * FROM temp.{table_name}").fetchall()]
+    return columns, rows
+
+
+def _merge_rows_into_output_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    columns: list[str],
+    rows: list[tuple],
+) -> None:
+    conn.execute(f"DELETE FROM {table_name}")
+    if not rows:
+        conn.commit()
+        return
+
+    column_sql = ", ".join(columns)
+    placeholder_sql = ", ".join(["?"] * len(columns))
+    insert_sql = f"INSERT OR REPLACE INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})"
+    for chunk in _chunked(rows, size=5000):
+        conn.executemany(insert_sql, chunk)
+        conn.commit()
+
+
+def _build_donor_address_indexes(
+    conn: sqlite3.Connection,
+    *,
+    include_name_tokens: bool = False,
+) -> dict[str, Any]:
+    donor_rows = conn.execute(
+        """
+        SELECT donor_key, donor_name, donor_city, donor_state
+        FROM analytics_donor_summary
+        WHERE source = 'bulk_receipts'
+            AND donor_key IS NOT NULL
+            AND donor_name IS NOT NULL
+            AND donor_state IS NOT NULL
+        """
+    ).fetchall()
+
+    zip_index: dict[tuple[str, str], list] = defaultdict(list)
+    city_index: dict[tuple[str, str], list] = defaultdict(list)
+    for dr in donor_rows:
+        norm_state = (dr["donor_state"] or "").strip().upper()
+        if not norm_state:
+            continue
+
+        donor_zip5 = None
+        parts = (dr["donor_key"] or "").split("|")
+        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
+        if zip5 and zip5[0].isdigit():
+            donor_zip5 = zip5
+
+        payload = {
+            "donor_key": dr["donor_key"],
+            "donor_name": dr["donor_name"],
+            "donor_city": dr["donor_city"],
+            "donor_state": dr["donor_state"],
+            "donor_zip5": donor_zip5,
+        }
+        if include_name_tokens:
+            payload["_tokens"] = _normalize_name_tokens(dr["donor_name"])
+
+        if donor_zip5:
+            zip_index[(norm_state, donor_zip5)].append(payload)
+
+        norm_city = _normalize_city(dr["donor_city"])
+        if norm_city:
+            city_index[(norm_state, norm_city)].append(payload)
+
+    donor_count = sum(len(v) for v in zip_index.values()) or sum(len(v) for v in city_index.values())
+    return {
+        "zip_index": zip_index,
+        "city_index": city_index,
+        "donor_count": donor_count,
+    }
 
 
 def _format_duration(seconds: float) -> str:
@@ -777,6 +959,7 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
 def match_527_directors_to_donors_by_address(
     conn: sqlite3.Connection,
     name_threshold: float = 0.30,
+    donor_indexes: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Match 527 directors to donors by zip5+state co-location AND name similarity.
 
@@ -804,53 +987,21 @@ def match_527_directors_to_donors_by_address(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
-    # Build donor zip index from analytics_donor_summary (pre-aggregated, ~50K rows)
-    # Extract zip5 from donor_key (format: "first|last|addr1|addr2|city|state|zip")
-    logger.info("527-director-address: building donor zip index from analytics_donor_summary")
-    donor_rows = conn.execute("""
-        SELECT donor_key, donor_name, donor_city, donor_state
-        FROM analytics_donor_summary
-        WHERE source = 'bulk_receipts'
-            AND donor_state IS NOT NULL
-            AND donor_name IS NOT NULL
-    """).fetchall()
+    if donor_indexes is None:
+        logger.info("527-director-address: building donor zip index from analytics_donor_summary")
+        donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
 
-    from collections import defaultdict
-    zip_index: dict[tuple[str, str], list] = defaultdict(list)
-    city_index: dict[tuple[str, str], list] = defaultdict(list)
-    for dr in donor_rows:
-        parts = dr["donor_key"].split("|")
-        norm_state = (dr["donor_state"] or "").strip().upper()
-        if not norm_state:
-            continue
-        donor_zip5 = None
-        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
-        if zip5 and zip5[0].isdigit():
-            donor_zip5 = zip5
-        payload = {
-            "donor_key": dr["donor_key"],
-            "donor_name": dr["donor_name"],
-            "donor_city": dr["donor_city"],
-            "donor_state": dr["donor_state"],
-            "donor_zip5": donor_zip5,
-        }
-        if donor_zip5:
-            zip_index[(norm_state, donor_zip5)].append(payload)
-        norm_city = _normalize_city(dr["donor_city"])
-        if norm_city:
-            city_index[(norm_state, norm_city)].append(payload)
-
-    donor_count = sum(len(v) for v in zip_index.values()) or sum(len(v) for v in city_index.values())
+    zip_index = donor_indexes["zip_index"]
+    city_index = donor_indexes["city_index"]
+    donor_count = int(donor_indexes["donor_count"])
     logger.info(
         "527-director-address: %d donors indexed (zip_buckets=%d, city_buckets=%d)",
         donor_count, len(zip_index), len(city_index)
     )
-    del donor_rows  # free memory
-
-    # Pre-compute donor name tokens (avoids redundant tokenization across directors)
     for bucket in zip_index.values():
         for dr in bucket:
-            dr["_tokens"] = _normalize_name_tokens(dr["donor_name"])
+            if "_tokens" not in dr:
+                dr["_tokens"] = _normalize_name_tokens(dr["donor_name"])
     for bucket in city_index.values():
         for dr in bucket:
             if "_tokens" not in dr:
@@ -946,6 +1097,7 @@ def match_527_directors_to_donors_by_address(
 def match_527_org_addresses(
     conn: sqlite3.Connection,
     name_threshold: float = 0.30,
+    donor_indexes: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Match 527 org addresses against committees by zip5+state AND name similarity.
 
@@ -1096,42 +1248,11 @@ def match_527_org_addresses(
                     _flush()
 
     if can_match_donors:
-        donor_rows = conn.execute(
-            """
-            SELECT donor_key, donor_name, donor_city, donor_state
-            FROM analytics_donor_summary
-            WHERE source = 'bulk_receipts'
-                AND donor_key IS NOT NULL
-                AND donor_name IS NOT NULL
-                AND donor_state IS NOT NULL
-                AND donor_city IS NOT NULL
-            """
-        ).fetchall()
+        if donor_indexes is None:
+            donor_indexes = _build_donor_address_indexes(conn)
 
-        from collections import defaultdict
-        donor_zip_index: dict[tuple[str, str], list] = defaultdict(list)
-        donor_city_index: dict[tuple[str, str], list] = defaultdict(list)
-        for dr in donor_rows:
-            norm_state = (dr["donor_state"] or "").strip().upper()
-            if not norm_state:
-                continue
-            donor_zip5 = None
-            parts = (dr["donor_key"] or "").split("|")
-            zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
-            if zip5 and zip5[0].isdigit():
-                donor_zip5 = zip5
-            payload = {
-                "donor_key": dr["donor_key"],
-                "donor_name": dr["donor_name"],
-                "donor_city": dr["donor_city"],
-                "donor_state": dr["donor_state"],
-                "donor_zip5": donor_zip5,
-            }
-            if donor_zip5:
-                donor_zip_index[(norm_state, donor_zip5)].append(payload)
-            norm_city = _normalize_city(dr["donor_city"])
-            if norm_city:
-                donor_city_index[(norm_state, norm_city)].append(payload)
+        donor_zip_index = donor_indexes["zip_index"]
+        donor_city_index = donor_indexes["city_index"]
 
         org_rows = conn.execute(
             """
@@ -1258,18 +1379,55 @@ def match_lobbying_to_527(conn: sqlite3.Connection, threshold: float = 0.80) -> 
     return {"matches": matches}
 
 
-def run_all_cross_matching(conn: sqlite3.Connection, threshold: float = 0.80) -> dict:
+def run_all_cross_matching(
+    conn: sqlite3.Connection,
+    threshold: float = 0.80,
+    incremental: bool = False,
+) -> dict:
     """Run all cross-matching functions and return combined stats."""
-    results = {}
-    results["lobbying_donors"] = match_lobbying_to_donors(conn, threshold=threshold)
-    results["lobbying_expenditures"] = match_lobbying_to_expenditure_payees(conn, threshold=threshold)
-    results["527_committees"] = match_527_to_committees(conn, threshold=threshold)
-    results["527_expenditures"] = match_527_expenditures_to_committees(conn, threshold=threshold)
-    results["527_directors"] = match_527_directors_to_donors(conn, threshold=threshold)
-    results["527_director_candidates"] = match_527_directors_to_candidates(conn, threshold=threshold)
-    results["527_director_addresses"] = match_527_directors_to_donors_by_address(conn)
-    results["527_org_addresses"] = match_527_org_addresses(conn)
-    results["lobbying_527"] = match_lobbying_to_527(conn, threshold=threshold)
+    return _run_cross_matching_sequential(conn, threshold=threshold, incremental=incremental)
+
+
+def _run_cross_matching_sequential(
+    conn: sqlite3.Connection,
+    threshold: float = 0.80,
+    incremental: bool = False,
+) -> dict:
+    results: dict[str, Any] = {}
+    if incremental:
+        _ensure_incremental_state_table(conn)
+
+    jobs: list[tuple[str, Any]] = [
+        ("lobbying_donors", lambda c: match_lobbying_to_donors(c, threshold=threshold)),
+        ("lobbying_expenditures", lambda c: match_lobbying_to_expenditure_payees(c, threshold=threshold)),
+        ("527_committees", lambda c: match_527_to_committees(c, threshold=threshold)),
+        ("527_expenditures", lambda c: match_527_expenditures_to_committees(c, threshold=threshold)),
+        ("527_directors", lambda c: match_527_directors_to_donors(c, threshold=threshold)),
+        ("527_director_candidates", lambda c: match_527_directors_to_candidates(c, threshold=threshold)),
+        ("527_director_addresses", None),
+        ("527_org_addresses", None),
+        ("lobbying_527", lambda c: match_lobbying_to_527(c, threshold=threshold)),
+    ]
+
+    shared_donor_indexes: Optional[dict[str, Any]] = None
+    for label, func in jobs:
+        if incremental and _job_is_unchanged(conn, label):
+            results[label] = {"matches": _job_matches_count(conn, label), "skipped": "unchanged"}
+            continue
+
+        if label == "527_director_addresses":
+            if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
+                shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
+            result = match_527_directors_to_donors_by_address(conn, donor_indexes=shared_donor_indexes)
+        elif label == "527_org_addresses":
+            result = match_527_org_addresses(conn, donor_indexes=shared_donor_indexes)
+        else:
+            result = func(conn)
+
+        results[label] = result
+        if incremental and "error" not in result:
+            _save_job_fingerprint(conn, label, _job_fingerprint(conn, label))
+
     return results
 
 
@@ -1278,6 +1436,7 @@ def run_all_cross_matching_parallel(
     threshold: float = 0.80,
     max_workers: int = 4,
     job_timeout: int = 180,
+    incremental: bool = False,
 ) -> dict:
     """Run cross-matching in two phases: fast jobs parallel, heavy jobs sequential.
 
@@ -1295,33 +1454,46 @@ def run_all_cross_matching_parallel(
     """
     from database.connection import get_db
 
-    # Phase 1: name-matching jobs (safe to parallelize — small write footprint)
-    parallel_jobs: list[tuple[str, Any]] = [
-        ("lobbying_donors", lambda c: match_lobbying_to_donors(c, threshold=threshold)),
-        ("lobbying_expenditures", lambda c: match_lobbying_to_expenditure_payees(c, threshold=threshold)),
-        ("527_committees", lambda c: match_527_to_committees(c, threshold=threshold)),
-        ("527_expenditures", lambda c: match_527_expenditures_to_committees(c, threshold=threshold)),
-        ("527_directors", lambda c: match_527_directors_to_donors(c, threshold=threshold)),
-        ("527_director_candidates", lambda c: match_527_directors_to_candidates(c, threshold=threshold)),
-        ("lobbying_527", lambda c: match_lobbying_to_527(c, threshold=threshold)),
+    # Phase 1: name-matching jobs (parallel read/score + isolated temp writes)
+    parallel_jobs: list[tuple[str, str, Any]] = [
+        ("lobbying_donors", _JOB_OUTPUT_TABLES["lobbying_donors"], lambda c: match_lobbying_to_donors(c, threshold=threshold)),
+        ("lobbying_expenditures", _JOB_OUTPUT_TABLES["lobbying_expenditures"], lambda c: match_lobbying_to_expenditure_payees(c, threshold=threshold)),
+        ("527_committees", _JOB_OUTPUT_TABLES["527_committees"], lambda c: match_527_to_committees(c, threshold=threshold)),
+        ("527_expenditures", _JOB_OUTPUT_TABLES["527_expenditures"], lambda c: match_527_expenditures_to_committees(c, threshold=threshold)),
+        ("527_directors", _JOB_OUTPUT_TABLES["527_directors"], lambda c: match_527_directors_to_donors(c, threshold=threshold)),
+        ("527_director_candidates", _JOB_OUTPUT_TABLES["527_director_candidates"], lambda c: match_527_directors_to_candidates(c, threshold=threshold)),
+        ("lobbying_527", _JOB_OUTPUT_TABLES["lobbying_527"], lambda c: match_lobbying_to_527(c, threshold=threshold)),
     ]
 
     # Phase 2: address-matching jobs (heavy SQL JOINs — run sequentially)
-    sequential_jobs: list[tuple[str, Any]] = [
-        ("527_director_addresses", lambda c: match_527_directors_to_donors_by_address(c)),
-        ("527_org_addresses", lambda c: match_527_org_addresses(c)),
+    sequential_jobs: list[tuple[str, str, Any]] = [
+        ("527_director_addresses", _JOB_OUTPUT_TABLES["527_director_addresses"], None),
+        ("527_org_addresses", _JOB_OUTPUT_TABLES["527_org_addresses"], None),
     ]
 
     results: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
     started = time.perf_counter()
 
-    def _run_job(label: str, func):
-        """Execute a single match job on its own connection."""
+    def _run_parallel_job(label: str, output_table: str, func):
+        """Execute one job on its own connection; writes are isolated in temp output table."""
         conn = get_db(db_path)
         conn.execute("PRAGMA busy_timeout = 60000")
         try:
-            return label, func(conn)
+            _shadow_output_table_for_worker(conn, output_table)
+            result = func(conn)
+            columns, rows = _read_temp_output_rows(conn, output_table)
+            return label, output_table, result, columns, rows
+        finally:
+            conn.close()
+
+    if incremental:
+        conn = get_db(db_path)
+        try:
+            _ensure_incremental_state_table(conn)
+            for label, _, _ in parallel_jobs + sequential_jobs:
+                if _job_is_unchanged(conn, label):
+                    results[label] = {"matches": _job_matches_count(conn, label), "skipped": "unchanged"}
         finally:
             conn.close()
 
@@ -1331,17 +1503,20 @@ def run_all_cross_matching_parallel(
         len(parallel_jobs), max_workers, job_timeout,
     )
 
-    failed_parallel: list[tuple[str, Any]] = []
+    failed_parallel: list[tuple[str, str, Any]] = []
+    phase1_payloads: dict[str, tuple[str, list[str], list[tuple], dict[str, Any]]] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_label = {
-            executor.submit(_run_job, label, func): (label, func)
-            for label, func in parallel_jobs
+            executor.submit(_run_parallel_job, label, output_table, func): (label, output_table, func)
+            for label, output_table, func in parallel_jobs
+            if label not in results
         }
         for future in as_completed(future_to_label):
-            label, func = future_to_label[future]
+            label, output_table, func = future_to_label[future]
             try:
-                _, result = future.result(timeout=job_timeout)
+                _, payload_table, result, columns, rows = future.result(timeout=job_timeout)
                 results[label] = result
+                phase1_payloads[label] = (payload_table, columns, rows, result)
                 logger.info("Phase 1 completed: %s -> %s", label, result)
             except TimeoutError:
                 future.cancel()
@@ -1349,21 +1524,39 @@ def run_all_cross_matching_parallel(
                     "Phase 1 timeout (%ds): %s — will retry sequentially",
                     job_timeout, label,
                 )
-                failed_parallel.append((label, func))
+                failed_parallel.append((label, output_table, func))
             except Exception as exc:
                 logger.error("Phase 1 failed: %s -> %s", label, exc)
                 if "locked" in str(exc).lower():
                     logger.info("Will retry %s sequentially", label)
-                    failed_parallel.append((label, func))
+                    failed_parallel.append((label, output_table, func))
                 else:
                     errors.append({"job": label, "error": str(exc), "phase": "parallel"})
                     results[label] = {"matches": 0, "error": str(exc)}
 
+    if phase1_payloads:
+        merge_conn = get_db(db_path)
+        try:
+            merge_conn.execute("PRAGMA busy_timeout = 120000")
+            if incremental:
+                _ensure_incremental_state_table(merge_conn)
+            for label, (table_name, columns, rows, result) in phase1_payloads.items():
+                _merge_rows_into_output_table(merge_conn, table_name, columns, rows)
+                if incremental and "error" not in result:
+                    _save_job_fingerprint(merge_conn, label, _job_fingerprint(merge_conn, label))
+        finally:
+            merge_conn.close()
+
     phase1_elapsed = time.perf_counter() - started
+    phase1_skipped = sum(
+        1
+        for label, _, _ in parallel_jobs
+        if label in results and results[label].get("skipped") == "unchanged"
+    )
     logger.info(
         "Phase 1 finished in %s (%d succeeded, %d to retry)",
         _format_duration(phase1_elapsed),
-        len(parallel_jobs) - len(failed_parallel) - len(errors),
+        len(phase1_payloads) + phase1_skipped,
         len(failed_parallel),
     )
 
@@ -1372,14 +1565,32 @@ def run_all_cross_matching_parallel(
     if all_sequential:
         logger.info("Phase 2: sequential (%d jobs)", len(all_sequential))
 
-    for label, func in all_sequential:
+    shared_donor_indexes: Optional[dict[str, Any]] = None
+    for label, _output_table, func in all_sequential:
+        if label in results and results[label].get("skipped") == "unchanged":
+            continue
         job_started = time.perf_counter()
         try:
             conn = get_db(db_path)
             conn.execute("PRAGMA busy_timeout = 120000")
             try:
-                result = func(conn)
+                if label == "527_director_addresses":
+                    if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):
+                        shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
+                    result = match_527_directors_to_donors_by_address(
+                        conn,
+                        donor_indexes=shared_donor_indexes,
+                    )
+                elif label == "527_org_addresses":
+                    result = match_527_org_addresses(
+                        conn,
+                        donor_indexes=shared_donor_indexes,
+                    )
+                else:
+                    result = func(conn)
                 results[label] = result
+                if incremental and "error" not in result:
+                    _save_job_fingerprint(conn, label, _job_fingerprint(conn, label))
                 job_elapsed = time.perf_counter() - job_started
                 logger.info(
                     "Phase 2 completed: %s -> %s (elapsed=%s)",
