@@ -14,6 +14,7 @@ manual adaptation.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 from typing import Iterable
@@ -248,6 +249,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=5000, help="Insert chunk size")
     parser.add_argument("--truncate-first", action="store_true", help="Truncate destination table before load")
     parser.add_argument("--skip-indexes", action="store_true", help="Skip index recreation")
+    parser.add_argument(
+        "--counts-json",
+        help="Optional path to write exact per-table SQLite row counts gathered during migration",
+    )
     return parser.parse_args()
 
 
@@ -264,6 +269,7 @@ def main() -> int:
         print(f"tables_found={len(tables)}")
 
         total_rows = 0
+        row_counts: dict[str, int] = {}
         for table_name in tables:
             col_count, row_count = migrate_table(
                 sqlite_conn,
@@ -273,11 +279,26 @@ def main() -> int:
                 truncate_first=args.truncate_first,
             )
             total_rows += row_count
+            row_counts[table_name] = row_count
             print(f"table={table_name} columns={col_count} rows={row_count}")
 
         if not args.skip_indexes:
             created, skipped = migrate_indexes(sqlite_conn, pg_conn)
             print(f"indexes_created={created} indexes_skipped={skipped}")
+
+        if args.counts_json:
+            with open(args.counts_json, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "tables_found": len(tables),
+                        "total_rows": total_rows,
+                        "row_counts": row_counts,
+                    },
+                    handle,
+                    indent=2,
+                    sort_keys=True,
+                )
+            print(f"counts_json_written={args.counts_json}")
 
         print(f"done total_rows={total_rows}")
         return 0
