@@ -392,6 +392,19 @@ class TestDirectorAddressMatching:
         assert stats["matches"] == 0
         conn.close()
 
+    def test_director_address_missing_city_bucket_does_not_error(self, tmp_path: Path):
+        from database.cross_matching import match_527_directors_to_donors_by_address
+        conn = _setup_db(tmp_path)
+        _insert_527_director(conn, "123456789", "Test Org", "John Smith",
+                             city="Chicago", state="IL", zip_code="60601")
+        _insert_donor_summary(conn, "john|smith|123 main||springfield|IL|60601", "John Smith",
+                              city="Springfield", state="IL")
+
+        stats = match_527_directors_to_donors_by_address(conn)
+        assert "matches" in stats
+        assert stats["matches"] >= 1
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 5. Organization Address Matching Tests
@@ -439,6 +452,19 @@ class TestOrgAddressMatching:
 
         stats = match_527_org_addresses(conn)
         assert stats["matches"] == 0
+        conn.close()
+
+    def test_org_address_missing_city_bucket_does_not_error(self, tmp_path: Path):
+        from database.cross_matching import match_527_org_addresses
+        conn = _setup_db(tmp_path)
+        _insert_527_org(conn, "123456789", "Citizens PAC",
+                        city="Chicago", state="IL", zip_code="60601")
+        _insert_donor_summary(conn, "first|last|123 main||springfield|IL|60601", "Some Donor",
+                              city="Springfield", state="IL")
+
+        stats = match_527_org_addresses(conn)
+        assert "matches" in stats
+        assert stats["matches"] >= 1
         conn.close()
 
 

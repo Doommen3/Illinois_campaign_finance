@@ -885,7 +885,7 @@ def match_527_directors_to_donors_by_address(
 
         bucket_zip = zip_index.get((d["norm_state"], d["norm_zip5"])) or []
         norm_city = _normalize_city(d["city"])
-        bucket_city = city_index.get((d["norm_state"], norm_city)) if norm_city else []
+        bucket_city = city_index.get((d["norm_state"], norm_city), []) if norm_city else []
         if not bucket_zip and not bucket_city:
             continue
         candidate_buckets = [bucket_zip, bucket_city] if bucket_city is not bucket_zip else [bucket_zip]
@@ -1145,7 +1145,7 @@ def match_527_org_addresses(
             norm_zip5 = o["norm_zip5"]
             norm_city = _normalize_city(o["city"])
             bucket_zip = donor_zip_index.get((norm_state, norm_zip5)) or []
-            bucket_city = donor_city_index.get((norm_state, norm_city)) if norm_city else []
+            bucket_city = donor_city_index.get((norm_state, norm_city), []) if norm_city else []
             if not bucket_zip and not bucket_city:
                 continue
 
