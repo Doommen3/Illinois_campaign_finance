@@ -1113,28 +1113,37 @@ class OpenBookScraper:
     ) -> None:
         """Save a raw extraction record for auditability (Postgres-safe)."""
         payload_json = json.dumps(payload, default=str) if not isinstance(payload, str) else payload
-        # Check-then-insert pattern for Postgres compatibility
-        # (avoids INSERT OR REPLACE which is SQLite-only)
-        existing = self.conn.execute(
-            "SELECT id FROM raw_extractions WHERE source_type = ? AND source_identifier = ?",
-            (source_type, source_identifier),
-        ).fetchone()
-        if existing:
-            eid = existing["id"] if hasattr(existing, "keys") else existing[0]
-            self.conn.execute(
-                """UPDATE raw_extractions
-                   SET source_url=?, parser_version=?, payload_json=?, updated_at=CURRENT_TIMESTAMP
-                   WHERE id=?""",
-                (source_url, "openbook_v1", payload_json, eid),
+        try:
+            # Check-then-insert pattern for Postgres compatibility
+            # (avoids INSERT OR REPLACE which is SQLite-only)
+            existing = self.conn.execute(
+                "SELECT id FROM raw_extractions WHERE source_type = ? AND source_identifier = ?",
+                (source_type, source_identifier),
+            ).fetchone()
+            if existing:
+                eid = existing["id"] if hasattr(existing, "keys") else existing[0]
+                self.conn.execute(
+                    """UPDATE raw_extractions
+                       SET source_url=?, parser_version=?, payload_json=?, updated_at=CURRENT_TIMESTAMP
+                       WHERE id=?""",
+                    (source_url, "openbook_v1", payload_json, eid),
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO raw_extractions
+                       (source_type, source_identifier, source_url, parser_version, payload_json)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (source_type, source_identifier, source_url, "openbook_v1", payload_json),
+                )
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            logger.warning(
+                "Skipping raw extraction persistence for %s:%s due to DB error: %s",
+                source_type,
+                source_identifier,
+                e,
             )
-        else:
-            self.conn.execute(
-                """INSERT INTO raw_extractions
-                   (source_type, source_identifier, source_url, parser_version, payload_json)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (source_type, source_identifier, source_url, "openbook_v1", payload_json),
-            )
-        self.conn.commit()
 
     def save_contract_warrants(
         self,
