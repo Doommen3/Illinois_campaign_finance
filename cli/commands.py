@@ -1613,7 +1613,7 @@ def run_cross_matching_command(threshold, only_match, parallel, workers, increme
             '527-directors': ('527_directors', lambda c, t: match_527_directors_to_donors(c, threshold=t)),
             '527-director-candidates': ('527_director_candidates', lambda c, t: match_527_directors_to_candidates(c, threshold=t)),
             '527-director-addresses': ('527_director_addresses', lambda c, _t: match_527_directors_to_donors_by_address(c)),
-            '527-org-addresses': ('527_org_addresses', lambda c, _t: match_527_org_addresses(c)),
+            '527-org-addresses': ('527_org_addresses', lambda c, _t: match_527_org_addresses(c, org_donor_name_threshold=0.20)),
             'lobbying-527': ('lobbying_527', lambda c, t: match_lobbying_to_527(c, threshold=t)),
         }
 
