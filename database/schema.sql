@@ -1204,6 +1204,23 @@ CREATE TABLE IF NOT EXISTS irs527_contributor_rollup (
 CREATE INDEX IF NOT EXISTS idx_irs527_contributor_rollup_amount
     ON irs527_contributor_rollup(total_amount DESC);
 
+-- Persisted donor address index for cross-matching fast path
+CREATE TABLE IF NOT EXISTS cross_matching_donor_address_index (
+    donor_key TEXT PRIMARY KEY,
+    donor_name TEXT NOT NULL,
+    donor_city TEXT,
+    donor_state TEXT NOT NULL,
+    donor_zip5 TEXT,
+    norm_city TEXT,
+    norm_state TEXT NOT NULL,
+    donor_tokens TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_cross_matching_donor_address_index_state_zip
+    ON cross_matching_donor_address_index(norm_state, donor_zip5);
+CREATE INDEX IF NOT EXISTS idx_cross_matching_donor_address_index_state_city
+    ON cross_matching_donor_address_index(norm_state, norm_city);
+
 -- 527 Director -> Candidate name matches
 CREATE TABLE IF NOT EXISTS irs527_director_candidate_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,

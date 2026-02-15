@@ -6,11 +6,14 @@ from database.cross_matching import (
     _normalize_name_tokens,
     _jaccard,
     _build_insert_sql,
+    _build_donor_address_indexes,
+    _apply_postgres_session_tuning,
     _shadow_output_table_for_worker,
     _merge_rows_into_output_table,
     match_lobbying_to_donors,
     match_lobbying_to_527,
     match_527_expenditures_to_committees,
+    match_527_org_addresses,
     match_527_to_committees,
     run_all_cross_matching,
     run_all_cross_matching_parallel,
@@ -66,14 +69,14 @@ def _insert_lobbying_client(conn, client_id, client_name):
     conn.commit()
 
 
-def _insert_donor_summary(conn, donor_key, donor_name, amount=1000):
+def _insert_donor_summary(conn, donor_key, donor_name, amount=1000, donor_city=None, donor_state="IL"):
     conn.execute(
         """
         INSERT OR REPLACE INTO analytics_donor_summary
-            (source, donor_key, donor_name, total_amount, contribution_count, committee_count)
-        VALUES ('bulk_receipts', ?, ?, ?, 1, 1)
+            (source, donor_key, donor_name, donor_city, donor_state, total_amount, contribution_count, committee_count)
+        VALUES ('bulk_receipts', ?, ?, ?, ?, ?, 1, 1)
         """,
-        (donor_key, donor_name, amount),
+        (donor_key, donor_name, donor_city, donor_state, amount),
     )
     conn.commit()
 
@@ -86,6 +89,18 @@ def _insert_527_org(conn, ein, org_name, state="IL"):
         VALUES (?, 1, 0, ?, ?)
         """,
         (ein, org_name, state),
+    )
+    conn.commit()
+
+
+def _insert_527_org_with_address(conn, ein, org_name, city, state, zip_code):
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO irs527_organizations
+            (ein, form_id, form_id_seq, org_name, city, state, zip)
+        VALUES (?, 1, 0, ?, ?, ?, ?)
+        """,
+        (ein, org_name, city, state, zip_code),
     )
     conn.commit()
 
@@ -345,3 +360,78 @@ def test_merge_rows_into_output_table_postgres_uses_swap_pattern():
     assert "INSERT INTO _swap_lobbying_donor_matches_" in sql
     assert "INSERT OR REPLACE" not in sql
     assert len(rows) == 1
+
+
+def test_build_donor_address_indexes_persists_cache(tmp_path: Path):
+    conn = _setup_db(tmp_path)
+    _insert_donor_summary(
+        conn,
+        "r|x|x|x|x|x|62704",
+        "Acme Donor",
+        donor_city="Springfield",
+        donor_state="IL",
+    )
+
+    indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
+    assert indexes["donor_count"] == 1
+
+    row = conn.execute(
+        "SELECT donor_zip5, norm_city, donor_tokens FROM cross_matching_donor_address_index WHERE donor_key = ?",
+        ("r|x|x|x|x|x|62704",),
+    ).fetchone()
+    assert row is not None
+    assert row["donor_zip5"] == "62704"
+    assert row["norm_city"] == "springfield"
+    assert "acme" in (row["donor_tokens"] or "")
+    conn.close()
+
+
+def test_match_527_org_addresses_uses_org_donor_name_prefilter(tmp_path: Path):
+    conn = _setup_db(tmp_path)
+    _insert_527_org_with_address(conn, "123456789", "Acme Future Action", "Springfield", "IL", "62704")
+
+    _insert_donor_summary(
+        conn,
+        "d|1|1|1|1|1|62704",
+        "Acme Future Holdings",
+        donor_city="Springfield",
+        donor_state="IL",
+    )
+    _insert_donor_summary(
+        conn,
+        "d|2|2|2|2|2|62704",
+        "Unrelated Name",
+        donor_city="Springfield",
+        donor_state="IL",
+    )
+
+    result = match_527_org_addresses(conn, org_donor_name_threshold=0.20)
+    assert result["matches"] >= 1
+
+    rows = conn.execute(
+        """
+        SELECT matched_entity_type, matched_entity_id, matched_entity_name
+        FROM irs527_org_address_matches
+        WHERE ein = '123456789' AND matched_entity_type = 'donor'
+        """
+    ).fetchall()
+    donor_ids = {r["matched_entity_id"] for r in rows}
+    assert "d|1|1|1|1|1|62704" in donor_ids
+    assert "d|2|2|2|2|2|62704" not in donor_ids
+    conn.close()
+
+
+def test_apply_postgres_session_tuning_executes_safe_settings():
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, params=None):
+            self.sql.append(sql)
+            return self
+
+    conn = PostgresCompatConnection()
+    _apply_postgres_session_tuning(conn)
+    assert "SET synchronous_commit TO OFF" in conn.sql
+    assert any("SET work_mem" in sql for sql in conn.sql)
+    assert any("SET temp_buffers" in sql for sql in conn.sql)

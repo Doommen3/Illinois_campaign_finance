@@ -123,8 +123,15 @@ python run.py run-cross-matching --only all --parallel --workers 4
 # Incremental cross-matching (skip unchanged jobs)
 python run.py run-cross-matching --only all --parallel --workers 4 --incremental
 
+# Fastest validated routine mode for repeat runs (materialized donor index + incremental fingerprints)
+python run.py run-cross-matching --only all --parallel --workers 4 --incremental
+
 # Force full rebuild
 python run.py run-cross-matching --only all --no-parallel --full-rebuild
+
+Cross-matching fast-path caveat:
+- PostgreSQL cross-matching sessions use performance-oriented settings (`synchronous_commit=off`, larger temp/work memory) for staging/swap writes.
+- This is safe for recomputable cross-matching output tables, but do not reuse this pattern for non-recomputable transactional writes.
 ```
 
 Compute-heavy workflow recommendation:

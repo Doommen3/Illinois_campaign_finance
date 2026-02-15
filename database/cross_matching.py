@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import logging
+import json
 import re
 import sqlite3
 import time
@@ -84,6 +85,11 @@ _REPLACE_TARGET_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "lobbying_527_matches": ("client_id", "ein"),
 }
 
+_DONOR_ADDRESS_INDEX_TABLE = "cross_matching_donor_address_index"
+_DONOR_ADDRESS_INDEX_JOB = "_donor_address_index"
+_ORG_ADDRESS_PROGRESS_EVERY = 5000
+_ORG_DONOR_NAME_PREFILTER_THRESHOLD = 0.20
+
 
 def _is_postgres_connection(conn: sqlite3.Connection) -> bool:
     return conn.__class__.__name__ == "PostgresCompatConnection"
@@ -93,6 +99,21 @@ def _set_busy_timeout(conn: sqlite3.Connection, timeout_ms: int) -> None:
     if _is_postgres_connection(conn):
         return
     conn.execute(f"PRAGMA busy_timeout = {int(timeout_ms)}")
+
+
+def _apply_postgres_session_tuning(conn: sqlite3.Connection) -> None:
+    if not _is_postgres_connection(conn):
+        return
+    tuning_sql = (
+        "SET synchronous_commit TO OFF",
+        "SET work_mem TO '256MB'",
+        "SET temp_buffers TO '64MB'",
+    )
+    for sql in tuning_sql:
+        try:
+            conn.execute(sql)
+        except Exception:
+            continue
 
 
 def _safe_identifier(name: str) -> str:
@@ -206,6 +227,108 @@ def _job_is_unchanged(conn: sqlite3.Connection, job_name: str) -> bool:
     return bool(saved and current == saved)
 
 
+def _ensure_donor_address_index_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_DONOR_ADDRESS_INDEX_TABLE} (
+            donor_key TEXT PRIMARY KEY,
+            donor_name TEXT NOT NULL,
+            donor_city TEXT,
+            donor_state TEXT NOT NULL,
+            donor_zip5 TEXT,
+            norm_city TEXT,
+            norm_state TEXT NOT NULL,
+            donor_tokens TEXT
+        )
+        """
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{_DONOR_ADDRESS_INDEX_TABLE}_state_zip "
+        f"ON {_DONOR_ADDRESS_INDEX_TABLE}(norm_state, donor_zip5)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{_DONOR_ADDRESS_INDEX_TABLE}_state_city "
+        f"ON {_DONOR_ADDRESS_INDEX_TABLE}(norm_state, norm_city)"
+    )
+    conn.commit()
+
+
+def _refresh_donor_address_index_if_stale(conn: sqlite3.Connection) -> None:
+    _ensure_donor_address_index_table(conn)
+    if not _table_exists(conn, "analytics_donor_summary"):
+        return
+
+    _ensure_incremental_state_table(conn)
+
+    source_fp = _table_fingerprint(conn, "analytics_donor_summary")
+    saved_fp = _get_saved_job_fingerprint(conn, _DONOR_ADDRESS_INDEX_JOB)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS c FROM {_DONOR_ADDRESS_INDEX_TABLE}"
+    ).fetchone()
+    current_rows = int(row["c"]) if row else 0
+
+    if saved_fp == source_fp and current_rows > 0:
+        return
+
+    conn.execute(f"DELETE FROM {_DONOR_ADDRESS_INDEX_TABLE}")
+    donor_rows = conn.execute(
+        """
+        SELECT donor_key, donor_name, donor_city, donor_state
+        FROM analytics_donor_summary
+        WHERE source = 'bulk_receipts'
+            AND donor_key IS NOT NULL
+            AND donor_name IS NOT NULL
+            AND donor_state IS NOT NULL
+        """
+    ).fetchall()
+
+    batch: list[tuple[Any, ...]] = []
+    insert_sql = _build_insert_sql(
+        conn,
+        _DONOR_ADDRESS_INDEX_TABLE,
+        [
+            "donor_key",
+            "donor_name",
+            "donor_city",
+            "donor_state",
+            "donor_zip5",
+            "norm_city",
+            "norm_state",
+            "donor_tokens",
+        ],
+        replace=True,
+    )
+    for dr in donor_rows:
+        norm_state = (dr["donor_state"] or "").strip().upper()
+        if not norm_state:
+            continue
+
+        parts = (dr["donor_key"] or "").split("|")
+        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
+        donor_zip5 = zip5 if zip5 and zip5[0].isdigit() else None
+        tokens = _normalize_name_tokens(dr["donor_name"])
+
+        batch.append((
+            dr["donor_key"],
+            dr["donor_name"],
+            dr["donor_city"],
+            dr["donor_state"],
+            donor_zip5,
+            _normalize_city(dr["donor_city"]),
+            norm_state,
+            json.dumps(tokens),
+        ))
+        if len(batch) >= 5000:
+            conn.executemany(insert_sql, batch)
+            batch.clear()
+
+    if batch:
+        conn.executemany(insert_sql, batch)
+
+    _save_job_fingerprint(conn, _DONOR_ADDRESS_INDEX_JOB, source_fp)
+    conn.commit()
+
+
 def _shadow_output_table_for_worker(conn: sqlite3.Connection, table_name: str) -> None:
     if _is_postgres_connection(conn):
         conn.execute(f"DROP TABLE IF EXISTS pg_temp.{table_name}")
@@ -274,29 +397,25 @@ def _build_donor_address_indexes(
     *,
     include_name_tokens: bool = False,
 ) -> dict[str, Any]:
+    _refresh_donor_address_index_if_stale(conn)
+
     donor_rows = conn.execute(
-        """
-        SELECT donor_key, donor_name, donor_city, donor_state
-        FROM analytics_donor_summary
-        WHERE source = 'bulk_receipts'
-            AND donor_key IS NOT NULL
-            AND donor_name IS NOT NULL
-            AND donor_state IS NOT NULL
+        f"""
+        SELECT donor_key, donor_name, donor_city, donor_state,
+               donor_zip5, norm_city, norm_state, donor_tokens
+        FROM {_DONOR_ADDRESS_INDEX_TABLE}
+        WHERE norm_state IS NOT NULL AND norm_state != ''
         """
     ).fetchall()
 
     zip_index: dict[tuple[str, str], list] = defaultdict(list)
     city_index: dict[tuple[str, str], list] = defaultdict(list)
     for dr in donor_rows:
-        norm_state = (dr["donor_state"] or "").strip().upper()
+        norm_state = (dr["norm_state"] or "").strip().upper()
         if not norm_state:
             continue
 
-        donor_zip5 = None
-        parts = (dr["donor_key"] or "").split("|")
-        zip5 = parts[-1].strip()[:5] if len(parts) >= 7 else ""
-        if zip5 and zip5[0].isdigit():
-            donor_zip5 = zip5
+        donor_zip5 = dr["donor_zip5"]
 
         payload = {
             "donor_key": dr["donor_key"],
@@ -306,12 +425,19 @@ def _build_donor_address_indexes(
             "donor_zip5": donor_zip5,
         }
         if include_name_tokens:
-            payload["_tokens"] = _normalize_name_tokens(dr["donor_name"])
+            token_blob = dr["donor_tokens"]
+            if token_blob:
+                try:
+                    payload["_tokens"] = json.loads(token_blob)
+                except Exception:
+                    payload["_tokens"] = _normalize_name_tokens(dr["donor_name"])
+            else:
+                payload["_tokens"] = _normalize_name_tokens(dr["donor_name"])
 
         if donor_zip5:
             zip_index[(norm_state, donor_zip5)].append(payload)
 
-        norm_city = _normalize_city(dr["donor_city"])
+        norm_city = dr["norm_city"] or _normalize_city(dr["donor_city"])
         if norm_city:
             city_index[(norm_state, norm_city)].append(payload)
 
@@ -1189,6 +1315,7 @@ def match_527_directors_to_donors_by_address(
 def match_527_org_addresses(
     conn: sqlite3.Connection,
     name_threshold: float = 0.30,
+    org_donor_name_threshold: float = 0.0,
     donor_indexes: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Match 527 org addresses against committees by zip5+state AND name similarity.
@@ -1285,18 +1412,39 @@ def match_527_org_addresses(
             zip_col = "zip"
 
         if zip_col:
+            conn.execute("DROP TABLE IF EXISTS _tmp_bulk_committees_norm")
+            conn.execute(
+                f"""
+                CREATE TEMP TABLE _tmp_bulk_committees_norm AS
+                SELECT committee_id_sbe, committee_name,
+                       city AS c_city,
+                       state AS c_state,
+                       {zip_col} AS c_zip,
+                       UPPER(TRIM(state)) AS norm_state,
+                       SUBSTR(TRIM({zip_col}), 1, 5) AS norm_zip5
+                FROM bulk_committees_clean
+                WHERE state IS NOT NULL
+                    AND {zip_col} IS NOT NULL
+                    AND TRIM({zip_col}) != ''
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS _idx_tmp_bulk_cmte_norm_sz "
+                "ON _tmp_bulk_committees_norm(norm_state, norm_zip5)"
+            )
+            conn.commit()
+
             # JOIN on zip5+state, then filter by org_name/committee_name Jaccard
             rows = conn.execute(
                 f"""
                 SELECT o.ein, o.org_name, o.addr_type,
                        o.city AS o_city, o.state AS o_state, o.zip AS o_zip,
                        c.committee_id_sbe, c.committee_name,
-                       c.city AS c_city, c.state AS c_state, c.{zip_col} AS c_zip
+                       c.c_city, c.c_state, c.c_zip
                 FROM _tmp_527_org_addrs o
-                JOIN bulk_committees_clean c
-                    ON o.norm_state = UPPER(TRIM(c.state))
-                    AND o.norm_zip5 = SUBSTR(TRIM(c.{zip_col}), 1, 5)
-                WHERE c.state IS NOT NULL AND c.{zip_col} IS NOT NULL
+                JOIN _tmp_bulk_committees_norm c
+                    ON o.norm_state = c.norm_state
+                    AND o.norm_zip5 = c.norm_zip5
                 """
             )
 
@@ -1341,7 +1489,7 @@ def match_527_org_addresses(
 
     if can_match_donors:
         if donor_indexes is None:
-            donor_indexes = _build_donor_address_indexes(conn)
+            donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
 
         donor_zip_index = donor_indexes["zip_index"]
         donor_city_index = donor_indexes["city_index"]
@@ -1353,14 +1501,33 @@ def match_527_org_addresses(
             """
         ).fetchall()
 
+        processed_org_rows = 0
+        donor_phase_started = time.perf_counter()
         for o in org_rows:
+            processed_org_rows += 1
             norm_state = o["norm_state"]
             norm_zip5 = o["norm_zip5"]
             norm_city = _normalize_city(o["city"])
             bucket_zip = donor_zip_index.get((norm_state, norm_zip5)) or []
             bucket_city = donor_city_index.get((norm_state, norm_city), []) if norm_city else []
             if not bucket_zip and not bucket_city:
+                if processed_org_rows % _ORG_ADDRESS_PROGRESS_EVERY == 0:
+                    elapsed = max(time.perf_counter() - donor_phase_started, 1e-6)
+                    rate = processed_org_rows / elapsed
+                    eta = max((len(org_rows) - processed_org_rows) / max(rate, 1e-6), 0.0)
+                    logger.info(
+                        "527-org-address donor progress: %d/%d (%.1f%%), candidates=%d, matches=%d, rate=%.1f rows/s, eta=%s",
+                        processed_org_rows,
+                        len(org_rows),
+                        (processed_org_rows / max(len(org_rows), 1)) * 100.0,
+                        candidates_scored,
+                        total_matches,
+                        rate,
+                        _format_duration(eta),
+                    )
                 continue
+
+            org_tokens = _normalize_name_tokens(o["org_name"])
 
             seen_donors = set()
             for bucket in (bucket_zip, bucket_city):
@@ -1368,6 +1535,12 @@ def match_527_org_addresses(
                     if dr["donor_key"] in seen_donors:
                         continue
                     seen_donors.add(dr["donor_key"])
+                    candidates_scored += 1
+
+                    if org_tokens and org_donor_name_threshold > 0:
+                        donor_tokens = dr.get("_tokens") or _normalize_name_tokens(dr["donor_name"])
+                        if _jaccard(org_tokens, donor_tokens) < org_donor_name_threshold:
+                            continue
 
                     address_score = _address_score(
                         o["city"], o["state"], o["zip"],
@@ -1395,10 +1568,26 @@ def match_527_org_addresses(
                     if len(batch) >= 50000:
                         _flush()
 
+            if processed_org_rows % _ORG_ADDRESS_PROGRESS_EVERY == 0:
+                elapsed = max(time.perf_counter() - donor_phase_started, 1e-6)
+                rate = processed_org_rows / elapsed
+                eta = max((len(org_rows) - processed_org_rows) / max(rate, 1e-6), 0.0)
+                logger.info(
+                    "527-org-address donor progress: %d/%d (%.1f%%), candidates=%d, matches=%d, rate=%.1f rows/s, eta=%s",
+                    processed_org_rows,
+                    len(org_rows),
+                    (processed_org_rows / max(len(org_rows), 1)) * 100.0,
+                    candidates_scored,
+                    total_matches,
+                    rate,
+                    _format_duration(eta),
+                )
+
     _flush()
     conn.commit()
 
     conn.execute("DROP TABLE IF EXISTS _tmp_527_org_addrs")
+    conn.execute("DROP TABLE IF EXISTS _tmp_bulk_committees_norm")
     conn.commit()
 
     elapsed = time.perf_counter() - started
@@ -1479,6 +1668,7 @@ def run_all_cross_matching(
     incremental: bool = False,
 ) -> dict:
     """Run all cross-matching functions and return combined stats."""
+    _apply_postgres_session_tuning(conn)
     return _run_cross_matching_sequential(conn, threshold=threshold, incremental=incremental)
 
 
@@ -1514,7 +1704,11 @@ def _run_cross_matching_sequential(
                 shared_donor_indexes = _build_donor_address_indexes(conn, include_name_tokens=True)
             result = match_527_directors_to_donors_by_address(conn, donor_indexes=shared_donor_indexes)
         elif label == "527_org_addresses":
-            result = match_527_org_addresses(conn, donor_indexes=shared_donor_indexes)
+            result = match_527_org_addresses(
+                conn,
+                org_donor_name_threshold=_ORG_DONOR_NAME_PREFILTER_THRESHOLD,
+                donor_indexes=shared_donor_indexes,
+            )
         else:
             result = func(conn)
 
@@ -1573,6 +1767,7 @@ def run_all_cross_matching_parallel(
         """Execute one job on its own connection; writes are isolated in temp output table."""
         conn = get_db(db_path)
         _set_busy_timeout(conn, 60000)
+        _apply_postgres_session_tuning(conn)
         try:
             _shadow_output_table_for_worker(conn, output_table)
             result = func(conn)
@@ -1584,6 +1779,7 @@ def run_all_cross_matching_parallel(
     if incremental:
         conn = get_db(db_path)
         try:
+            _apply_postgres_session_tuning(conn)
             _ensure_incremental_state_table(conn)
             for label, _, _ in parallel_jobs + sequential_jobs:
                 if _job_is_unchanged(conn, label):
@@ -1632,6 +1828,7 @@ def run_all_cross_matching_parallel(
         merge_conn = get_db(db_path)
         try:
             _set_busy_timeout(merge_conn, 120000)
+            _apply_postgres_session_tuning(merge_conn)
             if incremental:
                 _ensure_incremental_state_table(merge_conn)
             for label, (table_name, columns, rows, result) in phase1_payloads.items():
@@ -1667,6 +1864,7 @@ def run_all_cross_matching_parallel(
         try:
             conn = get_db(db_path)
             _set_busy_timeout(conn, 120000)
+            _apply_postgres_session_tuning(conn)
             try:
                 _shadow_output_table_for_worker(conn, _output_table)
                 if label == "527_director_addresses":
@@ -1679,6 +1877,7 @@ def run_all_cross_matching_parallel(
                 elif label == "527_org_addresses":
                     result = match_527_org_addresses(
                         conn,
+                        org_donor_name_threshold=_ORG_DONOR_NAME_PREFILTER_THRESHOLD,
                         donor_indexes=shared_donor_indexes,
                     )
                 else:
@@ -1689,6 +1888,7 @@ def run_all_cross_matching_parallel(
 
             merge_conn = get_db(db_path)
             _set_busy_timeout(merge_conn, 120000)
+            _apply_postgres_session_tuning(merge_conn)
             try:
                 if incremental:
                     _ensure_incremental_state_table(merge_conn)
