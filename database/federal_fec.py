@@ -5524,7 +5524,7 @@ def get_federal_race_analytics(
         FROM fec_schedule_a_contributions sa
         WHERE sa.candidate_id IS NOT NULL
           AND (? IS NULL OR sa.cycle = ?)
-        GROUP BY donor_entity_key, sa.candidate_id
+                GROUP BY 1, sa.candidate_id
         """,
         (cycle, cycle),
     ).fetchall()

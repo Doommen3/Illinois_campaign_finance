@@ -100,13 +100,21 @@ class PostgresCompatCursor:
 
         self._fake_rows = None
         translated = _qmark_to_percent_s(sql)
-        self._cursor.execute(translated, bound_params)
+        try:
+            self._cursor.execute(translated, bound_params)
+        except Exception:
+            self._conn.rollback()
+            raise
         return self
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> "PostgresCompatCursor":
         self._fake_rows = None
         translated = _qmark_to_percent_s(sql)
-        self._cursor.executemany(translated, seq_of_params)
+        try:
+            self._cursor.executemany(translated, seq_of_params)
+        except Exception:
+            self._conn.rollback()
+            raise
         return self
 
     def fetchone(self):
@@ -177,43 +185,85 @@ class PostgresCompatConnection:
         return None
 
     def _sqlite_master_table_exists(self, table_name: str) -> list[dict[str, Any]]:
-        row = self._pg_conn.execute(
-            """
-            SELECT 1 AS one
-            FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = %s
-            """,
-            (table_name,),
-        ).fetchone()
+        try:
+            row = self._pg_conn.execute(
+                """
+                SELECT 1 AS one
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+                """,
+                (table_name,),
+            ).fetchone()
+        except Exception:
+            self._pg_conn.rollback()
+            row = self._pg_conn.execute(
+                """
+                SELECT 1 AS one
+                FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = %s
+                """,
+                (table_name,),
+            ).fetchone()
         return [{"one": 1}] if row else []
 
     def _pragma_table_info(self, table_name: str) -> list[dict[str, Any]]:
-        rows = self._pg_conn.execute(
-            """
-            WITH pk_columns AS (
-                SELECT kcu.column_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                  ON tc.constraint_name = kcu.constraint_name
-                 AND tc.table_schema = kcu.table_schema
-                 AND tc.table_name = kcu.table_name
-                WHERE tc.table_schema = 'public'
-                  AND tc.table_name = %s
-                  AND tc.constraint_type = 'PRIMARY KEY'
-            )
-            SELECT
-                c.ordinal_position - 1 AS cid,
-                c.column_name AS name,
-                c.data_type AS type,
-                CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
-                c.column_default AS dflt_value,
-                CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
-            FROM information_schema.columns c
-            LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
-            WHERE c.table_schema = 'public'
-              AND c.table_name = %s
-            ORDER BY c.ordinal_position
-            """,
-            (table_name, table_name),
-        ).fetchall()
+        try:
+            rows = self._pg_conn.execute(
+                """
+                WITH pk_columns AS (
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = 'public'
+                      AND tc.table_name = %s
+                      AND tc.constraint_type = 'PRIMARY KEY'
+                )
+                SELECT
+                    c.ordinal_position - 1 AS cid,
+                    c.column_name AS name,
+                    c.data_type AS type,
+                    CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+                    c.column_default AS dflt_value,
+                    CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
+                FROM information_schema.columns c
+                LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
+                WHERE c.table_schema = 'public'
+                  AND c.table_name = %s
+                ORDER BY c.ordinal_position
+                """,
+                (table_name, table_name),
+            ).fetchall()
+        except Exception:
+            self._pg_conn.rollback()
+            rows = self._pg_conn.execute(
+                """
+                WITH pk_columns AS (
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = 'public'
+                      AND tc.table_name = %s
+                      AND tc.constraint_type = 'PRIMARY KEY'
+                )
+                SELECT
+                    c.ordinal_position - 1 AS cid,
+                    c.column_name AS name,
+                    c.data_type AS type,
+                    CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+                    c.column_default AS dflt_value,
+                    CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
+                FROM information_schema.columns c
+                LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
+                WHERE c.table_schema = 'public'
+                  AND c.table_name = %s
+                ORDER BY c.ordinal_position
+                """,
+                (table_name, table_name),
+            ).fetchall()
         return [dict(row) for row in rows]

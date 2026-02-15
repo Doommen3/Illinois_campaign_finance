@@ -1990,7 +1990,7 @@ def get_state_race_analytics(
             TRIM(COALESCE(district_type, '')) AS district_type,
             TRIM(COALESCE(district, '')) AS district,
             CAST(committee_id_sbe AS TEXT) AS committee_id_sbe,
-            COALESCE(SUM(sum_total_receipts), 0.0) AS candidate_receipts_total
+            COALESCE(SUM(CAST(sum_total_receipts AS DOUBLE PRECISION)), 0.0) AS candidate_receipts_total
         FROM bulk_candidate_committee_finance_agg
         {candidate_where}
         GROUP BY candidate_id, candidate_full_name, office_sought, district_type, district, committee_id_sbe
