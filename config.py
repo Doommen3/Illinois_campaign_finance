@@ -75,3 +75,13 @@ DEFAULT_BATCH_SIZE = 20
 
 # Federal Election Commission (FEC) sync
 FEC_API_KEY = os.environ.get('FEC_API_KEY', '')
+
+# Socrata / Chicago Open Data
+SOCRATA_APP_NAME = os.environ.get('SOCRATA_APP_NAME', 'Illinois_campaignfinance').strip() or 'Illinois_campaignfinance'
+SOCRATA_APP_TOKEN = os.environ.get('SOCRATA_APP_TOKEN', '').strip()
+SOCRATA_APP_SECRET = os.environ.get('SOCRATA_APP_SECRET', '').strip()
+SOCRATA_API_BASE_URL = os.environ.get('SOCRATA_API_BASE_URL', 'https://data.cityofchicago.org').strip().rstrip('/')
+SOCRATA_API_PAGE_LIMIT = int(os.environ.get('SOCRATA_API_PAGE_LIMIT', 50000))
+SOCRATA_API_TIMEOUT_SECONDS = int(os.environ.get('SOCRATA_API_TIMEOUT_SECONDS', 60))
+SOCRATA_API_MAX_RETRIES = int(os.environ.get('SOCRATA_API_MAX_RETRIES', 5))
+SOCRATA_API_MIN_INTERVAL_SECONDS = float(os.environ.get('SOCRATA_API_MIN_INTERVAL_SECONDS', 0.25))

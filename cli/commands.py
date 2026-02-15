@@ -35,6 +35,7 @@ from database.federal_fec import (
 from database.local_donor_entities import rebuild_local_donor_entities
 from database.lobbying_loader import load_lobbying_csv
 from database.irs527_loader import load_irs527_full_file, reload_irs527_reports, reload_irs527_contributions
+from database.chicago_loader import import_chicago_phase1
 from database.cross_matching import (
     match_lobbying_to_donors,
     match_lobbying_to_expenditure_payees,
@@ -1442,6 +1443,42 @@ def import_lobbying_command(file_path):
         conn.close()
 
 
+@cli.command('import-chicago-phase1')
+@click.option('--app-token', default=None,
+              help='Optional Socrata app token override (otherwise uses SOCRATA_APP_TOKEN env)')
+@click.option('--row-limit', type=int, default=None,
+              help='Optional max rows per dataset for this run')
+@click.option('--page-limit', type=int, default=None,
+              help='Optional API page size override (max 50000)')
+@click.option('--full-refresh/--upsert', default=True, show_default=True,
+              help='Delete existing phase1 rows before import, or upsert into existing data')
+def import_chicago_phase1_command(app_token, row_limit, page_limit, full_refresh):
+    """Import Chicago Open Data phase 1 datasets via Socrata API."""
+    conn = get_db(config.DATABASE_PATH)
+    try:
+        click.echo('Importing Chicago phase1 datasets via Socrata API...')
+        resolved_app_token = (app_token or config.SOCRATA_APP_TOKEN or '').strip()
+        if not resolved_app_token:
+            click.echo('Error importing Chicago phase1 data: SOCRATA_APP_TOKEN is not set', err=True)
+            sys.exit(1)
+
+        stats = import_chicago_phase1(
+            conn,
+            app_token=resolved_app_token,
+            full_refresh=bool(full_refresh),
+            row_limit=row_limit,
+            page_limit=page_limit,
+        )
+        click.echo('Chicago phase1 import completed:')
+        for key, value in stats.items():
+            click.echo(f'  {key}: {value}')
+    except Exception as e:
+        click.echo(f'Error importing Chicago phase1 data: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 @cli.command('import-irs527')
 @click.option('--file', 'file_path', required=True,
               help='Path to IRS 527 FullDataFile.txt')
@@ -1544,11 +1581,16 @@ def repair_irs527_contributions_command(file_path, illinois_only, replace_existi
               help='Run all match functions in parallel threads (only applies to --only all)')
 @click.option('--workers', default=4, type=int, show_default=True,
               help='Number of parallel worker threads (only applies with --parallel)')
-def run_cross_matching_command(threshold, only_match, parallel, workers):
+@click.option('--incremental/--full-rebuild', default=False, show_default=True,
+              help='Skip unchanged jobs using source-table fingerprints')
+def run_cross_matching_command(threshold, only_match, parallel, workers, incremental):
     """Run cross-matching between lobbying, IRS 527, and campaign finance data."""
     conn = get_db(config.DATABASE_PATH)
     try:
-        click.echo(f'Running cross-matching (threshold={threshold}, only={only_match}, parallel={parallel})...')
+        click.echo(
+            f'Running cross-matching (threshold={threshold}, only={only_match}, '
+            f'parallel={parallel}, incremental={incremental})...'
+        )
 
         match_funcs = {
             'lobbying-donors': ('lobbying_donors', lambda c, t: match_lobbying_to_donors(c, threshold=t)),
@@ -1570,6 +1612,7 @@ def run_cross_matching_command(threshold, only_match, parallel, workers):
                     config.DATABASE_PATH,
                     threshold=threshold,
                     max_workers=max(1, workers),
+                    incremental=incremental,
                 )
                 errors = results.pop("_errors", [])
                 if errors:
@@ -1577,7 +1620,7 @@ def run_cross_matching_command(threshold, only_match, parallel, workers):
                     for err in errors:
                         click.echo(f'    - {err["job"]}: {err["error"]}')
             else:
-                results = run_all_cross_matching(conn, threshold=threshold)
+                results = run_all_cross_matching(conn, threshold=threshold, incremental=incremental)
         else:
             label, func = match_funcs[only_match]
             results = {label: func(conn, threshold)}

@@ -799,6 +799,107 @@ CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_client
 CREATE INDEX IF NOT EXISTS idx_lobbying_lobbyist_regs_year
     ON lobbying_lobbyist_registrations(reg_year);
 
+-- City of Chicago Open Data (Socrata) - Phase 1
+CREATE TABLE IF NOT EXISTS chicago_contracts_raw (
+    socrata_row_id TEXT PRIMARY KEY,
+    purchase_order_contract_number TEXT,
+    revision_number TEXT,
+    specification_number TEXT,
+    contract_type TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    approval_date TEXT,
+    department TEXT,
+    vendor_name TEXT,
+    vendor_id TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    award_amount REAL,
+    procurement_type TEXT,
+    purchase_order_description TEXT,
+    contract_pdf TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chicago_contracts_contract_number
+    ON chicago_contracts_raw(purchase_order_contract_number);
+CREATE INDEX IF NOT EXISTS idx_chicago_contracts_vendor
+    ON chicago_contracts_raw(vendor_name);
+CREATE INDEX IF NOT EXISTS idx_chicago_contracts_vendor_id
+    ON chicago_contracts_raw(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_chicago_contracts_approval_date
+    ON chicago_contracts_raw(approval_date);
+
+CREATE TABLE IF NOT EXISTS chicago_payments_raw (
+    socrata_row_id TEXT PRIMARY KEY,
+    voucher_number TEXT,
+    amount REAL,
+    check_date_raw TEXT,
+    check_date TEXT,
+    department_name TEXT,
+    contract_number TEXT,
+    vendor_name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chicago_payments_contract_number
+    ON chicago_payments_raw(contract_number);
+CREATE INDEX IF NOT EXISTS idx_chicago_payments_vendor
+    ON chicago_payments_raw(vendor_name);
+CREATE INDEX IF NOT EXISTS idx_chicago_payments_check_date
+    ON chicago_payments_raw(check_date);
+
+CREATE TABLE IF NOT EXISTS chicago_lobbyist_contributions_raw (
+    socrata_row_id TEXT PRIMARY KEY,
+    contribution_id INTEGER,
+    period_start TEXT,
+    period_end TEXT,
+    contribution_date TEXT,
+    recipient TEXT,
+    amount REAL,
+    lobbyist_id INTEGER,
+    lobbyist_first_name TEXT,
+    lobbyist_last_name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_contrib_lobbyist
+    ON chicago_lobbyist_contributions_raw(lobbyist_id);
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_contrib_recipient
+    ON chicago_lobbyist_contributions_raw(recipient);
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_contrib_date
+    ON chicago_lobbyist_contributions_raw(contribution_date);
+
+CREATE TABLE IF NOT EXISTS chicago_lobbying_activity_raw (
+    socrata_row_id TEXT PRIMARY KEY,
+    lobbying_activity_id INTEGER,
+    period_start TEXT,
+    period_end TEXT,
+    action TEXT,
+    action_sought TEXT,
+    department TEXT,
+    client_id INTEGER,
+    client_name TEXT,
+    lobbyist_id INTEGER,
+    lobbyist_first_name TEXT,
+    lobbyist_last_name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_activity_lobbyist
+    ON chicago_lobbying_activity_raw(lobbyist_id);
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_activity_client
+    ON chicago_lobbying_activity_raw(client_id);
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_activity_client_name
+    ON chicago_lobbying_activity_raw(client_name);
+CREATE INDEX IF NOT EXISTS idx_chicago_lobby_activity_period_start
+    ON chicago_lobbying_activity_raw(period_start);
+
 -- IRS 527 Political Organization Filings
 CREATE TABLE IF NOT EXISTS irs527_organizations (
     ein TEXT NOT NULL,

@@ -8,6 +8,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Federal Elections Commission (FEC)** — Illinois federal candidates, Schedule A contributions, Schedule B disbursements, Schedule E independent expenditures via the FEC API
 - **IL Secretary of State Lobbying** — Active lobbying entities/clients plus daily lobbyist-entity-client extracts (supports both `ENTITY_ID`/`ENTITY_NAME` and `ENT_ID`/`ENT_NAME` source headers)
 - **IRS 527 Political Organizations** — Organization registrations, periodic reports, directors, related organizations, expenditures, and election authority filings from IRS Form 8871/8872
+- **City of Chicago Open Data (Socrata)** — Contracts, payments, lobbyist contributions, and lobbying activity ingested via SODA API pagination (Phase 1)
 
 ## Features
 
@@ -112,13 +113,29 @@ python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_D
 # Import IRS 527 political org filings (IL-filtered by default)
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
 
+# Import City of Chicago Phase 1 datasets from Socrata API
+# Uses SOCRATA_APP_TOKEN from environment unless --app-token is provided
+python run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert
+
 # Run cross-matching across all data sources
 python run.py run-cross-matching --only all --parallel --workers 4
+
+# Incremental cross-matching (skip unchanged jobs)
+python run.py run-cross-matching --only all --parallel --workers 4 --incremental
+
+# Force full rebuild
+python run.py run-cross-matching --only all --no-parallel --full-rebuild
 ```
 
 Compute-heavy workflow recommendation:
 - For commands expected to take significant CPU time (for example `import-irs527` and `run-cross-matching --only all`), consider running on your local machine first.
 - Prefer uploading resulting files or derived outputs to the server, and use server-side execution for steps that must run directly against production data.
+
+PostgreSQL (self-hosted) migration runbook:
+- See `docs/postgres_self_hosted_runbook.md` for install, migration, verification, backup, and cutover checklists.
+- Migration helper scripts:
+  - `scripts/postgres/migrate_sqlite_to_postgres.py`
+  - `scripts/postgres/verify_sqlite_postgres_counts.py`
 
 ### Run Scrapers (Optional)
 ```bash
@@ -263,6 +280,14 @@ Environment variables (set in `.env` or export directly):
 | `LOCAL_DATA_STALE_DAYS` | `45` | Freshness warning threshold for local data |
 | `FEDERAL_DATA_STALE_DAYS` | `14` | Freshness warning threshold for federal data |
 | `RATE_LIMIT_RPM` | `30` | Scraper requests per minute |
+| `SOCRATA_APP_NAME` | `Illinois_campaignfinance` | User-Agent app name for Socrata requests |
+| `SOCRATA_APP_TOKEN` | *(empty)* | Socrata app token used by `import-chicago-phase1` |
+| `SOCRATA_APP_SECRET` | *(empty)* | Optional Socrata app secret (reserved for future auth flows) |
+| `SOCRATA_API_BASE_URL` | `https://data.cityofchicago.org` | Base URL for Socrata API |
+| `SOCRATA_API_PAGE_LIMIT` | `50000` | Maximum rows requested per Socrata page |
+| `SOCRATA_API_TIMEOUT_SECONDS` | `60` | HTTP timeout for Socrata requests |
+| `SOCRATA_API_MAX_RETRIES` | `5` | Retry attempts for throttled/transient Socrata failures |
+| `SOCRATA_API_MIN_INTERVAL_SECONDS` | `0.25` | Minimum delay between Socrata API calls |
 
 ## Route Performance Notes (2026-02)
 

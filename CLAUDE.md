@@ -50,6 +50,7 @@ python run.py runserver --port 5000
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
 3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
+5. **City of Chicago (Socrata)** - Contracts, payments, lobbyist contributions, and lobbying activity (Phase 1 API ingest)
 
 ### Cross-Matching Engine
 
@@ -83,6 +84,14 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS`
    - `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_PREWARM_ENABLED`
+   - `SOCRATA_APP_NAME`
+   - `SOCRATA_APP_TOKEN`
+   - `SOCRATA_APP_SECRET`
+   - `SOCRATA_API_BASE_URL`
+   - `SOCRATA_API_PAGE_LIMIT`
+   - `SOCRATA_API_TIMEOUT_SECONDS`
+   - `SOCRATA_API_MAX_RETRIES`
+   - `SOCRATA_API_MIN_INTERVAL_SECONDS`
 - Homepage donor query fast path uses `analytics_donor_summary` (fallback remains legacy donor totals query if the summary table is absent).
 - 527 contribution ingest now populates `irs527_contributor_rollup` to reduce expensive recomputation for contribution summary metrics.
 - Benchmarking guidance:
@@ -232,6 +241,17 @@ python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_D
 ```bash
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
 ```
+
+### Import Chicago Phase 1 Socrata data
+```bash
+python run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert
+```
+
+Phase 1 datasets imported:
+- `rsxa-ify5` (Contracts)
+- `s4vu-giwb` (Payments)
+- `p9p7-vfqc` (Lobbyist Contributions)
+- `pahz-egmi` (Lobbying Activity)
 
 ### Run cross-matching
 ```bash
