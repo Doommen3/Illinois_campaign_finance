@@ -78,6 +78,56 @@ _JOB_INPUT_TABLES: dict[str, tuple[str, ...]] = {
     "lobbying_527": ("lobbying_clients", "irs527_organizations"),
 }
 
+_REPLACE_TARGET_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "lobbying_donor_matches": ("client_id", "donor_key"),
+    "irs527_committee_matches": ("ein", "committee_id_sbe"),
+    "lobbying_527_matches": ("client_id", "ein"),
+}
+
+
+def _is_postgres_connection(conn: sqlite3.Connection) -> bool:
+    return conn.__class__.__name__ == "PostgresCompatConnection"
+
+
+def _set_busy_timeout(conn: sqlite3.Connection, timeout_ms: int) -> None:
+    if _is_postgres_connection(conn):
+        return
+    conn.execute(f"PRAGMA busy_timeout = {int(timeout_ms)}")
+
+
+def _build_insert_sql(
+    conn: sqlite3.Connection,
+    table_name: str,
+    columns: list[str],
+    *,
+    replace: bool,
+) -> str:
+    column_sql = ", ".join(columns)
+    placeholder_sql = ", ".join(["?"] * len(columns))
+
+    if not replace:
+        return f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})"
+
+    if not _is_postgres_connection(conn):
+        return f"INSERT OR REPLACE INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})"
+
+    conflict_cols = list(_REPLACE_TARGET_PRIMARY_KEYS.get(table_name, ()))
+    if not conflict_cols:
+        return f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})"
+
+    non_conflict_cols = [col for col in columns if col not in conflict_cols]
+    conflict_sql = ", ".join(conflict_cols)
+    if non_conflict_cols:
+        update_sql = ", ".join(f"{col} = EXCLUDED.{col}" for col in non_conflict_cols)
+        return (
+            f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql}) "
+            f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {update_sql}"
+        )
+    return (
+        f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql}) "
+        f"ON CONFLICT ({conflict_sql}) DO NOTHING"
+    )
+
 
 def _chunked(values: list[tuple], size: int = 5000):
     for idx in range(0, len(values), size):
@@ -102,7 +152,7 @@ def _table_fingerprint(conn: sqlite3.Connection, table_name: str) -> str:
         return "missing"
     try:
         row = conn.execute(f"SELECT COUNT(*) AS c, COALESCE(MAX(rowid), 0) AS m FROM {table_name}").fetchone()
-    except sqlite3.OperationalError:
+    except Exception:
         row = conn.execute(f"SELECT COUNT(*) AS c, 0 AS m FROM {table_name}").fetchone()
     return f"{int(row['c'])}:{int(row['m'])}"
 
@@ -151,14 +201,18 @@ def _job_is_unchanged(conn: sqlite3.Connection, job_name: str) -> bool:
 
 
 def _shadow_output_table_for_worker(conn: sqlite3.Connection, table_name: str) -> None:
-    conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
-    conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM main.{table_name} WHERE 0")
+    if _is_postgres_connection(conn):
+        conn.execute(f"DROP TABLE IF EXISTS pg_temp.{table_name}")
+        conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM public.{table_name} WHERE 0")
+    else:
+        conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
+        conn.execute(f"CREATE TEMP TABLE {table_name} AS SELECT * FROM main.{table_name} WHERE 0")
     conn.commit()
 
 
 def _read_temp_output_rows(conn: sqlite3.Connection, table_name: str) -> tuple[list[str], list[tuple]]:
     columns = [row["name"] for row in conn.execute(f"PRAGMA temp.table_info({table_name})").fetchall()]
-    rows = [tuple(row) for row in conn.execute(f"SELECT * FROM temp.{table_name}").fetchall()]
+    rows = [tuple(row) for row in conn.execute(f"SELECT * FROM {table_name}").fetchall()]
     return columns, rows
 
 
@@ -173,9 +227,7 @@ def _merge_rows_into_output_table(
         conn.commit()
         return
 
-    column_sql = ", ".join(columns)
-    placeholder_sql = ", ".join(["?"] * len(columns))
-    insert_sql = f"INSERT OR REPLACE INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})"
+    insert_sql = _build_insert_sql(conn, table_name, columns, replace=True)
     for chunk in _chunked(rows, size=5000):
         conn.executemany(insert_sql, chunk)
         conn.commit()
@@ -464,12 +516,14 @@ def match_lobbying_to_donors(conn: sqlite3.Connection, threshold: float = 0.80) 
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "lobbying_donor_matches",
+            ["client_id", "donor_key", "client_name", "donor_name", "score", "method"],
+            replace=True,
+        )
         conn.executemany(
-            """
-            INSERT OR REPLACE INTO lobbying_donor_matches
-                (client_id, donor_key, client_name, donor_name, score, method)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -604,12 +658,14 @@ def match_527_to_committees(conn: sqlite3.Connection, threshold: float = 0.80) -
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "irs527_committee_matches",
+            ["ein", "org_name", "committee_id_sbe", "committee_name", "score", "method"],
+            replace=True,
+        )
         conn.executemany(
-            """
-            INSERT OR REPLACE INTO irs527_committee_matches
-                (ein, org_name, committee_id_sbe, committee_name, score, method)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -1358,12 +1414,14 @@ def match_lobbying_to_527(conn: sqlite3.Connection, threshold: float = 0.80) -> 
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "lobbying_527_matches",
+            ["client_id", "client_name", "ein", "org_name", "score"],
+            replace=True,
+        )
         conn.executemany(
-            """
-            INSERT OR REPLACE INTO lobbying_527_matches
-                (client_id, client_name, ein, org_name, score)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -1478,7 +1536,7 @@ def run_all_cross_matching_parallel(
     def _run_parallel_job(label: str, output_table: str, func):
         """Execute one job on its own connection; writes are isolated in temp output table."""
         conn = get_db(db_path)
-        conn.execute("PRAGMA busy_timeout = 60000")
+        _set_busy_timeout(conn, 60000)
         try:
             _shadow_output_table_for_worker(conn, output_table)
             result = func(conn)
@@ -1537,7 +1595,7 @@ def run_all_cross_matching_parallel(
     if phase1_payloads:
         merge_conn = get_db(db_path)
         try:
-            merge_conn.execute("PRAGMA busy_timeout = 120000")
+            _set_busy_timeout(merge_conn, 120000)
             if incremental:
                 _ensure_incremental_state_table(merge_conn)
             for label, (table_name, columns, rows, result) in phase1_payloads.items():
@@ -1572,7 +1630,7 @@ def run_all_cross_matching_parallel(
         job_started = time.perf_counter()
         try:
             conn = get_db(db_path)
-            conn.execute("PRAGMA busy_timeout = 120000")
+            _set_busy_timeout(conn, 120000)
             try:
                 if label == "527_director_addresses":
                     if shared_donor_indexes is None and _table_exists(conn, "analytics_donor_summary"):

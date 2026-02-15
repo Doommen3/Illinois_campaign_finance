@@ -5,6 +5,9 @@ from database.connection import get_db, init_db
 from database.cross_matching import (
     _normalize_name_tokens,
     _jaccard,
+    _build_insert_sql,
+    _shadow_output_table_for_worker,
+    _merge_rows_into_output_table,
     match_lobbying_to_donors,
     match_lobbying_to_527,
     match_527_expenditures_to_committees,
@@ -22,6 +25,12 @@ def test_normalize_name_tokens():
     assert _normalize_name_tokens(None) == []
     # Multi-word names retain non-stop words
     assert _normalize_name_tokens("Northwestern University") == ["northwestern", "university"]
+
+
+def test_normalize_name_tokens_handles_bom_and_malformed_text():
+    assert _normalize_name_tokens("\ufeffAcme, LLC!!!") == ["acme"]
+    assert _normalize_name_tokens("\ufeff   ") == []
+    assert _normalize_name_tokens("@@@###") == []
 
 
 def test_jaccard_identical():
@@ -267,3 +276,65 @@ def test_run_all_cross_matching_parallel_matches_sequential(tmp_path: Path):
         seq_matches = sequential_results[key].get("matches", 0)
         par_matches = parallel_results[key].get("matches", 0)
         assert seq_matches == par_matches, f"{key}: sequential={seq_matches} != parallel={par_matches}"
+
+
+def test_build_insert_sql_for_postgres_replace_uses_on_conflict():
+    class PostgresCompatConnection:
+        pass
+
+    sql = _build_insert_sql(
+        PostgresCompatConnection(),
+        "lobbying_donor_matches",
+        ["client_id", "donor_key", "client_name", "donor_name", "score", "method"],
+        replace=True,
+    )
+    assert "INSERT OR REPLACE" not in sql
+    assert "ON CONFLICT (client_id, donor_key)" in sql
+    assert "DO UPDATE SET" in sql
+
+
+def test_shadow_output_table_for_postgres_uses_public_source():
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, params=None):
+            self.sql.append(sql.strip())
+            return self
+
+        def commit(self):
+            return None
+
+    conn = PostgresCompatConnection()
+    _shadow_output_table_for_worker(conn, "lobbying_donor_matches")
+    assert any("DROP TABLE IF EXISTS pg_temp.lobbying_donor_matches" in q for q in conn.sql)
+    assert any("CREATE TEMP TABLE lobbying_donor_matches AS SELECT * FROM public.lobbying_donor_matches WHERE 0" in q for q in conn.sql)
+
+
+def test_merge_rows_into_output_table_postgres_uses_on_conflict_sql():
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.executemany_calls = []
+
+        def execute(self, sql, params=None):
+            return self
+
+        def executemany(self, sql, rows):
+            self.executemany_calls.append((sql, list(rows)))
+            return self
+
+        def commit(self):
+            return None
+
+    conn = PostgresCompatConnection()
+    _merge_rows_into_output_table(
+        conn,
+        "lobbying_donor_matches",
+        ["client_id", "donor_key", "client_name", "donor_name", "score", "method"],
+        [(1, "k1", "Client", "Donor", 0.95, "jaccard")],
+    )
+    assert conn.executemany_calls
+    sql, rows = conn.executemany_calls[0]
+    assert "ON CONFLICT (client_id, donor_key)" in sql
+    assert "INSERT OR REPLACE" not in sql
+    assert len(rows) == 1

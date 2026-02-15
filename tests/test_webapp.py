@@ -178,6 +178,14 @@ class TestWebApp:
         assert b'Federal Committee Disbursements (Schedule B)' in response.data
         assert b'Federal Independent Expenditures (Schedule E)' in response.data
 
+    def test_analytics_networks_tab_css_hooks_present(self, client):
+        """Analytics networks page should retain baseline stylesheet/scaffold markup."""
+        response = client.get('/analytics/networks')
+        assert response.status_code == 200
+        assert b'/static/css/style.css' in response.data
+        assert b'Analytics: Networks' in response.data
+        assert b'class="search-form analytics-form"' in response.data
+
     def test_candidate_finance_page_loads_without_bulk_table(self, client):
         """Test candidate finance page renders guidance when bulk table is missing."""
         response = client.get('/candidate-finance/')

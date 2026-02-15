@@ -1597,7 +1597,8 @@ def repair_irs527_contributions_command(file_path, illinois_only, replace_existi
               help='Skip unchanged jobs using source-table fingerprints')
 def run_cross_matching_command(threshold, only_match, parallel, workers, incremental):
     """Run cross-matching between lobbying, IRS 527, and campaign finance data."""
-    conn = get_db(config.DATABASE_PATH)
+    db_target = config.DATABASE_TARGET
+    conn = get_db(db_target)
     try:
         click.echo(
             f'Running cross-matching (threshold={threshold}, only={only_match}, '
@@ -1621,7 +1622,7 @@ def run_cross_matching_command(threshold, only_match, parallel, workers, increme
                 conn.close()
                 conn = None  # each worker opens its own connection
                 results = run_all_cross_matching_parallel(
-                    config.DATABASE_PATH,
+                    db_target,
                     threshold=threshold,
                     max_workers=max(1, workers),
                     incremental=incremental,
