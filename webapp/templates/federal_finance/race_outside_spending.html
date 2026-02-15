@@ -54,6 +54,7 @@
                 <tr>
                     <th>Committee ID</th>
                     <th>Committee Name</th>
+                    <th>Candidates Targeted</th>
                     <th>Transactions</th>
                     <th>Total Amount</th>
                 </tr>
@@ -63,11 +64,12 @@
                 <tr>
                     <td>{{ row.committee_id if row.committee_id else '-' }}</td>
                     <td>{{ row.committee_name if row.committee_name else '-' }}</td>
+                    <td>{{ row.candidate_names if row.candidate_names else '-' }}</td>
                     <td>{{ row.transaction_count }}</td>
                     <td>{{ format_currency(row.total_amount) }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4">No committee rows found for this filter.</td></tr>
+                <tr><td colspan="5">No committee rows found for this filter.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -82,6 +84,8 @@
                 <tr>
                     <th>Payee</th>
                     <th>State</th>
+                    <th>Paying Committees</th>
+                    <th>Candidates Targeted</th>
                     <th>Transactions</th>
                     <th>Total Amount</th>
                 </tr>
@@ -91,11 +95,13 @@
                 <tr>
                     <td>{{ row.payee_name if row.payee_name else '-' }}</td>
                     <td>{{ row.payee_state if row.payee_state else '-' }}</td>
+                    <td>{{ row.committee_names if row.committee_names else '-' }}</td>
+                    <td>{{ row.candidate_names if row.candidate_names else '-' }}</td>
                     <td>{{ row.transaction_count }}</td>
                     <td>{{ format_currency(row.total_amount) }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4">No payee rows found for this filter.</td></tr>
+                <tr><td colspan="6">No payee rows found for this filter.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

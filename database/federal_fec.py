@@ -5822,7 +5822,10 @@ def get_federal_race_outside_spending(
             se.committee_id,
             COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee') AS committee_name,
             COUNT(*) AS transaction_count,
-            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount
+            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
+            GROUP_CONCAT(
+                DISTINCT COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)
+            ) AS candidate_names
         FROM fec_schedule_e_independent_expenditures se
         {candidate_join_sql}
         WHERE {where_sql}
@@ -5839,7 +5842,13 @@ def get_federal_race_outside_spending(
             COALESCE(NULLIF(se.payee_name, ''), 'Unknown Payee') AS payee_name,
             COALESCE(NULLIF(se.payee_state, ''), '') AS payee_state,
             COUNT(*) AS transaction_count,
-            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount
+            COALESCE(SUM(se.expenditure_amount), 0.0) AS total_amount,
+            GROUP_CONCAT(
+                DISTINCT COALESCE(NULLIF(se.committee_name, ''), se.committee_id, 'Unknown Committee')
+            ) AS committee_names,
+            GROUP_CONCAT(
+                DISTINCT COALESCE(NULLIF(se.candidate_name, ''), cm.candidate_name, se.candidate_id)
+            ) AS candidate_names
         FROM fec_schedule_e_independent_expenditures se
         {candidate_join_sql}
         WHERE {where_sql}
@@ -5907,6 +5916,7 @@ def get_federal_race_outside_spending(
                 "committee_name": row["committee_name"],
                 "transaction_count": int(row["transaction_count"] or 0),
                 "total_amount": float(row["total_amount"] or 0.0),
+                "candidate_names": row["candidate_names"] or "",
             }
             for row in top_committees_rows
         ],
@@ -5916,6 +5926,8 @@ def get_federal_race_outside_spending(
                 "payee_state": row["payee_state"],
                 "transaction_count": int(row["transaction_count"] or 0),
                 "total_amount": float(row["total_amount"] or 0.0),
+                "committee_names": row["committee_names"] or "",
+                "candidate_names": row["candidate_names"] or "",
             }
             for row in top_payees_rows
         ],
