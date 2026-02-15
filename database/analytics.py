@@ -1977,7 +1977,7 @@ def get_state_race_analytics(
     where_parts: list[str] = []
     where_params: list[object] = []
     if has_cycle and resolved_cycle is not None:
-        where_parts.append("election_cycle = ?")
+        where_parts.append("CAST(election_cycle AS TEXT) = CAST(? AS TEXT)")
         where_params.append(int(resolved_cycle))
     candidate_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
