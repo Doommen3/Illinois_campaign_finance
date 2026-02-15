@@ -343,7 +343,7 @@ def test_shadow_output_table_for_postgres_uses_public_source():
     assert any("CREATE TEMP TABLE lobbying_donor_matches AS SELECT * FROM public.lobbying_donor_matches WHERE FALSE" in q for q in conn.sql)
 
 
-def test_merge_rows_into_output_table_postgres_uses_swap_pattern():
+def test_merge_rows_into_output_table_postgres_uses_truncate_pattern():
     class PostgresCompatConnection:
         def __init__(self):
             self.execute_calls = []
@@ -368,13 +368,10 @@ def test_merge_rows_into_output_table_postgres_uses_swap_pattern():
         [(1, "k1", "Client", "Donor", 0.95, "jaccard")],
     )
 
-    assert any("CREATE TABLE _swap_lobbying_donor_matches_" in q for q in conn.execute_calls)
-    assert any("LOCK TABLE lobbying_donor_matches IN ACCESS EXCLUSIVE MODE" in q for q in conn.execute_calls)
-    assert any("ALTER TABLE lobbying_donor_matches RENAME TO _old_lobbying_donor_matches_" in q for q in conn.execute_calls)
-    assert any("ALTER TABLE _swap_lobbying_donor_matches_" in q and "RENAME TO lobbying_donor_matches" in q for q in conn.execute_calls)
+    assert any("TRUNCATE TABLE lobbying_donor_matches" in q for q in conn.execute_calls)
     assert conn.executemany_calls
     sql, rows = conn.executemany_calls[0]
-    assert "INSERT INTO _swap_lobbying_donor_matches_" in sql
+    assert "INSERT INTO lobbying_donor_matches" in sql
     assert "INSERT OR REPLACE" not in sql
     assert len(rows) == 1
 

@@ -83,6 +83,7 @@ _REPLACE_TARGET_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "lobbying_donor_matches": ("client_id", "donor_key"),
     "irs527_committee_matches": ("ein", "committee_id_sbe"),
     "lobbying_527_matches": ("client_id", "ein"),
+    "cross_matching_donor_address_index": ("donor_key",),
 }
 
 _DONOR_ADDRESS_INDEX_TABLE = "cross_matching_donor_address_index"
@@ -121,6 +122,15 @@ def _safe_identifier(name: str) -> str:
     if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
         raise ValueError(f"Unsafe SQL identifier: {name}")
     return name
+
+
+def _clear_table(conn: sqlite3.Connection, table_name: str) -> None:
+    """Clear all rows from a table. Uses TRUNCATE on Postgres for speed."""
+    safe = _safe_identifier(table_name)
+    if _is_postgres_connection(conn):
+        conn.execute(f"TRUNCATE TABLE {safe} RESTART IDENTITY")
+    else:
+        conn.execute(f"DELETE FROM {safe}")
 
 
 def _build_insert_sql(
@@ -178,10 +188,14 @@ def _ensure_incremental_state_table(conn: sqlite3.Connection) -> None:
 def _table_fingerprint(conn: sqlite3.Connection, table_name: str) -> str:
     if not _table_exists(conn, table_name):
         return "missing"
-    try:
-        row = conn.execute(f"SELECT COUNT(*) AS c, COALESCE(MAX(rowid), 0) AS m FROM {table_name}").fetchone()
-    except Exception:
+    if _is_postgres_connection(conn):
+        # Postgres doesn't have implicit rowid
         row = conn.execute(f"SELECT COUNT(*) AS c, 0 AS m FROM {table_name}").fetchone()
+    else:
+        try:
+            row = conn.execute(f"SELECT COUNT(*) AS c, COALESCE(MAX(rowid), 0) AS m FROM {table_name}").fetchone()
+        except Exception:
+            row = conn.execute(f"SELECT COUNT(*) AS c, 0 AS m FROM {table_name}").fetchone()
     return f"{int(row['c'])}:{int(row['m'])}"
 
 
@@ -464,30 +478,23 @@ def _merge_rows_into_output_table(
             conn.commit()
         return
 
-    swap_suffix = int(time.time() * 1000)
-    shadow_table = _safe_identifier(f"_swap_{safe_table_name}_{swap_suffix}")
-    old_table = _safe_identifier(f"_old_{safe_table_name}_{swap_suffix}")
+    # Postgres path: TRUNCATE + INSERT (faster than swap-table pattern).
+    # TRUNCATE is non-logged and resets identity sequences automatically.
+    # We commit any pending work first to avoid nested transaction issues.
+    try:
+        conn.commit()
+    except Exception:
+        pass
 
     try:
-        conn.execute(f"CREATE TABLE {shadow_table} (LIKE {safe_table_name} INCLUDING ALL)")
+        conn.execute(f"TRUNCATE TABLE {safe_table_name} RESTART IDENTITY")
         if rows:
-            insert_sql = _build_insert_sql(conn, shadow_table, columns, replace=False)
+            insert_sql = _build_insert_sql(conn, safe_table_name, columns, replace=False)
             for chunk in _chunked(rows, size=5000):
                 conn.executemany(insert_sql, chunk)
-
-        conn.execute("BEGIN")
-        conn.execute(f"LOCK TABLE {safe_table_name} IN ACCESS EXCLUSIVE MODE")
-        conn.execute(f"ALTER TABLE {safe_table_name} RENAME TO {old_table}")
-        conn.execute(f"ALTER TABLE {shadow_table} RENAME TO {safe_table_name}")
-        conn.execute(f"DROP TABLE {old_table}")
         conn.commit()
     except Exception:
         conn.rollback()
-        try:
-            conn.execute(f"DROP TABLE IF EXISTS {shadow_table}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
         raise
 
 
@@ -738,7 +745,7 @@ def match_lobbying_to_donors(conn: sqlite3.Connection, threshold: float = 0.80) 
     if not _table_exists(conn, "lobbying_clients") or not _table_exists(conn, "analytics_donor_summary"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM lobbying_donor_matches")
+    _clear_table(conn, "lobbying_donor_matches")
     conn.commit()
 
     clients = conn.execute("SELECT client_id, client_name FROM lobbying_clients").fetchall()
@@ -808,7 +815,7 @@ def match_lobbying_to_expenditure_payees(conn: sqlite3.Connection, threshold: fl
     if not _table_exists(conn, "lobbying_clients") or not _table_exists(conn, "bulk_expenditures_clean"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM lobbying_expenditure_matches")
+    _clear_table(conn, "lobbying_expenditure_matches")
     conn.commit()
 
     # Gather distinct payees
@@ -854,12 +861,14 @@ def match_lobbying_to_expenditure_payees(conn: sqlite3.Connection, threshold: fl
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "lobbying_expenditure_matches",
+            ["source_type", "source_id", "source_name", "payee_name", "committee_id_sbe", "score"],
+            replace=False,
+        )
         conn.executemany(
-            """
-            INSERT INTO lobbying_expenditure_matches
-                (source_type, source_id, source_name, payee_name, committee_id_sbe, score)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -883,7 +892,7 @@ def match_527_to_committees(conn: sqlite3.Connection, threshold: float = 0.80) -
     if not _table_exists(conn, "irs527_organizations") or not _table_exists(conn, "bulk_committees_clean"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM irs527_committee_matches")
+    _clear_table(conn, "irs527_committee_matches")
     conn.commit()
 
     orgs = conn.execute(
@@ -951,7 +960,7 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
     if not _table_exists(conn, "irs527_expenditures"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM irs527_expenditure_recipient_matches")
+    _clear_table(conn, "irs527_expenditure_recipient_matches")
     conn.commit()
 
     logger.info(
@@ -1029,12 +1038,14 @@ def match_527_expenditures_to_committees(conn: sqlite3.Connection, threshold: fl
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "irs527_expenditure_recipient_matches",
+            ["ein", "org_name", "recipient_name", "matched_type", "matched_id", "matched_name", "score"],
+            replace=False,
+        )
         conn.executemany(
-            """
-            INSERT INTO irs527_expenditure_recipient_matches
-                (ein, org_name, recipient_name, matched_type, matched_id, matched_name, score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -1121,7 +1132,7 @@ def match_527_directors_to_donors(conn: sqlite3.Connection, threshold: float = 0
     if not _table_exists(conn, "irs527_directors") or not _table_exists(conn, "analytics_donor_summary"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM irs527_director_donor_matches")
+    _clear_table(conn, "irs527_director_donor_matches")
     conn.commit()
 
     directors = conn.execute(
@@ -1165,12 +1176,14 @@ def match_527_directors_to_donors(conn: sqlite3.Connection, threshold: float = 0
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "irs527_director_donor_matches",
+            ["ein", "org_name", "director_name", "donor_key", "donor_name", "score"],
+            replace=False,
+        )
         conn.executemany(
-            """
-            INSERT INTO irs527_director_donor_matches
-                (ein, org_name, director_name, donor_key, donor_name, score)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -1194,7 +1207,7 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
     if not _table_exists(conn, "irs527_directors"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM irs527_director_candidate_matches")
+    _clear_table(conn, "irs527_director_candidate_matches")
     conn.commit()
 
     directors = conn.execute(
@@ -1252,12 +1265,14 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
     matches = len(batch)
 
     if batch:
+        insert_sql = _build_insert_sql(
+            conn,
+            "irs527_director_candidate_matches",
+            ["ein", "org_name", "director_name", "candidate_id", "candidate_name", "candidate_source", "score"],
+            replace=False,
+        )
         conn.executemany(
-            """
-            INSERT INTO irs527_director_candidate_matches
-                (ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            insert_sql,
             batch,
         )
         conn.commit()
@@ -1291,18 +1306,19 @@ def match_527_directors_to_donors_by_address(
         return {"matches": 0, "skipped": "missing_tables"}
 
     started = time.perf_counter()
-    conn.execute("DELETE FROM irs527_director_address_matches")
+    _clear_table(conn, "irs527_director_address_matches")
     conn.commit()
 
-    _INSERT_SQL = """
-        INSERT INTO irs527_director_address_matches
-            (ein, org_name, director_name,
-             director_city, director_state, director_zip5,
-             donor_key, donor_name,
-             donor_city, donor_state, donor_zip5,
-             address_score, name_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
+    _INSERT_SQL = _build_insert_sql(
+        conn,
+        "irs527_director_address_matches",
+        ["ein", "org_name", "director_name",
+         "director_city", "director_state", "director_zip5",
+         "donor_key", "donor_name",
+         "donor_city", "donor_state", "donor_zip5",
+         "address_score", "name_score"],
+        replace=False,
+    )
 
     if donor_indexes is None:
         logger.info("527-director-address: building donor zip index from analytics_donor_summary")
@@ -1433,7 +1449,7 @@ def match_527_org_addresses(
         return {"matches": 0, "skipped": "missing_tables"}
 
     started = time.perf_counter()
-    conn.execute("DELETE FROM irs527_org_address_matches")
+    _clear_table(conn, "irs527_org_address_matches")
     conn.commit()
 
     # Flatten org addresses into a temp table
@@ -1481,15 +1497,16 @@ def match_527_org_addresses(
     conn.execute("CREATE INDEX IF NOT EXISTS _idx_tmp_org_sz ON _tmp_527_org_addrs(norm_state, norm_zip5)")
     conn.commit()
 
-    _INSERT_SQL = """
-        INSERT INTO irs527_org_address_matches
-            (ein, org_name, address_type,
-             org_city, org_state, org_zip5,
-             matched_entity_type, matched_entity_id, matched_entity_name,
-             matched_city, matched_state, matched_zip5,
-             address_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
+    _INSERT_SQL = _build_insert_sql(
+        conn,
+        "irs527_org_address_matches",
+        ["ein", "org_name", "address_type",
+         "org_city", "org_state", "org_zip5",
+         "matched_entity_type", "matched_entity_id", "matched_entity_name",
+         "matched_city", "matched_state", "matched_zip5",
+         "address_score"],
+        replace=False,
+    )
     batch = []
     total_matches = 0
     candidates_scored = 0
@@ -1705,7 +1722,7 @@ def match_lobbying_to_527(conn: sqlite3.Connection, threshold: float = 0.80) -> 
     if not _table_exists(conn, "lobbying_clients") or not _table_exists(conn, "irs527_organizations"):
         return {"matches": 0, "skipped": "missing_tables"}
 
-    conn.execute("DELETE FROM lobbying_527_matches")
+    _clear_table(conn, "lobbying_527_matches")
     conn.commit()
 
     clients = conn.execute("SELECT client_id, client_name FROM lobbying_clients").fetchall()
