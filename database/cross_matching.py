@@ -382,6 +382,66 @@ def _dedupe_replace_target_rows(
     return list(deduped.values())
 
 
+def _inject_required_surrogate_ids_for_postgres(
+    conn: sqlite3.Connection,
+    table_name: str,
+    columns: list[str],
+    rows: list[tuple],
+) -> tuple[list[str], list[tuple]]:
+    if not _is_postgres_connection(conn) or not rows:
+        return columns, rows
+
+    schema_cursor = conn.execute(
+        """
+        SELECT column_name, is_nullable, column_default, ordinal_position
+        FROM information_schema.columns
+        WHERE table_schema = ? AND table_name = ?
+        ORDER BY ordinal_position
+        """,
+        ("public", table_name),
+    )
+    if not hasattr(schema_cursor, "fetchall"):
+        return columns, rows
+    schema_rows = schema_cursor.fetchall()
+    if not schema_rows:
+        return columns, rows
+
+    required_identity_cols: list[str] = []
+    for schema_row in schema_rows:
+        column_name = schema_row["column_name"]
+        if column_name not in _IDENTITY_LIKE_COLUMNS:
+            continue
+        if schema_row["is_nullable"] != "NO":
+            continue
+        if schema_row["column_default"]:
+            continue
+        required_identity_cols.append(column_name)
+
+    if not required_identity_cols:
+        return columns, rows
+
+    updated_columns = list(columns)
+    updated_rows = list(rows)
+
+    for identity_column in required_identity_cols:
+        if identity_column in updated_columns:
+            identity_idx = updated_columns.index(identity_column)
+            if all(row[identity_idx] is None for row in updated_rows):
+                updated_rows = [
+                    tuple((row[col_idx] if col_idx != identity_idx else row_idx) for col_idx in range(len(updated_columns)))
+                    for row_idx, row in enumerate(updated_rows, start=1)
+                ]
+            continue
+
+        updated_columns = [identity_column] + updated_columns
+        updated_rows = [
+            (row_idx, *row)
+            for row_idx, row in enumerate(updated_rows, start=1)
+        ]
+
+    return updated_columns, updated_rows
+
+
 def _merge_rows_into_output_table(
     conn: sqlite3.Connection,
     table_name: str,
@@ -390,6 +450,7 @@ def _merge_rows_into_output_table(
 ) -> None:
     safe_table_name = _safe_identifier(table_name)
     rows = _dedupe_replace_target_rows(table_name, columns, rows)
+    columns, rows = _inject_required_surrogate_ids_for_postgres(conn, safe_table_name, columns, rows)
 
     if not _is_postgres_connection(conn):
         conn.execute(f"DELETE FROM {safe_table_name}")

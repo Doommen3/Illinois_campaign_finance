@@ -416,6 +416,94 @@ def test_merge_rows_into_output_table_postgres_dedupes_replace_keys():
     assert rows[0][1] == "Org A Updated"
 
 
+def test_merge_rows_into_output_table_postgres_generates_match_id_when_required():
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.execute_calls = []
+            self.executemany_calls = []
+
+        def execute(self, sql, params=None):
+            self.execute_calls.append((sql, params))
+            if "information_schema.columns" in sql:
+                return FakeResult([
+                    {"column_name": "match_id", "is_nullable": "NO", "column_default": None, "ordinal_position": 1},
+                    {"column_name": "ein", "is_nullable": "YES", "column_default": None, "ordinal_position": 2},
+                    {"column_name": "candidate_name", "is_nullable": "YES", "column_default": None, "ordinal_position": 3},
+                ])
+            return FakeResult([])
+
+        def executemany(self, sql, rows):
+            self.executemany_calls.append((sql, list(rows)))
+            return self
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    conn = PostgresCompatConnection()
+    _merge_rows_into_output_table(
+        conn,
+        "irs527_director_candidate_matches",
+        ["ein", "candidate_name"],
+        [("111", "Alice"), ("222", "Bob")],
+    )
+
+    assert conn.executemany_calls
+    sql, rows = conn.executemany_calls[0]
+    assert "(match_id, ein, candidate_name)" in sql
+    assert rows[0][0] == 1
+    assert rows[1][0] == 2
+
+
+def test_merge_rows_into_output_table_postgres_keeps_empty_rows_without_insert():
+    class FakeResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class PostgresCompatConnection:
+        def __init__(self):
+            self.execute_calls = []
+            self.executemany_calls = []
+
+        def execute(self, sql, params=None):
+            self.execute_calls.append((sql, params))
+            if "information_schema.columns" in sql:
+                return FakeResult([])
+            return FakeResult([])
+
+        def executemany(self, sql, rows):
+            self.executemany_calls.append((sql, list(rows)))
+            return self
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    conn = PostgresCompatConnection()
+    _merge_rows_into_output_table(
+        conn,
+        "irs527_director_candidate_matches",
+        ["ein", "candidate_name"],
+        [],
+    )
+
+    assert conn.executemany_calls == []
+
+
 def test_read_temp_output_rows_drops_null_identity_columns():
     class FakeConn:
         def execute(self, sql, params=None):
