@@ -33,6 +33,19 @@ def pg_count(conn: psycopg.Connection, table_name: str) -> int:
     return int(row["c"])
 
 
+def pg_tables(conn: psycopg.Connection) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT tablename
+            FROM pg_catalog.pg_tables
+            WHERE schemaname = 'public'
+            """
+        )
+        rows = cur.fetchall()
+    return {row["tablename"] for row in rows}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify SQLite vs PostgreSQL table row counts")
     parser.add_argument("--sqlite-path", required=True, help="Path to SQLite database file")
@@ -49,10 +62,16 @@ def main() -> int:
     mismatches = 0
     try:
         tables = sqlite_tables(sqlite_conn)
+        pg_table_names = pg_tables(pg_conn)
         print(f"tables={len(tables)}")
 
         for table_name in tables:
             left = sqlite_count(sqlite_conn, table_name)
+            if table_name not in pg_table_names:
+                print(f"MISSING table={table_name} sqlite={left} postgres=missing")
+                mismatches += 1
+                continue
+
             right = pg_count(pg_conn, table_name)
             status = "OK" if left == right else "MISMATCH"
             print(f"{status} table={table_name} sqlite={left} postgres={right}")

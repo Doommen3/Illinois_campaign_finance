@@ -139,6 +139,37 @@ def insert_pg_rows(
     pg_conn.commit()
 
 
+def _to_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off", ""}:
+        return False
+    return bool(text)
+
+
+def _coerce_rows_for_pg(columns: list[dict], rows: list[tuple]) -> list[tuple]:
+    bool_indexes = [
+        index for index, column in enumerate(columns) if map_sqlite_type_to_pg(column.get("type")) == "BOOLEAN"
+    ]
+    if not bool_indexes:
+        return rows
+
+    coerced: list[tuple] = []
+    for row in rows:
+        mutable = list(row)
+        for index in bool_indexes:
+            mutable[index] = _to_bool(mutable[index])
+        coerced.append(tuple(mutable))
+    return coerced
+
+
 def migrate_table(
     sqlite_conn: sqlite3.Connection,
     pg_conn: psycopg.Connection,
@@ -161,12 +192,12 @@ def migrate_table(
     for row in iter_sqlite_rows(sqlite_conn, table_name, column_names):
         chunk.append(row)
         if len(chunk) >= chunk_size:
-            insert_pg_rows(pg_conn, table_name, column_names, chunk)
+            insert_pg_rows(pg_conn, table_name, column_names, _coerce_rows_for_pg(columns, chunk))
             total_rows += len(chunk)
             chunk = []
 
     if chunk:
-        insert_pg_rows(pg_conn, table_name, column_names, chunk)
+        insert_pg_rows(pg_conn, table_name, column_names, _coerce_rows_for_pg(columns, chunk))
         total_rows += len(chunk)
 
     return len(columns), total_rows
