@@ -4751,6 +4751,15 @@ def get_irs527_ecosystem_graph(
     resolved_date_from = range_start.isoformat() if range_start else None
     resolved_date_to = range_end.isoformat() if range_end else None
     has_date_window = bool(resolved_date_from or resolved_date_to)
+    safe_date_expr = (
+        "CASE "
+        "WHEN date IS NULL THEN NULL "
+        "WHEN LENGTH(TRIM(CAST(date AS TEXT))) < 10 THEN NULL "
+        "WHEN SUBSTR(TRIM(CAST(date AS TEXT)), 5, 1) != '-' THEN NULL "
+        "WHEN SUBSTR(TRIM(CAST(date AS TEXT)), 8, 1) != '-' THEN NULL "
+        "ELSE DATE(SUBSTR(TRIM(CAST(date AS TEXT)), 1, 10)) "
+        "END"
+    )
 
     required = {"irs527_organizations": _table_exists(conn, "irs527_organizations")}
     if not required["irs527_organizations"]:
@@ -4778,10 +4787,10 @@ def get_irs527_ecosystem_graph(
         filters = ["ein IS NOT NULL", "TRIM(ein) != ''", "date IS NOT NULL", "TRIM(date) != ''"]
         params: list[object] = []
         if resolved_date_from:
-            filters.append("DATE(date) >= DATE(?)")
+            filters.append(f"{safe_date_expr} >= DATE(?)")
             params.append(resolved_date_from)
         if resolved_date_to:
-            filters.append("DATE(date) <= DATE(?)")
+            filters.append(f"{safe_date_expr} <= DATE(?)")
             params.append(resolved_date_to)
         active_ein_sql_parts.append(f"SELECT DISTINCT ein FROM irs527_expenditures WHERE {' AND '.join(filters)}")
         active_ein_params.extend(params)
@@ -4789,10 +4798,10 @@ def get_irs527_ecosystem_graph(
         filters = ["ein IS NOT NULL", "TRIM(ein) != ''", "date IS NOT NULL", "TRIM(date) != ''"]
         params = []
         if resolved_date_from:
-            filters.append("DATE(date) >= DATE(?)")
+            filters.append(f"{safe_date_expr} >= DATE(?)")
             params.append(resolved_date_from)
         if resolved_date_to:
-            filters.append("DATE(date) <= DATE(?)")
+            filters.append(f"{safe_date_expr} <= DATE(?)")
             params.append(resolved_date_to)
         active_ein_sql_parts.append(f"SELECT DISTINCT ein FROM irs527_contributions WHERE {' AND '.join(filters)}")
         active_ein_params.extend(params)
@@ -4867,10 +4876,10 @@ def get_irs527_ecosystem_graph(
             recipient_date_filters = ""
             recipient_date_params: list[object] = []
             if resolved_date_from:
-                recipient_date_filters += " AND DATE(date) >= DATE(?)"
+                recipient_date_filters += f" AND {safe_date_expr} >= DATE(?)"
                 recipient_date_params.append(resolved_date_from)
             if resolved_date_to:
-                recipient_date_filters += " AND DATE(date) <= DATE(?)"
+                recipient_date_filters += f" AND {safe_date_expr} <= DATE(?)"
                 recipient_date_params.append(resolved_date_to)
             amount_rows = conn.execute(
                 f"""
