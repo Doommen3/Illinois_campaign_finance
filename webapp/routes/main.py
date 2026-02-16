@@ -1217,6 +1217,28 @@ def _load_candidate_compare_profile(conn, candidate_id: int) -> dict | None:
     total_amount = sum(row["total_amount"] for row in donors)
     total_contributions = sum(row["contribution_count"] for row in donors)
 
+    # Election history from candidacies
+    candidacies = []
+    if _table_exists(conn, "isbe_candidacies"):
+        candidacy_rows = conn.execute(
+            """
+            SELECT election_type, election_year, race_type, outcome
+            FROM isbe_candidacies
+            WHERE candidate_id = ?
+            ORDER BY election_year DESC, election_type
+            """,
+            (candidate_id,),
+        ).fetchall()
+        candidacies = [
+            {
+                "election_type": row["election_type"] or "",
+                "election_year": row["election_year"],
+                "race_type": row["race_type"] or "",
+                "outcome": row["outcome"] or "",
+            }
+            for row in candidacy_rows
+        ]
+
     return {
         "entity_type": "candidate",
         "entity_key": str(candidate_id),
@@ -1228,6 +1250,7 @@ def _load_candidate_compare_profile(conn, candidate_id: int) -> dict | None:
         "contribution_count": total_contributions,
         "counterparty_count": committees_count,
         "donor_count": len(donors),
+        "candidacies": candidacies,
         "trend": trend,
         "donors": donors,
         "top_donors": donors[:12],
@@ -2327,9 +2350,9 @@ def person_intelligence():
                 for g in groups.values()
             ]
 
-        # State candidates
+        # State candidates (enriched with committee links and candidacies)
         if _table_exists(conn, "bulk_candidates_clean"):
-            results['candidates'] = conn.execute(
+            candidate_rows = conn.execute(
                 """
                 SELECT candidate_id, candidate_full_name
                 FROM bulk_candidates_clean
@@ -2339,6 +2362,42 @@ def person_intelligence():
                 """,
                 (like_pattern,),
             ).fetchall()
+
+            enriched_candidates = []
+            for cand in candidate_rows:
+                cand_dict = dict(cand)
+                cand_dict['committees'] = []
+                cand_dict['candidacies'] = []
+
+                if _table_exists(conn, "bulk_committee_candidate_links"):
+                    cmte_rows = conn.execute(
+                        """
+                        SELECT l.committee_id_sbe,
+                               COALESCE(c.committee_name, 'Committee ' || l.committee_id_sbe) AS committee_name
+                        FROM bulk_committee_candidate_links l
+                        LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = l.committee_id_sbe
+                        WHERE l.candidate_id = ?
+                        ORDER BY committee_name
+                        """,
+                        (cand_dict['candidate_id'],),
+                    ).fetchall()
+                    cand_dict['committees'] = [dict(r) for r in cmte_rows]
+
+                if _table_exists(conn, "isbe_candidacies"):
+                    candidacy_rows = conn.execute(
+                        """
+                        SELECT election_type, election_year, race_type, outcome
+                        FROM isbe_candidacies
+                        WHERE candidate_id = ?
+                        ORDER BY election_year DESC
+                        LIMIT 5
+                        """,
+                        (cand_dict['candidate_id'],),
+                    ).fetchall()
+                    cand_dict['candidacies'] = [dict(r) for r in candidacy_rows]
+
+                enriched_candidates.append(cand_dict)
+            results['candidates'] = enriched_candidates
 
         # 527 directors
         if _table_exists(conn, "irs527_directors"):

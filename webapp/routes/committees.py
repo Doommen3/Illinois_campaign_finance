@@ -28,9 +28,39 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     has_candidate_links = _table_exists(conn, "bulk_committee_candidate_links")
     has_candidates = _table_exists(conn, "bulk_candidates_clean")
     has_analytics_agg = _table_exists(conn, "analytics_donor_committee_agg")
+    has_officers = _table_exists(conn, "isbe_officers")
+    has_isbe_committees = _table_exists(conn, "isbe_committees")
 
     committee_name = ""
-    if has_bulk_committees:
+    committee_meta = {}
+    if has_isbe_committees:
+        row = conn.execute(
+            """
+            SELECT id, name, type, party, purpose, active,
+                   status_date, creation_date, creation_amount,
+                   city, state, zipcode
+            FROM isbe_committees
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (committee_id_sbe,),
+        ).fetchone()
+        if row:
+            committee_name = (row["name"] or "").strip()
+            committee_meta = {
+                "committee_type": row["type"] or "",
+                "party": row["party"] or "",
+                "purpose": row["purpose"] or "",
+                "active": bool(row["active"]) if row["active"] is not None else None,
+                "status_date": row["status_date"],
+                "creation_date": row["creation_date"],
+                "creation_amount": float(row["creation_amount"]) if row["creation_amount"] else None,
+                "city": row["city"] or "",
+                "state": row["state"] or "",
+                "zipcode": row["zipcode"] or "",
+            }
+
+    if not committee_name and has_bulk_committees:
         row = conn.execute(
             """
             SELECT committee_name
@@ -229,12 +259,38 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     if not has_any_data:
         return None
 
+    officers: list[dict] = []
+    if has_officers:
+        officer_rows = conn.execute(
+            """
+            SELECT first_name, last_name, title, current, city, state
+            FROM isbe_officers
+            WHERE committee_id = ?
+              AND COALESCE(current, 0) = 1
+            ORDER BY title, last_name
+            """,
+            (committee_id_sbe,),
+        ).fetchall()
+        officers = [
+            {
+                "name": " ".join(
+                    part for part in [row["first_name"], row["last_name"]] if part
+                ).strip() or "Unknown",
+                "title": row["title"] or "",
+                "city": row["city"] or "",
+                "state": row["state"] or "",
+            }
+            for row in officer_rows
+        ]
+
     return {
         "committee_id_sbe": committee_id_sbe,
         "committee_name": committee_name or f"Committee {committee_id_sbe}",
+        "committee_meta": committee_meta,
         "receipts_summary": receipts_summary,
         "expenditures_summary": expenditures_summary,
         "candidate_links": candidate_links,
+        "officers": officers,
         "top_donors": top_donors,
         "top_payees": top_payees,
     }

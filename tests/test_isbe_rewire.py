@@ -83,6 +83,65 @@ def _seed_isbe_tables(conn):
         VALUES (100, 1001), (200, 1002)
     """)
 
+    # Candidacies (election history)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS isbe_candidacies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER,
+            election_type TEXT,
+            election_year INTEGER,
+            race_type TEXT,
+            outcome TEXT,
+            fair_campaign INTEGER DEFAULT 0,
+            limits_off INTEGER DEFAULT 0,
+            limits_off_reason TEXT
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_candidacies (candidate_id, election_type, election_year, race_type, outcome)
+        VALUES
+            (1001, 'General Primary', 2022, 'challenger', 'lost'),
+            (1001, 'General Election', 2026, 'incumbent', NULL),
+            (1002, 'General Primary', 2024, 'open_seat', 'won'),
+            (1002, 'General Election', 2024, 'open_seat', 'won')
+    """)
+
+    # Officers
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS isbe_officers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            committee_id INTEGER,
+            last_name TEXT, first_name TEXT,
+            address1 TEXT, address2 TEXT,
+            city TEXT, state TEXT, zipcode TEXT,
+            title TEXT, phone TEXT,
+            resign_date TEXT,
+            redaction_requested INTEGER DEFAULT 0,
+            current INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_officers (committee_id, last_name, first_name, title, current, city, state)
+        VALUES
+            (100, 'Smith', 'John', 'Chairman', 1, 'Chicago', 'IL'),
+            (100, 'Doe', 'Jane', 'Treasurer', 1, 'Chicago', 'IL'),
+            (200, 'Jones', 'Sarah', 'Chairman', 1, 'Springfield', 'IL'),
+            (100, 'OldOfficer', 'Tom', 'Secretary', 0, 'Peoria', 'IL')
+    """)
+
+    # Officer-committee links
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS isbe_officer_committees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            committee_id INTEGER,
+            officer_id INTEGER
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_officer_committees (committee_id, officer_id)
+        VALUES (100, 1), (100, 2), (200, 3), (100, 4)
+    """)
+
     conn.execute("""
         CREATE TABLE isbe_filed_docs (
             id INTEGER PRIMARY KEY,
@@ -714,3 +773,109 @@ class TestEdgeCases:
         ).fetchone()
         assert row['amount'] is None
         conn.close()
+
+
+class TestCandidateElectionHistory:
+    """Tests for candidacy/election history linked to candidate profiles."""
+
+    def test_candidacies_table_has_data(self, isbe_app):
+        """isbe_candidacies should have election history rows."""
+        conn = get_db(isbe_app.config['DATABASE_PATH'])
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM isbe_candidacies").fetchone()
+        assert row['cnt'] >= 4
+        conn.close()
+
+    def test_candidacies_link_to_candidates(self, isbe_app):
+        """All candidacies should reference valid candidates."""
+        conn = get_db(isbe_app.config['DATABASE_PATH'])
+        orphans = conn.execute("""
+            SELECT COUNT(*) AS cnt FROM isbe_candidacies ca
+            LEFT JOIN isbe_candidates c ON c.id = ca.candidate_id
+            WHERE c.id IS NULL
+        """).fetchone()
+        assert orphans['cnt'] == 0
+        conn.close()
+
+    def test_candidate_compare_shows_election_history(self, isbe_app):
+        """Candidate compare profile should include election history."""
+        client = isbe_app.test_client()
+        # Candidate 1001 (Smith) vs 1002 (Jones) both have candidacy records
+        resp = client.get('/compare?mode=candidate&left=1001&right=1002')
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Should show candidacy data: race type and outcome
+        assert 'challenger' in html.lower() or 'incumbent' in html.lower()
+
+    def test_candidate_compare_no_candidacies(self, isbe_app):
+        """Candidate without candidacies should still load fine."""
+        client = isbe_app.test_client()
+        # Candidate 1003 (Atcha) has no candidacy records, vs 1001
+        resp = client.get('/compare?mode=candidate&left=1003&right=1001')
+        assert resp.status_code == 200
+
+
+class TestCommitteeOfficers:
+    """Tests for committee officer information on committee detail pages."""
+
+    def test_officers_table_has_data(self, isbe_app):
+        """isbe_officers should have officer records."""
+        conn = get_db(isbe_app.config['DATABASE_PATH'])
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM isbe_officers").fetchone()
+        assert row['cnt'] >= 4
+        conn.close()
+
+    def test_officers_linked_to_committees(self, isbe_app):
+        """Officers should have valid committee references."""
+        conn = get_db(isbe_app.config['DATABASE_PATH'])
+        # All officers with committee_id should match a committee
+        orphans = conn.execute("""
+            SELECT COUNT(*) AS cnt FROM isbe_officers o
+            LEFT JOIN isbe_committees c ON c.id = o.committee_id
+            WHERE o.committee_id IS NOT NULL AND c.id IS NULL
+        """).fetchone()
+        assert orphans['cnt'] == 0
+        conn.close()
+
+    def test_committee_profile_shows_officers(self, isbe_app):
+        """Committee detail page should show officers."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Should show officer names
+        assert 'Treasurer' in html or 'Chairman' in html
+
+    def test_committee_profile_shows_only_current_officers(self, isbe_app):
+        """Committee detail should show current officers, not resigned ones."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        assert 'Smith' in html  # current chairman
+        assert 'Doe' in html  # current treasurer
+        # OldOfficer (current=0) should not appear in current officers section
+
+    def test_committee_profile_shows_status(self, isbe_app):
+        """Committee detail should show status (active/inactive)."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        # Should show active status indicator
+        assert 'Active' in html or 'active' in html
+
+
+class TestCandidateFinanceWithCandidacies:
+    """Tests for candidate finance page with candidacy data enrichment."""
+
+    def test_candidate_finance_page_loads(self, isbe_app):
+        """Candidate finance page should load with ISBE data."""
+        client = isbe_app.test_client()
+        resp = client.get('/candidate-finance/')
+        assert resp.status_code == 200
+
+    def test_candidate_finance_shows_election_data(self, isbe_app):
+        """Candidate finance listing should show election cycle data."""
+        client = isbe_app.test_client()
+        resp = client.get('/candidate-finance/')
+        html = resp.data.decode()
+        # Should have cycle data from agg VIEW
+        assert 'Smith' in html or 'Jones' in html

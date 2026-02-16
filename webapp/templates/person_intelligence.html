@@ -84,6 +84,8 @@
         <tr>
             <th>Candidate Name</th>
             <th>Candidate ID</th>
+            <th>Committees</th>
+            <th>Election History</th>
         </tr>
     </thead>
     <tbody>
@@ -91,6 +93,20 @@
         <tr>
             <td>{{ c.candidate_full_name }}</td>
             <td>{{ c.candidate_id }}</td>
+            <td>
+                {% if c.committees %}
+                {% for cmte in c.committees %}
+                <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=cmte.committee_id_sbe) }}">{{ cmte.committee_name }}</a>{% if not loop.last %}, {% endif %}
+                {% endfor %}
+                {% else %}-{% endif %}
+            </td>
+            <td>
+                {% if c.candidacies %}
+                {% for ca in c.candidacies %}
+                {{ ca.election_year }} {{ ca.election_type }} ({{ ca.race_type }}{% if ca.outcome %}, {{ ca.outcome }}{% endif %}){% if not loop.last %}; {% endif %}
+                {% endfor %}
+                {% else %}-{% endif %}
+            </td>
         </tr>
         {% endfor %}
     </tbody>

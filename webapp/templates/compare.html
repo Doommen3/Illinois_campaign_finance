@@ -98,6 +98,25 @@
                 {% endfor %}
             </tbody>
         </table>
+
+        {% if left_profile.candidacies %}
+        <h3>Election History</h3>
+        <table class="data-table">
+            <thead>
+                <tr><th>Year</th><th>Election</th><th>Race Type</th><th>Outcome</th></tr>
+            </thead>
+            <tbody>
+                {% for c in left_profile.candidacies %}
+                <tr>
+                    <td>{{ c.election_year }}</td>
+                    <td>{{ c.election_type }}</td>
+                    <td>{{ c.race_type }}</td>
+                    <td>{{ c.outcome if c.outcome else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
     </div>
 
     <div class="column">
@@ -151,6 +170,25 @@
                 {% endfor %}
             </tbody>
         </table>
+
+        {% if right_profile.candidacies %}
+        <h3>Election History</h3>
+        <table class="data-table">
+            <thead>
+                <tr><th>Year</th><th>Election</th><th>Race Type</th><th>Outcome</th></tr>
+            </thead>
+            <tbody>
+                {% for c in right_profile.candidacies %}
+                <tr>
+                    <td>{{ c.election_year }}</td>
+                    <td>{{ c.election_type }}</td>
+                    <td>{{ c.race_type }}</td>
+                    <td>{{ c.outcome if c.outcome else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
     </div>
 </div>
 
