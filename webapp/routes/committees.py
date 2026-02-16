@@ -218,7 +218,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                 """
                 SELECT
                     l.candidate_id,
-                    COALESCE(c.candidate_full_name, 'Candidate ' || l.candidate_id) AS candidate_name
+                    COALESCE(MAX(c.candidate_full_name), 'Candidate ' || l.candidate_id) AS candidate_name
                 FROM bulk_committee_candidate_links l
                 LEFT JOIN bulk_candidates_clean c ON c.candidate_id = l.candidate_id
                 WHERE l.committee_id_sbe = ?
@@ -266,7 +266,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             SELECT first_name, last_name, title, current, city, state
             FROM isbe_officers
             WHERE committee_id = ?
-              AND COALESCE(current, 0) = 1
+              AND current = TRUE
             ORDER BY title, last_name
             """,
             (committee_id_sbe,),
