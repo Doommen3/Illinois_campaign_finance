@@ -47,7 +47,7 @@ def _parse_currency(text: str) -> Optional[float]:
     """Parse a currency string like '$1,234.56' to float."""
     if not text:
         return None
-    cleaned = re.sub(r"[^0-9.\-]", "", text.strip())
+    cleaned = re.sub(r"[^0-9.\-]", "", html_lib.unescape(text.strip()))
     try:
         return float(cleaned)
     except (ValueError, TypeError):
@@ -58,6 +58,15 @@ def _clean(text: str) -> str:
     """Strip and collapse whitespace."""
     if not text:
         return ""
+    return re.sub(r"\s+", " ", text.strip())
+
+
+def _clean_html_cell(text: str) -> str:
+    """Unescape HTML entities, strip tags, then collapse whitespace."""
+    if not text:
+        return ""
+    text = html_lib.unescape(text)
+    text = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"\s+", " ", text.strip())
 
 
@@ -157,6 +166,11 @@ _STRIP_GEO = {"OF", "ILLINOIS", "CHICAGO", "SPRINGFIELD", "IL"}
 
 _ROMAN_NUMERALS = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
 
+_CONTRIB_HEADER_TEXTS = frozenset({
+    "CONTRIBUTED BY", "RECEIVED BY", "EMPLOYER", "DATE", "AMOUNT",
+})
+_CONTRIB_DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+
 _ABBREVIATION_ALIASES: Dict[str, List[str]] = {
     "COMED": ["COMMONWEALTH EDISON"],
     "BCBS": ["BLUE CROSS BLUE SHIELD"],
@@ -189,6 +203,17 @@ _ABBREVIATION_ALIASES: Dict[str, List[str]] = {
     "MWRD": ["METROPOLITAN WATER RECLAMATION DISTRICT"],
     "CDB": ["ILLINOIS CAPITAL DEVELOPMENT BOARD"],
 }
+
+
+def _is_person_name(name: str) -> bool:
+    """Detect likely person names in LAST, FIRST format."""
+    if not name or "," not in name:
+        return False
+    parts = name.strip().upper().split(",", 1)
+    after_comma = parts[1].strip().split()
+    if not after_comma:
+        return False
+    return not all(t in _STRIP_SUFFIXES for t in after_comma)
 
 
 def generate_search_terms(name: str) -> List[str]:
@@ -326,6 +351,9 @@ def _score_one(reference: str, candidate_key: str) -> Tuple[str, float]:
     if upper_cand == upper_ref:
         return "exact", 1.0
     if upper_cand.startswith(upper_ref):
+        ref_tokens = upper_ref.split()
+        if len(ref_tokens) == 1 and len(upper_ref) <= 5:
+            return "prefix", 0.5   # Penalize short single-token ("BUSH", "KYLE")
         return "prefix", 0.9
     if upper_ref.startswith(upper_cand):
         return "prefix", 0.85
@@ -345,7 +373,7 @@ def _score_all_matches(
     seed_text: str,
     suggestions: Optional[List[Dict[str, str]]],
     search_term: str,
-    min_confidence: float = 0.4,
+    min_confidence: float = 0.8,
 ) -> List[Dict[str, Any]]:
     """Score ALL autosuggest results against the seed text AND search term.
 
@@ -488,16 +516,21 @@ def parse_contributions_html(html: str, vendor_key: str) -> List[Dict[str, Any]]
         if len(cells) < 5:
             continue
 
-        contributor = _clean(cells[0])
-        recipient = _clean(cells[1])
-        employer = _clean(cells[2])
-        date_str = _clean(cells[3])
+        contributor = _clean_html_cell(cells[0])
+        recipient = _clean_html_cell(cells[1])
+        employer = _clean_html_cell(cells[2])
+        date_str = _clean_html_cell(cells[3])
         amount_raw = cells[4]
 
-        # Skip header rows and "No Records Found"
-        if not contributor or "No Records Found" in contributor:
+        # Skip header rows, empty rows, and "No Records Found"
+        if not contributor or contributor.upper() in _CONTRIB_HEADER_TEXTS:
             continue
-        if contributor == "Contributed By":
+        if recipient.upper() in _CONTRIB_HEADER_TEXTS:
+            continue
+        if "No Records Found" in contributor:
+            continue
+        # Date validation (same pattern as contracts parser)
+        if not _CONTRIB_DATE_RE.match(date_str):
             continue
 
         amount = _parse_currency(amount_raw)
@@ -531,18 +564,17 @@ def parse_contract_detail_html(
     if not html:
         return warrants
 
-    row_pattern = re.compile(
-        r"<tr>\s*"
-        r"<td[^>]*>(.*?)</td>\s*"
-        r"<td[^>]*>(.*?)</td>\s*"
-        r"</tr>",
-        re.DOTALL | re.IGNORECASE,
-    )
+    row_pattern = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL | re.IGNORECASE)
+    cell_pattern = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL | re.IGNORECASE)
     date_pattern = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
 
     for match in row_pattern.finditer(html):
-        issue_raw = _clean(re.sub(r"<[^>]+>", "", match.group(1)))
-        amount_raw = _clean(re.sub(r"<[^>]+>", "", match.group(2)))
+        cells = cell_pattern.findall(match.group(1))
+        if len(cells) < 2:
+            continue
+
+        issue_raw = _clean_html_cell(cells[0])
+        amount_raw = _clean_html_cell(cells[1])
 
         if not issue_raw or issue_raw.lower() == "issue date":
             continue
@@ -566,6 +598,12 @@ def parse_contract_detail_html(
             "payment_amount": payment_amount,
             "row_hash": row_hash,
         })
+
+    if html.strip() and not warrants:
+        logger.debug(
+            "contract_detail_html had content but parsed 0 warrants; first 500 chars: %s",
+            html[:500],
+        )
 
     return warrants
 
@@ -967,7 +1005,7 @@ class OpenBookScraper:
         seed_text: str,
         session: _HttpSession,
         search_terms: Optional[List[str]] = None,
-        min_confidence: float = 0.4,
+        min_confidence: float = 0.8,
     ) -> List[Dict[str, Any]]:
         """Resolve a seed to ALL matching vendors via smart search terms.
 
@@ -1894,14 +1932,15 @@ class OpenBookScraper:
           - lobbying: lobbying_entities
           - chicago: chicago_contracts_raw
           - fec: fec_schedule_b_disbursements
+          - isbe: bulk_expenditures_clean (ISBE payees by total spend)
 
         Returns stats dict with counts per source and total_new_seeds.
         """
         stats: Dict[str, int] = {}
         run_sources = (
-            ["expenditures", "lobbying", "chicago", "fec"]
+            ["expenditures", "lobbying", "chicago", "fec", "isbe"]
             if sources == "all"
-            else [sources]
+            else [s.strip() for s in sources.split(",")]
         )
 
         for source in run_sources:
@@ -2033,6 +2072,45 @@ class OpenBookScraper:
                         count += 1
                 conn.commit()
                 stats["fec_seeds"] = count
+
+            elif source == "isbe":
+                if not _table_exists(conn, "bulk_expenditures_clean"):
+                    logger.info("Table bulk_expenditures_clean not found, skipping isbe seeds")
+                    stats["isbe_seeds"] = 0
+                    continue
+                import config as _cfg
+                isbe_limit = getattr(_cfg, "OPENBOOK_ISBE_SEED_LIMIT", 5000)
+                rows = conn.execute(
+                    """SELECT UPPER(TRIM(payee_last_or_business_name)) AS name,
+                              SUM(amount) AS total
+                       FROM bulk_expenditures_clean
+                       WHERE payee_last_or_business_name IS NOT NULL
+                         AND payee_last_or_business_name != ''
+                         AND (is_amount_anomalous = 0 OR is_amount_anomalous IS NULL)
+                       GROUP BY UPPER(TRIM(payee_last_or_business_name))
+                       HAVING SUM(amount) >= ?
+                       ORDER BY SUM(amount) DESC
+                       LIMIT ?""",
+                    (min_amount, isbe_limit),
+                ).fetchall()
+                for r in rows:
+                    name = r["name"] if hasattr(r, "keys") else r[0]
+                    if not name or len(name.strip()) < 3:
+                        continue
+                    if _is_person_name(name):
+                        continue
+                    existing = conn.execute(
+                        "SELECT 1 FROM openbook_vendor_seed WHERE seed_text = ? AND seed_source = ?",
+                        (name, "isbe"),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO openbook_vendor_seed (seed_text, seed_source) VALUES (?, ?)",
+                            (name, "isbe"),
+                        )
+                        count += 1
+                conn.commit()
+                stats["isbe_seeds"] = count
 
         stats["total_new_seeds"] = sum(
             v for k, v in stats.items() if k.endswith("_seeds")

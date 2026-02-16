@@ -47,7 +47,7 @@ def list_vendors():
     per_page = 50
     offset = max(0, page - 1) * per_page
 
-    where_sql = "WHERE m.match_method != 'no_match' AND m.openbook_vendor_key != ''"
+    where_sql = "WHERE m.match_method != 'no_match' AND m.openbook_vendor_key != '' AND m.confidence >= 0.8"
     params = []
     if query:
         where_sql += " AND (m.openbook_vendor_key LIKE ? OR m.openbook_vendor_label LIKE ?)"
@@ -159,7 +159,7 @@ def vendor_detail(vendor_key: str):
             MAX(m.confidence) AS best_confidence,
             COUNT(DISTINCT m.seed_id) AS seed_count
         FROM openbook_vendor_match m
-        WHERE m.match_method != 'no_match' AND m.openbook_vendor_key = ?
+        WHERE m.match_method != 'no_match' AND m.openbook_vendor_key = ? AND m.confidence >= 0.8
         GROUP BY m.openbook_vendor_key
         """,
         (vendor_key,),
@@ -224,7 +224,7 @@ def vendor_detail(vendor_key: str):
         FROM openbook_vendor_match m
         JOIN openbook_vendor_seed s ON s.seed_id = m.seed_id
         LEFT JOIN lobbying_entities le ON UPPER(TRIM(le.entity_name)) = UPPER(TRIM(s.seed_text))
-        WHERE m.openbook_vendor_key = ? AND m.match_method != 'no_match'
+        WHERE m.openbook_vendor_key = ? AND m.match_method != 'no_match' AND m.confidence >= 0.8
         GROUP BY s.seed_text, s.seed_source
         ORDER BY best_confidence DESC, s.seed_text ASC
         LIMIT 250
