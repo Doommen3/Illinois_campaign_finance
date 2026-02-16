@@ -250,7 +250,7 @@ def _candidate_destinations(conn, donor_keys: list[str], limit: int = 10) -> lis
             ) AS contribution_count
         FROM analytics_donor_committee_agg a
         JOIN bulk_cmte_candidate_links_clean l
-          ON l.committee_id_sbe = a.committee_id
+          ON CAST(l.committee_id_sbe AS TEXT) = a.committee_id
         LEFT JOIN bulk_candidates_clean c
           ON c.candidate_id = l.candidate_id
         LEFT JOIN committee_candidate_counts cc

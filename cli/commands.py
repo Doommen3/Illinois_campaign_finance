@@ -2,6 +2,7 @@
 import asyncio
 import click
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -62,6 +63,19 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _db_target() -> str:
+    """Resolve active DB target, preferring DATABASE_URL for Postgres runtimes."""
+    env_database_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if env_database_url:
+        return env_database_url
+
+    configured_database_url = (config.DATABASE_URL or "").strip()
+    if configured_database_url:
+        return configured_database_url
+
+    return (config.DATABASE_TARGET or config.DATABASE_PATH).strip()
 
 
 def _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe):
@@ -137,8 +151,9 @@ def init_db_command():
     """Initialize the database with schema."""
     click.echo('Initializing database...')
     try:
-        init_db(config.DATABASE_PATH)
-        click.echo(f'Database initialized at: {config.DATABASE_PATH}')
+        db_target = _db_target()
+        init_db(db_target)
+        click.echo(f'Database initialized at: {db_target}')
     except Exception as e:
         click.echo(f'Error initializing database: {e}', err=True)
         sys.exit(1)
@@ -151,7 +166,7 @@ def init_db_command():
 @click.option('--inactive', is_flag=True, help='Create user as inactive')
 def create_user_command(username, password, inactive):
     """Create or update a manual-entry web user."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         user = AppUser.create_or_update_password(
             conn,
@@ -175,7 +190,7 @@ def create_user_command(username, password, inactive):
               help='Rebuild materialized analytics after import')
 def import_bulk_download_command(directory, refresh_analytics):
     """Import and normalize bulk committees/D2/candidate/link/receipts/expenditures files into joined tables."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         results = import_bulk_download(conn, Path(directory))
         click.echo('Bulk download import completed:')
@@ -231,7 +246,7 @@ def sunshine_import_command(bulk_dir, download, tables, skip_views):
               help='Limit cleanup scope')
 def clean_data_command(apply, scope):
     """Clean garbage committee rows and normalize donor occupation/employer metadata."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         if scope in ('all', 'committees'):
             garbage_rows = find_garbage_committees(conn)
@@ -347,7 +362,7 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
               help='Apply changes (default is dry-run)')
 def requeue_details_command(missing_transaction_date, limit, apply):
     """Requeue reports for detail scraping and rebuild contribution rows."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         report_ids = find_reports_for_detail_rescrape(
             conn,
@@ -382,7 +397,7 @@ def scrape_main_command(start_page, end_page, resume):
     """Scrape the main reports list."""
     click.echo(f'Scraping main list from page {start_page} to {end_page}...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
@@ -427,7 +442,7 @@ def scrape_details_command(batch_size, resume):
     """Scrape contribution details from report pages."""
     click.echo(f'Scraping details for up to {batch_size} reports...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
@@ -467,7 +482,7 @@ def scrape_details_command(batch_size, resume):
 @cli.command('scrape-status')
 def scrape_status_command():
     """Show current scrape status."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
 
     try:
         # Main list status
@@ -523,7 +538,7 @@ def seed_committee_urls_command(committee_ids_sbe, batch_size, include_existing)
     else:
         click.echo(f'Seeding committee detail URLs for up to {batch_size} committees...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
@@ -582,7 +597,7 @@ def scrape_committee_reports_command(committee_ids, committee_ids_sbe, batch_siz
         target_label = f"batch of {batch_size}"
     click.echo(f'Scraping committee reports for {target_label} until filed date cutoff {filed_cutoff}...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     rate_limiter = RateLimiter(
         requests_per_minute=config.RATE_LIMIT_RPM,
         min_delay=config.RATE_LIMIT_MIN_DELAY,
@@ -634,7 +649,7 @@ def scrape_d2_details_command(committee_ids, committee_ids_sbe, batch_size, with
     committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
     click.echo(f'Scraping up to {batch_size} D-2 detail pages...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
     if unresolved_sbe:
         click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
@@ -686,7 +701,7 @@ def scrape_d2_itemized_command(committee_ids, committee_ids_sbe, batch_size):
     committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
     click.echo(f'Scraping up to {batch_size} D-2 itemized links...')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
     if unresolved_sbe:
         click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
@@ -745,7 +760,7 @@ def scrape_d2_all_pending_command(
     committee_ids = list(committee_ids) if committee_ids else None
     committee_ids_sbe = list(committee_ids_sbe) if committee_ids_sbe else None
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     committee_ids, unresolved_sbe = _resolve_internal_committee_ids(conn, committee_ids, committee_ids_sbe)
     if unresolved_sbe:
         click.echo(f'  Warning: no local committee rows for SBE IDs {unresolved_sbe}')
@@ -876,7 +891,7 @@ def refresh_analytics_command(
     recon_min_abs_diff,
 ):
     """Rebuild materialized analytics tables and optionally refresh the full snapshot cache."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Refreshing materialized analytics tables...')
         stats = refresh_analytics_materialized(conn)
@@ -942,7 +957,7 @@ def rebuild_local_donor_entities_command(
     dry_run,
 ):
     """Build confidence-scored local donor entities and review candidates."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Rebuilding local donor entities...')
         stats = rebuild_local_donor_entities(
@@ -1037,7 +1052,7 @@ def sync_fec_il_federal_command(
         click.echo(f'Error: candidates CSV not found: {csv_path}', err=True)
         sys.exit(1)
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Starting FEC Illinois federal sync...')
         stats = sync_il_federal_fec(
@@ -1116,7 +1131,7 @@ def backfill_fec_schedule_a_command(
         click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
         sys.exit(1)
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Starting FEC Schedule A backfill run...')
         stats = backfill_fec_missing_schedule_a(
@@ -1197,7 +1212,7 @@ def backfill_fec_schedule_b_command(
         click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
         sys.exit(1)
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Starting FEC Schedule B backfill run...')
         stats = backfill_fec_schedule_b(
@@ -1259,7 +1274,7 @@ def backfill_fec_schedule_b_command(
 )
 def refresh_fec_transfer_committees_command(cycle, min_transfer_amount):
     """Mark committees that disburse to candidates/committees from Schedule B rows."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Refreshing transfer-source committee registry...')
         stats = refresh_fec_transfer_source_committees(
@@ -1319,7 +1334,7 @@ def sync_fec_transfer_committee_receipts_command(
         click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
         sys.exit(1)
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Starting transfer-source committee receipts sync...')
         stats = sync_fec_transfer_committee_receipts(
@@ -1379,7 +1394,7 @@ def backfill_fec_schedule_e_command(
         click.echo('Error: missing FEC API key. Provide --api-key or set FEC_API_KEY.', err=True)
         sys.exit(1)
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Starting FEC Schedule E backfill run...')
         stats = backfill_fec_schedule_e(
@@ -1422,7 +1437,7 @@ def refresh_fec_local_donor_matches_command(
     match_limit,
 ):
     """Materialize federal/local donor match pairs for dashboard and quick lookups."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Refreshing persisted federal/local donor matches...')
         stats = refresh_fec_local_donor_matches(
@@ -1450,7 +1465,7 @@ def refresh_fec_local_donor_matches_command(
 @click.option('--batch-size', type=int, default=5000, show_default=True, help='Rows per update batch')
 def rebuild_fec_donor_identities_command(cycle, only_missing, batch_size):
     """Rebuild donor entity IDs used for cross-candidate donor drill-down."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Rebuilding FEC donor identities...')
         stats = rebuild_fec_donor_identities(
@@ -1473,7 +1488,7 @@ def rebuild_fec_donor_identities_command(cycle, only_missing, batch_size):
               help='Path to IL SOS lobbying CSV file')
 def import_lobbying_command(file_path):
     """Import IL Secretary of State lobbying entity/client data from CSV."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo(f'Importing lobbying data from {file_path}...')
         stats = load_lobbying_csv(conn, Path(file_path))
@@ -1498,7 +1513,7 @@ def import_lobbying_command(file_path):
               help='Delete existing phase1 rows before import, or upsert into existing data')
 def import_chicago_phase1_command(app_token, row_limit, page_limit, full_refresh):
     """Import Chicago Open Data phase 1 datasets via Socrata API."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo('Importing Chicago phase1 datasets via Socrata API...')
         resolved_app_token = (app_token or config.SOCRATA_APP_TOKEN or '').strip()
@@ -1542,7 +1557,7 @@ def import_chicago_phase1_command(app_token, row_limit, page_limit, full_refresh
               help='Only load orgs with IL addresses or IL expenditures')
 def import_irs527_command(file_path, illinois_only):
     """Import IRS 527 political organization filings from pipe-delimited file."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo(f'Importing IRS 527 data from {file_path}...')
         if illinois_only:
@@ -1567,7 +1582,7 @@ def import_irs527_command(file_path, illinois_only):
               help='Delete current irs527_reports rows before rebuild')
 def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
     """Repair irs527_reports totals/ein mapping from FullDataFile type-2 records."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo(f'Rebuilding IRS 527 report totals from {file_path}...')
         if illinois_only:
@@ -1599,7 +1614,7 @@ def repair_irs527_reports_command(file_path, illinois_only, replace_existing):
               help='Delete current irs527_contributions rows before rebuild')
 def repair_irs527_contributions_command(file_path, illinois_only, replace_existing):
     """Repair irs527_contributions from FullDataFile type-A records."""
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     try:
         click.echo(f'Rebuilding IRS 527 contributions from {file_path}...')
         if illinois_only:
@@ -1641,7 +1656,7 @@ def repair_irs527_contributions_command(file_path, illinois_only, replace_existi
               help='Skip unchanged jobs using source-table fingerprints')
 def run_cross_matching_command(threshold, only_match, parallel, workers, incremental):
     """Run cross-matching between lobbying, IRS 527, and campaign finance data."""
-    db_target = config.DATABASE_TARGET
+    db_target = _db_target()
     conn = get_db(db_target)
     try:
         click.echo(
@@ -1707,7 +1722,7 @@ def import_openbook_vendor_command(vendor_name, max_contract_pages, max_contribu
     """Import contracts and contributions for a single vendor from OpenBook IL Comptroller."""
     click.echo(f'Searching OpenBook for vendor: {vendor_name}')
 
-    conn = get_db(config.DATABASE_PATH)
+    conn = get_db(_db_target())
     rate_limiter = RateLimiter(
         requests_per_minute=30,
         min_delay=1.0,

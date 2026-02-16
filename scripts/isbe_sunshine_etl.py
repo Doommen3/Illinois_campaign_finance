@@ -301,6 +301,7 @@ CREATE INDEX idx_isbe_receipts_committee_id ON isbe_receipts(committee_id);
 CREATE INDEX idx_isbe_receipts_filed_doc_id ON isbe_receipts(filed_doc_id);
 CREATE INDEX idx_isbe_receipts_received_date ON isbe_receipts(received_date);
 CREATE INDEX idx_isbe_receipts_amount ON isbe_receipts(amount);
+CREATE INDEX idx_isbe_receipts_committee_date_doc ON isbe_receipts(committee_id, received_date, filed_doc_id);
 
 CREATE TABLE isbe_expenditures (
     id                  INTEGER PRIMARY KEY,
@@ -330,6 +331,7 @@ CREATE TABLE isbe_expenditures (
 CREATE INDEX idx_isbe_expenditures_committee_id ON isbe_expenditures(committee_id);
 CREATE INDEX idx_isbe_expenditures_filed_doc_id ON isbe_expenditures(filed_doc_id);
 CREATE INDEX idx_isbe_expenditures_expended_date ON isbe_expenditures(expended_date);
+CREATE INDEX idx_isbe_expenditures_committee_date_doc ON isbe_expenditures(committee_id, expended_date, filed_doc_id);
 
 CREATE TABLE isbe_d2_reports (
     id                              INTEGER PRIMARY KEY,
@@ -359,6 +361,7 @@ CREATE TABLE isbe_d2_reports (
 );
 CREATE INDEX idx_isbe_d2_reports_committee_id ON isbe_d2_reports(committee_id);
 CREATE INDEX idx_isbe_d2_reports_filed_doc_id ON isbe_d2_reports(filed_doc_id);
+CREATE INDEX idx_isbe_d2_reports_filed_doc_committee ON isbe_d2_reports(filed_doc_id, committee_id);
 
 CREATE TABLE isbe_candidate_committees (
     id              INTEGER PRIMARY KEY,
@@ -367,6 +370,7 @@ CREATE TABLE isbe_candidate_committees (
 );
 CREATE INDEX idx_isbe_cc_committee ON isbe_candidate_committees(committee_id);
 CREATE INDEX idx_isbe_cc_candidate ON isbe_candidate_committees(candidate_id);
+CREATE INDEX idx_isbe_cc_candidate_committee ON isbe_candidate_committees(candidate_id, committee_id);
 
 CREATE TABLE isbe_candidacies (
     id              INTEGER PRIMARY KEY,
@@ -1415,7 +1419,7 @@ SELECT
   NULL::text AS source_file,
   NULL::bigint AS source_row_number,
   r.received_date::text AS received_datetime_raw
-FROM isbe_receipts r;
+FROM isbe_condensed_receipts r;
 
 DROP VIEW IF EXISTS isbe_bulk_expenditures_clean_compat CASCADE;
 CREATE VIEW isbe_bulk_expenditures_clean_compat AS
@@ -1447,7 +1451,7 @@ SELECT
   NULL::text AS anomaly_reason,
   NULL::text AS source_file,
   NULL::bigint AS source_row_number
-FROM isbe_expenditures e;
+FROM isbe_condensed_expenditures e;
 
 DROP VIEW IF EXISTS isbe_bulk_committees_clean_compat CASCADE;
 CREATE VIEW isbe_bulk_committees_clean_compat AS

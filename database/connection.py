@@ -1,6 +1,7 @@
 """Database connection management for Illinois Campaign Finance tracker."""
 import sqlite3
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,6 +25,22 @@ def _is_postgres_dsn(value: str | None) -> bool:
 
 def _clean_env(value: str | None) -> str:
     return (value or '').strip().lower()
+
+
+def _is_postgres_connection(conn: sqlite3.Connection) -> bool:
+    return conn.__class__.__name__ == "PostgresCompatConnection"
+
+
+_AUTOINCREMENT_PK_RE = re.compile(
+    r"\b(?P<column>[A-Za-z_][A-Za-z0-9_]*)\s+INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b",
+    re.IGNORECASE,
+)
+
+
+def _adapt_schema_for_postgres(schema: str) -> str:
+    """Translate SQLite AUTOINCREMENT PK definitions to Postgres identity columns."""
+    translated = _AUTOINCREMENT_PK_RE.sub(r"\g<column> BIGSERIAL PRIMARY KEY", schema)
+    return re.sub(r"\bAUTOINCREMENT\b", "", translated, flags=re.IGNORECASE)
 
 
 def _resolve_sqlite_tuning_profile() -> str:
@@ -128,6 +145,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     schema_path = Path(__file__).parent / 'schema.sql'
     with open(schema_path, 'r') as f:
         schema = f.read()
+    if _is_postgres_connection(conn):
+        schema = _adapt_schema_for_postgres(schema)
     # Backward-compatible column additions for existing installations.
     # This must happen before running schema.sql so CREATE INDEX statements
     # on these columns do not fail on older databases.
@@ -214,12 +233,6 @@ def init_db(db_path: str = None) -> None:
         db_target = (os.environ.get('DATABASE_URL') or '').strip()
     if not db_target:
         db_target = os.environ.get('DATABASE_PATH', str(DEFAULT_DB_PATH))
-
-    if _is_postgres_dsn(db_target):
-        raise RuntimeError(
-            'init-db currently applies SQLite schema only. '
-            'For PostgreSQL, use scripts/postgres/migrate_sqlite_to_postgres.py after creating the target database.'
-        )
 
     conn = get_db(db_target)
     try:

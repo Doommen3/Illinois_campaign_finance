@@ -3079,7 +3079,7 @@ def get_donor_cogiving_network(
                         ) AS donor_amount
                     FROM analytics_donor_committee_agg a
                     JOIN bulk_cmte_candidate_links_clean l
-                      ON l.committee_id_sbe = a.committee_id
+                      ON CAST(l.committee_id_sbe AS TEXT) = a.committee_id
                     LEFT JOIN committee_candidate_counts cc
                       ON cc.committee_id_sbe = l.committee_id_sbe
                     WHERE a.source = 'bulk_receipts'
@@ -3904,7 +3904,7 @@ def get_candidate_competition_networks(
                     JOIN top_state_donors td
                       ON td.donor_key = a.donor_key
                     JOIN bulk_cmte_candidate_links_clean l
-                      ON l.committee_id_sbe = a.committee_id
+                      ON CAST(l.committee_id_sbe AS TEXT) = a.committee_id
                     {"LEFT JOIN bulk_candidates_clean bc ON bc.candidate_id = l.candidate_id" if _has_candidates_table else ""}
                     LEFT JOIN committee_candidate_counts cc
                       ON cc.committee_id_sbe = l.committee_id_sbe
