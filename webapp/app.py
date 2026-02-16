@@ -12,6 +12,7 @@ from flask import Flask, abort, g, jsonify, render_template, request
 import config as app_config
 from database.connection import close_db, get_db
 from webapp.auth import get_csrf_token, get_current_user, validate_csrf_token
+from webapp.utils.time_filter import TIME_PERIODS, get_active_period
 
 DEFAULT_INSECURE_SECRET = "dev-secret-key-change-in-production"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
@@ -491,6 +492,8 @@ def create_app(config=None):
             public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
             csrf_token=get_csrf_token,
             global_data_status=data_status,
+            time_period=get_active_period(),
+            time_periods=TIME_PERIODS,
         )
 
     return app

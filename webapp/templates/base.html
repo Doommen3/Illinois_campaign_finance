@@ -12,6 +12,14 @@
             <div class="nav-brand">
                 <a href="{{ url_for('main.index') }}">IL Campaign Finance</a>
             </div>
+            <div class="nav-time-filter">
+                <label for="time-period-select">Period:</label>
+                <select id="time-period-select" onchange="applyTimePeriod(this.value)">
+                    {% for key, label, desc in time_periods %}
+                    <option value="{{ key }}" {{ 'selected' if time_period.key == key else '' }} title="{{ desc }}">{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <div class="nav-search">
                 <form action="{{ url_for('main.search') }}" method="get">
                     <input type="text" name="q" placeholder="Search candidates, reports, donor keys..." value="{{ request.args.get('q', '') }}">
@@ -139,6 +147,15 @@
         </div>
     </footer>
     <script src="{{ url_for('static', filename='js/table_sort.js', v='20260213-1') }}"></script>
+    <script>
+    function applyTimePeriod(period) {
+        var url = new URL(window.location.href);
+        url.searchParams.set('period', period);
+        // Reset pagination when changing period
+        url.searchParams.delete('page');
+        window.location.href = url.toString();
+    }
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

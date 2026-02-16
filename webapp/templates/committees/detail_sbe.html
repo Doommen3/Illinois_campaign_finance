@@ -41,7 +41,7 @@
 {% endif %}
 
 <div class="status-section">
-    <h2>Receipts Summary</h2>
+    <h2>Receipts Summary <span class="period-badge">{{ time_period.label }}</span></h2>
     <p class="subtitle">
         Contributions: <strong>{{ profile.receipts_summary.contribution_count }}</strong> |
         Total receipts: <strong>{{ format_currency(profile.receipts_summary.total_amount) }}</strong> |
@@ -51,7 +51,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Expenditures Summary</h2>
+    <h2>Expenditures Summary <span class="period-badge">{{ time_period.label }}</span></h2>
     <p class="subtitle">
         Transactions: <strong>{{ profile.expenditures_summary.transaction_count }}</strong> |
         Total expenditures: <strong>{{ format_currency(profile.expenditures_summary.total_amount) }}</strong> |

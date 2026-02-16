@@ -22,6 +22,9 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
 
 
 def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
+    from webapp.utils.time_filter import get_active_period, period_qmark_clause
+    period = get_active_period()
+
     has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
     has_bulk_receipts = _table_exists(conn, "bulk_receipts_clean")
     has_bulk_expenditures = _table_exists(conn, "bulk_expenditures_clean")
@@ -87,8 +90,13 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             committee_name = (row["committee_name"] or "").strip()
 
     receipts_filter = "WHERE committee_id_sbe = ?"
+    receipts_params = [committee_id_sbe]
     if has_bulk_receipts and _column_exists(conn, "bulk_receipts_clean", "is_archived"):
         receipts_filter += " AND COALESCE(is_archived, 0) = 0"
+    rcpt_clause, rcpt_plist = period_qmark_clause("received_date", period)
+    if rcpt_clause:
+        receipts_filter += rcpt_clause
+        receipts_params.extend(rcpt_plist)
 
     receipts_summary = {
         "contribution_count": 0,
@@ -108,7 +116,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             FROM bulk_receipts_clean
             {receipts_filter}
             """,
-            (committee_id_sbe,),
+            tuple(receipts_params),
         ).fetchone()
         if row:
             receipts_summary = {
@@ -138,7 +146,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             ORDER BY total_amount DESC, contribution_count DESC, donor_name ASC
             LIMIT 20
             """,
-            (committee_id_sbe,),
+            tuple(receipts_params),
         ).fetchall()
         top_donors = [
             {
@@ -150,8 +158,13 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         ]
 
     expenditures_filter = "WHERE committee_id_sbe = ?"
+    expenditures_params = [committee_id_sbe]
     if has_bulk_expenditures and _column_exists(conn, "bulk_expenditures_clean", "is_archived"):
         expenditures_filter += " AND COALESCE(is_archived, 0) = 0"
+    exp_clause, exp_plist = period_qmark_clause("expended_date", period)
+    if exp_clause:
+        expenditures_filter += exp_clause
+        expenditures_params.extend(exp_plist)
 
     expenditures_summary = {
         "transaction_count": 0,
@@ -171,7 +184,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             FROM bulk_expenditures_clean
             {expenditures_filter}
             """,
-            (committee_id_sbe,),
+            tuple(expenditures_params),
         ).fetchone()
         if row:
             expenditures_summary = {
@@ -201,7 +214,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             ORDER BY total_amount DESC, transaction_count DESC, payee_name ASC
             LIMIT 20
             """,
-            (committee_id_sbe,),
+            tuple(expenditures_params),
         ).fetchall()
         top_payees = [
             {

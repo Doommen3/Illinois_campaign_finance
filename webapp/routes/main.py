@@ -286,8 +286,14 @@ def warm_dashboard_home_cache(
         conn.close()
 
 
-def _get_candidate_stats(conn):
-    """Return (stats_dict, freshness_dict) for state and federal candidate data."""
+def _get_candidate_stats(conn, period=None):
+    """Return (stats_dict, freshness_dict) for state and federal candidate data.
+
+    If period is provided (from time_filter.get_active_period()), date-bearing
+    queries are filtered to the given window.
+    """
+    from webapp.utils.time_filter import period_qmark_clause
+
     stats = {
         'local_candidate_rows': 0,
         'local_candidates': 0,
@@ -328,17 +334,28 @@ def _get_candidate_stats(conn):
         )
 
     if _table_exists(conn, "bulk_d2_totals_clean"):
+        # D2 totals: filter by reporting_period_end via isbe_filed_docs
+        d2_period_join = ""
+        d2_period_params = ()
+        if period and period.get("start_date"):
+            d2_clause, d2_plist = period_qmark_clause("fd.reporting_period_end", period)
+            if d2_clause:
+                d2_period_join = " JOIN isbe_filed_docs fd ON fd.id = d2.filed_doc_id"
+                d2_period_params = tuple(d2_plist)
+
         stats['local_total_receipts'] = float(
             _scalar(
                 conn,
-                "SELECT COALESCE(SUM(total_receipts), 0) AS total FROM bulk_d2_totals_clean WHERE COALESCE(is_archived, 0) = 0",
+                f"SELECT COALESCE(SUM(d2.total_receipts), 0) AS total FROM bulk_d2_totals_clean d2{d2_period_join} WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}",
+                params=d2_period_params,
                 default=0.0,
             )
         )
         stats['local_total_expenditures'] = float(
             _scalar(
                 conn,
-                "SELECT COALESCE(SUM(total_expenditures), 0) AS total FROM bulk_d2_totals_clean WHERE COALESCE(is_archived, 0) = 0",
+                f"SELECT COALESCE(SUM(d2.total_expenditures), 0) AS total FROM bulk_d2_totals_clean d2{d2_period_join} WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}",
+                params=d2_period_params,
                 default=0.0,
             )
         )
@@ -360,40 +377,51 @@ def _get_candidate_stats(conn):
         )
 
     if _table_exists(conn, "fec_schedule_a_contributions"):
+        fec_a_clause, fec_a_params = period_qmark_clause("contribution_receipt_date", period) if period else ("", [])
+        fec_a_where = "WHERE 1=1" + fec_a_clause if fec_a_clause else ""
         stats['federal_contributions'] = int(
             _scalar(
                 conn,
-                "SELECT COUNT(*) AS count FROM fec_schedule_a_contributions",
+                f"SELECT COUNT(*) AS count FROM fec_schedule_a_contributions {fec_a_where}",
+                params=tuple(fec_a_params),
                 default=0,
             )
         )
     if _table_exists(conn, "fec_schedule_b_disbursements"):
+        fec_b_clause, fec_b_params = period_qmark_clause("disbursement_date", period) if period else ("", [])
+        fec_b_where = "WHERE 1=1" + fec_b_clause if fec_b_clause else ""
         stats['federal_disbursements'] = int(
             _scalar(
                 conn,
-                "SELECT COUNT(*) AS count FROM fec_schedule_b_disbursements",
+                f"SELECT COUNT(*) AS count FROM fec_schedule_b_disbursements {fec_b_where}",
+                params=tuple(fec_b_params),
                 default=0,
             )
         )
         stats['federal_disbursement_total'] = float(
             _scalar(
                 conn,
-                "SELECT COALESCE(SUM(disbursement_amount), 0) AS total FROM fec_schedule_b_disbursements",
+                f"SELECT COALESCE(SUM(disbursement_amount), 0) AS total FROM fec_schedule_b_disbursements {fec_b_where}",
+                params=tuple(fec_b_params),
                 default=0.0,
             )
         )
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        fec_e_clause, fec_e_params = period_qmark_clause("expenditure_date", period) if period else ("", [])
+        fec_e_where = "WHERE 1=1" + fec_e_clause if fec_e_clause else ""
         stats['federal_independent_expenditures'] = int(
             _scalar(
                 conn,
-                "SELECT COUNT(*) AS count FROM fec_schedule_e_independent_expenditures",
+                f"SELECT COUNT(*) AS count FROM fec_schedule_e_independent_expenditures {fec_e_where}",
+                params=tuple(fec_e_params),
                 default=0,
             )
         )
         stats['federal_independent_expenditure_total'] = float(
             _scalar(
                 conn,
-                "SELECT COALESCE(SUM(expenditure_amount), 0) AS total FROM fec_schedule_e_independent_expenditures",
+                f"SELECT COALESCE(SUM(expenditure_amount), 0) AS total FROM fec_schedule_e_independent_expenditures {fec_e_where}",
+                params=tuple(fec_e_params),
                 default=0.0,
             )
         )
@@ -525,10 +553,13 @@ def _get_candidate_stats(conn):
     return stats, freshness
 
 
-def _get_candidate_stats_cached(conn):
-    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+def _get_candidate_stats_cached(conn, period=None):
+    from webapp.utils.time_filter import DEFAULT_PERIOD
+    # Only use cache for the default period
+    is_default = period is None or period.get("key") == DEFAULT_PERIOD
+    cache_enabled = is_default and bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
-        return _get_candidate_stats(conn)
+        return _get_candidate_stats(conn, period=period)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180)))
     now = time.monotonic()
@@ -539,7 +570,7 @@ def _get_candidate_stats_cached(conn):
         ):
             return _candidate_stats_cache["value"]
 
-    value = _get_candidate_stats(conn)
+    value = _get_candidate_stats(conn, period=period)
     with _candidate_stats_cache_lock:
         _candidate_stats_cache["value"] = value
         _candidate_stats_cache["expires_at"] = now + float(ttl_seconds)
@@ -2058,9 +2089,11 @@ def investigate_workspace():
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
+    from webapp.utils.time_filter import get_active_period
     conn = current_app.get_database()
+    period = get_active_period()
 
-    stats, freshness = _get_candidate_stats_cached(conn)
+    stats, freshness = _get_candidate_stats_cached(conn, period=period)
     stats['legacy_reports'] = Report.count(conn)
     stats['legacy_committees'] = Committee.count(conn)
     stats['legacy_donors'] = Donor.count(conn)
@@ -2106,7 +2139,31 @@ def index():
         stats['irs527_total_contributions_received'] = 0
         stats['irs527_contribution_records'] = 0
 
-    top_donors = _get_top_donors_cached(conn)
+    if period and period.get("key") != "2026cycle" and period.get("start_date") and _table_exists(conn, "bulk_receipts_clean"):
+        # Time-filtered top donors from raw receipts
+        from webapp.utils.time_filter import period_qmark_clause as _pqc
+        td_clause, td_params = _pqc("received_date", period)
+        base_filter = _bulk_receipts_base_filter(conn, "r")
+        top_donors = conn.execute(
+            f"""
+            SELECT
+                {_bulk_donor_name_sql('r')} AS name,
+                {_bulk_donor_key_sql('r')} AS donor_key,
+                'bulk_receipts' AS source,
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count,
+                NULL AS entity_id,
+                NULL AS id
+            FROM bulk_receipts_clean r
+            WHERE {base_filter}{td_clause}
+            GROUP BY name, donor_key
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """,
+            tuple(td_params),
+        ).fetchall()
+    else:
+        top_donors = _get_top_donors_cached(conn)
     insights = _get_dashboard_insights(conn)
 
     return render_template('index.html',

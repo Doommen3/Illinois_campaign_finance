@@ -87,6 +87,39 @@ a:hover {
     margin-left: auto;
 }
 
+.nav-time-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+}
+
+.nav-time-filter label {
+    color: #93c5fd;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.nav-time-filter select {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #4a5568;
+    border-radius: 4px;
+    background: #1a365d;
+    color: #e2e8f0;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.nav-time-filter select:hover {
+    border-color: #63b3ed;
+}
+
+.nav-time-filter select:focus {
+    outline: none;
+    border-color: #63b3ed;
+    box-shadow: 0 0 0 2px rgba(99, 179, 237, 0.3);
+}
+
 .nav-search form {
     display: flex;
     gap: 0.4rem;
@@ -1403,3 +1436,16 @@ h2 {
 .confidence-unknown { color: #6b7280; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
 .confidence-filters { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 .confidence-filters label { display: flex; align-items: center; gap: 4px; font-size: 0.9em; cursor: pointer; }
+
+/* Time period badge */
+.period-badge {
+    display: inline-block;
+    background: #dbeafe;
+    color: #1e40af;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.82em;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+}
