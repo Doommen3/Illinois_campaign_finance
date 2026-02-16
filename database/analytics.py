@@ -3123,14 +3123,14 @@ def get_donor_cogiving_network(
                 e1.donor_key AS donor_a,
                 e2.donor_key AS donor_b,
                 COUNT(*) AS shared_count,
-                COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+                COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) AS shared_amount
             FROM donor_edges e1
             JOIN donor_edges e2
               ON e1.target_id = e2.target_id
              AND e1.donor_key < e2.donor_key
             GROUP BY e1.donor_key, e2.donor_key
             HAVING COUNT(*) >= ?
-               AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+               AND COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) >= ?
             ORDER BY shared_amount DESC, shared_count DESC
             LIMIT ?
             """,
@@ -3176,14 +3176,14 @@ def get_donor_cogiving_network(
                     e1.donor_key AS donor_a,
                     e2.donor_key AS donor_b,
                     COUNT(*) AS shared_count,
-                    COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+                    COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) AS shared_amount
                 FROM donor_candidate_edges e1
                 JOIN donor_candidate_edges e2
                   ON e1.target_id = e2.target_id
                  AND e1.donor_key < e2.donor_key
                 GROUP BY e1.donor_key, e2.donor_key
                 HAVING COUNT(*) >= ?
-                   AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+                   AND COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) >= ?
                 ORDER BY shared_amount DESC, shared_count DESC
                 LIMIT ?
                 """,
@@ -3343,14 +3343,14 @@ def get_donor_cogiving_network(
             e1.donor_id AS donor_a,
             e2.donor_id AS donor_b,
             COUNT(*) AS shared_count,
-            COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+            COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) AS shared_amount
         FROM donor_edges e1
         JOIN donor_edges e2
           ON e1.target_id = e2.target_id
          AND e1.donor_id < e2.donor_id
         GROUP BY e1.donor_id, e2.donor_id
         HAVING COUNT(*) >= ?
-           AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+           AND COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) >= ?
         ORDER BY shared_amount DESC, shared_count DESC
         LIMIT ?
         """,
@@ -3514,14 +3514,14 @@ def get_committee_similarity_network(
                 e1.committee_id AS committee_a,
                 e2.committee_id AS committee_b,
                 COUNT(*) AS shared_donor_count,
-                COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+                COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) AS shared_amount
             FROM donor_edges e1
             JOIN donor_edges e2
               ON e1.donor_key = e2.donor_key
              AND e1.committee_id < e2.committee_id
             GROUP BY e1.committee_id, e2.committee_id
             HAVING COUNT(*) >= ?
-               AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+               AND COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) >= ?
             ORDER BY shared_amount DESC, shared_donor_count DESC
             LIMIT ?
             """,
@@ -3650,14 +3650,14 @@ def get_committee_similarity_network(
             e1.committee_id AS committee_a,
             e2.committee_id AS committee_b,
             COUNT(*) AS shared_donor_count,
-            COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) AS shared_amount
+            COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) AS shared_amount
         FROM donor_edges e1
         JOIN donor_edges e2
           ON e1.donor_id = e2.donor_id
          AND e1.committee_id < e2.committee_id
         GROUP BY e1.committee_id, e2.committee_id
         HAVING COUNT(*) >= ?
-           AND COALESCE(SUM(MIN(e1.donor_amount, e2.donor_amount)), 0) >= ?
+           AND COALESCE(SUM(CASE WHEN e1.donor_amount < e2.donor_amount THEN e1.donor_amount ELSE e2.donor_amount END), 0) >= ?
         ORDER BY shared_amount DESC, shared_donor_count DESC
         LIMIT ?
         """,

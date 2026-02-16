@@ -22,6 +22,10 @@ _PRAGMA_TABLE_INFO_RE = re.compile(
     r"^\s*PRAGMA\s+(?:temp\.)?table_info\((?P<table>[^)]+)\)\s*;?\s*$",
     re.IGNORECASE,
 )
+_PRINTF_DATE_RE = re.compile(
+    r"PRINTF\(\s*'%04d-%02d-%02d'\s*,\s*(?P<year>[^,]+?)\s*,\s*(?P<month>[^,]+?)\s*,\s*(?P<day>[^)]+?)\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _strip_identifier(value: str) -> str:
@@ -73,6 +77,24 @@ def _qmark_to_percent_s(sql: str) -> str:
     return "".join(out)
 
 
+def _translate_sqlite_functions(sql: str) -> str:
+    """Translate SQLite-only function usage to PostgreSQL equivalents."""
+    translated = re.sub(r"\bINSTR\s*\(", "STRPOS(", sql, flags=re.IGNORECASE)
+
+    def _replace_printf_date(match: re.Match[str]) -> str:
+        year = match.group("year").strip()
+        month = match.group("month").strip()
+        day = match.group("day").strip()
+        return (
+            f"(LPAD(CAST({year} AS TEXT), 4, '0') || '-' || "
+            f"LPAD(CAST({month} AS TEXT), 2, '0') || '-' || "
+            f"LPAD(CAST({day} AS TEXT), 2, '0'))"
+        )
+
+    translated = _PRINTF_DATE_RE.sub(_replace_printf_date, translated)
+    return translated
+
+
 class PostgresCompatCursor:
     def __init__(self, conn: "PostgresCompatConnection") -> None:
         self._conn = conn
@@ -103,7 +125,7 @@ class PostgresCompatCursor:
             return self
 
         self._fake_rows = None
-        translated = _qmark_to_percent_s(sql)
+        translated = _translate_sqlite_functions(_qmark_to_percent_s(sql))
         try:
             self._cursor.execute(translated, bound_params)
         except Exception:
@@ -113,7 +135,7 @@ class PostgresCompatCursor:
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> "PostgresCompatCursor":
         self._fake_rows = None
-        translated = _qmark_to_percent_s(sql)
+        translated = _translate_sqlite_functions(_qmark_to_percent_s(sql))
         try:
             self._cursor.executemany(translated, seq_of_params)
         except Exception:
