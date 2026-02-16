@@ -547,6 +547,7 @@ def relationships():
     relationships_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 300)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    quick_mode = filters["load_mode"] != "full"
     cache_key = (
         filters["time_period_key"],
         filters["date_from"],
@@ -574,43 +575,92 @@ def relationships():
                 payload = _relationships_cache.get("payload")
 
     if payload is None:
-        payload = {
-            "donor_cogiving": get_donor_cogiving_network(
-                conn,
-                donor_limit=donor_limit,
-                edge_limit=edge_limit,
-                min_shared_amount=min_shared_amount,
-                min_shared_targets=min_shared_targets,
-            ),
-            "committee_similarity": get_committee_similarity_network(
-                conn,
-                committee_limit=committee_limit,
-                edge_limit=edge_limit,
-                min_shared_donors=min_shared_donors,
-                min_shared_amount=min_shared_amount,
-            ),
-            "candidate_competition": get_candidate_competition_networks(
-                conn,
-                candidate_limit=candidate_limit,
-                edge_limit=edge_limit,
-                min_shared_donors=min_shared_donors,
-                min_shared_amount=min_shared_amount,
-            ),
-            "lobbying_influence": get_lobbying_influence_graph(
-                conn,
-                client_limit=client_limit,
-                edge_limit=edge_limit,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-            "ecosystem_527": get_irs527_ecosystem_graph(
-                conn,
-                org_limit=org_limit,
-                edge_limit=edge_limit,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-        }
+        if quick_mode:
+            state_network = _empty_network()
+            state_network["summary"]["available"] = False
+            state_network["summary"]["candidate_rows"] = 0
+            federal_network = _empty_network()
+            federal_network["summary"]["available"] = False
+            federal_network["summary"]["candidate_rows"] = 0
+            combined_network = _empty_network()
+            combined_network["summary"]["available"] = False
+            combined_network["summary"]["candidate_rows"] = 0
+            combined_network["summary"]["bridge_match_count"] = 0
+            payload = {
+                "donor_cogiving": _empty_network(),
+                "committee_similarity": _empty_network(),
+                "candidate_competition": {
+                    "state": state_network,
+                    "federal": federal_network,
+                    "combined": combined_network,
+                    "summary": {
+                        "candidate_limit": candidate_limit,
+                        "edge_limit": edge_limit,
+                        "min_shared_donors": min_shared_donors,
+                        "min_shared_amount": min_shared_amount,
+                        "state_available": False,
+                        "federal_available": False,
+                        "bridge_match_count": 0,
+                        "quick_mode": True,
+                    },
+                },
+                "lobbying_influence": _empty_network(),
+                "ecosystem_527": _empty_network(),
+            }
+            payload["donor_cogiving"]["summary"].update(
+                {"donor_pool_size": 0, "source": "quick_mode", "quick_mode": True}
+            )
+            payload["committee_similarity"]["summary"].update(
+                {"committee_pool_size": 0, "source": "quick_mode", "quick_mode": True}
+            )
+            payload["lobbying_influence"]["summary"].update({"client_pool_size": 0, "quick_mode": True})
+            payload["ecosystem_527"]["summary"].update(
+                {
+                    "org_pool_size": 0,
+                    "quick_mode": True,
+                    "window_applied": bool(filters["date_from"] or filters["date_to"]),
+                    "date_from": filters["date_from"],
+                    "date_to": filters["date_to"],
+                }
+            )
+        else:
+            payload = {
+                "donor_cogiving": get_donor_cogiving_network(
+                    conn,
+                    donor_limit=donor_limit,
+                    edge_limit=edge_limit,
+                    min_shared_amount=min_shared_amount,
+                    min_shared_targets=min_shared_targets,
+                ),
+                "committee_similarity": get_committee_similarity_network(
+                    conn,
+                    committee_limit=committee_limit,
+                    edge_limit=edge_limit,
+                    min_shared_donors=min_shared_donors,
+                    min_shared_amount=min_shared_amount,
+                ),
+                "candidate_competition": get_candidate_competition_networks(
+                    conn,
+                    candidate_limit=candidate_limit,
+                    edge_limit=edge_limit,
+                    min_shared_donors=min_shared_donors,
+                    min_shared_amount=min_shared_amount,
+                ),
+                "lobbying_influence": get_lobbying_influence_graph(
+                    conn,
+                    client_limit=client_limit,
+                    edge_limit=edge_limit,
+                    date_from=filters["date_from"],
+                    date_to=filters["date_to"],
+                ),
+                "ecosystem_527": get_irs527_ecosystem_graph(
+                    conn,
+                    org_limit=org_limit,
+                    edge_limit=edge_limit,
+                    date_from=filters["date_from"],
+                    date_to=filters["date_to"],
+                ),
+            }
         if cache_enabled:
             with _relationships_cache_lock:
                 _relationships_cache["payload"] = payload
