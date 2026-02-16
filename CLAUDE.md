@@ -55,6 +55,7 @@ python run.py runserver --port 5000
    - Loads 12 ISBE bulk files into `isbe_*` tables with FK constraints
    - Creates materialized views: `isbe_condensed_receipts`, `isbe_condensed_expenditures` (dedup amended filings), `isbe_committee_money`, `isbe_candidate_money`
    - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download]`
+   - After sunshine import, run `python scripts/swap_bulk_to_isbe.py` to (re)create `bulk_*` compatibility views used by legacy routes and analytics helpers.
    - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (still works, but `isbe_*` tables are preferred)
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
 3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
@@ -105,6 +106,9 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `SOCRATA_API_MAX_RETRIES`
    - `SOCRATA_API_MIN_INTERVAL_SECONDS`
 - Homepage donor query fast path uses `analytics_donor_summary` (fallback remains legacy donor totals query if the summary table is absent).
+- Homepage candidate stats path now consolidates expensive aggregates into fewer SQL calls (single-pass local candidate/committee counts plus combined D2 and federal Schedule B/E aggregate queries).
+- `/person-intelligence` candidate enrichment now uses set-based batching for committees/candidacies (avoid per-candidate N+1 lookup loops).
+- Homepage legacy summary cards (`reports` / `committees` / `donors`) should return zero when legacy tables are absent instead of erroring the route.
 - 527 contribution ingest now populates `irs527_contributor_rollup` to reduce expensive recomputation for contribution summary metrics.
 - Search route performance guardrails:
   - In `type=all`, `filed_docs` runs only for doc-id-like queries.
@@ -115,6 +119,16 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
   - `idx_irs527_contributions_name_amount`
   - `idx_irs527_contributions_date_amount`
   - `idx_irs527_expenditures_date_amount`
+- Required `isbe_condensed_receipts` indexes for fast analytics refresh + donor-key search:
+  - `idx_isbe_condensed_receipts_filed_doc_id`
+  - `idx_isbe_condensed_receipts_committee_id`
+  - `idx_isbe_condensed_receipts_received_date`
+  - `idx_isbe_condensed_receipts_active_part1`
+  - `idx_isbe_condensed_receipts_donor_name_trgm`
+  - `idx_isbe_condensed_receipts_donor_key_trgm`
+- Snapshot build compatibility:
+  - `get_nlp_spending_summary` falls back to `bulk_expenditures_clean` when legacy `contributions` is absent.
+  - `get_dashboard_snapshot` handles PostgreSQL `datetime` objects for `completed_at` in addition to string timestamps.
 - Global time-filter canonical semantics:
    - Report-driven pages/queries filter by `filed_date`.
    - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).

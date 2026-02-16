@@ -517,27 +517,24 @@ def _get_candidate_stats(conn, period=None):
     }
 
     if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
-        stats['local_candidate_rows'] = int(
-            _scalar(conn, "SELECT COUNT(*) AS count FROM bulk_candidate_committee_finance_agg", default=0)
-        )
-        stats['local_candidates'] = int(
-            _scalar(
-                conn,
-                "SELECT COUNT(DISTINCT candidate_id) AS count FROM bulk_candidate_committee_finance_agg WHERE candidate_id IS NOT NULL",
-                default=0,
-            )
-        )
-        stats['local_committees'] = int(
-            _scalar(
-                conn,
-                "SELECT COUNT(DISTINCT committee_id_sbe) AS count FROM bulk_candidate_committee_finance_agg WHERE committee_id_sbe IS NOT NULL",
-                default=0,
-            )
-        )
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS row_count,
+                COUNT(DISTINCT CASE WHEN candidate_id IS NOT NULL THEN candidate_id END) AS candidate_count,
+                COUNT(DISTINCT CASE WHEN committee_id_sbe IS NOT NULL THEN committee_id_sbe END) AS committee_count
+            FROM bulk_candidate_committee_finance_agg
+            """
+        ).fetchone()
+        if row:
+            stats['local_candidate_rows'] = int(row["row_count"] or 0)
+            stats['local_candidates'] = int(row["candidate_count"] or 0)
+            stats['local_committees'] = int(row["committee_count"] or 0)
 
     if _table_exists(conn, "bulk_d2_totals_clean"):
         # D2 totals: filter by reporting_period_end via isbe_filed_docs
         d2_period_join = ""
+        d2_clause = ""
         d2_period_params = ()
         if period and period.get("start_date"):
             d2_clause, d2_plist = period_qmark_clause("fd.reporting_period_end", period)
@@ -545,22 +542,19 @@ def _get_candidate_stats(conn, period=None):
                 d2_period_join = " JOIN isbe_filed_docs fd ON fd.id = d2.filed_doc_id"
                 d2_period_params = tuple(d2_plist)
 
-        stats['local_total_receipts'] = float(
-            _scalar(
-                conn,
-                f"SELECT COALESCE(SUM(d2.total_receipts), 0) AS total FROM bulk_d2_totals_clean d2{d2_period_join} WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}",
-                params=d2_period_params,
-                default=0.0,
-            )
-        )
-        stats['local_total_expenditures'] = float(
-            _scalar(
-                conn,
-                f"SELECT COALESCE(SUM(d2.total_expenditures), 0) AS total FROM bulk_d2_totals_clean d2{d2_period_join} WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}",
-                params=d2_period_params,
-                default=0.0,
-            )
-        )
+        totals_row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(d2.total_receipts), 0) AS total_receipts,
+                COALESCE(SUM(d2.total_expenditures), 0) AS total_expenditures
+            FROM bulk_d2_totals_clean d2{d2_period_join}
+            WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}
+            """,
+            d2_period_params,
+        ).fetchone()
+        if totals_row:
+            stats['local_total_receipts'] = float(totals_row["total_receipts"] or 0.0)
+            stats['local_total_expenditures'] = float(totals_row["total_expenditures"] or 0.0)
         stats['local_archived_filings'] = int(
             _scalar(
                 conn,
@@ -597,40 +591,32 @@ def _get_candidate_stats(conn, period=None):
         )
     if _table_exists(conn, "fec_schedule_b_disbursements"):
         fec_b_where = "WHERE 1=1" + fec_cycle_clause
-        stats['federal_disbursements'] = int(
-            _scalar(
-                conn,
-                f"SELECT COUNT(*) AS count FROM fec_schedule_b_disbursements {fec_b_where}",
-                params=tuple(fec_cycle_params),
-                default=0,
-            )
-        )
-        stats['federal_disbursement_total'] = float(
-            _scalar(
-                conn,
-                f"SELECT COALESCE(SUM(disbursement_amount), 0) AS total FROM fec_schedule_b_disbursements {fec_b_where}",
-                params=tuple(fec_cycle_params),
-                default=0.0,
-            )
-        )
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS count,
+                COALESCE(SUM(disbursement_amount), 0) AS total
+            FROM fec_schedule_b_disbursements {fec_b_where}
+            """,
+            tuple(fec_cycle_params),
+        ).fetchone()
+        if row:
+            stats['federal_disbursements'] = int(row["count"] or 0)
+            stats['federal_disbursement_total'] = float(row["total"] or 0.0)
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
         fec_e_where = "WHERE 1=1" + fec_cycle_clause
-        stats['federal_independent_expenditures'] = int(
-            _scalar(
-                conn,
-                f"SELECT COUNT(*) AS count FROM fec_schedule_e_independent_expenditures {fec_e_where}",
-                params=tuple(fec_cycle_params),
-                default=0,
-            )
-        )
-        stats['federal_independent_expenditure_total'] = float(
-            _scalar(
-                conn,
-                f"SELECT COALESCE(SUM(expenditure_amount), 0) AS total FROM fec_schedule_e_independent_expenditures {fec_e_where}",
-                params=tuple(fec_cycle_params),
-                default=0.0,
-            )
-        )
+        row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS count,
+                COALESCE(SUM(expenditure_amount), 0) AS total
+            FROM fec_schedule_e_independent_expenditures {fec_e_where}
+            """,
+            tuple(fec_cycle_params),
+        ).fetchone()
+        if row:
+            stats['federal_independent_expenditures'] = int(row["count"] or 0)
+            stats['federal_independent_expenditure_total'] = float(row["total"] or 0.0)
     if _table_exists(conn, "fec_candidate_cycle_totals"):
         totals_where = "WHERE 1=1" + fec_cycle_clause
         totals_rows = int(
@@ -2485,10 +2471,15 @@ def index():
     period = get_active_period()
     date_from, date_to = period_to_date_window(period)
 
+    def _safe_count(table_name: str) -> int:
+        if not _table_exists(conn, table_name):
+            return 0
+        return int(_scalar(conn, f"SELECT COUNT(*) AS count FROM {table_name}", default=0))
+
     stats, freshness = _get_candidate_stats_cached(conn, period=period)
-    stats['legacy_reports'] = Report.count(conn)
-    stats['legacy_committees'] = Committee.count(conn)
-    stats['legacy_donors'] = Donor.count(conn)
+    stats['legacy_reports'] = _safe_count("reports")
+    stats['legacy_committees'] = _safe_count("committees")
+    stats['legacy_donors'] = _safe_count("donors")
 
     # Lobbying counts
     if _table_exists(conn, "lobbying_entities"):
@@ -2584,7 +2575,7 @@ def candidates():
 
     conn = current_app.get_database()
     period = get_active_period()
-    stats, freshness = _get_candidate_stats(conn, period=period)
+    stats, freshness = _get_candidate_stats_cached(conn, period=period)
     return render_template('candidates.html', stats=stats, freshness=freshness)
 
 
@@ -2893,39 +2884,97 @@ def person_intelligence():
                 (like_pattern,),
             ).fetchall()
 
+            candidate_ids = [row["candidate_id"] for row in candidate_rows if row["candidate_id"] is not None]
+            committee_lookup: dict[int, list[dict]] = defaultdict(list)
+            candidacy_lookup: dict[int, list[dict]] = defaultdict(list)
+
+            has_links = _table_exists(conn, "bulk_committee_candidate_links")
+            has_committees = _table_exists(conn, "bulk_committees_clean")
+            has_candidacies = _table_exists(conn, "isbe_candidacies")
+
+            if candidate_ids and has_links:
+                placeholders = ",".join(["?"] * len(candidate_ids))
+                if has_committees:
+                    committee_rows = conn.execute(
+                        f"""
+                        SELECT
+                            l.candidate_id,
+                            l.committee_id_sbe,
+                            COALESCE(c.committee_name, 'Committee ' || l.committee_id_sbe) AS committee_name
+                        FROM bulk_committee_candidate_links l
+                        LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = l.committee_id_sbe
+                        WHERE l.candidate_id IN ({placeholders})
+                        ORDER BY l.candidate_id, committee_name
+                        """,
+                        tuple(candidate_ids),
+                    ).fetchall()
+                else:
+                    committee_rows = conn.execute(
+                        f"""
+                        SELECT
+                            candidate_id,
+                            committee_id_sbe,
+                            'Committee ' || committee_id_sbe AS committee_name
+                        FROM bulk_committee_candidate_links
+                        WHERE candidate_id IN ({placeholders})
+                        ORDER BY candidate_id, committee_name
+                        """,
+                        tuple(candidate_ids),
+                    ).fetchall()
+                for row in committee_rows:
+                    if row["candidate_id"] is None:
+                        continue
+                    committee_lookup[int(row["candidate_id"])].append(
+                        {
+                            "committee_id_sbe": row["committee_id_sbe"],
+                            "committee_name": row["committee_name"],
+                        }
+                    )
+
+            if candidate_ids and has_candidacies:
+                placeholders = ",".join(["?"] * len(candidate_ids))
+                candidacy_rows = conn.execute(
+                    f"""
+                    WITH ranked AS (
+                        SELECT
+                            candidate_id,
+                            election_type,
+                            election_year,
+                            race_type,
+                            outcome,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY candidate_id
+                                ORDER BY election_year DESC, election_type
+                            ) AS rn
+                        FROM isbe_candidacies
+                        WHERE candidate_id IN ({placeholders})
+                    )
+                    SELECT candidate_id, election_type, election_year, race_type, outcome
+                    FROM ranked
+                    WHERE rn <= 5
+                    ORDER BY candidate_id, election_year DESC, election_type
+                    """,
+                    tuple(candidate_ids),
+                ).fetchall()
+                for row in candidacy_rows:
+                    if row["candidate_id"] is None:
+                        continue
+                    candidacy_lookup[int(row["candidate_id"])].append(
+                        {
+                            "election_type": row["election_type"] or "",
+                            "election_year": row["election_year"],
+                            "race_type": row["race_type"] or "",
+                            "outcome": row["outcome"] or "",
+                        }
+                    )
+
             enriched_candidates = []
             for cand in candidate_rows:
                 cand_dict = dict(cand)
-                cand_dict['committees'] = []
-                cand_dict['candidacies'] = []
-
-                if _table_exists(conn, "bulk_committee_candidate_links"):
-                    cmte_rows = conn.execute(
-                        """
-                        SELECT l.committee_id_sbe,
-                               COALESCE(c.committee_name, 'Committee ' || l.committee_id_sbe) AS committee_name
-                        FROM bulk_committee_candidate_links l
-                        LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = l.committee_id_sbe
-                        WHERE l.candidate_id = ?
-                        ORDER BY committee_name
-                        """,
-                        (cand_dict['candidate_id'],),
-                    ).fetchall()
-                    cand_dict['committees'] = [dict(r) for r in cmte_rows]
-
-                if _table_exists(conn, "isbe_candidacies"):
-                    candidacy_rows = conn.execute(
-                        """
-                        SELECT election_type, election_year, race_type, outcome
-                        FROM isbe_candidacies
-                        WHERE candidate_id = ?
-                        ORDER BY election_year DESC
-                        LIMIT 5
-                        """,
-                        (cand_dict['candidate_id'],),
-                    ).fetchall()
-                    cand_dict['candidacies'] = [dict(r) for r in candidacy_rows]
-
+                candidate_id_value = cand_dict.get("candidate_id")
+                cid = int(candidate_id_value) if candidate_id_value is not None else None
+                cand_dict["committees"] = committee_lookup.get(cid, []) if cid is not None else []
+                cand_dict["candidacies"] = candidacy_lookup.get(cid, []) if cid is not None else []
                 enriched_candidates.append(cand_dict)
             results['candidates'] = enriched_candidates
 

@@ -106,6 +106,9 @@ python run.py init-db
 # Downloads missing files automatically with --download
 python run.py sunshine-import --bulk-dir Bulk_download --download
 
+# Recreate bulk_* compatibility views after sunshine ETL
+python scripts/swap_bulk_to_isbe.py
+
 # Legacy ISBE import (still works, loads into bulk_*_clean tables)
 # python run.py import-bulk-download --directory Bulk_download
 
@@ -401,6 +404,9 @@ Environment variables (set in `.env` or export directly):
 
 - Added route-level TTL caching for three heavy pages: `/`, `/analytics/relationships`, and `/527/dark-money`.
 - Homepage now reuses cached insights and top-donor datasets; top donors prefer `analytics_donor_summary` for faster reads when available.
+- Homepage candidate stats now consolidate multiple row-count/total queries into fewer aggregate SQL calls (notably for `bulk_candidate_committee_finance_agg`, D2 totals, and federal Schedule B/E cards).
+- `/person-intelligence` now batches candidate committee + candidacy enrichment into set-based queries (removes per-candidate N+1 lookup loops).
+- Homepage legacy cards (`reports` / `committees` / `donors`) now degrade safely to zero when legacy tables are absent instead of failing route render.
 - Added startup prewarm (`DASHBOARD_PREWARM_ENABLED`) to reduce first-visit latency after process restart.
 - Added `irs527_contributor_rollup` population in the IRS 527 loader path so dark-money and contribution-facing summaries avoid repeated full-table scans.
 - Added `/search` response caching and section guards:
@@ -411,6 +417,14 @@ Environment variables (set in `.env` or export directly):
   - use `amount > 0` predicates (instead of `COALESCE(amount, 0) > 0`) so numeric indexes are used.
   - date filters use dual-format text ranges (`YYYY-MM-DD` and `YYYYMMDD`) to stay index-friendly without `DATE(column)` wrappers.
   - new indexes: `idx_irs527_contributions_name_amount`, `idx_irs527_contributions_date_amount`, `idx_irs527_expenditures_date_amount`.
+- Added `isbe_condensed_receipts` indexes to support analytics refresh + donor search paths:
+  - `idx_isbe_condensed_receipts_filed_doc_id`
+  - `idx_isbe_condensed_receipts_committee_id`
+  - `idx_isbe_condensed_receipts_received_date`
+  - `idx_isbe_condensed_receipts_active_part1`
+  - `idx_isbe_condensed_receipts_donor_name_trgm`
+  - `idx_isbe_condensed_receipts_donor_key_trgm`
+- `refresh-analytics --with-snapshot` now supports PostgreSQL timestamp objects in snapshot metadata parsing and can build NLP spending summary from `bulk_expenditures_clean` when legacy `contributions` is absent.
 - Expected behavior: first request after cache expiry/restart can still be slower; subsequent warm requests should be significantly faster.
 
 ## Server Deployment

@@ -2945,10 +2945,26 @@ def get_dashboard_snapshot(
     is_fresh = False
     if completed_at:
         try:
-            completed_dt = datetime.strptime(completed_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            completed_dt: datetime | None = None
+            if isinstance(completed_at, datetime):
+                completed_dt = completed_at
+            else:
+                completed_text = str(completed_at)
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+                    try:
+                        completed_dt = datetime.strptime(completed_text, fmt)
+                        break
+                    except ValueError:
+                        continue
+            if completed_dt is None:
+                raise ValueError("unable to parse completed_at timestamp")
+            if completed_dt.tzinfo is None:
+                completed_dt = completed_dt.replace(tzinfo=timezone.utc)
+            else:
+                completed_dt = completed_dt.astimezone(timezone.utc)
             age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
             is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
-        except ValueError:
+        except (ValueError, TypeError):
             age_seconds = None
 
     return {
@@ -3089,15 +3105,29 @@ def build_dashboard_full_snapshot(
 
 def get_nlp_spending_summary(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     """Categorize spending-related text using keyword NLP heuristics."""
-    rows = conn.execute(
-        """
-        SELECT
-            COALESCE(ct.description, '') AS text_value,
-            COALESCE(ct.amount, 0) AS amount
-        FROM contributions ct
-        WHERE ct.amount IS NOT NULL AND ct.amount > 0
-        """
-    ).fetchall()
+    rows: list[dict] = []
+
+    if _table_exists(conn, "contributions"):
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(ct.description, '') AS text_value,
+                COALESCE(ct.amount, 0) AS amount
+            FROM contributions ct
+            WHERE ct.amount IS NOT NULL AND ct.amount > 0
+            """
+        ).fetchall()
+    elif _table_exists(conn, "bulk_expenditures_clean"):
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(e.purpose, '') AS text_value,
+                COALESCE(e.amount, 0) AS amount
+            FROM bulk_expenditures_clean e
+            WHERE COALESCE(e.amount, 0) > 0
+              AND COALESCE(e.is_archived, 0) = 0
+            """
+        ).fetchall()
 
     if _table_exists(conn, "d2_itemized_entries"):
         d2_rows = conn.execute(
