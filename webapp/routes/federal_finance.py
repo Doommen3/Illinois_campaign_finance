@@ -7,6 +7,7 @@ from io import StringIO
 from flask import Blueprint, Response, current_app, render_template, request
 
 from database.models import Donor
+from webapp.utils.time_filter import get_active_period, period_cycle
 from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
@@ -34,16 +35,23 @@ from database.federal_fec import (
 federal_finance_bp = Blueprint('federal_finance', __name__)
 
 
-def _parse_shared_filters() -> tuple[int, str, str]:
-    cycle = request.args.get('cycle', 2026, type=int)
-    if cycle < 1970 or cycle > 2100:
-        cycle = 2026
+def _parse_shared_filters() -> tuple[int | None, int, str, str]:
+    """Resolve cycle + analysis filters, defaulting cycle from global period."""
+    period = get_active_period()
+    derived_cycle = period_cycle(period)
+    cycle_filter = derived_cycle
+
+    explicit_cycle = request.args.get('cycle', type=int)
+    if explicit_cycle is not None and 1970 <= explicit_cycle <= 2100:
+        cycle_filter = explicit_cycle
+
+    cycle_for_ui = cycle_filter if cycle_filter is not None else 2026
 
     analysis_office = request.args.get('analysis_office', '', type=str).strip().upper()
     if analysis_office not in {'', 'H', 'S', 'P'}:
         analysis_office = ''
     analysis_district = request.args.get('analysis_district', '', type=str).strip()
-    return cycle, analysis_office, analysis_district
+    return cycle_filter, cycle_for_ui, analysis_office, analysis_district
 
 
 def _base_context(active_page: str, table_available: bool, cycle: int, analysis_office: str, analysis_district: str) -> dict:
@@ -93,7 +101,7 @@ def _scalar(conn, sql: str, params=(), default=0):
     return default if value is None else value
 
 
-def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, analysis_district: str) -> dict:
+def _federal_schedule_b_e_metrics(conn, *, cycle: int | None, analysis_office: str, analysis_district: str) -> dict:
     """Return filtered Schedule B/E row counts and totals for federal overview cards."""
     metrics = {
         'schedule_b_count': 0,
@@ -112,7 +120,7 @@ def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, ana
             WITH candidate_scope AS (
                 SELECT DISTINCT fec_candidate_id AS candidate_id, cycle
                 FROM fec_candidate_match
-                WHERE cycle = ?
+                WHERE (? IS NULL OR cycle = ?)
                   AND fec_candidate_id IS NOT NULL
                   AND (? = '' OR office_code = ? OR office = ?)
                   AND (? = '' OR district_code = ? OR district = ?)
@@ -125,7 +133,16 @@ def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, ana
               ON cs.candidate_id = sb.candidate_id
              AND cs.cycle = sb.cycle
             """,
-            (cycle, analysis_office, analysis_office, analysis_office, district_value, district_value, district_value),
+            (
+                cycle,
+                cycle,
+                analysis_office,
+                analysis_office,
+                analysis_office,
+                district_value,
+                district_value,
+                district_value,
+            ),
         ).fetchone()
         if row:
             metrics['schedule_b_count'] = int(row["disbursement_count"] or 0)
@@ -137,7 +154,7 @@ def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, ana
             WITH candidate_scope AS (
                 SELECT DISTINCT fec_candidate_id AS candidate_id, cycle
                 FROM fec_candidate_match
-                WHERE cycle = ?
+                WHERE (? IS NULL OR cycle = ?)
                   AND fec_candidate_id IS NOT NULL
                   AND (? = '' OR office_code = ? OR office = ?)
                   AND (? = '' OR district_code = ? OR district = ?)
@@ -150,7 +167,16 @@ def _federal_schedule_b_e_metrics(conn, *, cycle: int, analysis_office: str, ana
               ON cs.candidate_id = se.candidate_id
              AND cs.cycle = se.cycle
             """,
-            (cycle, analysis_office, analysis_office, analysis_office, district_value, district_value, district_value),
+            (
+                cycle,
+                cycle,
+                analysis_office,
+                analysis_office,
+                analysis_office,
+                district_value,
+                district_value,
+                district_value,
+            ),
         ).fetchone()
         if row:
             metrics['schedule_e_count'] = int(row["expenditure_count"] or 0)
@@ -175,7 +201,7 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
 def federal_overview():
     """Overview page with high-level federal race, donor, and geography summaries."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     overview = {
@@ -198,7 +224,7 @@ def federal_overview():
     if table_available:
         payload = None
         cache_params = {
-            'cycle': cycle,
+            'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
             'version': 2,
@@ -214,10 +240,10 @@ def federal_overview():
                 payload = cache_status.get('payload')
 
         if payload is None:
-            overview['candidate_count'] = count_federal_candidates(conn, cycle=cycle)
+            overview['candidate_count'] = count_federal_candidates(conn, cycle=cycle_filter)
             race_analytics = get_federal_race_analytics(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 limit=12,
@@ -226,7 +252,7 @@ def federal_overview():
 
             geographic = get_federal_geographic_concentration(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 limit_states=10,
@@ -236,7 +262,7 @@ def federal_overview():
 
             network_snapshot = get_federal_network_graph(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 min_edge_amount=100.0,
@@ -248,7 +274,7 @@ def federal_overview():
             overview.update(
                 _federal_schedule_b_e_metrics(
                     conn,
-                    cycle=cycle,
+                    cycle=cycle_filter,
                     analysis_office=analysis_office,
                     analysis_district=analysis_district,
                 )
@@ -294,7 +320,7 @@ def federal_overview():
 def federal_candidates():
     """Candidate table and drill-down entry points."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     page = max(request.args.get('page', 1, type=int), 1)
@@ -321,7 +347,7 @@ def federal_candidates():
             conn,
             limit=per_page,
             offset=offset,
-            cycle=cycle,
+            cycle=cycle_filter,
             search=query,
             office=candidate_office,
             party=candidate_party,
@@ -331,7 +357,7 @@ def federal_candidates():
         )
         total = count_federal_candidates(
             conn,
-            cycle=cycle,
+            cycle=cycle_filter,
             search=query,
             office=candidate_office,
             party=candidate_party,
@@ -359,7 +385,7 @@ def federal_candidates():
 def federal_networks():
     """Visual network analysis page (federal and local/federal overlap)."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
@@ -381,7 +407,7 @@ def federal_networks():
     if table_available:
         payload = None
         cache_params = {
-            'cycle': cycle,
+            'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
             'network_min_edge_amount': round(network_min_edge_amount, 2),
@@ -401,7 +427,7 @@ def federal_networks():
         if payload is None:
             federal_network = get_federal_network_graph(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 min_edge_amount=network_min_edge_amount,
@@ -433,7 +459,7 @@ def federal_networks():
 def federal_donor_intelligence():
     """Donor segmentation, clustering, influence, and multi-hop tracing."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     segmentation_method = request.args.get('segmentation_method', 'kmeans', type=str).strip().lower()
@@ -461,7 +487,7 @@ def federal_donor_intelligence():
         payload = None
         cache_allowed = _federal_cache_enabled()
         cache_params = {
-            'cycle': cycle,
+            'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
             'segmentation_method': segmentation_method,
@@ -486,7 +512,7 @@ def federal_donor_intelligence():
         if payload is None:
             donor_segmentation = get_federal_donor_segmentation(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 method=segmentation_method,
@@ -497,7 +523,7 @@ def federal_donor_intelligence():
             )
             donor_clusters = get_federal_donor_network_clusters(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 min_edge_amount=min_edge_amount,
@@ -539,7 +565,7 @@ def federal_donor_intelligence():
 def federal_money_flow():
     """Multi-layer money flow network (A/B/E) and cross-role organizations."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
@@ -564,14 +590,14 @@ def federal_money_flow():
 
     if table_available:
         multilayer_network = get_federal_multilayer_network_graph(
-            conn, cycle=cycle,
+            conn, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             min_edge_amount=network_min_edge_amount,
             limit=network_limit,
         )
         cross_role_orgs = get_federal_cross_role_organizations(
-            conn, cycle=cycle,
+            conn, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             limit=60, min_total_amount=network_min_edge_amount,
@@ -591,7 +617,7 @@ def federal_money_flow():
 def federal_influence():
     """Influence scores for donors and candidates."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     min_edge_amount = max(request.args.get('network_min_edge_amount', 100.0, type=float), 0.0)
@@ -601,7 +627,7 @@ def federal_influence():
 
     if table_available:
         influence = get_federal_influence_scores(
-            conn, cycle=cycle,
+            conn, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             min_edge_amount=min_edge_amount,
@@ -621,7 +647,7 @@ def federal_influence():
 def federal_follow_the_money():
     """Multi-hop donor path tracing."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     follow_donor_key = request.args.get('follow_donor_key', '', type=str).strip()
@@ -638,7 +664,7 @@ def federal_follow_the_money():
 
     if table_available and follow_donor_key:
         follow_money = get_federal_follow_the_money(
-            conn, donor_entity_key=follow_donor_key, cycle=cycle,
+            conn, donor_entity_key=follow_donor_key, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             max_hops=follow_max_hops,
@@ -647,7 +673,7 @@ def federal_follow_the_money():
 
     top_donors = []
     if table_available:
-        top_donors = get_top_donor_entities(conn, cycle=cycle, limit=200)
+        top_donors = get_top_donor_entities(conn, cycle=cycle_filter, limit=200)
 
     return render_template(
         'federal_finance/follow_the_money.html',
@@ -664,14 +690,14 @@ def federal_follow_the_money():
 def federal_geography():
     """Geographic concentration analysis for federal contributions."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     geographic = {'states': [], 'cities': [], 'race_concentration': []}
 
     if table_available:
         geographic = get_federal_geographic_concentration(
-            conn, cycle=cycle,
+            conn, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             limit_states=20, limit_cities=25, limit_races=15,
@@ -688,7 +714,7 @@ def federal_geography():
 def federal_matching():
     """Federal/local donor matching diagnostics and confidence review."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     local_match_limit = min(max(request.args.get('local_match_limit', 100000, type=int), 1000), 500000)
@@ -717,7 +743,7 @@ def federal_matching():
     if table_available:
         payload = None
         cache_params = {
-            'cycle': cycle,
+            'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
             'local_match_limit': local_match_limit,
@@ -739,7 +765,7 @@ def federal_matching():
         if payload is None:
             local_matches = get_federal_local_donor_matches(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 federal_donor_limit=5000,
@@ -748,7 +774,7 @@ def federal_matching():
             )
             overlap_network = get_federal_local_overlap_network(
                 conn,
-                cycle=cycle,
+                cycle=cycle_filter,
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 min_edge_amount=min_edge_amount,
@@ -789,7 +815,7 @@ def federal_matching():
 def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key: str):
     """Show a combined profile view for one matched federal/local donor pair."""
     conn = current_app.get_database()
-    cycle, analysis_office, analysis_district = _parse_shared_filters()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     table_available = federal_data_available(conn)
 
     local_source = request.args.get('local_source', 'bulk_receipts', type=str).strip() or 'bulk_receipts'
@@ -825,7 +851,7 @@ def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key
         federal_detail = get_federal_donor_detail(
             conn,
             donor_entity_key=federal_donor_entity_key,
-            cycle=cycle,
+            cycle=cycle_filter,
             contribution_limit=federal_per_page,
             contribution_offset=federal_offset,
         )
@@ -918,7 +944,7 @@ def federal_donor_detail(donor_entity_key: str):
     """Show one donor's contributions across federal candidates."""
     conn = current_app.get_database()
 
-    cycle = request.args.get('cycle', 2026, type=int)
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
     contribution_per_page = 100
     contribution_offset = (contribution_page - 1) * contribution_per_page
@@ -926,7 +952,7 @@ def federal_donor_detail(donor_entity_key: str):
     detail = get_federal_donor_detail(
         conn,
         donor_entity_key=donor_entity_key,
-        cycle=cycle,
+        cycle=cycle_filter,
         contribution_limit=contribution_per_page,
         contribution_offset=contribution_offset,
     )
@@ -948,7 +974,7 @@ def federal_donor_detail(donor_entity_key: str):
 def federal_committee_receipts(committee_id: str):
     """Show one federal committee's Schedule A receipt rows."""
     conn = current_app.get_database()
-    cycle = request.args.get('cycle', 2026, type=int)
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
     receipt_page = max(request.args.get('receipt_page', 1, type=int), 1)
     receipt_per_page = 100
     receipt_offset = (receipt_page - 1) * receipt_per_page
@@ -962,7 +988,7 @@ def federal_committee_receipts(committee_id: str):
     detail = get_federal_committee_receipts(
         conn,
         committee_id=committee_id,
-        cycle=cycle,
+        cycle=cycle_filter,
         receipt_limit=receipt_per_page,
         receipt_offset=receipt_offset,
         receipt_sort=receipt_sort,
@@ -994,7 +1020,8 @@ def federal_committee_receipts(committee_id: str):
 def federal_race_outside_spending(office_code: str, district_code: str):
     """Race-level Schedule E independent expenditure drilldown."""
     conn = current_app.get_database()
-    cycle = request.args.get('cycle', 2026, type=int)
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
+    race_cycle = cycle_filter if cycle_filter is not None else cycle
     output_format = request.args.get('format', 'html', type=str).strip().lower()
 
     page = max(request.args.get('page', 1, type=int), 1)
@@ -1015,7 +1042,7 @@ def federal_race_outside_spending(office_code: str, district_code: str):
 
     detail = get_federal_race_outside_spending(
         conn,
-        cycle=cycle,
+        cycle=race_cycle,
         office_code=office_code,
         district_code=district_code,
         limit=500000 if output_format == 'csv' else per_page,
@@ -1108,7 +1135,7 @@ def federal_candidate_detail(candidate_id: str):
     """Show top donors and recent FEC Schedule A contributions for one candidate."""
     conn = current_app.get_database()
 
-    cycle = request.args.get('cycle', 2026, type=int)
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
     output_format = request.args.get('format', 'html', type=str).strip().lower()
     export_table = request.args.get('table', '', type=str).strip().lower()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
@@ -1136,7 +1163,7 @@ def federal_candidate_detail(candidate_id: str):
     detail = get_federal_candidate_detail(
         conn,
         candidate_id=candidate_id,
-        cycle=cycle,
+        cycle=cycle_filter,
         top_donor_limit=25,
         contribution_limit=contribution_per_page,
         contribution_offset=contribution_offset,
@@ -1165,7 +1192,7 @@ def federal_candidate_detail(candidate_id: str):
             schedule_b_rows = get_federal_candidate_detail(
                 conn,
                 candidate_id=candidate_id,
-                cycle=cycle,
+                cycle=cycle_filter,
                 top_donor_limit=1,
                 contribution_limit=1,
                 contribution_offset=0,
@@ -1181,7 +1208,7 @@ def federal_candidate_detail(candidate_id: str):
             csv_rows = [
                 [
                     row.get('sub_id'),
-                    cycle,
+                    row.get('cycle', cycle),
                     candidate_id,
                     row.get('committee_id'),
                     row.get('committee_name'),
@@ -1230,7 +1257,7 @@ def federal_candidate_detail(candidate_id: str):
             schedule_e_rows = get_federal_candidate_detail(
                 conn,
                 candidate_id=candidate_id,
-                cycle=cycle,
+                cycle=cycle_filter,
                 top_donor_limit=1,
                 contribution_limit=1,
                 contribution_offset=0,
@@ -1246,7 +1273,7 @@ def federal_candidate_detail(candidate_id: str):
             csv_rows = [
                 [
                     row.get('sub_id'),
-                    cycle,
+                    row.get('cycle', cycle),
                     candidate_id,
                     row.get('expenditure_date'),
                     row.get('support_oppose_indicator'),

@@ -1,5 +1,6 @@
 """OpenBook vendor contracts and contributions routes."""
 from flask import Blueprint, render_template, request, current_app, abort
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 openbook_bp = Blueprint("openbook", __name__)
 
@@ -29,6 +30,13 @@ def _scalar(conn, sql, params=(), default=0):
     return default if value is None else value
 
 
+def _cash_date_window() -> tuple[str | None, str | None]:
+    period = get_active_period()
+    explicit_from = request.args.get("date_from", "", type=str).strip()
+    explicit_to = request.args.get("date_to", "", type=str).strip()
+    return period_to_date_window(period, explicit_from, explicit_to)
+
+
 @openbook_bp.route("/")
 def list_vendors():
     conn = current_app.get_database()
@@ -46,12 +54,27 @@ def list_vendors():
     page = request.args.get("page", 1, type=int)
     per_page = 50
     offset = max(0, page - 1) * per_page
+    cash_date_from, cash_date_to = _cash_date_window()
 
     where_sql = "WHERE m.match_method != 'no_match' AND m.openbook_vendor_key != '' AND m.confidence >= 0.8"
     params = []
     if query:
         where_sql += " AND (m.openbook_vendor_key LIKE ? OR m.openbook_vendor_label LIKE ?)"
         params.extend([f"%{query}%", f"%{query}%"])
+
+    contribution_date_clauses = []
+    contribution_date_params: list[object] = []
+    if cash_date_from:
+        contribution_date_clauses.append("DATE(contribution_date) >= DATE(?)")
+        contribution_date_params.append(cash_date_from)
+    if cash_date_to:
+        contribution_date_clauses.append("DATE(contribution_date) <= DATE(?)")
+        contribution_date_params.append(cash_date_to)
+    contribution_date_where = (
+        "WHERE " + " AND ".join(contribution_date_clauses)
+        if contribution_date_clauses
+        else ""
+    )
 
     total = int(
         _scalar(
@@ -92,6 +115,7 @@ def list_vendors():
                 openbook_vendor_key,
                 COUNT(*) AS contribution_count
             FROM openbook_contributions_raw
+            {contribution_date_where}
             GROUP BY openbook_vendor_key
         )
         SELECT
@@ -108,7 +132,7 @@ def list_vendors():
         ORDER BY c.total_award_amount DESC, c.contract_count DESC, b.openbook_vendor_label ASC
         LIMIT ? OFFSET ?
         """,
-        params + [per_page, offset],
+        params + contribution_date_params + [per_page, offset],
     ).fetchall()
 
     summary = {
@@ -128,7 +152,12 @@ def list_vendors():
             else 0
         ),
         "contributions_total": int(
-            _scalar(conn, "SELECT COUNT(*) FROM openbook_contributions_raw", default=0)
+            _scalar(
+                conn,
+                f"SELECT COUNT(*) FROM openbook_contributions_raw {contribution_date_where}",
+                params=tuple(contribution_date_params),
+                default=0,
+            )
             if _table_exists(conn, "openbook_contributions_raw")
             else 0
         ),
@@ -148,6 +177,7 @@ def list_vendors():
 @openbook_bp.route("/<path:vendor_key>")
 def vendor_detail(vendor_key: str):
     conn = current_app.get_database()
+    cash_date_from, cash_date_to = _cash_date_window()
     if not _table_exists(conn, "openbook_vendor_match"):
         abort(404)
 
@@ -183,8 +213,21 @@ def vendor_detail(vendor_key: str):
         (vendor_key,),
     ).fetchall() if _table_exists(conn, "openbook_contracts_raw") else []
 
+    warrant_date_clauses = []
+    warrant_date_params: list[object] = [vendor_key]
+    if cash_date_from:
+        warrant_date_clauses.append("DATE(issue_date) >= DATE(?)")
+        warrant_date_params.append(cash_date_from)
+    if cash_date_to:
+        warrant_date_clauses.append("DATE(issue_date) <= DATE(?)")
+        warrant_date_params.append(cash_date_to)
+    warrant_date_where = (
+        " AND " + " AND ".join(warrant_date_clauses)
+        if warrant_date_clauses
+        else ""
+    )
     warrants = conn.execute(
-        """
+        f"""
         SELECT
             contract_number,
             fiscal_year,
@@ -192,14 +235,28 @@ def vendor_detail(vendor_key: str):
             payment_amount
         FROM openbook_contract_warrants
         WHERE openbook_vendor_key = ?
+        {warrant_date_where}
         ORDER BY issue_date DESC
         LIMIT 250
         """,
-        (vendor_key,),
+        tuple(warrant_date_params),
     ).fetchall() if _table_exists(conn, "openbook_contract_warrants") else []
 
+    contribution_date_clauses = []
+    contribution_date_params: list[object] = [vendor_key]
+    if cash_date_from:
+        contribution_date_clauses.append("DATE(contribution_date) >= DATE(?)")
+        contribution_date_params.append(cash_date_from)
+    if cash_date_to:
+        contribution_date_clauses.append("DATE(contribution_date) <= DATE(?)")
+        contribution_date_params.append(cash_date_to)
+    contribution_date_where = (
+        " AND " + " AND ".join(contribution_date_clauses)
+        if contribution_date_clauses
+        else ""
+    )
     contributions = conn.execute(
-        """
+        f"""
         SELECT
             contribution_date,
             contributor_name,
@@ -207,10 +264,11 @@ def vendor_detail(vendor_key: str):
             amount
         FROM openbook_contributions_raw
         WHERE openbook_vendor_key = ?
+        {contribution_date_where}
         ORDER BY contribution_date DESC, amount DESC
         LIMIT 250
         """,
-        (vendor_key,),
+        tuple(contribution_date_params),
     ).fetchall() if _table_exists(conn, "openbook_contributions_raw") else []
 
     seed_links = conn.execute(

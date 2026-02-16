@@ -61,7 +61,7 @@ def app(tmp_path: Path):
         "recon_min_abs_diff": 1000.0,
         "date_from": None,
         "date_to": None,
-        "snapshot_version": 2,
+        "snapshot_version": 3,
     }
     save_dashboard_snapshot(
         conn,
@@ -146,7 +146,7 @@ def test_analytics_networks_page_loads(client):
 
 def test_analytics_networks_has_graph_descriptions(client):
     """Networks page contains per-tab help-text descriptions."""
-    response = client.get("/analytics/networks?load_mode=full")
+    response = client.get("/analytics/networks?load_mode=full&period=all")
     html = response.data.decode()
     assert "Three-column donor" in html
     assert "dark money" in html.lower() or "527" in html
@@ -155,7 +155,7 @@ def test_analytics_networks_has_graph_descriptions(client):
 
 def test_analytics_networks_has_info_panels(client):
     """Networks page contains info panel divs for force-graph tabs."""
-    response = client.get("/analytics/networks?load_mode=full")
+    response = client.get("/analytics/networks?load_mode=full&period=all")
     html = response.data.decode()
     assert "network-info-panel" in html
     assert "vendor-info-panel" in html
@@ -165,7 +165,7 @@ def test_analytics_networks_has_info_panels(client):
 
 def test_analytics_networks_has_color_legend(client):
     """Networks page contains the node color legend."""
-    response = client.get("/analytics/networks?load_mode=full")
+    response = client.get("/analytics/networks?load_mode=full&period=all")
     html = response.data.decode()
     assert "network-color-legend" in html
     assert "Donor" in html
@@ -178,7 +178,7 @@ def test_analytics_networks_has_color_legend(client):
 
 def test_network_svg_expanded_viewbox(client):
     """Force-graph SVGs use the expanded 1200x700 viewBox for less overlap."""
-    response = client.get("/analytics/networks?load_mode=full")
+    response = client.get("/analytics/networks?load_mode=full&period=all")
     html = response.data.decode()
     assert 'viewBox="0 0 1200 700"' in html
 

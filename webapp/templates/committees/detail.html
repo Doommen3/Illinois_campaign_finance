@@ -93,8 +93,8 @@
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='filed_date', contrib_dir='asc' if contrib_sort != 'filed_date' or contrib_dir == 'desc' else 'desc') }}">
-                    Date{% if contrib_sort == 'filed_date' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='transaction_date', contrib_dir='asc' if contrib_sort != 'transaction_date' or contrib_dir == 'desc' else 'desc') }}">
+                    Date{% if contrib_sort in ['transaction_date', 'filed_date'] %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
@@ -113,7 +113,7 @@
                 </a>
             </td>
             <td>{{ format_currency(contrib.amount) }}</td>
-            <td>{{ contrib.filed_date if contrib.filed_date else '-' }}</td>
+            <td>{{ contrib.transaction_date if contrib.transaction_date else (contrib.filed_date if contrib.filed_date else '-') }}</td>
             <td>{{ contrib.description|truncate(40) if contrib.description else '-' }}</td>
         </tr>
         {% else %}

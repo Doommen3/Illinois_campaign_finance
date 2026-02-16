@@ -71,6 +71,10 @@ def _db_target() -> str:
     if env_database_url:
         return env_database_url
 
+    env_database_path = (os.environ.get("DATABASE_PATH") or "").strip()
+    if env_database_path:
+        return env_database_path
+
     configured_database_url = (config.DATABASE_URL or "").strip()
     if configured_database_url:
         return configured_database_url

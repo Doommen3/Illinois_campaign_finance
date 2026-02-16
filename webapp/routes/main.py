@@ -2,6 +2,7 @@
 from collections import defaultdict, OrderedDict
 import csv
 from datetime import datetime
+import inspect
 from io import StringIO
 import sqlite3
 import threading
@@ -16,16 +17,19 @@ main_bp = Blueprint('main', __name__)
 _dashboard_insights_cache = {
     "value": None,
     "expires_at": 0.0,
+    "key": None,
 }
 _dashboard_insights_cache_lock = threading.Lock()
 _candidate_stats_cache = {
     "value": None,
     "expires_at": 0.0,
+    "key": None,
 }
 _candidate_stats_cache_lock = threading.Lock()
 _top_donors_cache = {
     "value": None,
     "expires_at": 0.0,
+    "key": None,
 }
 _top_donors_cache_lock = threading.Lock()
 
@@ -98,6 +102,48 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
     return False
 
 
+def _sql_date_expr(column: str) -> str:
+    text_expr = f"TRIM(COALESCE(CAST({column} AS TEXT), ''))"
+    first_slash_expr = f"INSTR({text_expr}, '/')"
+    remainder_expr = f"SUBSTR({text_expr}, {first_slash_expr} + 1)"
+    second_slash_expr = f"INSTR({remainder_expr}, '/')"
+    month_expr = f"SUBSTR({text_expr}, 1, {first_slash_expr} - 1)"
+    day_expr = f"SUBSTR({remainder_expr}, 1, {second_slash_expr} - 1)"
+    year_expr = f"SUBSTR({remainder_expr}, {second_slash_expr} + 1, 4)"
+    return f"""(
+        CASE
+            WHEN {text_expr} = '' THEN NULL
+            WHEN {first_slash_expr} > 0 AND {second_slash_expr} > 0 THEN
+                DATE(
+                    PRINTF(
+                        '%04d-%02d-%02d',
+                        CAST({year_expr} AS INTEGER),
+                        CAST({month_expr} AS INTEGER),
+                        CAST({day_expr} AS INTEGER)
+                    )
+                )
+            ELSE DATE(SUBSTR({text_expr}, 1, 10))
+        END
+    )"""
+
+
+def _apply_date_window_clauses(
+    where_clauses: list[str],
+    params: list[object],
+    date_expr: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> None:
+    start = (date_from or "").strip()
+    if start:
+        where_clauses.append(f"{date_expr} >= DATE(?)")
+        params.append(start[:10])
+    end = (date_to or "").strip()
+    if end:
+        where_clauses.append(f"{date_expr} <= DATE(?)")
+        params.append(end[:10])
+
+
 def _scalar(conn, sql: str, params=(), default=0):
     try:
         row = conn.execute(sql, params).fetchone()
@@ -126,7 +172,31 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
     return response
 
 
-def _build_dashboard_insights(conn) -> dict:
+def _period_cache_token(period) -> str:
+    from webapp.utils.time_filter import period_cache_key
+
+    key = period_cache_key(period)
+    if not period:
+        return key
+    return f"{key}:{period.get('start_date') or ''}:{period.get('end_date') or ''}"
+
+
+def _call_build_dashboard_insights(conn, period=None) -> dict:
+    """Call _build_dashboard_insights with backward-compatible signature handling."""
+    build_fn = _build_dashboard_insights
+    try:
+        signature = inspect.signature(build_fn)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature and "period" in signature.parameters:
+        return build_fn(conn, period=period)
+    return build_fn(conn)
+
+
+def _build_dashboard_insights(conn, period=None) -> dict:
+    from webapp.utils.time_filter import period_qmark_date_clause
+
     insights = {
         "donor_dependent_committees": [],
         "lobbying_donor_overlap": [],
@@ -187,14 +257,17 @@ def _build_dashboard_insights(conn) -> dict:
         ).fetchall()
 
     if _table_exists(conn, "irs527_expenditures") and _table_exists(conn, "irs527_expenditure_recipient_matches"):
+        tx_clause, tx_params = period_qmark_date_clause("e.date", period) if period else ("", [])
         row = conn.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(e.amount), 0) AS total_amount, COUNT(*) AS match_count
             FROM irs527_expenditures e
             JOIN irs527_expenditure_recipient_matches m
               ON m.ein = e.ein AND m.recipient_name = e.recipient_name
             WHERE m.score >= 0.80
-            """
+            {tx_clause}
+            """,
+            tuple(tx_params),
         ).fetchone()
         if row:
             insights["dark_money_totals"] = {
@@ -205,24 +278,27 @@ def _build_dashboard_insights(conn) -> dict:
     return insights
 
 
-def _get_dashboard_insights(conn) -> dict:
+def _get_dashboard_insights(conn, period=None) -> dict:
+    cache_key = _period_cache_token(period)
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
-        return _build_dashboard_insights(conn)
+        return _call_build_dashboard_insights(conn, period=period)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180)))
     now = time.monotonic()
     with _dashboard_insights_cache_lock:
         if (
             _dashboard_insights_cache.get("value") is not None
+            and _dashboard_insights_cache.get("key") == cache_key
             and float(_dashboard_insights_cache.get("expires_at", 0.0)) > now
         ):
             return _dashboard_insights_cache["value"]
 
-    insights = _build_dashboard_insights(conn)
+    insights = _call_build_dashboard_insights(conn, period=period)
     with _dashboard_insights_cache_lock:
         _dashboard_insights_cache["value"] = insights
         _dashboard_insights_cache["expires_at"] = now + float(ttl_seconds)
+        _dashboard_insights_cache["key"] = cache_key
     return insights
 
 
@@ -233,10 +309,11 @@ def warm_dashboard_insights_cache(database_path: str, ttl_seconds: int = 180) ->
 
     conn = get_db(database_path)
     try:
-        insights = _build_dashboard_insights(conn)
+        insights = _call_build_dashboard_insights(conn)
         with _dashboard_insights_cache_lock:
             _dashboard_insights_cache["value"] = insights
             _dashboard_insights_cache["expires_at"] = time.monotonic() + float(ttl_seconds)
+            _dashboard_insights_cache["key"] = "2026cycle"
     finally:
         conn.close()
 
@@ -251,7 +328,7 @@ def warm_dashboard_home_cache(
 
     conn = get_db(database_path)
     try:
-        insights = _build_dashboard_insights(conn)
+        insights = _call_build_dashboard_insights(conn)
         stats = _get_candidate_stats(conn)
         if _table_exists(conn, "analytics_donor_summary"):
             donors = conn.execute(
@@ -276,12 +353,15 @@ def warm_dashboard_home_cache(
         with _dashboard_insights_cache_lock:
             _dashboard_insights_cache["value"] = insights
             _dashboard_insights_cache["expires_at"] = now + float(max(15, insights_ttl_seconds))
+            _dashboard_insights_cache["key"] = "2026cycle"
         with _candidate_stats_cache_lock:
             _candidate_stats_cache["value"] = stats
             _candidate_stats_cache["expires_at"] = now + float(max(15, candidate_stats_ttl_seconds))
+            _candidate_stats_cache["key"] = "2026cycle"
         with _top_donors_cache_lock:
             _top_donors_cache["value"] = donors
             _top_donors_cache["expires_at"] = now + float(max(15, top_donors_ttl_seconds))
+            _top_donors_cache["key"] = "2026cycle"
     finally:
         conn.close()
 
@@ -292,7 +372,17 @@ def _get_candidate_stats(conn, period=None):
     If period is provided (from time_filter.get_active_period()), date-bearing
     queries are filtered to the given window.
     """
-    from webapp.utils.time_filter import period_qmark_clause
+    from webapp.utils.time_filter import period_cycles, period_qmark_clause
+
+    federal_cycles = period_cycles(period) if period else None
+
+    def _cycle_clause(date_column: str) -> tuple[str, list[object]]:
+        if federal_cycles is None:
+            return "", []
+        if not federal_cycles:
+            return " AND 1=0", []
+        placeholders = ",".join(["?"] * len(federal_cycles))
+        return f" AND {date_column} IN ({placeholders})", [int(cycle) for cycle in federal_cycles]
 
     stats = {
         'local_candidate_rows': 0,
@@ -368,33 +458,38 @@ def _get_candidate_stats(conn, period=None):
         )
 
     if _table_exists(conn, "fec_candidate_match"):
+        cycle_clause, cycle_params = _cycle_clause("cycle")
         stats['federal_candidates'] = int(
             _scalar(
                 conn,
-                "SELECT COUNT(DISTINCT fec_candidate_id) AS count FROM fec_candidate_match WHERE fec_candidate_id IS NOT NULL",
+                f"""
+                SELECT COUNT(DISTINCT fec_candidate_id) AS count
+                FROM fec_candidate_match
+                WHERE fec_candidate_id IS NOT NULL{cycle_clause}
+                """,
+                params=tuple(cycle_params),
                 default=0,
             )
         )
 
+    fec_cycle_clause, fec_cycle_params = _cycle_clause("cycle")
     if _table_exists(conn, "fec_schedule_a_contributions"):
-        fec_a_clause, fec_a_params = period_qmark_clause("contribution_receipt_date", period) if period else ("", [])
-        fec_a_where = "WHERE 1=1" + fec_a_clause if fec_a_clause else ""
+        fec_a_where = "WHERE 1=1" + fec_cycle_clause
         stats['federal_contributions'] = int(
             _scalar(
                 conn,
                 f"SELECT COUNT(*) AS count FROM fec_schedule_a_contributions {fec_a_where}",
-                params=tuple(fec_a_params),
+                params=tuple(fec_cycle_params),
                 default=0,
             )
         )
     if _table_exists(conn, "fec_schedule_b_disbursements"):
-        fec_b_clause, fec_b_params = period_qmark_clause("disbursement_date", period) if period else ("", [])
-        fec_b_where = "WHERE 1=1" + fec_b_clause if fec_b_clause else ""
+        fec_b_where = "WHERE 1=1" + fec_cycle_clause
         stats['federal_disbursements'] = int(
             _scalar(
                 conn,
                 f"SELECT COUNT(*) AS count FROM fec_schedule_b_disbursements {fec_b_where}",
-                params=tuple(fec_b_params),
+                params=tuple(fec_cycle_params),
                 default=0,
             )
         )
@@ -402,18 +497,17 @@ def _get_candidate_stats(conn, period=None):
             _scalar(
                 conn,
                 f"SELECT COALESCE(SUM(disbursement_amount), 0) AS total FROM fec_schedule_b_disbursements {fec_b_where}",
-                params=tuple(fec_b_params),
+                params=tuple(fec_cycle_params),
                 default=0.0,
             )
         )
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
-        fec_e_clause, fec_e_params = period_qmark_clause("expenditure_date", period) if period else ("", [])
-        fec_e_where = "WHERE 1=1" + fec_e_clause if fec_e_clause else ""
+        fec_e_where = "WHERE 1=1" + fec_cycle_clause
         stats['federal_independent_expenditures'] = int(
             _scalar(
                 conn,
                 f"SELECT COUNT(*) AS count FROM fec_schedule_e_independent_expenditures {fec_e_where}",
-                params=tuple(fec_e_params),
+                params=tuple(fec_cycle_params),
                 default=0,
             )
         )
@@ -421,15 +515,17 @@ def _get_candidate_stats(conn, period=None):
             _scalar(
                 conn,
                 f"SELECT COALESCE(SUM(expenditure_amount), 0) AS total FROM fec_schedule_e_independent_expenditures {fec_e_where}",
-                params=tuple(fec_e_params),
+                params=tuple(fec_cycle_params),
                 default=0.0,
             )
         )
     if _table_exists(conn, "fec_candidate_cycle_totals"):
+        totals_where = "WHERE 1=1" + fec_cycle_clause
         totals_rows = int(
             _scalar(
                 conn,
-                "SELECT COUNT(*) AS count FROM fec_candidate_cycle_totals",
+                f"SELECT COUNT(*) AS count FROM fec_candidate_cycle_totals {totals_where}",
+                params=tuple(fec_cycle_params),
                 default=0,
             )
         )
@@ -437,7 +533,8 @@ def _get_candidate_stats(conn, period=None):
             stats['federal_total_amount'] = float(
                 _scalar(
                     conn,
-                    "SELECT COALESCE(SUM(receipts), 0) AS total FROM fec_candidate_cycle_totals",
+                    f"SELECT COALESCE(SUM(receipts), 0) AS total FROM fec_candidate_cycle_totals {totals_where}",
+                    params=tuple(fec_cycle_params),
                     default=0.0,
                 )
             )
@@ -445,7 +542,8 @@ def _get_candidate_stats(conn, period=None):
             stats['federal_total_amount'] = float(
                 _scalar(
                     conn,
-                    "SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions",
+                    f"SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions {fec_a_where}",
+                    params=tuple(fec_cycle_params),
                     default=0.0,
                 )
             )
@@ -453,7 +551,8 @@ def _get_candidate_stats(conn, period=None):
         stats['federal_total_amount'] = float(
             _scalar(
                 conn,
-                "SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions",
+                f"SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions {fec_a_where}",
+                params=tuple(fec_cycle_params),
                 default=0.0,
             )
         )
@@ -554,10 +653,8 @@ def _get_candidate_stats(conn, period=None):
 
 
 def _get_candidate_stats_cached(conn, period=None):
-    from webapp.utils.time_filter import DEFAULT_PERIOD
-    # Only use cache for the default period
-    is_default = period is None or period.get("key") == DEFAULT_PERIOD
-    cache_enabled = is_default and bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    cache_key = _period_cache_token(period)
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
         return _get_candidate_stats(conn, period=period)
 
@@ -566,6 +663,7 @@ def _get_candidate_stats_cached(conn, period=None):
     with _candidate_stats_cache_lock:
         if (
             _candidate_stats_cache.get("value") is not None
+            and _candidate_stats_cache.get("key") == cache_key
             and float(_candidate_stats_cache.get("expires_at", 0.0)) > now
         ):
             return _candidate_stats_cache["value"]
@@ -574,12 +672,38 @@ def _get_candidate_stats_cached(conn, period=None):
     with _candidate_stats_cache_lock:
         _candidate_stats_cache["value"] = value
         _candidate_stats_cache["expires_at"] = now + float(ttl_seconds)
+        _candidate_stats_cache["key"] = cache_key
     return value
 
 
-def _get_top_donors_cached(conn):
-    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
-    if not cache_enabled:
+def _get_top_donors_cached(conn, period=None):
+    from webapp.utils.time_filter import period_qmark_clause
+
+    cache_key = _period_cache_token(period)
+
+    def _query_top_donors():
+        if period and period.get("key") != "all" and _table_exists(conn, "bulk_receipts_clean"):
+            td_clause, td_params = period_qmark_clause("received_date", period)
+            base_filter = _bulk_receipts_base_filter(conn, "r")
+            return conn.execute(
+                f"""
+                SELECT
+                    {_bulk_donor_name_sql('r')} AS name,
+                    {_bulk_donor_key_sql('r')} AS donor_key,
+                    'bulk_receipts' AS source,
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS contribution_count,
+                    NULL AS entity_id,
+                    NULL AS id
+                FROM bulk_receipts_clean r
+                WHERE {base_filter}{td_clause}
+                GROUP BY name, donor_key
+                ORDER BY total_amount DESC
+                LIMIT 8
+                """,
+                tuple(td_params),
+            ).fetchall()
+
         if _table_exists(conn, "analytics_donor_summary"):
             return conn.execute(
                 """
@@ -599,37 +723,25 @@ def _get_top_donors_cached(conn):
             ).fetchall()
         return Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    if not cache_enabled:
+        return _query_top_donors()
+
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180)))
     now = time.monotonic()
     with _top_donors_cache_lock:
         if (
             _top_donors_cache.get("value") is not None
+            and _top_donors_cache.get("key") == cache_key
             and float(_top_donors_cache.get("expires_at", 0.0)) > now
         ):
             return _top_donors_cache["value"]
 
-    if _table_exists(conn, "analytics_donor_summary"):
-        value = conn.execute(
-            """
-            SELECT
-                donor_name AS name,
-                donor_key,
-                source,
-                total_amount,
-                contribution_count,
-                NULL AS entity_id,
-                NULL AS id
-            FROM analytics_donor_summary
-            WHERE source = 'bulk_receipts'
-            ORDER BY total_amount DESC
-            LIMIT 8
-            """
-        ).fetchall()
-    else:
-        value = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+    value = _query_top_donors()
     with _top_donors_cache_lock:
         _top_donors_cache["value"] = value
         _top_donors_cache["expires_at"] = now + float(ttl_seconds)
+        _top_donors_cache["key"] = cache_key
     return value
 
 
@@ -832,11 +944,38 @@ def _search_federal_candidates(conn, query: str, limit: int = 20) -> list[dict]:
     return output
 
 
-def _search_reports(conn, query: str, limit: int = 30) -> list[dict]:
+def _search_reports(
+    conn,
+    query: str,
+    limit: int = 30,
+    filed_date_from: str | None = None,
+    filed_date_to: str | None = None,
+) -> list[dict]:
     if not _table_exists(conn, "reports"):
         return []
-    rows = conn.execute(
+    where_clauses = [
         """
+        (
+            c.name LIKE ?
+            OR COALESCE(r.report_type, '') LIKE ?
+            OR COALESCE(r.reporting_period, '') LIKE ?
+            OR COALESCE(r.filed_date, '') LIKE ?
+            OR CAST(r.id AS TEXT) LIKE ?
+        )
+        """
+    ]
+    params: list[object] = [f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"]
+    _apply_date_window_clauses(
+        where_clauses,
+        params,
+        _sql_date_expr("r.filed_date"),
+        date_from=filed_date_from,
+        date_to=filed_date_to,
+    )
+    params.append(limit)
+
+    rows = conn.execute(
+        f"""
         SELECT
             r.id,
             r.report_type,
@@ -848,16 +987,11 @@ def _search_reports(conn, query: str, limit: int = 30) -> list[dict]:
             c.name AS committee_name
         FROM reports r
         JOIN committees c ON c.id = r.committee_id
-        WHERE
-            c.name LIKE ?
-            OR COALESCE(r.report_type, '') LIKE ?
-            OR COALESCE(r.reporting_period, '') LIKE ?
-            OR COALESCE(r.filed_date, '') LIKE ?
-            OR CAST(r.id AS TEXT) LIKE ?
+        WHERE {' AND '.join(where_clauses)}
         ORDER BY r.updated_at DESC, r.id DESC
         LIMIT ?
         """,
-        (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", limit),
+        params,
     ).fetchall()
 
     output = []
@@ -884,27 +1018,70 @@ def _search_reports(conn, query: str, limit: int = 30) -> list[dict]:
     return output
 
 
-def _search_filed_docs(conn, query: str, limit: int = 30) -> list[dict]:
+def _search_filed_docs(
+    conn,
+    query: str,
+    limit: int = 30,
+    filed_date_from: str | None = None,
+    filed_date_to: str | None = None,
+) -> list[dict]:
     rows: list[dict] = []
+    has_date_window = bool((filed_date_from or "").strip() or (filed_date_to or "").strip())
+    has_filed_docs = _table_exists(conn, "isbe_filed_docs")
+    filed_doc_date_expr = None
+    if has_filed_docs:
+        if _column_exists(conn, "isbe_filed_docs", "received_datetime"):
+            filed_doc_date_expr = _sql_date_expr("fd.received_datetime")
+        elif _column_exists(conn, "isbe_filed_docs", "filed_date"):
+            filed_doc_date_expr = _sql_date_expr("fd.filed_date")
+        elif _column_exists(conn, "isbe_filed_docs", "reporting_period_end"):
+            filed_doc_date_expr = _sql_date_expr("fd.reporting_period_end")
 
     if _table_exists(conn, "bulk_d2_receipts_recon"):
-        d2_rows = conn.execute(
+        d2_join_sql = "JOIN isbe_filed_docs fd ON fd.id = d.filed_doc_id" if filed_doc_date_expr else ""
+        d2_where = [
             """
-            SELECT
-                filed_doc_id,
-                committee_id_sbe,
-                committee_name,
-                ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) AS abs_diff,
-                first_receipt_date,
-                last_receipt_date
-            FROM bulk_d2_receipts_recon
-            WHERE
+            (
                 COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?
-                OR COALESCE(committee_name, '') LIKE ?
-            ORDER BY abs_diff DESC, filed_doc_id DESC
+                OR COALESCE(d.committee_name, '') LIKE ?
+            )
+            """
+        ]
+        d2_params: list[object] = [f"%{query}%", f"%{query}%"]
+        if has_date_window:
+            if filed_doc_date_expr:
+                _apply_date_window_clauses(
+                    d2_where,
+                    d2_params,
+                    filed_doc_date_expr,
+                    date_from=filed_date_from,
+                    date_to=filed_date_to,
+                )
+            elif _column_exists(conn, "bulk_d2_receipts_recon", "last_receipt_date"):
+                _apply_date_window_clauses(
+                    d2_where,
+                    d2_params,
+                    _sql_date_expr("d.last_receipt_date"),
+                    date_from=filed_date_from,
+                    date_to=filed_date_to,
+                )
+        d2_params.append(limit)
+        d2_rows = conn.execute(
+            f"""
+            SELECT
+                d.filed_doc_id,
+                d.committee_id_sbe,
+                d.committee_name,
+                ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) AS abs_diff,
+                d.first_receipt_date,
+                d.last_receipt_date
+            FROM bulk_d2_receipts_recon d
+            {d2_join_sql}
+            WHERE {' AND '.join(d2_where)}
+            ORDER BY abs_diff DESC, d.filed_doc_id DESC
             LIMIT ?
             """,
-            (f"%{query}%", f"%{query}%", limit),
+            d2_params,
         ).fetchall()
         for row in d2_rows:
             rows.append(
@@ -924,24 +1101,47 @@ def _search_filed_docs(conn, query: str, limit: int = 30) -> list[dict]:
             )
 
     if _table_exists(conn, "bulk_receipts_clean"):
+        receipts_join_sql = "JOIN isbe_filed_docs fd ON fd.id = r.filed_doc_id" if filed_doc_date_expr else ""
+        receipts_where = [
+            "r.filed_doc_id IS NOT NULL",
+            "CAST(r.filed_doc_id AS TEXT) LIKE ?",
+        ]
+        receipt_params: list[object] = [f"%{query}%"]
+        if has_date_window:
+            if filed_doc_date_expr:
+                _apply_date_window_clauses(
+                    receipts_where,
+                    receipt_params,
+                    filed_doc_date_expr,
+                    date_from=filed_date_from,
+                    date_to=filed_date_to,
+                )
+            else:
+                _apply_date_window_clauses(
+                    receipts_where,
+                    receipt_params,
+                    _sql_date_expr("r.received_date"),
+                    date_from=filed_date_from,
+                    date_to=filed_date_to,
+                )
+        receipt_params.append(limit)
         receipt_rows = conn.execute(
-            """
+            f"""
             SELECT
-                filed_doc_id,
-                committee_id_sbe,
+                r.filed_doc_id,
+                r.committee_id_sbe,
                 COUNT(*) AS receipt_row_count,
-                COALESCE(SUM(amount), 0) AS total_amount,
-                MIN(received_date) AS first_receipt_date,
-                MAX(received_date) AS last_receipt_date
-            FROM bulk_receipts_clean
-            WHERE
-                filed_doc_id IS NOT NULL
-                AND CAST(filed_doc_id AS TEXT) LIKE ?
-            GROUP BY filed_doc_id, committee_id_sbe
-            ORDER BY total_amount DESC, filed_doc_id DESC
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                MIN(r.received_date) AS first_receipt_date,
+                MAX(r.received_date) AS last_receipt_date
+            FROM bulk_receipts_clean r
+            {receipts_join_sql}
+            WHERE {' AND '.join(receipts_where)}
+            GROUP BY r.filed_doc_id, r.committee_id_sbe
+            ORDER BY total_amount DESC, r.filed_doc_id DESC
             LIMIT ?
             """,
-            (f"%{query}%", limit),
+            receipt_params,
         ).fetchall()
         for row in receipt_rows:
             rows.append(
@@ -989,30 +1189,85 @@ def _search_filed_docs(conn, query: str, limit: int = 30) -> list[dict]:
     return output[:limit]
 
 
-def _search_donor_keys(conn, query: str, limit: int = 30) -> list[dict]:
-    if not _table_exists(conn, "analytics_donor_summary"):
-        return []
-    rows = conn.execute(
-        """
-        SELECT
-            source,
-            donor_key,
-            donor_name,
-            donor_city,
-            donor_state,
-            total_amount,
-            contribution_count,
-            committee_count,
-            updated_at
-        FROM analytics_donor_summary
-        WHERE
-            donor_key LIKE ?
-            OR donor_name LIKE ?
-        ORDER BY total_amount DESC, donor_name ASC
-        LIMIT ?
-        """,
-        (f"%{query}%", f"%{query}%", limit),
-    ).fetchall()
+def _search_donor_keys(
+    conn,
+    query: str,
+    limit: int = 30,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
+    has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+    if (
+        has_date_window
+        and _table_exists(conn, "bulk_receipts_clean")
+        and _column_exists(conn, "bulk_receipts_clean", "first_name")
+        and _column_exists(conn, "bulk_receipts_clean", "last_or_business_name")
+        and _column_exists(conn, "bulk_receipts_clean", "address_line_1")
+        and _column_exists(conn, "bulk_receipts_clean", "address_line_2")
+        and _column_exists(conn, "bulk_receipts_clean", "city")
+        and _column_exists(conn, "bulk_receipts_clean", "state")
+        and _column_exists(conn, "bulk_receipts_clean", "postal_code")
+    ):
+        donor_key_expr = _bulk_donor_key_sql("r")
+        donor_name_expr = _bulk_donor_name_sql("r")
+        where_clauses = [
+            _bulk_receipts_base_filter(conn, "r"),
+            f"{donor_key_expr} <> ''",
+            f"({donor_key_expr} LIKE ? OR {donor_name_expr} LIKE ?)",
+        ]
+        params: list[object] = [f"%{query}%", f"%{query}%"]
+        _apply_date_window_clauses(
+            where_clauses,
+            params,
+            _sql_date_expr("r.received_date"),
+            date_from=date_from,
+            date_to=date_to,
+        )
+        params.append(limit)
+        rows = conn.execute(
+            f"""
+            SELECT
+                'bulk_receipts' AS source,
+                {donor_key_expr} AS donor_key,
+                {donor_name_expr} AS donor_name,
+                COALESCE(NULLIF(TRIM(r.city), ''), NULL) AS donor_city,
+                COALESCE(NULLIF(TRIM(r.state), ''), NULL) AS donor_state,
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count,
+                COUNT(DISTINCT r.committee_id_sbe) AS committee_count,
+                MAX(r.received_date) AS updated_at
+            FROM bulk_receipts_clean r
+            WHERE {' AND '.join(where_clauses)}
+            GROUP BY donor_key, donor_name, donor_city, donor_state
+            ORDER BY total_amount DESC, donor_name ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    else:
+        if not _table_exists(conn, "analytics_donor_summary"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT
+                source,
+                donor_key,
+                donor_name,
+                donor_city,
+                donor_state,
+                total_amount,
+                contribution_count,
+                committee_count,
+                updated_at
+            FROM analytics_donor_summary
+            WHERE
+                donor_key LIKE ?
+                OR donor_name LIKE ?
+            ORDER BY total_amount DESC, donor_name ASC
+            LIMIT ?
+            """,
+            (f"%{query}%", f"%{query}%", limit),
+        ).fetchall()
 
     output = []
     for row in rows:
@@ -2089,7 +2344,7 @@ def investigate_workspace():
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
-    from webapp.utils.time_filter import get_active_period
+    from webapp.utils.time_filter import get_active_period, period_qmark_date_clause
     conn = current_app.get_database()
     period = get_active_period()
 
@@ -2114,7 +2369,17 @@ def index():
     else:
         stats['irs527_orgs'] = 0
 
-    if _table_exists(conn, "irs527_reports"):
+    if _table_exists(conn, "irs527_expenditures"):
+        exp_clause, exp_params = period_qmark_date_clause("date", period)
+        stats['irs527_total_expenditures'] = float(
+            _scalar(
+                conn,
+                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_expenditures WHERE COALESCE(amount, 0) > 0{exp_clause}",
+                params=tuple(exp_params),
+                default=0,
+            )
+        )
+    elif _table_exists(conn, "irs527_reports"):
         stats['irs527_total_expenditures'] = float(_scalar(
             conn, "SELECT COALESCE(SUM(total_expenditures), 0) FROM irs527_reports", default=0
         ))
@@ -2128,7 +2393,25 @@ def index():
     else:
         stats['irs527_director_donor_matches'] = 0
 
-    if _table_exists(conn, "irs527_contribution_rollup"):
+    if _table_exists(conn, "irs527_contributions"):
+        contrib_clause, contrib_params = period_qmark_date_clause("date", period)
+        stats['irs527_total_contributions_received'] = float(
+            _scalar(
+                conn,
+                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contrib_clause}",
+                params=tuple(contrib_params),
+                default=0,
+            )
+        )
+        stats['irs527_contribution_records'] = int(
+            _scalar(
+                conn,
+                f"SELECT COUNT(*) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contrib_clause}",
+                params=tuple(contrib_params),
+                default=0,
+            )
+        )
+    elif _table_exists(conn, "irs527_contribution_rollup"):
         stats['irs527_total_contributions_received'] = float(_scalar(
             conn, "SELECT COALESCE(SUM(total_amount), 0) FROM irs527_contribution_rollup", default=0
         ))
@@ -2139,32 +2422,8 @@ def index():
         stats['irs527_total_contributions_received'] = 0
         stats['irs527_contribution_records'] = 0
 
-    if period and period.get("key") != "2026cycle" and period.get("start_date") and _table_exists(conn, "bulk_receipts_clean"):
-        # Time-filtered top donors from raw receipts
-        from webapp.utils.time_filter import period_qmark_clause as _pqc
-        td_clause, td_params = _pqc("received_date", period)
-        base_filter = _bulk_receipts_base_filter(conn, "r")
-        top_donors = conn.execute(
-            f"""
-            SELECT
-                {_bulk_donor_name_sql('r')} AS name,
-                {_bulk_donor_key_sql('r')} AS donor_key,
-                'bulk_receipts' AS source,
-                COALESCE(SUM(r.amount), 0) AS total_amount,
-                COUNT(*) AS contribution_count,
-                NULL AS entity_id,
-                NULL AS id
-            FROM bulk_receipts_clean r
-            WHERE {base_filter}{td_clause}
-            GROUP BY name, donor_key
-            ORDER BY total_amount DESC
-            LIMIT 8
-            """,
-            tuple(td_params),
-        ).fetchall()
-    else:
-        top_donors = _get_top_donors_cached(conn)
-    insights = _get_dashboard_insights(conn)
+    top_donors = _get_top_donors_cached(conn, period=period)
+    insights = _get_dashboard_insights(conn, period=period)
 
     return render_template('index.html',
                            stats=stats,
@@ -2176,8 +2435,11 @@ def index():
 @main_bp.route('/candidates')
 def candidates():
     """Unified candidates landing page — state and federal entry points."""
+    from webapp.utils.time_filter import get_active_period
+
     conn = current_app.get_database()
-    stats, freshness = _get_candidate_stats(conn)
+    period = get_active_period()
+    stats, freshness = _get_candidate_stats(conn, period=period)
     return render_template('candidates.html', stats=stats, freshness=freshness)
 
 
@@ -2199,7 +2461,11 @@ def legacy():
 @main_bp.route('/search')
 def search():
     """Global search."""
+    from webapp.utils.time_filter import get_active_period, period_to_date_window
+
     conn = current_app.get_database()
+    period = get_active_period()
+    date_from, date_to = period_to_date_window(period)
     raw_query = request.args.get('q', '')
     max_query_len = max(8, int(current_app.config.get('SEARCH_MAX_QUERY_LENGTH', 64)))
     min_query_len = max(1, int(current_app.config.get('SEARCH_MIN_QUERY_LENGTH', 2)))
@@ -2284,13 +2550,25 @@ def search():
         if search_type in ('all', 'committees'):
             results['committees'] = _run_section(
                 'committees',
-                lambda: Committee.search(conn, query, limit=committee_limit),
+                lambda: Committee.search(
+                    conn,
+                    query,
+                    limit=committee_limit,
+                    transaction_date_from=date_from,
+                    transaction_date_to=date_to,
+                ),
             )
 
         if search_type in ('all', 'donors'):
             results['donors'] = _run_section(
                 'donors',
-                lambda: Donor.search(conn, query, limit=donor_limit),
+                lambda: Donor.search(
+                    conn,
+                    query,
+                    limit=donor_limit,
+                    transaction_date_from=date_from,
+                    transaction_date_to=date_to,
+                ),
             )
 
         if search_type in ('all', 'candidates'):
@@ -2307,19 +2585,37 @@ def search():
         if search_type in ('all', 'reports'):
             results['reports'] = _run_section(
                 'reports',
-                lambda: _search_reports(conn, query, limit=report_limit),
+                lambda: _search_reports(
+                    conn,
+                    query,
+                    limit=report_limit,
+                    filed_date_from=date_from,
+                    filed_date_to=date_to,
+                ),
             )
 
         if search_type in ('all', 'filed_docs'):
             results['filed_docs'] = _run_section(
                 'filed_docs',
-                lambda: _search_filed_docs(conn, query, limit=filed_doc_limit),
+                lambda: _search_filed_docs(
+                    conn,
+                    query,
+                    limit=filed_doc_limit,
+                    filed_date_from=date_from,
+                    filed_date_to=date_to,
+                ),
             )
 
         if search_type in ('all', 'donor_keys'):
             results['donor_keys'] = _run_section(
                 'donor_keys',
-                lambda: _search_donor_keys(conn, query, limit=donor_key_limit),
+                lambda: _search_donor_keys(
+                    conn,
+                    query,
+                    limit=donor_key_limit,
+                    date_from=date_from,
+                    date_to=date_to,
+                ),
             )
 
     search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)

@@ -116,6 +116,22 @@ def test_relationships_network_cached_across_requests(tmp_path: Path, monkeypatc
         call_count["value"] += 1
         return {"nodes": [], "edges": [], "summary": {}}
 
+    graph_date_args = {"lobbying": None, "ecosystem": None}
+
+    def fake_lobbying(*args, **kwargs):
+        graph_date_args["lobbying"] = {
+            "date_from": kwargs.get("date_from"),
+            "date_to": kwargs.get("date_to"),
+        }
+        return fake_network(*args, **kwargs)
+
+    def fake_ecosystem(*args, **kwargs):
+        graph_date_args["ecosystem"] = {
+            "date_from": kwargs.get("date_from"),
+            "date_to": kwargs.get("date_to"),
+        }
+        return fake_network(*args, **kwargs)
+
     def fake_candidate_competition(*args, **kwargs):
         call_count["value"] += 1
         return {
@@ -128,13 +144,15 @@ def test_relationships_network_cached_across_requests(tmp_path: Path, monkeypatc
     monkeypatch.setattr(analytics_routes, "get_donor_cogiving_network", fake_network)
     monkeypatch.setattr(analytics_routes, "get_committee_similarity_network", fake_network)
     monkeypatch.setattr(analytics_routes, "get_candidate_competition_networks", fake_candidate_competition)
-    monkeypatch.setattr(analytics_routes, "get_lobbying_influence_graph", fake_network)
-    monkeypatch.setattr(analytics_routes, "get_irs527_ecosystem_graph", fake_network)
+    monkeypatch.setattr(analytics_routes, "get_lobbying_influence_graph", fake_lobbying)
+    monkeypatch.setattr(analytics_routes, "get_irs527_ecosystem_graph", fake_ecosystem)
 
     client = app.test_client()
-    first = client.get("/analytics/relationships")
-    second = client.get("/analytics/relationships")
+    first = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31")
+    second = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31")
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert call_count["value"] == 5
+    assert graph_date_args["lobbying"] == {"date_from": "2025-01-01", "date_to": "2025-12-31"}
+    assert graph_date_args["ecosystem"] == {"date_from": "2025-01-01", "date_to": "2025-12-31"}

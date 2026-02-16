@@ -10,6 +10,7 @@ from database.models import (
     CandidateCommitteeItemizedExpenditure,
     CandidateCommitteeItemizedReceipt,
 )
+from webapp.utils.time_filter import get_active_period, period_cycle, period_to_date_window
 
 candidate_finance_bp = Blueprint('candidate_finance', __name__)
 
@@ -48,6 +49,7 @@ def _parse_iso_date(value: str) -> str | None:
 def list_candidate_finance():
     """List candidate-committee aggregate finance rows from bulk imports."""
     conn = current_app.get_database()
+    period = get_active_period()
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 50
@@ -60,14 +62,19 @@ def list_candidate_finance():
     candidate_party = request.args.get('candidate_party', '').strip()
     committee_party = request.args.get('committee_party', '').strip()
     start_date_raw = request.args.get('start_date', '').strip()
+    end_date_raw = request.args.get('end_date', '').strip()
     year_raw = request.args.get('year', '').strip()
     cycle_raw = request.args.get('cycle', '').strip()
     min_receipts_raw = request.args.get('min_receipts', '').strip()
     min_expenditures_raw = request.args.get('min_expenditures', '').strip()
 
-    start_date = _parse_iso_date(start_date_raw)
+    resolved_start_date, resolved_end_date = period_to_date_window(period, start_date_raw, end_date_raw)
+    start_date = _parse_iso_date(resolved_start_date or "")
+    end_date = _parse_iso_date(resolved_end_date or "")
     year = _parse_int(year_raw)
     cycle = _parse_int(cycle_raw)
+    if cycle is None:
+        cycle = period_cycle(period)
     min_receipts = _parse_float(min_receipts_raw)
     min_expenditures = _parse_float(min_expenditures_raw)
     output_format = request.args.get('format', 'html').strip().lower()
@@ -91,6 +98,7 @@ def list_candidate_finance():
             candidate_party=candidate_party,
             committee_party=committee_party,
             start_date=start_date,
+            end_date=end_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -103,6 +111,7 @@ def list_candidate_finance():
             candidate_party=candidate_party,
             committee_party=committee_party,
             start_date=start_date,
+            end_date=end_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -125,6 +134,7 @@ def list_candidate_finance():
             candidate_party=candidate_party,
             committee_party=committee_party,
             start_date=start_date,
+            end_date=end_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -193,8 +203,9 @@ def list_candidate_finance():
         candidate_party=candidate_party,
         committee_party=committee_party,
         start_date=start_date_raw,
+        end_date=end_date_raw,
         year=year_raw,
-        cycle=cycle_raw,
+        cycle=cycle_raw or (str(cycle) if cycle is not None else ""),
         available_years=period_values["years"],
         available_cycles=period_values["cycles"],
         min_receipts=min_receipts_raw,
@@ -207,6 +218,7 @@ def list_candidate_finance():
 def candidate_committee_itemized(candidate_id: int, committee_id: int):
     """Show itemized receipt rows for one candidate/committee pair."""
     conn = current_app.get_database()
+    period = get_active_period()
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 100
@@ -220,6 +232,9 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
     min_amount_raw = request.args.get('min_amount', '').strip()
     max_amount_raw = request.args.get('max_amount', '').strip()
     output_format = request.args.get('format', 'html').strip().lower()
+    explicit_date_from = request.args.get('date_from', '').strip()
+    explicit_date_to = request.args.get('date_to', '').strip()
+    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
 
     min_amount = _parse_float(min_amount_raw)
     max_amount = _parse_float(max_amount_raw)
@@ -246,6 +261,8 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
                 min_amount=min_amount,
                 max_amount=max_amount,
                 archived=archived,
+                date_from=date_from,
+                date_to=date_to,
             )
             total = CandidateCommitteeItemizedReceipt.count(
                 conn,
@@ -256,6 +273,8 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
                 min_amount=min_amount,
                 max_amount=max_amount,
                 archived=archived,
+                date_from=date_from,
+                date_to=date_to,
             )
             total_pages = (total + per_page - 1) // per_page
 
@@ -276,6 +295,8 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
             min_amount=min_amount,
             max_amount=max_amount,
             archived=archived,
+            date_from=date_from,
+            date_to=date_to,
         )
         output = StringIO()
         writer = csv.writer(output)
@@ -356,6 +377,7 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
 def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: int):
     """Show itemized expenditure rows for one candidate/committee pair."""
     conn = current_app.get_database()
+    period = get_active_period()
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 100
@@ -370,6 +392,9 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
     min_amount_raw = request.args.get('min_amount', '').strip()
     max_amount_raw = request.args.get('max_amount', '').strip()
     output_format = request.args.get('format', 'html').strip().lower()
+    explicit_date_from = request.args.get('date_from', '').strip()
+    explicit_date_to = request.args.get('date_to', '').strip()
+    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
 
     min_amount = _parse_float(min_amount_raw)
     max_amount = _parse_float(max_amount_raw)
@@ -397,6 +422,8 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
                 max_amount=max_amount,
                 archived=archived,
                 anomalies_only=anomalies_only,
+                date_from=date_from,
+                date_to=date_to,
             )
             total = CandidateCommitteeItemizedExpenditure.count(
                 conn,
@@ -408,6 +435,8 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
                 max_amount=max_amount,
                 archived=archived,
                 anomalies_only=anomalies_only,
+                date_from=date_from,
+                date_to=date_to,
             )
             total_pages = (total + per_page - 1) // per_page
 
@@ -429,6 +458,8 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
             max_amount=max_amount,
             archived=archived,
             anomalies_only=anomalies_only,
+            date_from=date_from,
+            date_to=date_to,
         )
         output = StringIO()
         writer = csv.writer(output)

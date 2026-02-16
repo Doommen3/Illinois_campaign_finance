@@ -174,6 +174,56 @@ class TestWebApp:
         response = client.get('/donors/')
         assert response.status_code == 200
 
+    def test_donor_detail_respects_transaction_date_period_filter(self, app, client):
+        """Donor detail should filter contributions by contribution transaction_date."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        committee = Committee.get_or_create(conn, "Period Filter Committee")
+        report = Report(
+            committee_id=committee.id,
+            report_type="A-1 ($1000+ Year Round)",
+            reporting_period="Q2 2026",
+            filed_date="06/01/2026",
+            pages=2,
+            detail_url="https://example.com/period-filter-report",
+            scrape_status="scraped",
+        ).save(conn)
+        donor = Donor.get_or_create(
+            conn,
+            "Period Filter Donor",
+            "777 Date Ln",
+            "period filter donor",
+            "777 date ln",
+        )
+        Contribution(
+            report_id=report.id,
+            donor_id=donor.id,
+            amount=100.0,
+            transaction_date="2024-05-10",
+            description="Older Window Contribution",
+            raw_contributed_by="Period Filter Donor",
+            raw_address="777 Date Ln",
+        ).save(conn)
+        Contribution(
+            report_id=report.id,
+            donor_id=donor.id,
+            amount=150.0,
+            transaction_date="2025-07-22",
+            description="Current Window Contribution",
+            raw_contributed_by="Period Filter Donor",
+            raw_address="777 Date Ln",
+        ).save(conn)
+        conn.close()
+
+        cycle_response = client.get(f"/donors/{donor.id}?period=2026cycle")
+        assert cycle_response.status_code == 200
+        assert b'Current Window Contribution' in cycle_response.data
+        assert b'Older Window Contribution' not in cycle_response.data
+
+        all_time_response = client.get(f"/donors/{donor.id}?period=all")
+        assert all_time_response.status_code == 200
+        assert b'Current Window Contribution' in all_time_response.data
+        assert b'Older Window Contribution' in all_time_response.data
+
     def test_openbook_list_page_loads(self, app, client):
         """OpenBook list route should render matched vendor aggregates."""
         conn = get_db(app.config['DATABASE_PATH'])
@@ -398,7 +448,7 @@ class TestWebApp:
         conn.commit()
         conn.close()
 
-        response = client.get('/openbook/CONTRIB%20VENDOR')
+        response = client.get('/openbook/CONTRIB%20VENDOR?period=all')
         assert response.status_code == 200
         assert b'Big Donor' in response.data
         assert b'Sen. Smith' in response.data
@@ -408,6 +458,29 @@ class TestWebApp:
         """Test that the reports page loads."""
         response = client.get('/reports/')
         assert response.status_code == 200
+
+    def test_reports_page_respects_filed_date_period_filter(self, app, client):
+        """Reports list should filter report rows by report filed_date."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        committee = Committee.get_or_create(conn, "Old Report Committee")
+        Report(
+            committee_id=committee.id,
+            report_type="Older Cycle Report",
+            reporting_period="Q2 2024",
+            filed_date="03/15/2024",
+            pages=1,
+            detail_url="https://example.com/older-cycle-report",
+            scrape_status="scraped",
+        ).save(conn)
+        conn.close()
+
+        cycle_response = client.get('/reports/?period=2026cycle')
+        assert cycle_response.status_code == 200
+        assert b'Older Cycle Report' not in cycle_response.data
+
+        all_time_response = client.get('/reports/?period=all')
+        assert all_time_response.status_code == 200
+        assert b'Older Cycle Report' in all_time_response.data
 
     def test_search_short_non_numeric_query_is_guarded(self, client):
         """Global search should guard very short non-numeric wildcard queries."""
@@ -488,33 +561,33 @@ class TestWebApp:
         conn.commit()
         conn.close()
 
-        response = client.get('/candidate-finance/?sort=sum_total_receipts&dir=desc')
+        response = client.get('/candidate-finance/?sort=sum_total_receipts&dir=desc&period=all')
         assert response.status_code == 200
         assert b'Candidate Committee Finance' in response.data
         assert response.data.find(b'Casey Jones') < response.data.find(b'Jordan Smith')
         assert b'/candidate-finance/202/102/itemized' in response.data
 
-        filtered = client.get('/candidate-finance/?q=Jordan')
+        filtered = client.get('/candidate-finance/?q=Jordan&period=all')
         assert filtered.status_code == 200
         assert b'Jordan Smith' in filtered.data
         assert b'Casey Jones' not in filtered.data
 
-        filtered_by_party = client.get('/candidate-finance/?candidate_party=Democratic&min_receipts=2500')
+        filtered_by_party = client.get('/candidate-finance/?candidate_party=Democratic&min_receipts=2500&period=all')
         assert filtered_by_party.status_code == 200
         assert b'Jordan Smith' in filtered_by_party.data
         assert b'Casey Jones' not in filtered_by_party.data
 
-        filtered_by_year = client.get('/candidate-finance/?year=2025')
+        filtered_by_year = client.get('/candidate-finance/?year=2025&period=all')
         assert filtered_by_year.status_code == 200
         assert b'Jordan Smith' in filtered_by_year.data
         assert b'Casey Jones' not in filtered_by_year.data
 
-        filtered_by_cycle = client.get('/candidate-finance/?cycle=2026')
+        filtered_by_cycle = client.get('/candidate-finance/?cycle=2026&period=all')
         assert filtered_by_cycle.status_code == 200
         assert b'Jordan Smith' in filtered_by_cycle.data
         assert b'Casey Jones' in filtered_by_cycle.data
 
-        exported = client.get('/candidate-finance/?format=csv&committee_party=Republican')
+        exported = client.get('/candidate-finance/?format=csv&committee_party=Republican&period=all')
         assert exported.status_code == 200
         assert exported.mimetype == 'text/csv'
         assert 'attachment; filename=candidate_committee_finance.csv' in exported.headers.get('Content-Disposition', '')

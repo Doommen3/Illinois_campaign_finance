@@ -19,6 +19,7 @@ RECEIPTS_PREFIX = "receipts_"
 EXPENDITURES_PREFIX = "expenditures_"
 
 EXTREME_EXPENDITURE_AMOUNT_THRESHOLD = 10_000_000.0
+EXTREME_RECEIPT_AMOUNT_THRESHOLD = 10_000_000.0
 
 
 def _set_csv_field_size_limit() -> None:
@@ -316,6 +317,8 @@ def init_bulk_tables(conn: sqlite3.Connection) -> None:
             is_archived INTEGER,
             country TEXT,
             redaction_requested INTEGER,
+            is_amount_anomalous INTEGER,
+            anomaly_reason TEXT,
             source_file TEXT,
             source_row_number INTEGER
         );
@@ -326,6 +329,7 @@ def init_bulk_tables(conn: sqlite3.Connection) -> None:
         CREATE INDEX idx_bulk_receipts_received_date ON bulk_receipts_clean(received_date);
         CREATE INDEX idx_bulk_receipts_d2_part_code ON bulk_receipts_clean(d2_part_code);
         CREATE INDEX idx_bulk_receipts_name ON bulk_receipts_clean(last_or_business_name, first_name);
+        CREATE INDEX idx_bulk_receipts_amount_anomaly ON bulk_receipts_clean(is_amount_anomalous);
 
         CREATE TABLE bulk_expenditures_clean (
             bulk_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -588,7 +592,7 @@ def load_cmte_candidate_links_file(conn: sqlite3.Connection, file_path: Path) ->
     return total
 
 
-def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> int:
+def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> dict:
     insert_sql = """
         INSERT INTO bulk_receipts_clean (
             receipt_record_id, committee_id_sbe, filed_doc_id, electronic_transaction_id,
@@ -599,56 +603,81 @@ def load_receipts_file(conn: sqlite3.Connection, file_path: Path) -> int:
             vendor_last_or_business_name, vendor_first_name,
             vendor_address_line_1, vendor_address_line_2, vendor_city, vendor_state, vendor_postal_code,
             is_archived, country, redaction_requested,
+            is_amount_anomalous, anomaly_reason,
             source_file, source_row_number
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
-    def rows():
-        with file_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for row_num, row in enumerate(reader, start=2):
-                received_date, received_datetime_raw = _normalize_bulk_receipt_date(row.get("RcvDate"))
-                yield (
-                    _to_int(row.get("ID")),
-                    _to_int(row.get("CommitteeID")),
-                    _to_int(row.get("FiledDocID")),
-                    _clean_text(row.get("ETransID")),
-                    _clean_text(row.get("LastOnlyName")),
-                    _clean_text(row.get("FirstName")),
-                    received_date,
-                    received_datetime_raw,
-                    _to_float(row.get("Amount")),
-                    _to_float(row.get("AggregateAmount")),
-                    _to_float(row.get("LoanAmount")),
-                    _clean_text(row.get("Occupation")),
-                    _clean_text(row.get("Employer")),
-                    _clean_text(row.get("Address1")),
-                    _clean_text(row.get("Address2")),
-                    _clean_text(row.get("City")),
-                    _clean_text(row.get("State")),
-                    _clean_text(row.get("Zip")),
-                    _clean_text(row.get("D2Part")),
-                    _clean_text(row.get("Description")),
-                    _clean_text(row.get("VendorLastOnlyName")),
-                    _clean_text(row.get("VendorFirstName")),
-                    _clean_text(row.get("VendorAddress1")),
-                    _clean_text(row.get("VendorAddress2")),
-                    _clean_text(row.get("VendorCity")),
-                    _clean_text(row.get("VendorState")),
-                    _clean_text(row.get("VendorZip")),
-                    _to_bool(row.get("Archived")),
-                    _clean_text(row.get("Country")),
-                    _to_bool(row.get("RedactionRequested")),
-                    file_path.name,
-                    row_num,
-                )
+    loaded = 0
+    anomaly_rows = 0
+    batch: list[tuple] = []
 
-    total = 0
-    for chunk in _chunked(rows(), size=10000):
-        conn.executemany(insert_sql, chunk)
-        total += len(chunk)
+    def flush_batch() -> None:
+        nonlocal loaded
+        if batch:
+            conn.executemany(insert_sql, batch)
+            loaded += len(batch)
+            batch.clear()
+
+    with file_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row_num, row in enumerate(reader, start=2):
+            received_date, received_datetime_raw = _normalize_bulk_receipt_date(row.get("RcvDate"))
+            amount = _to_float(row.get("Amount"))
+
+            is_amount_anomalous = 0
+            anomaly_reason = None
+            if amount is not None and abs(amount) >= EXTREME_RECEIPT_AMOUNT_THRESHOLD:
+                is_amount_anomalous = 1
+                anomaly_reason = f"abs(amount)>={EXTREME_RECEIPT_AMOUNT_THRESHOLD:.0f}"
+                anomaly_rows += 1
+
+            batch.append((
+                _to_int(row.get("ID")),
+                _to_int(row.get("CommitteeID")),
+                _to_int(row.get("FiledDocID")),
+                _clean_text(row.get("ETransID")),
+                _clean_text(row.get("LastOnlyName")),
+                _clean_text(row.get("FirstName")),
+                received_date,
+                received_datetime_raw,
+                amount,
+                _to_float(row.get("AggregateAmount")),
+                _to_float(row.get("LoanAmount")),
+                _clean_text(row.get("Occupation")),
+                _clean_text(row.get("Employer")),
+                _clean_text(row.get("Address1")),
+                _clean_text(row.get("Address2")),
+                _clean_text(row.get("City")),
+                _clean_text(row.get("State")),
+                _clean_text(row.get("Zip")),
+                _clean_text(row.get("D2Part")),
+                _clean_text(row.get("Description")),
+                _clean_text(row.get("VendorLastOnlyName")),
+                _clean_text(row.get("VendorFirstName")),
+                _clean_text(row.get("VendorAddress1")),
+                _clean_text(row.get("VendorAddress2")),
+                _clean_text(row.get("VendorCity")),
+                _clean_text(row.get("VendorState")),
+                _clean_text(row.get("VendorZip")),
+                _to_bool(row.get("Archived")),
+                _clean_text(row.get("Country")),
+                _to_bool(row.get("RedactionRequested")),
+                is_amount_anomalous,
+                anomaly_reason,
+                file_path.name,
+                row_num,
+            ))
+
+            if len(batch) >= 10000:
+                flush_batch()
+
+    flush_batch()
     conn.commit()
-    return total
+    return {
+        "receipts_loaded": loaded,
+        "receipt_amount_anomaly_rows": anomaly_rows,
+    }
 
 
 def load_expenditures_file(conn: sqlite3.Connection, file_path: Path) -> dict:
@@ -1349,8 +1378,11 @@ def import_bulk_download(conn: sqlite3.Connection, directory: Path) -> dict:
         links_loaded = load_cmte_candidate_links_file(conn, links_file)
 
     receipts_loaded = 0
+    receipt_amount_anomaly_rows = 0
     if receipts_file:
-        receipts_loaded = load_receipts_file(conn, receipts_file)
+        receipts_stats = load_receipts_file(conn, receipts_file)
+        receipts_loaded = receipts_stats["receipts_loaded"]
+        receipt_amount_anomaly_rows = receipts_stats["receipt_amount_anomaly_rows"]
 
     expenditures_loaded = 0
     expenditures_rejected = 0

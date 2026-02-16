@@ -23,6 +23,7 @@ from database.analytics import (
     save_dashboard_snapshot,
 )
 from database.connection import get_db
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -71,6 +72,7 @@ def _empty_geo_summary() -> dict:
 
 
 def _parse_filters() -> dict:
+    period = get_active_period()
     load_mode = (request.args.get("load_mode", "quick", type=str) or "quick").strip().lower()
     if load_mode not in {"quick", "full"}:
         load_mode = "quick"
@@ -85,6 +87,10 @@ def _parse_filters() -> dict:
     nlp_limit = min(max(request.args.get("nlp_limit", 20, type=int) or 20, 1), 500)
     recon_limit = min(max(request.args.get("recon_limit", 20, type=int) or 20, 1), 500)
     recon_min_abs_diff = max(request.args.get("recon_min_abs_diff", 1000.0, type=float) or 1000.0, 0.0)
+
+    explicit_date_from = (request.args.get("date_from", "", type=str) or "").strip()
+    explicit_date_to = (request.args.get("date_to", "", type=str) or "").strip()
+    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
 
     return {
         "load_mode": load_mode,
@@ -101,8 +107,9 @@ def _parse_filters() -> dict:
         "nlp_limit": nlp_limit,
         "recon_limit": recon_limit,
         "recon_min_abs_diff": recon_min_abs_diff,
-        "date_from": (request.args.get("date_from", "", type=str) or "").strip(),
-        "date_to": (request.args.get("date_to", "", type=str) or "").strip(),
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "time_period_key": period["key"],
     }
 
 
@@ -133,7 +140,7 @@ def _build_snapshot_params(
         "recon_min_abs_diff": float(recon_min_abs_diff),
         "date_from": (date_from or "").strip() or None,
         "date_to": (date_to or "").strip() or None,
-        "snapshot_version": 2,
+        "snapshot_version": 3,
     }
 
 
@@ -409,12 +416,24 @@ def networks():
         )
         lobbying_graph = _safe_optional_graph(
             "lobbying_graph",
-            lambda: get_lobbying_influence_graph(conn, client_limit=80, edge_limit=600),
+            lambda: get_lobbying_influence_graph(
+                conn,
+                client_limit=80,
+                edge_limit=600,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
             empty_graph,
         )
         ecosystem_527 = _safe_optional_graph(
             "ecosystem_527",
-            lambda: get_irs527_ecosystem_graph(conn, org_limit=80, edge_limit=600),
+            lambda: get_irs527_ecosystem_graph(
+                conn,
+                org_limit=80,
+                edge_limit=600,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
             empty_graph,
         )
     else:
@@ -529,6 +548,9 @@ def relationships():
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
     cache_key = (
+        filters["time_period_key"],
+        filters["date_from"],
+        filters["date_to"],
         donor_limit,
         committee_limit,
         candidate_limit,
@@ -578,11 +600,15 @@ def relationships():
                 conn,
                 client_limit=client_limit,
                 edge_limit=edge_limit,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
             ),
             "ecosystem_527": get_irs527_ecosystem_graph(
                 conn,
                 org_limit=org_limit,
                 edge_limit=edge_limit,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
             ),
         }
         if cache_enabled:

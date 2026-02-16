@@ -97,11 +97,11 @@ def test_lobbying_client_not_found(client):
 
 
 def test_lobbying_committee_link_uses_sbe_fallback(client):
-    response = client.get('/lobbying/client/1')
+    response = client.get('/lobbying/client/1?period=all')
     assert response.status_code == 200
     assert b'/committees/sbe/24680' in response.data
 
-    committee_response = client.get('/committees/sbe/24680')
+    committee_response = client.get('/committees/sbe/24680?period=all')
     assert committee_response.status_code == 200
     assert b'Fallback Committee' in committee_response.data
 
@@ -134,7 +134,7 @@ def test_lobbying_flows_page_has_stable_ui_hooks(client):
 
 
 def test_lobbying_flows_data_returns_summary_metadata(client):
-    response = client.get('/lobbying/flows/data')
+    response = client.get('/lobbying/flows/data?period=all')
     assert response.status_code == 200
 
     payload = response.get_json()

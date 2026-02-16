@@ -2,6 +2,7 @@
 from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for
 
 from database.models import Committee, Report, Contribution
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 committees_bp = Blueprint('committees', __name__)
 
@@ -22,7 +23,7 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
 
 
 def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
-    from webapp.utils.time_filter import get_active_period, period_qmark_clause
+    from webapp.utils.time_filter import get_active_period, period_qmark_date_clause
     period = get_active_period()
 
     has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
@@ -93,7 +94,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     receipts_params = [committee_id_sbe]
     if has_bulk_receipts and _column_exists(conn, "bulk_receipts_clean", "is_archived"):
         receipts_filter += " AND COALESCE(is_archived, 0) = 0"
-    rcpt_clause, rcpt_plist = period_qmark_clause("received_date", period)
+    rcpt_clause, rcpt_plist = period_qmark_date_clause("received_date", period)
     if rcpt_clause:
         receipts_filter += rcpt_clause
         receipts_params.extend(rcpt_plist)
@@ -161,7 +162,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     expenditures_params = [committee_id_sbe]
     if has_bulk_expenditures and _column_exists(conn, "bulk_expenditures_clean", "is_archived"):
         expenditures_filter += " AND COALESCE(is_archived, 0) = 0"
-    exp_clause, exp_plist = period_qmark_clause("expended_date", period)
+    exp_clause, exp_plist = period_qmark_date_clause("expended_date", period)
     if exp_clause:
         expenditures_filter += exp_clause
         expenditures_params.extend(exp_plist)
@@ -356,6 +357,8 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
 def list_committees():
     """List all committees."""
     conn = current_app.get_database()
+    period = get_active_period()
+    date_from, date_to = period_to_date_window(period)
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -364,8 +367,20 @@ def list_committees():
     sort_by = request.args.get('sort', 'name')
     sort_dir = request.args.get('dir', 'asc')
 
-    committees = Committee.get_all(conn, limit=per_page, offset=offset, sort_by=sort_by, sort_dir=sort_dir)
-    total = Committee.count(conn)
+    committees = Committee.get_all(
+        conn,
+        limit=per_page,
+        offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        transaction_date_from=date_from,
+        transaction_date_to=date_to,
+    )
+    total = Committee.count(
+        conn,
+        transaction_date_from=date_from,
+        transaction_date_to=date_to,
+    )
     total_pages = (total + per_page - 1) // per_page
 
     return render_template('committees/list.html',
@@ -381,6 +396,8 @@ def list_committees():
 def committee_detail(committee_id):
     """Committee detail page."""
     conn = current_app.get_database()
+    period = get_active_period()
+    date_from, date_to = period_to_date_window(period)
 
     committee = Committee.get_by_id(conn, committee_id)
     if not committee:
@@ -401,6 +418,8 @@ def committee_detail(committee_id):
         committee_id,
         limit=per_page,
         offset=offset,
+        filed_date_from=date_from,
+        filed_date_to=date_to,
         sort_by=report_sort,
         sort_dir=report_dir
     )
@@ -410,15 +429,27 @@ def committee_detail(committee_id):
         conn,
         committee_id,
         limit=100,
+        transaction_date_from=date_from,
+        transaction_date_to=date_to,
         sort_by=contrib_sort,
         sort_dir=contrib_dir
     )
 
     # Get total
-    total_amount = Contribution.total_by_committee(conn, committee_id)
+    total_amount = Contribution.total_by_committee(
+        conn,
+        committee_id,
+        transaction_date_from=date_from,
+        transaction_date_to=date_to,
+    )
 
     # Count reports
-    report_count = Report.count_by_committee(conn, committee_id)
+    report_count = Report.count_by_committee(
+        conn,
+        committee_id,
+        filed_date_from=date_from,
+        filed_date_to=date_to,
+    )
     total_pages = (report_count + per_page - 1) // per_page
 
     return render_template('committees/detail.html',

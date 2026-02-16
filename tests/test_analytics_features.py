@@ -640,6 +640,122 @@ def test_analytics_date_range_filters(analytics_conn):
     assert all(str(row["event_date"]).startswith("2026-04") for row in filtered_anomalies)
 
 
+def test_lobbying_influence_graph_date_window_filters_edges(analytics_conn):
+    analytics_conn.execute("DELETE FROM lobbying_clients")
+    analytics_conn.execute("DELETE FROM lobbying_entities")
+    analytics_conn.execute("DELETE FROM lobbying_entity_clients")
+    analytics_conn.execute("DELETE FROM lobbying_donor_matches")
+    analytics_conn.execute("DELETE FROM lobbying_expenditure_matches")
+    analytics_conn.execute(
+        """
+        INSERT INTO lobbying_clients (client_id, client_name)
+        VALUES (?, ?)
+        """,
+        (1, "Client One"),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO lobbying_entities (entity_id, entity_name, reg_year)
+        VALUES (?, ?, ?)
+        """,
+        (101, "Entity One", 2026),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO lobbying_entity_clients (entity_id, client_id, reg_year)
+        VALUES (?, ?, ?)
+        """,
+        (101, 1, 2026),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO lobbying_donor_matches (client_id, donor_key, client_name, donor_name, score, method)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (1, "d1", "Client One", "Donor One", 0.91, "name_state_zip"),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO lobbying_expenditure_matches (
+            source_type, source_id, source_name, payee_name, committee_id_sbe, score
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("client", 1, "Client One", "Vendor One", 1001, 0.88),
+    )
+    analytics_conn.commit()
+
+    all_time = get_lobbying_influence_graph(
+        analytics_conn,
+        client_limit=50,
+        edge_limit=200,
+    )
+    filtered = get_lobbying_influence_graph(
+        analytics_conn,
+        client_limit=50,
+        edge_limit=200,
+        date_from="2027-01-01",
+        date_to="2027-12-31",
+    )
+    assert all_time["summary"]["edge_count"] > 0
+    assert filtered["summary"]["window_applied"] is True
+    assert filtered["summary"]["edge_count"] == 0
+
+
+def test_irs527_ecosystem_graph_date_window_filters_edges(analytics_conn):
+    analytics_conn.execute("DELETE FROM irs527_organizations")
+    analytics_conn.execute("DELETE FROM irs527_committee_matches")
+    analytics_conn.execute("DELETE FROM irs527_expenditure_recipient_matches")
+    analytics_conn.execute("DELETE FROM irs527_director_donor_matches")
+    analytics_conn.execute(
+        """
+        INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, state)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        ("EIN1", 1, 1, "Org One", "IL"),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO irs527_committee_matches (
+            ein, org_name, committee_id_sbe, committee_name, score, method
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("EIN1", "Org One", 10, "Committee Ten", 0.9, "name_state_zip"),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO irs527_expenditure_recipient_matches (
+            ein, org_name, recipient_name, matched_type, matched_id, matched_name, score
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("EIN1", "Org One", "Vendor One", "committee", "10", "Committee Ten", 0.8),
+    )
+    analytics_conn.execute(
+        """
+        INSERT INTO irs527_director_donor_matches (
+            ein, org_name, director_name, donor_key, donor_name, score
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("EIN1", "Org One", "Director One", "d1", "Donor One", 0.87),
+    )
+    analytics_conn.commit()
+
+    all_time = get_irs527_ecosystem_graph(
+        analytics_conn,
+        org_limit=50,
+        edge_limit=200,
+    )
+    filtered = get_irs527_ecosystem_graph(
+        analytics_conn,
+        org_limit=50,
+        edge_limit=200,
+        date_from="2027-01-01",
+        date_to="2027-12-31",
+    )
+    assert all_time["summary"]["edge_count"] > 0
+    assert filtered["summary"]["window_applied"] is True
+    assert filtered["summary"]["edge_count"] == 0
+
+
 def test_materialized_refresh_and_snapshot_cache(analytics_conn):
     stats = refresh_analytics_materialized(analytics_conn)
     assert stats["donor_rows"] > 0
@@ -909,12 +1025,12 @@ def test_analytics_dashboard_route_loads(analytics_client):
 
 
 def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
-    overview = analytics_client.get("/analytics/?load_mode=full&sync_full=1")
+    overview = analytics_client.get("/analytics/?load_mode=full&sync_full=1&period=all")
     assert overview.status_code == 200
     assert b"Quick mode is active" not in overview.data
     assert b"Full snapshot status" in overview.data
 
-    networks = analytics_client.get("/analytics/networks?load_mode=full")
+    networks = analytics_client.get("/analytics/networks?load_mode=full&period=all")
     assert networks.status_code == 200
     assert b"Analytics: Networks" in networks.data
     assert b'id="network-svg"' in networks.data
@@ -923,7 +1039,7 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Skipped in quick mode" not in networks.data
     assert b"Committee One" in networks.data
 
-    risk = analytics_client.get("/analytics/risk?load_mode=full")
+    risk = analytics_client.get("/analytics/risk?load_mode=full&period=all")
     assert risk.status_code == 200
     assert b"Analytics: Risk" in risk.data
     assert b"Risk and Anomaly Flags" in risk.data
@@ -931,7 +1047,7 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Skipped in quick mode" not in risk.data
     assert b"Committee One" in risk.data
 
-    donors = analytics_client.get("/analytics/donors?load_mode=full")
+    donors = analytics_client.get("/analytics/donors?load_mode=full&period=all")
     assert donors.status_code == 200
     assert b"Analytics: Donors" in donors.data
     assert b"Donor Concentration Metrics" in donors.data
@@ -939,7 +1055,7 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Skipped in quick mode" not in donors.data
     assert b"Committee One" in donors.data
 
-    geography = analytics_client.get("/analytics/geography?load_mode=full")
+    geography = analytics_client.get("/analytics/geography?load_mode=full&period=all")
     assert geography.status_code == 200
     assert b"Analytics: Geography" in geography.data
     assert b"Time-Series Intelligence" in geography.data
@@ -966,7 +1082,7 @@ def test_analytics_networks_full_mode_survives_optional_graph_failures(analytics
 
 
 def test_analytics_api_endpoints(analytics_client):
-    network = analytics_client.get("/api/analytics/network?min_edge_amount=0&limit=100")
+    network = analytics_client.get("/api/analytics/network?min_edge_amount=0&limit=100&period=all")
     assert network.status_code == 200
     network_data = network.get_json()
     assert "nodes" in network_data
@@ -977,7 +1093,7 @@ def test_analytics_api_endpoints(analytics_client):
     assert all("region" in node for node in network_data["nodes"])
     assert "edge_type_definitions" in network_data["summary"]
 
-    anomalies = analytics_client.get("/api/analytics/anomalies?limit=10")
+    anomalies = analytics_client.get("/api/analytics/anomalies?limit=10&period=all")
     assert anomalies.status_code == 200
     anomalies_data = anomalies.get_json()
     assert "data" in anomalies_data
@@ -985,13 +1101,13 @@ def test_analytics_api_endpoints(analytics_client):
     assert "explainability" in anomalies_data["data"][0]
     assert "threshold" in anomalies_data["data"][0]
 
-    concentration = analytics_client.get("/api/analytics/concentration?limit=10")
+    concentration = analytics_client.get("/api/analytics/concentration?limit=10&period=all")
     assert concentration.status_code == 200
     concentration_data = concentration.get_json()
     assert "data" in concentration_data
     assert len(concentration_data["data"]) > 0
 
-    timeseries = analytics_client.get("/api/analytics/time-series?months=12")
+    timeseries = analytics_client.get("/api/analytics/time-series?months=12&period=all")
     assert timeseries.status_code == 200
     timeseries_data = timeseries.get_json()
     assert "data" in timeseries_data
@@ -1004,7 +1120,7 @@ def test_analytics_api_endpoints(analytics_client):
     filtered_series_data = timeseries_filtered.get_json()
     assert [row["month"] for row in filtered_series_data["data"]] == ["2026-02", "2026-03"]
 
-    geo = analytics_client.get("/api/analytics/geo?state_limit=5&city_limit=5")
+    geo = analytics_client.get("/api/analytics/geo?state_limit=5&city_limit=5&period=all")
     assert geo.status_code == 200
     geo_data = geo.get_json()
     assert "states" in geo_data

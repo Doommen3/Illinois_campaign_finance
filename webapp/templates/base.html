@@ -10,7 +10,7 @@
     <nav class="navbar">
         <div class="nav-topline">
             <div class="nav-brand">
-                <a href="{{ url_for('main.index') }}">IL Campaign Finance</a>
+                <a href="{{ url_for('main.index', period=time_period.key) }}">IL Campaign Finance</a>
             </div>
             <div class="nav-time-filter">
                 <label for="time-period-select">Period:</label>
@@ -22,6 +22,7 @@
             </div>
             <div class="nav-search">
                 <form action="{{ url_for('main.search') }}" method="get">
+                    <input type="hidden" name="period" value="{{ time_period.key }}">
                     <input type="text" name="q" placeholder="Search candidates, reports, donor keys..." value="{{ request.args.get('q', '') }}">
                     <button type="submit">Search</button>
                 </form>
@@ -32,35 +33,35 @@
             <div class="nav-group">
                 <p class="nav-group-title">Explore</p>
                 <ul class="nav-links">
-                    <li><a href="{{ url_for('main.investigate_workspace') }}">Start Here</a></li>
-                    <li><a href="{{ url_for('main.index') }}">Overview</a></li>
-                    <li><a href="{{ url_for('main.search') }}">Search</a></li>
-                    <li><a href="{{ url_for('main.candidates') }}">Candidates</a></li>
-                    <li><a href="{{ url_for('committees.list_committees') }}">Committees</a></li>
-                    <li><a href="{{ url_for('donors.list_donors') }}">Donors</a></li>
-                    <li><a href="{{ url_for('lobbying.list_entities') }}">Lobbying</a></li>
-                    <li><a href="{{ url_for('irs527.list_orgs') }}">527s</a></li>
-                    <li><a href="{{ url_for('openbook.list_vendors') }}">OpenBook</a></li>
-                    <li><a href="{{ url_for('main.person_intelligence') }}">Person Intel</a></li>
+                    <li><a href="{{ url_for('main.investigate_workspace', period=time_period.key) }}">Start Here</a></li>
+                    <li><a href="{{ url_for('main.index', period=time_period.key) }}">Overview</a></li>
+                    <li><a href="{{ url_for('main.search', period=time_period.key) }}">Search</a></li>
+                    <li><a href="{{ url_for('main.candidates', period=time_period.key) }}">Candidates</a></li>
+                    <li><a href="{{ url_for('committees.list_committees', period=time_period.key) }}">Committees</a></li>
+                    <li><a href="{{ url_for('donors.list_donors', period=time_period.key) }}">Donors</a></li>
+                    <li><a href="{{ url_for('lobbying.list_entities', period=time_period.key) }}">Lobbying</a></li>
+                    <li><a href="{{ url_for('irs527.list_orgs', period=time_period.key) }}">527s</a></li>
+                    <li><a href="{{ url_for('openbook.list_vendors', period=time_period.key) }}">OpenBook</a></li>
+                    <li><a href="{{ url_for('main.person_intelligence', period=time_period.key) }}">Person Intel</a></li>
                 </ul>
             </div>
 
             <div class="nav-group">
                 <p class="nav-group-title">Analytics</p>
                 <ul class="nav-links">
-                    <li><a href="{{ url_for('analytics.dashboard') }}">State Analytics</a></li>
-                    <li><a href="{{ url_for('federal_finance.federal_overview') }}">Federal Finance</a></li>
+                    <li><a href="{{ url_for('analytics.dashboard', period=time_period.key) }}">State Analytics</a></li>
+                    <li><a href="{{ url_for('federal_finance.federal_overview', period=time_period.key) }}">Federal Finance</a></li>
                 </ul>
             </div>
 
             <div class="nav-group">
                 <p class="nav-group-title">Admin</p>
                 <ul class="nav-links">
-                    <li><a href="{{ url_for('admin.admin_hub') }}">Tools</a></li>
+                    <li><a href="{{ url_for('admin.admin_hub', period=time_period.key) }}">Tools</a></li>
                     {% if current_manual_user %}
-                    <li><a href="{{ url_for('auth.logout') }}">Sign Out ({{ current_manual_user.username }})</a></li>
+                    <li><a href="{{ url_for('auth.logout', period=time_period.key) }}">Sign Out ({{ current_manual_user.username }})</a></li>
                     {% else %}
-                    <li><a href="{{ url_for('auth.login') }}">Login</a></li>
+                    <li><a href="{{ url_for('auth.login', period=time_period.key) }}">Login</a></li>
                     {% endif %}
                 </ul>
             </div>
@@ -155,6 +156,41 @@
         url.searchParams.delete('page');
         window.location.href = url.toString();
     }
+
+    (function ensurePeriodOnNavigation() {
+        var selectedPeriod = "{{ time_period.key }}";
+        var links = document.querySelectorAll('a[href]');
+        links.forEach(function(anchor) {
+            var href = anchor.getAttribute('href');
+            if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+                return;
+            }
+            try {
+                var parsed = new URL(href, window.location.origin);
+                if (parsed.origin !== window.location.origin || parsed.pathname.startsWith('/static/')) {
+                    return;
+                }
+                if (!parsed.searchParams.get('period')) {
+                    parsed.searchParams.set('period', selectedPeriod);
+                    anchor.setAttribute('href', parsed.pathname + parsed.search + parsed.hash);
+                }
+            } catch (e) {
+                // Ignore invalid links and preserve existing href values.
+            }
+        });
+
+        var forms = document.querySelectorAll('form[method="get"], form:not([method])');
+        forms.forEach(function(form) {
+            if (form.querySelector('input[name="period"]')) {
+                return;
+            }
+            var hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'period';
+            hidden.value = selectedPeriod;
+            form.appendChild(hidden);
+        });
+    })();
     </script>
     {% block extra_js %}{% endblock %}
 </body>

@@ -7,6 +7,7 @@ import hashlib
 import re
 
 from flask import Blueprint, render_template, request, current_app, abort, jsonify
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 lobbying_bp = Blueprint('lobbying', __name__)
 
@@ -17,6 +18,13 @@ def _table_exists(conn, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
 
 
 def _scalar(conn, sql, params=(), default=0):
@@ -34,6 +42,23 @@ def _scalar(conn, sql, params=(), default=0):
     else:
         value = row[0] if len(row) else default
     return default if value is None else value
+
+
+def _resolved_time_window() -> tuple[str | None, str | None]:
+    period = get_active_period()
+    explicit_from = request.args.get("date_from", "", type=str).strip()
+    explicit_to = request.args.get("date_to", "", type=str).strip()
+    return period_to_date_window(period, explicit_from, explicit_to)
+
+
+def _bulk_donor_key_sql(alias: str = "r") -> str:
+    return (
+        f"LOWER(TRIM("
+        f"COALESCE({alias}.first_name, '') || '|' || COALESCE({alias}.last_or_business_name, '') || '|' || "
+        f"COALESCE({alias}.address_line_1, '') || '|' || COALESCE({alias}.address_line_2, '') || '|' || "
+        f"COALESCE({alias}.city, '') || '|' || COALESCE({alias}.state, '') || '|' || COALESCE({alias}.postal_code, '')"
+        f"))"
+    )
 
 
 def _normalize_name(value: str | None) -> str:
@@ -208,7 +233,86 @@ def _donor_band_summary(donor_matches: list[dict]) -> dict[str, int]:
     return bands
 
 
-def _candidate_destinations(conn, donor_keys: list[str], limit: int = 10) -> list[dict]:
+def _candidate_destinations(
+    conn,
+    donor_keys: list[str],
+    limit: int = 10,
+    committee_totals: list[dict] | None = None,
+) -> list[dict]:
+    if committee_totals and _table_exists(conn, "bulk_cmte_candidate_links_clean"):
+        committee_ids = [
+            int(row["committee_id"])
+            for row in committee_totals
+            if row.get("committee_id") is not None
+        ]
+        if not committee_ids:
+            return []
+        committee_lookup = {
+            int(row["committee_id"]): {
+                "total_amount": float(row.get("total_amount") or 0.0),
+                "contribution_count": float(row.get("contribution_count") or 0.0),
+            }
+            for row in committee_totals
+            if row.get("committee_id") is not None
+        }
+        placeholders = ",".join(["?"] * len(committee_ids))
+        rows = conn.execute(
+            f"""
+            SELECT
+                l.committee_id_sbe,
+                l.candidate_id,
+                COALESCE(MAX(c.candidate_full_name), 'Candidate ' || l.candidate_id) AS candidate_name
+            FROM bulk_cmte_candidate_links_clean l
+            LEFT JOIN bulk_candidates_clean c
+              ON c.candidate_id = l.candidate_id
+            WHERE l.candidate_id IS NOT NULL
+              AND l.committee_id_sbe IN ({placeholders})
+            GROUP BY l.committee_id_sbe, l.candidate_id
+            """,
+            committee_ids,
+        ).fetchall()
+        committee_to_candidates: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        for row in rows:
+            committee_to_candidates[int(row["committee_id_sbe"])].append(
+                (int(row["candidate_id"]), row["candidate_name"] or f"Candidate {row['candidate_id']}")
+            )
+
+        candidate_totals: dict[int, dict] = {}
+        for committee_id, metrics in committee_lookup.items():
+            candidates = committee_to_candidates.get(committee_id, [])
+            if not candidates:
+                continue
+            split = float(len(candidates))
+            amount_share = metrics["total_amount"] / split if split > 0 else 0.0
+            count_share = metrics["contribution_count"] / split if split > 0 else 0.0
+            for candidate_id, candidate_name in candidates:
+                bucket = candidate_totals.setdefault(
+                    candidate_id,
+                    {
+                        "candidate_id": candidate_id,
+                        "candidate_name": candidate_name,
+                        "total_amount": 0.0,
+                        "contribution_count": 0.0,
+                    },
+                )
+                bucket["total_amount"] += amount_share
+                bucket["contribution_count"] += count_share
+
+        ranked = sorted(
+            candidate_totals.values(),
+            key=lambda row: (float(row["total_amount"]), float(row["contribution_count"])),
+            reverse=True,
+        )[:limit]
+        return [
+            {
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"],
+                "total_amount": round(float(row["total_amount"] or 0.0), 2),
+                "contribution_count": int(round(float(row["contribution_count"] or 0.0))),
+            }
+            for row in ranked
+        ]
+
     if (
         not donor_keys
         or not _table_exists(conn, "analytics_donor_committee_agg")
@@ -308,7 +412,13 @@ def _get_donor_profiles(conn, donor_keys: list[str], fallback_lookup: dict[str, 
     return profiles
 
 
-def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
+def _get_receipt_activity(
+    conn,
+    donor_profiles: dict[str, dict],
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
     if not donor_profiles or not _table_exists(conn, "bulk_receipts_clean"):
         return {
             "total_amount": 0.0,
@@ -317,10 +427,12 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
             "last_donation_date": None,
             "monthly_series": [],
             "max_monthly_amount": 0.0,
+            "committee_totals": [],
         }
 
     donor_key_set = set(donor_profiles.keys())
     names = sorted({_normalize_name(meta.get("donor_name")) for meta in donor_profiles.values() if meta.get("donor_name")})
+    names_set = set(names)
     if not names:
         return {
             "total_amount": 0.0,
@@ -329,6 +441,7 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
             "last_donation_date": None,
             "monthly_series": [],
             "max_monthly_amount": 0.0,
+            "committee_totals": [],
         }
 
     placeholders = ",".join(["?"] * len(names))
@@ -342,6 +455,7 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
             city,
             state,
             postal_code,
+            committee_id_sbe,
             received_date,
             amount,
             is_archived
@@ -367,6 +481,9 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
     contribution_count = 0
     first_date = None
     last_date = None
+    committee_totals: dict[int, dict] = {}
+    range_start = _parse_date_text(date_from)
+    range_end = _parse_date_text(date_to)
 
     for row in rows:
         if int(row["is_archived"] or 0) != 0:
@@ -380,7 +497,17 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
             row["postal_code"],
         )
         donor_key = _stable_entity_key(donor_name, donor_address)
-        if donor_key not in donor_key_set:
+        if donor_key_set:
+            donor_name_key = _normalize_name(donor_name)
+            if donor_key not in donor_key_set and donor_name_key not in names_set:
+                continue
+        elif _normalize_name(donor_name) not in names_set:
+            continue
+
+        parsed_date = _parse_date_text(row["received_date"])
+        if range_start and (parsed_date is None or parsed_date < range_start):
+            continue
+        if range_end and (parsed_date is None or parsed_date > range_end):
             continue
 
         amount = float(row["amount"] or 0.0)
@@ -389,7 +516,6 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
         contribution_count += 1
         total_amount += amount
 
-        parsed_date = _parse_date_text(row["received_date"])
         if parsed_date:
             if first_date is None or parsed_date < first_date:
                 first_date = parsed_date
@@ -400,10 +526,40 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
         if month:
             monthly_totals[month] += amount
 
+        committee_id = row["committee_id_sbe"]
+        if committee_id is not None:
+            cid = int(committee_id)
+            bucket = committee_totals.setdefault(
+                cid,
+                {"committee_id": cid, "committee_name": f"Committee {cid}", "total_amount": 0.0, "contribution_count": 0},
+            )
+            bucket["total_amount"] += amount
+            bucket["contribution_count"] += 1
+
+    if committee_totals and _table_exists(conn, "bulk_committees_clean"):
+        placeholders = ",".join(["?"] * len(committee_totals))
+        name_rows = conn.execute(
+            f"""
+            SELECT committee_id_sbe, committee_name
+            FROM bulk_committees_clean
+            WHERE committee_id_sbe IN ({placeholders})
+            """,
+            list(committee_totals.keys()),
+        ).fetchall()
+        for row in name_rows:
+            committee_id = int(row["committee_id_sbe"])
+            if committee_id in committee_totals and row["committee_name"]:
+                committee_totals[committee_id]["committee_name"] = row["committee_name"]
+
     monthly_series = [
         {"month": month, "amount": round(amount, 2)}
         for month, amount in sorted(monthly_totals.items())
     ]
+    committee_series = sorted(
+        committee_totals.values(),
+        key=lambda row: (float(row["total_amount"]), int(row["contribution_count"])),
+        reverse=True,
+    )
 
     return {
         "total_amount": round(total_amount, 2),
@@ -412,10 +568,18 @@ def _get_receipt_activity(conn, donor_profiles: dict[str, dict]) -> dict:
         "last_donation_date": last_date.isoformat() if last_date else None,
         "monthly_series": monthly_series[-18:],
         "max_monthly_amount": round(max(monthly_totals.values()) if monthly_totals else 0.0, 2),
+        "committee_totals": committee_series,
     }
 
 
-def _build_money_destinations(conn, donor_matches: list[dict], top_limit: int = 10) -> dict:
+def _build_money_destinations(
+    conn,
+    donor_matches: list[dict],
+    top_limit: int = 10,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
     donor_keys = sorted({(row.get("donor_key") or "").strip() for row in donor_matches if row.get("donor_key")})
     if not donor_keys:
         return {
@@ -429,7 +593,8 @@ def _build_money_destinations(conn, donor_matches: list[dict], top_limit: int = 
         }
 
     committee_destinations = []
-    if _table_exists(conn, "analytics_donor_committee_agg"):
+    has_time_window = bool((date_from or "").strip() or (date_to or "").strip())
+    if _table_exists(conn, "analytics_donor_committee_agg") and not has_time_window:
         placeholders = ",".join(["?"] * len(donor_keys))
         committee_rows = conn.execute(
             f"""
@@ -463,7 +628,9 @@ def _build_money_destinations(conn, donor_matches: list[dict], top_limit: int = 
         if row.get("donor_key")
     }
     donor_profiles = _get_donor_profiles(conn, donor_keys, fallback_lookup=fallback_lookup)
-    activity = _get_receipt_activity(conn, donor_profiles)
+    activity = _get_receipt_activity(conn, donor_profiles, date_from=date_from, date_to=date_to)
+    if has_time_window and activity.get("committee_totals"):
+        committee_destinations = activity["committee_totals"][:top_limit]
 
     if not activity["total_amount"] and committee_destinations:
         activity["total_amount"] = round(sum(row["total_amount"] for row in committee_destinations), 2)
@@ -471,7 +638,12 @@ def _build_money_destinations(conn, donor_matches: list[dict], top_limit: int = 
 
     return {
         "committee_destinations": committee_destinations,
-        "candidate_destinations": _candidate_destinations(conn, donor_keys, limit=top_limit),
+        "candidate_destinations": _candidate_destinations(
+            conn,
+            donor_keys,
+            limit=top_limit,
+            committee_totals=committee_destinations if has_time_window else None,
+        ),
         "total_amount": activity["total_amount"],
         "contribution_count": activity["contribution_count"],
         "first_donation_date": activity["first_donation_date"],
@@ -535,6 +707,7 @@ def list_entities():
 def entity_detail(entity_id):
     """Entity detail: clients, matched donors, money destinations, matched payees."""
     conn = current_app.get_database()
+    date_from, date_to = _resolved_time_window()
 
     if not _table_exists(conn, "lobbying_entities"):
         abort(404)
@@ -582,7 +755,13 @@ def entity_detail(entity_id):
         donor_matches = _enrich_donor_matches(conn, donor_match_rows)
 
     donor_band_summary = _donor_band_summary(donor_matches)
-    money_destinations = _build_money_destinations(conn, donor_matches, top_limit=10)
+    money_destinations = _build_money_destinations(
+        conn,
+        donor_matches,
+        top_limit=10,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     # Expenditure matches for this entity
     expenditure_matches = []
@@ -610,6 +789,7 @@ def entity_detail(entity_id):
 def client_detail(client_id):
     """Client detail: entities, donor links, money destinations, payee and 527 matches."""
     conn = current_app.get_database()
+    date_from, date_to = _resolved_time_window()
 
     if not _table_exists(conn, "lobbying_clients"):
         abort(404)
@@ -649,7 +829,13 @@ def client_detail(client_id):
         donor_matches = _enrich_donor_matches(conn, donor_match_rows)
 
     donor_band_summary = _donor_band_summary(donor_matches)
-    money_destinations = _build_money_destinations(conn, donor_matches, top_limit=10)
+    money_destinations = _build_money_destinations(
+        conn,
+        donor_matches,
+        top_limit=10,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     # Expenditure matches
     expenditure_matches = []
@@ -699,8 +885,14 @@ def flows():
 def flows_data():
     """JSON for Sankey diagram."""
     conn = current_app.get_database()
+    date_from, date_to = _resolved_time_window()
+    has_time_window = bool((date_from or "").strip() or (date_to or "").strip())
 
-    if not _table_exists(conn, "lobbying_donor_matches") or not _table_exists(conn, "analytics_donor_committee_agg"):
+    if not _table_exists(conn, "lobbying_donor_matches"):
+        return jsonify(_empty_flow_payload())
+    if has_time_window and not _table_exists(conn, "bulk_receipts_clean"):
+        return jsonify(_empty_flow_payload())
+    if not has_time_window and not _table_exists(conn, "analytics_donor_committee_agg"):
         return jsonify(_empty_flow_payload())
 
     _ensure_lobbying_flow_indexes(conn)
@@ -712,28 +904,73 @@ def flows_data():
         where.append("client_name LIKE ?")
         params.append(f"%{client_filter}%")
 
-    rows = conn.execute(
-        f"""
-        WITH filtered_matches AS (
-            SELECT donor_key, COALESCE(client_name, 'Unknown Client') AS client_name
-            FROM lobbying_donor_matches
-            WHERE {' AND '.join(where)}
-        )
-        SELECT
-            fm.client_name AS client_name,
-            COALESCE(a.committee_name, 'Unknown Committee') AS committee_name,
-            SUM(a.total_amount) AS flow_amount
-        FROM filtered_matches fm
-        JOIN analytics_donor_committee_agg a
-          ON a.donor_key = fm.donor_key
-         AND a.source = 'bulk_receipts'
-        GROUP BY fm.client_name, a.committee_name
-        HAVING SUM(a.total_amount) >= 1000
-        ORDER BY flow_amount DESC
-        LIMIT 100
-        """,
-        params,
-    ).fetchall()
+    if has_time_window:
+        date_clause = ""
+        date_params: list[object] = []
+        if date_from:
+            date_clause += " AND DATE(r.received_date) >= DATE(?)"
+            date_params.append(date_from)
+        if date_to:
+            date_clause += " AND DATE(r.received_date) <= DATE(?)"
+            date_params.append(date_to)
+        archived_clause = " AND COALESCE(r.is_archived, 0) = 0" if _column_exists(conn, "bulk_receipts_clean", "is_archived") else ""
+        rows = conn.execute(
+            f"""
+            WITH filtered_matches AS (
+                SELECT donor_key, COALESCE(client_name, 'Unknown Client') AS client_name
+                FROM lobbying_donor_matches
+                WHERE {' AND '.join(where)}
+            ),
+            donor_committee AS (
+                SELECT
+                    {_bulk_donor_key_sql('r')} AS donor_key,
+                    r.committee_id_sbe,
+                    COALESCE(SUM(r.amount), 0) AS total_amount
+                FROM bulk_receipts_clean r
+                WHERE COALESCE(r.amount, 0) > 0
+                  {archived_clause}
+                  {date_clause}
+                GROUP BY donor_key, r.committee_id_sbe
+            )
+            SELECT
+                fm.client_name AS client_name,
+                COALESCE(MAX(c.committee_name), 'Committee ' || dc.committee_id_sbe) AS committee_name,
+                SUM(dc.total_amount) AS flow_amount
+            FROM filtered_matches fm
+            JOIN donor_committee dc
+              ON dc.donor_key = fm.donor_key
+            LEFT JOIN bulk_committees_clean c
+              ON c.committee_id_sbe = dc.committee_id_sbe
+            GROUP BY fm.client_name, dc.committee_id_sbe
+            HAVING SUM(dc.total_amount) >= 1000
+            ORDER BY flow_amount DESC
+            LIMIT 100
+            """,
+            [*params, *date_params],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            WITH filtered_matches AS (
+                SELECT donor_key, COALESCE(client_name, 'Unknown Client') AS client_name
+                FROM lobbying_donor_matches
+                WHERE {' AND '.join(where)}
+            )
+            SELECT
+                fm.client_name AS client_name,
+                COALESCE(a.committee_name, 'Unknown Committee') AS committee_name,
+                SUM(a.total_amount) AS flow_amount
+            FROM filtered_matches fm
+            JOIN analytics_donor_committee_agg a
+              ON a.donor_key = fm.donor_key
+             AND a.source = 'bulk_receipts'
+            GROUP BY fm.client_name, a.committee_name
+            HAVING SUM(a.total_amount) >= 1000
+            ORDER BY flow_amount DESC
+            LIMIT 100
+            """,
+            params,
+        ).fetchall()
 
     if not rows:
         return jsonify(_empty_flow_payload())

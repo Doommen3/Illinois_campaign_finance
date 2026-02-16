@@ -17,8 +17,16 @@ from database.analytics import (
     get_time_series,
 )
 from database.models import Committee, Report, Donor, Contribution, ScrapeState
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 api_bp = Blueprint('api', __name__)
+
+
+def _resolved_date_window() -> tuple[str | None, str | None]:
+    period = get_active_period()
+    explicit_from = (request.args.get('date_from', '', type=str) or '').strip()
+    explicit_to = (request.args.get('date_to', '', type=str) or '').strip()
+    return period_to_date_window(period, explicit_from, explicit_to)
 
 
 @api_bp.route('/stats')
@@ -280,7 +288,16 @@ def analytics_network():
     conn = current_app.get_database()
     min_edge_amount = request.args.get('min_edge_amount', 1000, type=float)
     limit = min(request.args.get('limit', 200, type=int), 2000)
-    return jsonify(get_network_graph(conn, min_edge_amount=min_edge_amount, limit=limit))
+    date_from, date_to = _resolved_date_window()
+    return jsonify(
+        get_network_graph(
+            conn,
+            min_edge_amount=min_edge_amount,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
 
 
 @api_bp.route('/analytics/anomalies')
@@ -288,8 +305,7 @@ def analytics_anomalies():
     """Get anomaly/risk flags."""
     conn = current_app.get_database()
     limit = min(request.args.get('limit', 25, type=int), 1000)
-    date_from = (request.args.get('date_from', '', type=str) or '').strip() or None
-    date_to = (request.args.get('date_to', '', type=str) or '').strip() or None
+    date_from, date_to = _resolved_date_window()
     return jsonify({'data': get_anomaly_flags(conn, limit=limit, date_from=date_from, date_to=date_to)})
 
 
@@ -298,7 +314,17 @@ def analytics_concentration():
     """Get donor concentration metrics by committee."""
     conn = current_app.get_database()
     limit = min(request.args.get('limit', 25, type=int), 1000)
-    return jsonify({'data': get_donor_concentration(conn, limit=limit)})
+    date_from, date_to = _resolved_date_window()
+    return jsonify(
+        {
+            'data': get_donor_concentration(
+                conn,
+                limit=limit,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        }
+    )
 
 
 @api_bp.route('/analytics/time-series')
@@ -306,8 +332,7 @@ def analytics_time_series():
     """Get monthly contribution time series."""
     conn = current_app.get_database()
     months = min(request.args.get('months', 24, type=int), 120)
-    date_from = (request.args.get('date_from', '', type=str) or '').strip() or None
-    date_to = (request.args.get('date_to', '', type=str) or '').strip() or None
+    date_from, date_to = _resolved_date_window()
     return jsonify({'data': get_time_series(conn, months=months, date_from=date_from, date_to=date_to)})
 
 
@@ -317,7 +342,16 @@ def analytics_geo():
     conn = current_app.get_database()
     state_limit = min(request.args.get('state_limit', 15, type=int), 100)
     city_limit = min(request.args.get('city_limit', 25, type=int), 500)
-    return jsonify(get_geo_summary(conn, limit_states=state_limit, limit_cities=city_limit))
+    date_from, date_to = _resolved_date_window()
+    return jsonify(
+        get_geo_summary(
+            conn,
+            limit_states=state_limit,
+            limit_cities=city_limit,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
 
 
 @api_bp.route('/analytics/nlp')
@@ -405,11 +439,14 @@ def analytics_lobbying_influence():
     conn = current_app.get_database()
     client_limit = min(max(request.args.get('client_limit', 80, type=int), 20), 2000)
     edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
+    date_from, date_to = _resolved_date_window()
     return jsonify(
         get_lobbying_influence_graph(
             conn,
             client_limit=client_limit,
             edge_limit=edge_limit,
+            date_from=date_from,
+            date_to=date_to,
         )
     )
 
@@ -420,10 +457,13 @@ def analytics_irs527_ecosystem():
     conn = current_app.get_database()
     org_limit = min(max(request.args.get('org_limit', 100, type=int), 20), 2000)
     edge_limit = min(max(request.args.get('edge_limit', 200, type=int), 50), 10000)
+    date_from, date_to = _resolved_date_window()
     return jsonify(
         get_irs527_ecosystem_graph(
             conn,
             org_limit=org_limit,
             edge_limit=edge_limit,
+            date_from=date_from,
+            date_to=date_to,
         )
     )

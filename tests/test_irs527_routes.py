@@ -65,7 +65,7 @@ def client(app):
 
 
 def test_527_list(client):
-    response = client.get('/527/')
+    response = client.get('/527/?period=all')
     assert response.status_code == 200
     assert b'Test 527 Org' in response.data
     assert b'$12,345.00' in response.data
@@ -80,7 +80,7 @@ def test_527_list_search(client):
 
 
 def test_527_detail(client):
-    response = client.get('/527/123456789')
+    response = client.get('/527/123456789?period=all')
     assert response.status_code == 200
     assert b'Test 527 Org' in response.data
     assert b'Jane Director' in response.data

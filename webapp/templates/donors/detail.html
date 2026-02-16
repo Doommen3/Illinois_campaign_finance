@@ -28,8 +28,8 @@
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('donors.donor_detail', donor_id=donor.id, sort='filed_date', dir='asc' if sort_by != 'filed_date' or sort_dir == 'desc' else 'desc') }}">
-                    Date{% if sort_by == 'filed_date' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
+                <a href="{{ url_for('donors.donor_detail', donor_id=donor.id, sort='transaction_date', dir='asc' if sort_by != 'transaction_date' or sort_dir == 'desc' else 'desc') }}">
+                    Date{% if sort_by in ['transaction_date', 'filed_date'] %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
@@ -44,7 +44,7 @@
         <tr>
             <td>{{ contrib.committee_name if contrib.committee_name else '-' }}</td>
             <td>{{ format_currency(contrib.amount) }}</td>
-            <td>{{ contrib.filed_date if contrib.filed_date else '-' }}</td>
+            <td>{{ contrib.transaction_date if contrib.transaction_date else (contrib.filed_date if contrib.filed_date else '-') }}</td>
             <td>{{ contrib.description|truncate(50) if contrib.description else '-' }}</td>
         </tr>
         {% else %}

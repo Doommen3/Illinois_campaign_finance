@@ -7,7 +7,11 @@ from webapp.utils.time_filter import (
     TIME_PERIODS,
     DEFAULT_PERIOD,
     get_period_dates,
+    period_cycle,
+    period_cycles,
+    period_qmark_date_clause,
     period_qmark_clause,
+    period_to_date_window,
 )
 
 
@@ -22,7 +26,6 @@ class TestTimePeriodDefinitions:
         assert "2024cycle" in keys
         assert "1y" in keys
         assert "2y" in keys
-        assert "5y" in keys
         assert "all" in keys
 
     def test_all_periods_have_three_tuple_elements(self):
@@ -89,6 +92,47 @@ class TestPeriodQmarkClause:
         clause, params = period_qmark_clause("received_date", period)
         assert clause == ""
         assert params == []
+
+    def test_date_clause_wraps_with_date_function(self):
+        period = {"key": "1y", "start_date": "2025-02-16", "end_date": "2026-02-16"}
+        clause, params = period_qmark_date_clause("expended_date", period)
+        assert "DATE(expended_date) >= ?" in clause
+        assert "DATE(expended_date) <= ?" in clause
+        assert params == ["2025-02-16", "2026-02-16"]
+
+
+class TestPeriodHelpers:
+
+    def test_period_to_date_window_defaults_to_period_bounds(self):
+        period = {"key": "2026cycle", "start_date": "2025-01-01", "end_date": "2026-02-16"}
+        date_from, date_to = period_to_date_window(period)
+        assert date_from == "2025-01-01"
+        assert date_to == "2026-02-16"
+
+    def test_period_to_date_window_keeps_explicit_args(self):
+        period = {"key": "2026cycle", "start_date": "2025-01-01", "end_date": "2026-02-16"}
+        date_from, date_to = period_to_date_window(period, date_from="2025-03-01", date_to="2025-07-31")
+        assert date_from == "2025-03-01"
+        assert date_to == "2025-07-31"
+
+    def test_period_cycle_selection(self):
+        assert period_cycle({"key": "2026cycle"}) == 2026
+        assert period_cycle({"key": "2024cycle"}) == 2024
+        assert period_cycle({"key": "all"}) is None
+
+    def test_period_cycles_for_range_period(self):
+        cycles = period_cycles(
+            {"key": "2y", "start_date": "2024-02-16", "end_date": "2026-02-16"}
+        )
+        assert cycles == (2024, 2026)
+
+    def test_1y_window_is_subset_of_2y_window(self):
+        one_year_start, one_year_end = get_period_dates("1y")
+        two_year_start, two_year_end = get_period_dates("2y")
+        assert one_year_start is not None and one_year_end is not None
+        assert two_year_start is not None and two_year_end is not None
+        assert two_year_start <= one_year_start
+        assert one_year_end <= two_year_end
 
 
 class TestTimeFilterInApp:

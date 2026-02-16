@@ -75,3 +75,12 @@ def test_db_target_falls_back_to_legacy_path_when_no_urls(monkeypatch):
     monkeypatch.setattr(cli_commands.config, "DATABASE_TARGET", "")
     monkeypatch.setattr(cli_commands.config, "DATABASE_PATH", "/tmp/legacy.db")
     assert cli_commands._db_target() == "/tmp/legacy.db"
+
+
+def test_db_target_prefers_env_database_path_when_env_url_missing(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_PATH", "/tmp/env-legacy.db")
+    monkeypatch.setattr(cli_commands.config, "DATABASE_URL", "postgresql://config/ilcf")
+    monkeypatch.setattr(cli_commands.config, "DATABASE_TARGET", "/tmp/config-target.db")
+    monkeypatch.setattr(cli_commands.config, "DATABASE_PATH", "/tmp/config-legacy.db")
+    assert cli_commands._db_target() == "/tmp/env-legacy.db"

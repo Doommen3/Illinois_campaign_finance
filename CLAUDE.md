@@ -104,6 +104,10 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `SOCRATA_API_MIN_INTERVAL_SECONDS`
 - Homepage donor query fast path uses `analytics_donor_summary` (fallback remains legacy donor totals query if the summary table is absent).
 - 527 contribution ingest now populates `irs527_contributor_rollup` to reduce expensive recomputation for contribution summary metrics.
+- Global time-filter canonical semantics:
+   - Report-driven pages/queries filter by `filed_date`.
+   - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).
+   - Legacy routes (`/reports`, `/donors`, `/committees`, and search report/filed-doc/donor-key sections) are expected to propagate the active global period window end-to-end.
 - Benchmarking guidance:
    - Always measure at least one **cold** pass and one **warm** pass.
    - For reliable warm numbers, run 2-3 warm passes and use median.
@@ -160,6 +164,25 @@ For any significant code path (imports, migrations, cross-matching, analytics re
 - Prefer `INSERT ... ON CONFLICT DO UPDATE` (upsert) for idempotent writes.
 - Use chunked batch inserts (`_chunked()` helper) for large data loads.
 - Use `psql` for ad-hoc queries, not `sqlite3`. Local DB: `psql ilcf`. Prod: `psql -h localhost ilcf`.
+
+## Token/Credit Efficiency Policy (Required)
+
+- Before starting any non-trivial process, evaluate whether the user can run it directly with lower credit/token cost than agent execution.
+- If user handoff is feasible and cheaper, pause and prompt the user first with:
+  - the exact command/process they can run,
+  - an estimated token/credit savings range if they run it themselves instead of the agent,
+  - expected runtime and what output to return.
+- If a request/prompt is estimated to be high-cost in credits/tokens, warn the user before proceeding and include:
+  - estimated token/credit usage range,
+  - the main cost driver (for example: very large logs, broad multi-file refactors, or verbose full-suite outputs),
+  - one or more cheaper alternatives (scope reduction, targeted files, summarized output, staged execution).
+- If the user confirms they still want the high-cost path, proceed.
+
+## Documentation Sync Policy (Required)
+
+- After making changes that introduce useful project knowledge, update both `README.md` and `CLAUDE.md` in the same task.
+- "Useful project knowledge" includes new commands/flags, workflow updates, config/env changes, performance findings, operational caveats, and troubleshooting notes.
+- Do not mark implementation complete until documentation is updated, or explicitly state why no documentation change is needed.
 
 ## New Dataset Integration Workflow (Required)
 

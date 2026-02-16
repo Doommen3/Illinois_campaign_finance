@@ -611,6 +611,32 @@ def _build_bulk_address(
     return ", ".join(part for part in parts if part)
 
 
+def _bulk_donor_key_sql(alias: str = "r") -> str:
+    return (
+        f"LOWER(TRIM("
+        f"COALESCE({alias}.first_name, '') || '|' || COALESCE({alias}.last_or_business_name, '') || '|' || "
+        f"COALESCE({alias}.address_line_1, '') || '|' || COALESCE({alias}.address_line_2, '') || '|' || "
+        f"COALESCE({alias}.city, '') || '|' || COALESCE({alias}.state, '') || '|' || COALESCE({alias}.postal_code, '')"
+        f"))"
+    )
+
+
+def _bulk_receipts_has_donor_key_columns(conn: sqlite3.Connection) -> bool:
+    required_columns = (
+        "first_name",
+        "last_or_business_name",
+        "address_line_1",
+        "address_line_2",
+        "city",
+        "state",
+        "postal_code",
+    )
+    return _table_exists(conn, "bulk_receipts_clean") and all(
+        _column_exists(conn, "bulk_receipts_clean", column_name)
+        for column_name in required_columns
+    )
+
+
 def _stable_entity_key(*values: str | None) -> str:
     normalized = "|".join(_normalize_name(value) for value in values)
     if not normalized:
@@ -671,11 +697,16 @@ def _get_donor_committee_rows(
     conn: sqlite3.Connection,
     min_edge_amount: float = 0.0,
     limit: Optional[int] = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> tuple[list[dict], str]:
     source = _donor_flow_source(conn)
     min_edge_amount = float(min_edge_amount or 0.0)
+    resolved_date_from = (date_from or "").strip() or None
+    resolved_date_to = (date_to or "").strip() or None
+    has_date_window = bool(resolved_date_from or resolved_date_to)
 
-    if _rows_for_source_exist(conn, "analytics_donor_committee_agg", source):
+    if not has_date_window and _rows_for_source_exist(conn, "analytics_donor_committee_agg", source):
         query = """
             SELECT
                 donor_key,
@@ -719,6 +750,14 @@ def _get_donor_committee_rows(
         return output, source
 
     if source == "bulk_receipts":
+        date_filters = ""
+        date_params: list[object] = []
+        if resolved_date_from:
+            date_filters += " AND DATE(r.received_date) >= DATE(?)"
+            date_params.append(resolved_date_from)
+        if resolved_date_to:
+            date_filters += " AND DATE(r.received_date) <= DATE(?)"
+            date_params.append(resolved_date_to)
         query = f"""
             SELECT
                 r.first_name AS first_name,
@@ -736,6 +775,7 @@ def _get_donor_committee_rows(
             LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe
             WHERE COALESCE(r.amount, 0) > 0
               AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+              {date_filters}
             GROUP BY
                 r.first_name,
                 r.last_or_business_name,
@@ -749,7 +789,7 @@ def _get_donor_committee_rows(
             HAVING COALESCE(SUM(r.amount), 0) >= ?
             ORDER BY total_amount DESC
         """
-        params: list[object] = [min_edge_amount]
+        params: list[object] = [*date_params, min_edge_amount]
         if limit is not None:
             query += " LIMIT ?"
             params.append(int(limit))
@@ -799,11 +839,18 @@ def _get_donor_committee_rows(
         JOIN donors d ON d.id = ct.donor_id
         JOIN reports r ON r.id = ct.report_id
         JOIN committees c ON c.id = r.committee_id
+        WHERE 1=1
+          AND (
+            ? IS NULL OR DATE(COALESCE(NULLIF(ct.transaction_date, ''), NULLIF(r.filed_date, ''))) >= DATE(?)
+          )
+          AND (
+            ? IS NULL OR DATE(COALESCE(NULLIF(ct.transaction_date, ''), NULLIF(r.filed_date, ''))) <= DATE(?)
+          )
         GROUP BY d.id, c.id
         HAVING COALESCE(SUM(ct.amount), 0) >= ?
         ORDER BY total_amount DESC
     """
-    params = [min_edge_amount]
+    params = [resolved_date_from, resolved_date_from, resolved_date_to, resolved_date_to, min_edge_amount]
     if limit is not None:
         query += " LIMIT ?"
         params.append(int(limit))
@@ -1035,9 +1082,17 @@ def get_donor_committee_rows(
     conn: sqlite3.Connection,
     min_edge_amount: float = 0.0,
     limit: Optional[int] = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> tuple[list[dict], str]:
     """Get donor->committee aggregate rows and active source."""
-    return _get_donor_committee_rows(conn, min_edge_amount=min_edge_amount, limit=limit)
+    return _get_donor_committee_rows(
+        conn,
+        min_edge_amount=min_edge_amount,
+        limit=limit,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 def get_network_graph(
@@ -1046,6 +1101,8 @@ def get_network_graph(
     limit: int = 300,
     donor_committee_rows: Optional[list[dict]] = None,
     donor_source: Optional[str] = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Build a donor->committee->candidate weighted graph and centrality scores."""
     nodes: dict[str, dict] = {}
@@ -1058,6 +1115,8 @@ def get_network_graph(
             conn,
             min_edge_amount=float(min_edge_amount),
             limit=int(limit),
+            date_from=date_from,
+            date_to=date_to,
         )
     else:
         donor_source = donor_source or _donor_flow_source(conn)
@@ -1309,10 +1368,18 @@ def get_donor_concentration(
     conn: sqlite3.Connection,
     limit: int = 50,
     donor_committee_rows: Optional[list[dict]] = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
     """Compute donor concentration metrics by committee (HHI, Gini, top shares)."""
     if donor_committee_rows is None:
-        rows, _source = _get_donor_committee_rows(conn, min_edge_amount=0.0, limit=None)
+        rows, _source = _get_donor_committee_rows(
+            conn,
+            min_edge_amount=0.0,
+            limit=None,
+            date_from=date_from,
+            date_to=date_to,
+        )
     else:
         rows = donor_committee_rows
     per_committee: dict[tuple[object, str], dict] = {}
@@ -1810,10 +1877,18 @@ def get_geo_summary(
     limit_cities: int = 30,
     donor_committee_rows: Optional[list[dict]] = None,
     donor_source: Optional[str] = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Summarize contributions geographically from donor addresses (state/city)."""
     if donor_committee_rows is None:
-        donor_committee_rows, donor_source = _get_donor_committee_rows(conn, min_edge_amount=0.0, limit=None)
+        donor_committee_rows, donor_source = _get_donor_committee_rows(
+            conn,
+            min_edge_amount=0.0,
+            limit=None,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
     source = donor_source or _donor_flow_source(conn)
     states: dict[str, dict] = {}
@@ -2808,7 +2883,13 @@ def build_dashboard_full_snapshot(
     date_from = (params.get("date_from") or "").strip() or None
     date_to = (params.get("date_to") or "").strip() or None
 
-    donor_rows, donor_source = _get_donor_committee_rows(conn, min_edge_amount=0.0, limit=None)
+    donor_rows, donor_source = _get_donor_committee_rows(
+        conn,
+        min_edge_amount=0.0,
+        limit=None,
+        date_from=date_from,
+        date_to=date_to,
+    )
     concentration_window = max(concentration_limit, 5000)
     concentration_all = get_donor_concentration(
         conn,
@@ -2823,6 +2904,8 @@ def build_dashboard_full_snapshot(
             limit=network_limit,
             donor_committee_rows=donor_rows,
             donor_source=donor_source,
+            date_from=date_from,
+            date_to=date_to,
         ),
         "anomalies": get_anomaly_flags(
             conn,
@@ -2844,6 +2927,8 @@ def build_dashboard_full_snapshot(
             limit_cities=geo_city_limit,
             donor_committee_rows=donor_rows,
             donor_source=donor_source,
+            date_from=date_from,
+            date_to=date_to,
         ),
         "nlp_summary": get_nlp_spending_summary(conn, limit=nlp_limit),
         "reconciliation": get_reconciliation_outliers(
@@ -4087,10 +4172,17 @@ def get_lobbying_influence_graph(
     conn: sqlite3.Connection,
     client_limit: int = 120,
     edge_limit: int = 1500,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Build lobbying client/entity/donor/payee/committee influence graph."""
     client_limit = max(20, min(int(client_limit), 2000))
     edge_limit = max(50, min(int(edge_limit), 10000))
+    range_start, range_end = _normalize_date_range(date_from, date_to)
+    resolved_date_from = range_start.isoformat() if range_start else None
+    resolved_date_to = range_end.isoformat() if range_end else None
+    has_date_window = bool(resolved_date_from or resolved_date_to)
+    has_bulk_receipts_donor_key_columns = _bulk_receipts_has_donor_key_columns(conn)
     required = {
         "lobbying_clients": _table_exists(conn, "lobbying_clients"),
         "lobbying_entities": _table_exists(conn, "lobbying_entities"),
@@ -4102,6 +4194,9 @@ def get_lobbying_influence_graph(
             has_donor_matches=_table_exists(conn, "lobbying_donor_matches"),
             has_payee_matches=_table_exists(conn, "lobbying_expenditure_matches"),
             has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
+            window_applied=has_date_window,
+            date_from=resolved_date_from,
+            date_to=resolved_date_to,
         )
 
     client_rows = conn.execute(
@@ -4133,9 +4228,21 @@ def get_lobbying_influence_graph(
             has_payee_matches=_table_exists(conn, "lobbying_expenditure_matches"),
             has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
             client_pool_size=0,
+            window_applied=has_date_window,
+            date_from=resolved_date_from,
+            date_to=resolved_date_to,
         )
 
     client_placeholders = ",".join(["?"] * len(client_ids))
+    entity_year_filters: list[str] = []
+    entity_year_params: list[object] = []
+    if range_start is not None:
+        entity_year_filters.append("ec.reg_year >= ?")
+        entity_year_params.append(range_start.year)
+    if range_end is not None:
+        entity_year_filters.append("ec.reg_year <= ?")
+        entity_year_params.append(range_end.year)
+    entity_year_sql = f" AND {' AND '.join(entity_year_filters)}" if entity_year_filters else ""
     entity_rows = conn.execute(
         f"""
         SELECT
@@ -4146,10 +4253,11 @@ def get_lobbying_influence_graph(
         FROM lobbying_entity_clients ec
         JOIN lobbying_entities e ON e.entity_id = ec.entity_id
         WHERE ec.client_id IN ({client_placeholders})
+          {entity_year_sql}
         GROUP BY ec.client_id, ec.entity_id, e.entity_name
         ORDER BY reg_year_count DESC, e.entity_name ASC
         """,
-        client_ids,
+        [*client_ids, *entity_year_params],
     ).fetchall()
     entity_ids = sorted({row["entity_id"] for row in entity_rows})
 
@@ -4170,6 +4278,52 @@ def get_lobbying_influence_graph(
             """,
             [*client_ids, edge_limit * 2],
         ).fetchall()
+
+    donor_window_filtered = False
+    if has_date_window:
+        donor_window_filtered = True
+        if donor_match_rows and has_bulk_receipts_donor_key_columns:
+            donor_date_filters = ""
+            donor_date_params: list[object] = []
+            if resolved_date_from:
+                donor_date_filters += " AND DATE(r.received_date) >= DATE(?)"
+                donor_date_params.append(resolved_date_from)
+            if resolved_date_to:
+                donor_date_filters += " AND DATE(r.received_date) <= DATE(?)"
+                donor_date_params.append(resolved_date_to)
+            donor_activity_rows = conn.execute(
+                f"""
+                WITH matched_donors AS (
+                    SELECT DISTINCT donor_key
+                    FROM lobbying_donor_matches
+                    WHERE client_id IN ({client_placeholders})
+                )
+                SELECT
+                    {_bulk_donor_key_sql("r")} AS donor_key,
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS txn_count
+                FROM bulk_receipts_clean r
+                JOIN matched_donors md
+                  ON md.donor_key = {_bulk_donor_key_sql("r")}
+                WHERE COALESCE(r.amount, 0) > 0
+                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+                  {donor_date_filters}
+                GROUP BY {_bulk_donor_key_sql("r")}
+                """,
+                [*client_ids, *donor_date_params],
+            ).fetchall()
+            active_donor_keys = {
+                (row["donor_key"] or "").strip()
+                for row in donor_activity_rows
+                if (row["donor_key"] or "").strip()
+            }
+            donor_match_rows = [
+                row
+                for row in donor_match_rows
+                if (row["donor_key"] or "").strip() in active_donor_keys
+            ]
+        else:
+            donor_match_rows = []
 
     has_payee_matches = _table_exists(conn, "lobbying_expenditure_matches")
     expenditure_rows = []
@@ -4197,7 +4351,9 @@ def get_lobbying_influence_graph(
         expenditure_rows = conn.execute(query, params).fetchall()
 
     payee_committee_amounts: dict[tuple[str, str], dict[str, float | int]] = {}
+    payee_window_filtered = False
     if expenditure_rows and _table_exists(conn, "bulk_expenditures_clean"):
+        payee_window_filtered = has_date_window
         matched_pair_keys = {
             (str(row["committee_id_sbe"]), _normalize_name(row["payee_name"]))
             for row in expenditure_rows
@@ -4206,6 +4362,18 @@ def get_lobbying_influence_graph(
         committee_ids = sorted({pair[0] for pair in matched_pair_keys})
         if committee_ids:
             placeholders = ",".join(["?"] * len(committee_ids))
+            spend_date_filters = ""
+            spend_date_params: list[object] = []
+            has_expended_date = _column_exists(conn, "bulk_expenditures_clean", "expended_date")
+            if has_date_window and not has_expended_date:
+                expenditure_rows = []
+                committee_ids = []
+            if committee_ids and has_expended_date and resolved_date_from:
+                spend_date_filters += " AND DATE(expended_date) >= DATE(?)"
+                spend_date_params.append(resolved_date_from)
+            if committee_ids and has_expended_date and resolved_date_to:
+                spend_date_filters += " AND DATE(expended_date) <= DATE(?)"
+                spend_date_params.append(resolved_date_to)
             spend_rows = conn.execute(
                 f"""
                 SELECT
@@ -4218,9 +4386,10 @@ def get_lobbying_influence_graph(
                   AND CAST(committee_id_sbe AS TEXT) IN ({placeholders})
                   AND payee_last_or_business_name IS NOT NULL
                   AND TRIM(payee_last_or_business_name) != ''
+                  {spend_date_filters}
                 GROUP BY committee_id_sbe, payee_last_or_business_name
                 """,
-                committee_ids,
+                [*committee_ids, *spend_date_params],
             ).fetchall()
             for row in spend_rows:
                 key = (str(row["committee_id_sbe"]), _normalize_name(row["payee_name"]))
@@ -4230,11 +4399,77 @@ def get_lobbying_influence_graph(
                     "total_amount": float(row["total_amount"] or 0.0),
                     "txn_count": int(row["txn_count"] or 0),
                 }
+            if has_date_window:
+                expenditure_rows = [
+                    row
+                    for row in expenditure_rows
+                    if row["committee_id_sbe"] is not None
+                    and (row["payee_name"] or "").strip()
+                    and (
+                        str(row["committee_id_sbe"]),
+                        _normalize_name(row["payee_name"]),
+                    ) in payee_committee_amounts
+                ]
+    elif has_date_window:
+        payee_window_filtered = True
+        expenditure_rows = []
 
     donor_committee_rows = []
     donor_keys = sorted({(row["donor_key"] or "").strip() for row in donor_match_rows if row["donor_key"]})
     has_donor_committee_edges = _table_exists(conn, "analytics_donor_committee_agg")
-    if donor_keys and has_donor_committee_edges:
+    donor_committee_source_table = "analytics_donor_committee_agg"
+    if donor_keys and has_date_window and has_bulk_receipts_donor_key_columns:
+        donor_placeholders = ",".join(["?"] * len(donor_keys))
+        date_filters = ""
+        date_params: list[object] = []
+        if resolved_date_from:
+            date_filters += " AND DATE(r.received_date) >= DATE(?)"
+            date_params.append(resolved_date_from)
+        if resolved_date_to:
+            date_filters += " AND DATE(r.received_date) <= DATE(?)"
+            date_params.append(resolved_date_to)
+        has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
+        committee_join_sql = "LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe" if has_bulk_committees else ""
+        committee_id_expr = "COALESCE(c.committee_id_sbe, r.committee_id_sbe)" if has_bulk_committees else "r.committee_id_sbe"
+        committee_name_expr = "COALESCE(c.committee_name, 'Committee ' || r.committee_id_sbe)" if has_bulk_committees else "'Committee ' || r.committee_id_sbe"
+        donor_committee_rows = conn.execute(
+            f"""
+            WITH donor_committee AS (
+                SELECT
+                    {_bulk_donor_key_sql("r")} AS donor_key,
+                    {committee_id_expr} AS committee_id,
+                    {committee_name_expr} AS committee_name,
+                    COALESCE(SUM(r.amount), 0) AS total_amount
+                FROM bulk_receipts_clean r
+                {committee_join_sql}
+                WHERE COALESCE(r.amount, 0) > 0
+                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+                  AND {_bulk_donor_key_sql("r")} IN ({donor_placeholders})
+                  {date_filters}
+                GROUP BY {_bulk_donor_key_sql("r")}, {committee_id_expr}, {committee_name_expr}
+            ),
+            ranked AS (
+                SELECT
+                    donor_key,
+                    committee_id,
+                    committee_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY donor_key
+                        ORDER BY total_amount DESC, committee_name ASC
+                    ) AS rn
+                FROM donor_committee
+            )
+            SELECT donor_key, committee_id, committee_name, total_amount
+            FROM ranked
+            WHERE rn <= 5
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            [*donor_keys, *date_params, edge_limit * 2],
+        ).fetchall()
+        donor_committee_source_table = "bulk_receipts_clean"
+    elif donor_keys and has_donor_committee_edges:
         donor_placeholders = ",".join(["?"] * len(donor_keys))
         donor_committee_rows = conn.execute(
             f"""
@@ -4461,7 +4696,7 @@ def get_lobbying_influence_graph(
             extra={
                 **_edge_semantics(
                     "donor_committee_flow",
-                    source_table="analytics_donor_committee_agg",
+                    source_table=donor_committee_source_table,
                 ),
             },
         )
@@ -4488,6 +4723,12 @@ def get_lobbying_influence_graph(
             "has_payee_matches": has_payee_matches,
             "has_donor_committee_edges": has_donor_committee_edges,
             "client_pool_size": len(client_ids),
+            "window_applied": has_date_window,
+            "date_from": resolved_date_from,
+            "date_to": resolved_date_to,
+            "entity_year_filter_applied": bool(entity_year_filters),
+            "donor_window_filtered": donor_window_filtered,
+            "payee_window_filtered": payee_window_filtered,
             "edge_type_definitions": {
                 edge_type: _edge_semantics(edge_type)
                 for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})
@@ -4500,10 +4741,16 @@ def get_irs527_ecosystem_graph(
     conn: sqlite3.Connection,
     org_limit: int = 150,
     edge_limit: int = 1800,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Build 527 ecosystem graph across org/committee/recipient/director/donor links."""
     org_limit = max(20, min(int(org_limit), 2000))
     edge_limit = max(50, min(int(edge_limit), 10000))
+    range_start, range_end = _normalize_date_range(date_from, date_to)
+    resolved_date_from = range_start.isoformat() if range_start else None
+    resolved_date_to = range_end.isoformat() if range_end else None
+    has_date_window = bool(resolved_date_from or resolved_date_to)
 
     required = {"irs527_organizations": _table_exists(conn, "irs527_organizations")}
     if not required["irs527_organizations"]:
@@ -4513,38 +4760,102 @@ def get_irs527_ecosystem_graph(
             has_recipient_matches=_table_exists(conn, "irs527_expenditure_recipient_matches"),
             has_director_donor_matches=_table_exists(conn, "irs527_director_donor_matches"),
             has_donor_committee_edges=_table_exists(conn, "analytics_donor_committee_agg"),
+            window_applied=has_date_window,
+            date_from=resolved_date_from,
+            date_to=resolved_date_to,
         )
 
     has_committee_matches = _table_exists(conn, "irs527_committee_matches")
     has_recipient_matches = _table_exists(conn, "irs527_expenditure_recipient_matches")
     has_director_donor_matches = _table_exists(conn, "irs527_director_donor_matches")
+    has_irs527_expenditures = _table_exists(conn, "irs527_expenditures")
+    has_irs527_contributions = _table_exists(conn, "irs527_contributions")
+    has_bulk_receipts_donor_key_columns = _bulk_receipts_has_donor_key_columns(conn)
+
+    active_ein_sql_parts: list[str] = []
+    active_ein_params: list[object] = []
+    if has_date_window and has_irs527_expenditures:
+        filters = ["ein IS NOT NULL", "TRIM(ein) != ''", "date IS NOT NULL", "TRIM(date) != ''"]
+        params: list[object] = []
+        if resolved_date_from:
+            filters.append("DATE(date) >= DATE(?)")
+            params.append(resolved_date_from)
+        if resolved_date_to:
+            filters.append("DATE(date) <= DATE(?)")
+            params.append(resolved_date_to)
+        active_ein_sql_parts.append(f"SELECT DISTINCT ein FROM irs527_expenditures WHERE {' AND '.join(filters)}")
+        active_ein_params.extend(params)
+    if has_date_window and has_irs527_contributions:
+        filters = ["ein IS NOT NULL", "TRIM(ein) != ''", "date IS NOT NULL", "TRIM(date) != ''"]
+        params = []
+        if resolved_date_from:
+            filters.append("DATE(date) >= DATE(?)")
+            params.append(resolved_date_from)
+        if resolved_date_to:
+            filters.append("DATE(date) <= DATE(?)")
+            params.append(resolved_date_to)
+        active_ein_sql_parts.append(f"SELECT DISTINCT ein FROM irs527_contributions WHERE {' AND '.join(filters)}")
+        active_ein_params.extend(params)
+    active_ein_sql = " UNION ".join(active_ein_sql_parts)
 
     committee_rows = []
     if has_committee_matches:
-        committee_rows = conn.execute(
-            """
-            SELECT ein, org_name, committee_id_sbe, committee_name, score
-            FROM irs527_committee_matches
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            (edge_limit * 2,),
-        ).fetchall()
+        if has_date_window and active_ein_sql:
+            committee_rows = conn.execute(
+                f"""
+                WITH active_eins AS (
+                    {active_ein_sql}
+                )
+                SELECT m.ein, m.org_name, m.committee_id_sbe, m.committee_name, m.score
+                FROM irs527_committee_matches m
+                JOIN active_eins a ON a.ein = m.ein
+                ORDER BY m.score DESC
+                LIMIT ?
+                """,
+                [*active_ein_params, edge_limit * 2],
+            ).fetchall()
+        elif not has_date_window:
+            committee_rows = conn.execute(
+                """
+                SELECT ein, org_name, committee_id_sbe, committee_name, score
+                FROM irs527_committee_matches
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (edge_limit * 2,),
+            ).fetchall()
 
     recipient_rows = []
     if has_recipient_matches:
-        recipient_rows = conn.execute(
-            """
-            SELECT ein, org_name, recipient_name, matched_type, matched_id, matched_name, score
-            FROM irs527_expenditure_recipient_matches
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            (edge_limit * 2,),
-        ).fetchall()
+        if has_date_window and active_ein_sql:
+            recipient_rows = conn.execute(
+                f"""
+                WITH active_eins AS (
+                    {active_ein_sql}
+                )
+                SELECT m.ein, m.org_name, m.recipient_name, m.matched_type, m.matched_id, m.matched_name, m.score
+                FROM irs527_expenditure_recipient_matches m
+                JOIN active_eins a ON a.ein = m.ein
+                ORDER BY m.score DESC
+                LIMIT ?
+                """,
+                [*active_ein_params, edge_limit * 2],
+            ).fetchall()
+        elif not has_date_window:
+            recipient_rows = conn.execute(
+                """
+                SELECT ein, org_name, recipient_name, matched_type, matched_id, matched_name, score
+                FROM irs527_expenditure_recipient_matches
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (edge_limit * 2,),
+            ).fetchall()
 
     recipient_amounts: dict[tuple[str, str], dict[str, float | int]] = {}
-    if recipient_rows and _table_exists(conn, "irs527_expenditures"):
+    recipient_window_filtered = False
+    if recipient_rows and has_irs527_expenditures:
+        recipient_window_filtered = has_date_window
         recipient_keys = {
             ((row["ein"] or "").strip(), _normalize_name(row["recipient_name"]))
             for row in recipient_rows
@@ -4553,6 +4864,14 @@ def get_irs527_ecosystem_graph(
         keep_ein_keys = sorted({ein for ein, _ in recipient_keys if ein})
         if keep_ein_keys:
             placeholders = ",".join(["?"] * len(keep_ein_keys))
+            recipient_date_filters = ""
+            recipient_date_params: list[object] = []
+            if resolved_date_from:
+                recipient_date_filters += " AND DATE(date) >= DATE(?)"
+                recipient_date_params.append(resolved_date_from)
+            if resolved_date_to:
+                recipient_date_filters += " AND DATE(date) <= DATE(?)"
+                recipient_date_params.append(resolved_date_to)
             amount_rows = conn.execute(
                 f"""
                 SELECT
@@ -4565,9 +4884,10 @@ def get_irs527_ecosystem_graph(
                   AND COALESCE(amount, 0) > 0
                   AND recipient_name IS NOT NULL
                   AND TRIM(recipient_name) != ''
+                  {recipient_date_filters}
                 GROUP BY ein, recipient_name
                 """,
-                keep_ein_keys,
+                [*keep_ein_keys, *recipient_date_params],
             ).fetchall()
             for row in amount_rows:
                 key = ((row["ein"] or "").strip(), _normalize_name(row["recipient_name"]))
@@ -4577,18 +4897,45 @@ def get_irs527_ecosystem_graph(
                     "total_amount": float(row["total_amount"] or 0.0),
                     "txn_count": int(row["txn_count"] or 0),
                 }
+            if has_date_window:
+                recipient_rows = [
+                    row
+                    for row in recipient_rows
+                    if (
+                        (row["ein"] or "").strip(),
+                        _normalize_name(row["recipient_name"]),
+                    ) in recipient_amounts
+                ]
+    elif has_date_window:
+        recipient_window_filtered = True
+        recipient_rows = []
 
     director_rows = []
     if has_director_donor_matches:
-        director_rows = conn.execute(
-            """
-            SELECT ein, org_name, director_name, donor_key, donor_name, score
-            FROM irs527_director_donor_matches
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            (edge_limit * 2,),
-        ).fetchall()
+        if has_date_window and active_ein_sql:
+            director_rows = conn.execute(
+                f"""
+                WITH active_eins AS (
+                    {active_ein_sql}
+                )
+                SELECT m.ein, m.org_name, m.director_name, m.donor_key, m.donor_name, m.score
+                FROM irs527_director_donor_matches m
+                JOIN active_eins a ON a.ein = m.ein
+                ORDER BY m.score DESC
+                LIMIT ?
+                """,
+                [*active_ein_params, edge_limit * 2],
+            ).fetchall()
+        elif not has_date_window:
+            director_rows = conn.execute(
+                """
+                SELECT ein, org_name, director_name, donor_key, donor_name, score
+                FROM irs527_director_donor_matches
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (edge_limit * 2,),
+            ).fetchall()
 
     org_scores: dict[str, float] = defaultdict(float)
     for row in committee_rows:
@@ -4601,16 +4948,32 @@ def get_irs527_ecosystem_graph(
     ranked_orgs = sorted(org_scores.items(), key=lambda item: item[1], reverse=True)[:org_limit]
     keep_eins = {ein for ein, _score in ranked_orgs if ein}
     if not keep_eins:
-        org_rows = conn.execute(
-            """
-            SELECT ein, MAX(org_name) AS org_name
-            FROM irs527_organizations
-            GROUP BY ein
-            ORDER BY org_name ASC
-            LIMIT ?
-            """,
-            (org_limit,),
-        ).fetchall()
+        if has_date_window and active_ein_sql:
+            org_rows = conn.execute(
+                f"""
+                WITH active_eins AS (
+                    {active_ein_sql}
+                )
+                SELECT o.ein, MAX(o.org_name) AS org_name
+                FROM irs527_organizations o
+                JOIN active_eins a ON a.ein = o.ein
+                GROUP BY o.ein
+                ORDER BY org_name ASC
+                LIMIT ?
+                """,
+                [*active_ein_params, org_limit],
+            ).fetchall()
+        else:
+            org_rows = conn.execute(
+                """
+                SELECT ein, MAX(org_name) AS org_name
+                FROM irs527_organizations
+                GROUP BY ein
+                ORDER BY org_name ASC
+                LIMIT ?
+                """,
+                (org_limit,),
+            ).fetchall()
         keep_eins = {(row["ein"] or "").strip() for row in org_rows if row["ein"]}
 
     committee_rows = [row for row in committee_rows if (row["ein"] or "").strip() in keep_eins]
@@ -4809,8 +5172,61 @@ def get_irs527_ecosystem_graph(
             )
             donor_keys.add(donor_key)
 
+    donor_committee_rows = []
     has_donor_committee_edges = _table_exists(conn, "analytics_donor_committee_agg")
-    if donor_keys and has_donor_committee_edges:
+    donor_committee_source_table = "analytics_donor_committee_agg"
+    if donor_keys and has_date_window and has_bulk_receipts_donor_key_columns:
+        donor_placeholders = ",".join(["?"] * len(donor_keys))
+        date_filters = ""
+        date_params: list[object] = []
+        if resolved_date_from:
+            date_filters += " AND DATE(r.received_date) >= DATE(?)"
+            date_params.append(resolved_date_from)
+        if resolved_date_to:
+            date_filters += " AND DATE(r.received_date) <= DATE(?)"
+            date_params.append(resolved_date_to)
+        has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
+        committee_join_sql = "LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe" if has_bulk_committees else ""
+        committee_id_expr = "COALESCE(c.committee_id_sbe, r.committee_id_sbe)" if has_bulk_committees else "r.committee_id_sbe"
+        committee_name_expr = "COALESCE(c.committee_name, 'Committee ' || r.committee_id_sbe)" if has_bulk_committees else "'Committee ' || r.committee_id_sbe"
+        donor_committee_rows = conn.execute(
+            f"""
+            WITH donor_committee AS (
+                SELECT
+                    {_bulk_donor_key_sql("r")} AS donor_key,
+                    {committee_id_expr} AS committee_id,
+                    {committee_name_expr} AS committee_name,
+                    COALESCE(SUM(r.amount), 0) AS total_amount
+                FROM bulk_receipts_clean r
+                {committee_join_sql}
+                WHERE COALESCE(r.amount, 0) > 0
+                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+                  AND {_bulk_donor_key_sql("r")} IN ({donor_placeholders})
+                  {date_filters}
+                GROUP BY {_bulk_donor_key_sql("r")}, {committee_id_expr}, {committee_name_expr}
+            ),
+            ranked AS (
+                SELECT
+                    donor_key,
+                    committee_id,
+                    committee_name,
+                    total_amount,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY donor_key
+                        ORDER BY total_amount DESC, committee_name ASC
+                    ) AS rn
+                FROM donor_committee
+            )
+            SELECT donor_key, committee_id, committee_name, total_amount
+            FROM ranked
+            WHERE rn <= 4
+            ORDER BY total_amount DESC
+            LIMIT ?
+            """,
+            [*sorted(donor_keys), *date_params, edge_limit * 2],
+        ).fetchall()
+        donor_committee_source_table = "bulk_receipts_clean"
+    elif donor_keys and has_donor_committee_edges:
         donor_placeholders = ",".join(["?"] * len(donor_keys))
         donor_committee_rows = conn.execute(
             f"""
@@ -4836,30 +5252,31 @@ def get_irs527_ecosystem_graph(
             """,
             [*sorted(donor_keys), edge_limit * 2],
         ).fetchall()
-        for row in donor_committee_rows:
-            donor_key = (row["donor_key"] or "").strip()
-            committee_id = row["committee_id"]
-            if not donor_key or committee_id is None:
-                continue
-            donor_node = f"donor:{donor_key}"
-            committee_node = f"committee:{committee_id}"
-            donor_label = nodes.get(donor_node, {}).get("label") or donor_key
-            committee_label = row["committee_name"] or f"Committee {committee_id}"
-            add_node(committee_node, committee_label, "committee")
-            add_edge(
-                donor_node,
-                committee_node,
-                "donor_committee_flow",
-                float(row["total_amount"] or 0.0),
-                donor_label,
-                committee_label,
-                extra={
-                    **_edge_semantics(
-                        "donor_committee_flow",
-                        source_table="analytics_donor_committee_agg",
-                    ),
-                },
-            )
+
+    for row in donor_committee_rows:
+        donor_key = (row["donor_key"] or "").strip()
+        committee_id = row["committee_id"]
+        if not donor_key or committee_id is None:
+            continue
+        donor_node = f"donor:{donor_key}"
+        committee_node = f"committee:{committee_id}"
+        donor_label = nodes.get(donor_node, {}).get("label") or donor_key
+        committee_label = row["committee_name"] or f"Committee {committee_id}"
+        add_node(committee_node, committee_label, "committee")
+        add_edge(
+            donor_node,
+            committee_node,
+            "donor_committee_flow",
+            float(row["total_amount"] or 0.0),
+            donor_label,
+            committee_label,
+            extra={
+                **_edge_semantics(
+                    "donor_committee_flow",
+                    source_table=donor_committee_source_table,
+                ),
+            },
+        )
 
     edges = sorted(
         edge_map.values(),
@@ -4883,6 +5300,10 @@ def get_irs527_ecosystem_graph(
             "has_director_donor_matches": has_director_donor_matches,
             "has_donor_committee_edges": has_donor_committee_edges,
             "org_pool_size": len(keep_eins),
+            "window_applied": has_date_window,
+            "date_from": resolved_date_from,
+            "date_to": resolved_date_to,
+            "recipient_window_filtered": recipient_window_filtered,
             "edge_type_definitions": {
                 edge_type: _edge_semantics(edge_type)
                 for edge_type in sorted({edge["edge_type"] for edge in edges if edge.get("edge_type")})

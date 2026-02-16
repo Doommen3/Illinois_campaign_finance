@@ -1,6 +1,8 @@
 """Global time period filter for site-wide date range control."""
 
-from datetime import date, timedelta
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
 from flask import request
 
 
@@ -11,7 +13,6 @@ TIME_PERIODS = [
     ("2024cycle", "2024 Cycle", "Jan 2023 – Dec 2024"),
     ("1y", "Past Year", "Last 12 months"),
     ("2y", "Past 2 Years", "Last 24 months"),
-    ("5y", "Past 5 Years", "Last 60 months"),
     ("all", "All Time", "Earliest available data"),
 ]
 
@@ -35,9 +36,6 @@ def get_period_dates(period_key: str) -> tuple[str | None, str | None]:
         return (start.isoformat(), today.isoformat())
     elif period_key == "2y":
         start = today - timedelta(days=730)
-        return (start.isoformat(), today.isoformat())
-    elif period_key == "5y":
-        start = today - timedelta(days=1826)
         return (start.isoformat(), today.isoformat())
     else:  # "all" or unknown
         return (None, None)
@@ -118,3 +116,92 @@ def period_qmark_clause(date_column: str, period: dict, prefix: str = "AND") -> 
     if not parts:
         return ("", [])
     return (f" {prefix} " + " AND ".join(parts), params)
+
+
+def period_qmark_date_clause(
+    date_column: str,
+    period: dict,
+    prefix: str = "AND",
+) -> tuple[str, list]:
+    """Like period_qmark_clause(), but compares using DATE(column) semantics."""
+    return period_qmark_clause(f"DATE({date_column})", period, prefix=prefix)
+
+
+def period_to_date_window(
+    period: dict,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve date_from/date_to, preferring explicit query values over period defaults."""
+    resolved_from = (date_from or "").strip() or None
+    resolved_to = (date_to or "").strip() or None
+    if not resolved_from:
+        resolved_from = period.get("start_date")
+    if not resolved_to:
+        resolved_to = period.get("end_date")
+    return resolved_from, resolved_to
+
+
+def period_cache_key(period: dict | None) -> str:
+    """Stable cache key token for the current global period."""
+    if not period:
+        return DEFAULT_PERIOD
+    key = (period.get("key") or DEFAULT_PERIOD).strip()
+    if not key:
+        key = DEFAULT_PERIOD
+    return key
+
+
+def default_cycle_for_today(today: date | None = None) -> int:
+    """Return the active federal cycle for a calendar date."""
+    current = today or date.today()
+    return current.year if current.year % 2 == 0 else current.year + 1
+
+
+def period_cycle(period: dict) -> int | None:
+    """Derive the primary federal cycle from a selected global period."""
+    key = (period.get("key") or "").strip()
+    if key == "2026cycle":
+        return 2026
+    if key == "2024cycle":
+        return 2024
+    if key == "all":
+        return None
+    return default_cycle_for_today()
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def period_cycles(period: dict) -> tuple[int, ...] | None:
+    """Return overlapping federal cycles for the selected period, or None for all cycles."""
+    key = (period.get("key") or "").strip()
+    if key == "all":
+        return None
+    start = _parse_iso_date(period.get("start_date"))
+    end = _parse_iso_date(period.get("end_date"))
+    if not start and not end:
+        cycle = period_cycle(period)
+        return (cycle,) if cycle is not None else None
+
+    if start is None:
+        start = end
+    if end is None:
+        end = start
+    if start is None or end is None:
+        cycle = period_cycle(period)
+        return (cycle,) if cycle is not None else None
+    if start > end:
+        start, end = end, start
+
+    cycle_values = set()
+    for year in range(start.year, end.year + 1):
+        cycle_values.add(year if year % 2 == 0 else year + 1)
+    return tuple(sorted(cycle_values))

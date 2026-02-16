@@ -5,6 +5,7 @@ from io import StringIO
 from flask import Blueprint, Response, current_app, render_template, request
 
 from database.models import D2ReceiptsRecon
+from webapp.utils.time_filter import get_active_period
 
 d2_receipts_recon_bp = Blueprint("d2_receipts_recon", __name__)
 
@@ -33,6 +34,9 @@ def _parse_int(value: str) -> int | None:
 def list_d2_receipts_recon():
     """List D2 rows with itemized receipt reconciliation metrics."""
     conn = current_app.get_database()
+    period = get_active_period()
+    period_start = period.get("start_date")
+    period_end = period.get("end_date")
 
     page = max(request.args.get("page", 1, type=int), 1)
     per_page = 50
@@ -62,12 +66,16 @@ def list_d2_receipts_recon():
             search=query,
             min_abs_diff=min_abs_diff,
             min_receipt_rows=min_receipt_rows,
+            period_start=period_start,
+            period_end=period_end,
         )
         total = D2ReceiptsRecon.count(
             conn,
             search=query,
             min_abs_diff=min_abs_diff,
             min_receipt_rows=min_receipt_rows,
+            period_start=period_start,
+            period_end=period_end,
         )
         total_pages = (total + per_page - 1) // per_page
 
@@ -84,6 +92,8 @@ def list_d2_receipts_recon():
             search=query,
             min_abs_diff=min_abs_diff,
             min_receipt_rows=min_receipt_rows,
+            period_start=period_start,
+            period_end=period_end,
         )
 
         output = StringIO()

@@ -11,6 +11,50 @@ from .identifiers import make_source_identifier, normalize_source_url
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
+def _normalized_date_sql(column: str) -> str:
+    """Normalize mixed TEXT date values (ISO, timestamps, MM/DD/YYYY) to DATE."""
+    text_expr = f"TRIM(COALESCE(CAST({column} AS TEXT), ''))"
+    first_slash_expr = f"INSTR({text_expr}, '/')"
+    remainder_expr = f"SUBSTR({text_expr}, {first_slash_expr} + 1)"
+    second_slash_expr = f"INSTR({remainder_expr}, '/')"
+    month_expr = f"SUBSTR({text_expr}, 1, {first_slash_expr} - 1)"
+    day_expr = f"SUBSTR({remainder_expr}, 1, {second_slash_expr} - 1)"
+    year_expr = f"SUBSTR({remainder_expr}, {second_slash_expr} + 1, 4)"
+    return f"""(
+        CASE
+            WHEN {text_expr} = '' THEN NULL
+            WHEN {first_slash_expr} > 0 AND {second_slash_expr} > 0 THEN
+                DATE(
+                    PRINTF(
+                        '%04d-%02d-%02d',
+                        CAST({year_expr} AS INTEGER),
+                        CAST({month_expr} AS INTEGER),
+                        CAST({day_expr} AS INTEGER)
+                    )
+                )
+            ELSE DATE(SUBSTR({text_expr}, 1, 10))
+        END
+    )"""
+
+
+def _append_date_range_filters(
+    clauses: List[str],
+    params: List[object],
+    date_expr: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> None:
+    start = (date_from or "").strip()
+    if start:
+        clauses.append(f"{date_expr} >= DATE(?)")
+        params.append(start[:10])
+
+    end = (date_to or "").strip()
+    if end:
+        clauses.append(f"{date_expr} <= DATE(?)")
+        params.append(end[:10])
+
+
 @dataclass
 class Committee:
     """Represents a committee (candidate/organization filing reports)."""
@@ -182,6 +226,8 @@ class Committee:
         offset: int = 0,
         sort_by: str = "name",
         sort_dir: str = "asc",
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
     ) -> List["Committee"]:
         """Get all committees with pagination and sorting."""
         sort_map = {
@@ -191,6 +237,20 @@ class Committee:
         }
         sort_field = sort_map.get(sort_by, "c.name")
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+        where_clauses: List[str] = []
+        params: List[object] = []
+
+        tx_date_expr = _normalized_date_sql("ct.transaction_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        params.extend([limit, offset])
 
         cursor = conn.execute(
             f"""
@@ -199,32 +259,91 @@ class Committee:
             FROM committees c
             LEFT JOIN reports r ON r.committee_id = c.id
             LEFT JOIN contributions ct ON ct.report_id = r.id
+            {where_sql}
             GROUP BY c.id
             ORDER BY {sort_field} {direction}, c.id ASC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            params,
         )
         return [cls._from_row(row) for row in cursor.fetchall()]
 
     @classmethod
-    def count(cls, conn: sqlite3.Connection) -> int:
+    def count(
+        cls,
+        conn: sqlite3.Connection,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> int:
         """Get total count of committees."""
-        cursor = conn.execute("SELECT COUNT(*) as count FROM committees")
+        where_clauses: List[str] = []
+        params: List[object] = []
+        tx_date_expr = _normalized_date_sql("ct.transaction_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
+
+        if where_clauses:
+            cursor = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT c.id) as count
+                FROM committees c
+                JOIN reports r ON r.committee_id = c.id
+                JOIN contributions ct ON ct.report_id = r.id
+                WHERE {' AND '.join(where_clauses)}
+                """,
+                params,
+            )
+        else:
+            cursor = conn.execute("SELECT COUNT(*) as count FROM committees")
         return cursor.fetchone()["count"]
 
     @classmethod
-    def search(cls, conn: sqlite3.Connection, query: str, limit: int = 100) -> List["Committee"]:
+    def search(
+        cls,
+        conn: sqlite3.Connection,
+        query: str,
+        limit: int = 100,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> List["Committee"]:
         """Search committees by name."""
+        where_clauses: List[str] = ["c.name LIKE ?"]
+        params: List[object] = [f"%{query}%"]
+        tx_filter_clauses: List[str] = []
+        _append_date_range_filters(
+            tx_filter_clauses,
+            params,
+            _normalized_date_sql("ct.transaction_date"),
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
+        if tx_filter_clauses:
+            where_clauses.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                    FROM reports r
+                    JOIN contributions ct ON ct.report_id = r.id
+                    WHERE r.committee_id = c.id
+                      AND {' AND '.join(tx_filter_clauses)}
+                )
+                """
+            )
+        params.append(limit)
         cursor = conn.execute(
-            """
+            f"""
             SELECT id, name, committee_id_sbe, detail_url, source_identifier, created_at, updated_at
-            FROM committees
-            WHERE name LIKE ?
-            ORDER BY name
+            FROM committees c
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY c.name
             LIMIT ?
             """,
-            (f"%{query}%", limit),
+            params,
         )
         return [cls._from_row(row) for row in cursor.fetchall()]
 
@@ -432,6 +551,8 @@ class Report:
         limit: int = 100,
         offset: int = 0,
         paper_filed: Optional[bool] = None,
+        filed_date_from: Optional[str] = None,
+        filed_date_to: Optional[str] = None,
         sort_by: str = "filed_date",
         sort_dir: str = "desc",
     ) -> List["Report"]:
@@ -455,10 +576,22 @@ class Report:
             JOIN committees c ON r.committee_id = c.id
         """
         params: List[object] = []
+        where_clauses: List[str] = []
 
         if paper_filed is not None:
-            query += " WHERE r.is_paper_filed = ?"
+            where_clauses.append("r.is_paper_filed = ?")
             params.append(int(bool(paper_filed)))
+        report_date_expr = _normalized_date_sql("r.filed_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            report_date_expr,
+            date_from=filed_date_from,
+            date_to=filed_date_to,
+        )
+
+        if where_clauses:
+            query += f" WHERE {' AND '.join(where_clauses)}"
 
         query += f" ORDER BY {order_by} {direction}, r.id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -473,6 +606,8 @@ class Report:
         committee_id: int,
         limit: int = 100,
         offset: int = 0,
+        filed_date_from: Optional[str] = None,
+        filed_date_to: Optional[str] = None,
         sort_by: str = "filed_date",
         sort_dir: str = "desc",
     ) -> List["Report"]:
@@ -488,50 +623,114 @@ class Report:
         }
         order_by = sort_map.get(sort_by, "r.filed_date")
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+        where_clauses: List[str] = ["r.committee_id = ?"]
+        params: List[object] = [committee_id]
+        report_date_expr = _normalized_date_sql("r.filed_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            report_date_expr,
+            date_from=filed_date_from,
+            date_to=filed_date_to,
+        )
 
         cursor = conn.execute(
             f"""
             SELECT r.*, c.name as committee_name
             FROM reports r
             JOIN committees c ON r.committee_id = c.id
-            WHERE r.committee_id = ?
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY {order_by} {direction}, r.id DESC
             LIMIT ? OFFSET ?
             """,
-            (committee_id, limit, offset),
+            [*params, limit, offset],
         )
         return [cls._from_row(row) for row in cursor.fetchall()]
 
     @classmethod
-    def count(cls, conn: sqlite3.Connection, paper_filed: Optional[bool] = None) -> int:
+    def count(
+        cls,
+        conn: sqlite3.Connection,
+        paper_filed: Optional[bool] = None,
+        filed_date_from: Optional[str] = None,
+        filed_date_to: Optional[str] = None,
+    ) -> int:
         """Get total count of reports."""
+        where_clauses: List[str] = []
+        params: List[object] = []
         if paper_filed is not None:
+            where_clauses.append("is_paper_filed = ?")
+            params.append(int(bool(paper_filed)))
+        report_date_expr = _normalized_date_sql("filed_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            report_date_expr,
+            date_from=filed_date_from,
+            date_to=filed_date_to,
+        )
+
+        if where_clauses:
             cursor = conn.execute(
-                "SELECT COUNT(*) as count FROM reports WHERE is_paper_filed = ?",
-                (int(bool(paper_filed)),),
+                f"SELECT COUNT(*) as count FROM reports WHERE {' AND '.join(where_clauses)}",
+                params,
             )
         else:
             cursor = conn.execute("SELECT COUNT(*) as count FROM reports")
         return cursor.fetchone()["count"]
 
     @classmethod
-    def count_by_committee(cls, conn: sqlite3.Connection, committee_id: int) -> int:
+    def count_by_committee(
+        cls,
+        conn: sqlite3.Connection,
+        committee_id: int,
+        filed_date_from: Optional[str] = None,
+        filed_date_to: Optional[str] = None,
+    ) -> int:
         """Count reports for a committee."""
+        where_clauses: List[str] = ["committee_id = ?"]
+        params: List[object] = [committee_id]
+        report_date_expr = _normalized_date_sql("filed_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            report_date_expr,
+            date_from=filed_date_from,
+            date_to=filed_date_to,
+        )
         cursor = conn.execute(
-            "SELECT COUNT(*) as count FROM reports WHERE committee_id = ?",
-            (committee_id,),
+            f"SELECT COUNT(*) as count FROM reports WHERE {' AND '.join(where_clauses)}",
+            params,
         )
         return cursor.fetchone()["count"]
 
     @classmethod
-    def count_by_status(cls, conn: sqlite3.Connection) -> dict:
+    def count_by_status(
+        cls,
+        conn: sqlite3.Connection,
+        filed_date_from: Optional[str] = None,
+        filed_date_to: Optional[str] = None,
+    ) -> dict:
         """Get count of reports by scrape status."""
+        where_clauses: List[str] = []
+        params: List[object] = []
+        report_date_expr = _normalized_date_sql("filed_date")
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            report_date_expr,
+            date_from=filed_date_from,
+            date_to=filed_date_to,
+        )
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         cursor = conn.execute(
-            """
+            f"""
             SELECT scrape_status, COUNT(*) as count
             FROM reports
+            {where_sql}
             GROUP BY scrape_status
-            """
+            """,
+            params,
         )
         return {row["scrape_status"]: row["count"] for row in cursor.fetchall()}
 
@@ -576,6 +775,77 @@ class Donor:
             return False
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         return any(row["name"] == column_name for row in rows)
+
+    @classmethod
+    def _bulk_donor_key_sql(cls, alias: str = "r") -> str:
+        return (
+            f"LOWER(TRIM("
+            f"COALESCE({alias}.first_name, '') || '|' || COALESCE({alias}.last_or_business_name, '') || '|' || "
+            f"COALESCE({alias}.address_line_1, '') || '|' || COALESCE({alias}.address_line_2, '') || '|' || "
+            f"COALESCE({alias}.city, '') || '|' || COALESCE({alias}.state, '') || '|' || COALESCE({alias}.postal_code, '')"
+            f"))"
+        )
+
+    @classmethod
+    def _bulk_donor_name_sql(cls, alias: str = "r") -> str:
+        return (
+            "TRIM("
+            f"COALESCE({alias}.first_name, '')"
+            " || CASE "
+            f"WHEN COALESCE({alias}.first_name, '') <> '' AND COALESCE({alias}.last_or_business_name, '') <> '' "
+            "THEN ' ' ELSE '' END"
+            f" || COALESCE({alias}.last_or_business_name, '')"
+            ")"
+        )
+
+    @classmethod
+    def _bulk_donor_address_sql(cls, alias: str = "r") -> str:
+        return (
+            "TRIM("
+            f"COALESCE({alias}.address_line_1, '')"
+            " || CASE "
+            f"WHEN COALESCE({alias}.address_line_1, '') <> '' AND COALESCE({alias}.address_line_2, '') <> '' "
+            "THEN ', ' ELSE '' END"
+            f" || COALESCE({alias}.address_line_2, '')"
+            " || CASE "
+            f"WHEN (COALESCE({alias}.address_line_1, '') <> '' OR COALESCE({alias}.address_line_2, '') <> '') "
+            f" AND COALESCE({alias}.city, '') <> '' THEN ', ' ELSE '' END"
+            f" || COALESCE({alias}.city, '')"
+            " || CASE "
+            f"WHEN COALESCE({alias}.state, '') <> '' THEN ', ' ELSE '' END"
+            f" || COALESCE({alias}.state, '')"
+            " || CASE "
+            f"WHEN COALESCE({alias}.postal_code, '') <> '' THEN ' ' ELSE '' END"
+            f" || COALESCE({alias}.postal_code, '')"
+            ")"
+        )
+
+    @classmethod
+    def _bulk_receipts_has_donor_key_columns(cls, conn: sqlite3.Connection) -> bool:
+        required_columns = (
+            "first_name",
+            "last_or_business_name",
+            "address_line_1",
+            "address_line_2",
+            "city",
+            "state",
+            "postal_code",
+        )
+        return cls._table_exists(conn, "bulk_receipts_clean") and all(
+            cls._column_exists(conn, "bulk_receipts_clean", column_name)
+            for column_name in required_columns
+        )
+
+    @classmethod
+    def _bulk_receipts_base_filter_sql(cls, conn: sqlite3.Connection, alias: str = "r") -> str:
+        clauses = [f"COALESCE({alias}.amount, 0) > 0"]
+        if cls._column_exists(conn, "bulk_receipts_clean", "is_archived"):
+            clauses.append(f"COALESCE({alias}.is_archived, 0) = 0")
+        if cls._column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
+            clauses.append(
+                f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"
+            )
+        return " AND ".join(clauses)
 
     @classmethod
     def _bulk_materialization_is_current(cls, conn: sqlite3.Connection) -> bool:
@@ -766,9 +1036,155 @@ class Donor:
         offset: int = 0,
         sort_by: str = "total_amount",
         sort_dir: str = "desc",
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
     ) -> List["Donor"]:
         """Get all donors with aggregated contribution totals."""
         source = cls.get_directory_source(conn)
+        has_date_window = bool((transaction_date_from or "").strip() or (transaction_date_to or "").strip())
+        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+        if has_date_window:
+            if (
+                source == "bulk_receipts"
+                and cls._bulk_receipts_has_donor_key_columns(conn)
+            ):
+                donor_key_expr = cls._bulk_donor_key_sql("r")
+                donor_name_expr = cls._bulk_donor_name_sql("r")
+                donor_address_expr = cls._bulk_donor_address_sql("r")
+                sort_map = {
+                    "source": "source",
+                    "name": "donor_name",
+                    "address": "donor_address",
+                    "occupation": "occupation",
+                    "employer": "employer",
+                    "total_amount": "total_amount",
+                    "contribution_count": "contribution_count",
+                    "committee_count": "committee_count",
+                    "city": "donor_city",
+                    "state": "donor_state",
+                    "created_at": "total_amount",
+                }
+                order_by = sort_map.get(sort_by, "total_amount")
+                where_clauses: List[str] = [
+                    cls._bulk_receipts_base_filter_sql(conn, "r"),
+                    f"{donor_key_expr} <> ''",
+                ]
+                params: List[object] = []
+                _append_date_range_filters(
+                    where_clauses,
+                    params,
+                    _normalized_date_sql("r.received_date"),
+                    date_from=transaction_date_from,
+                    date_to=transaction_date_to,
+                )
+                params.extend([limit, offset])
+
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        'bulk_receipts' AS source,
+                        {donor_key_expr} AS donor_key,
+                        NULL AS local_donor_id,
+                        {donor_name_expr} AS donor_name,
+                        {donor_address_expr} AS donor_address,
+                        COALESCE(NULLIF(TRIM(r.city), ''), NULL) AS donor_city,
+                        COALESCE(NULLIF(TRIM(r.state), ''), NULL) AS donor_state,
+                        COALESCE(NULLIF(TRIM(r.occupation), ''), NULL) AS occupation,
+                        COALESCE(NULLIF(TRIM(r.employer), ''), NULL) AS employer,
+                        COALESCE(SUM(r.amount), 0) AS total_amount,
+                        COUNT(*) AS contribution_count,
+                        COUNT(DISTINCT r.committee_id_sbe) AS committee_count
+                    FROM bulk_receipts_clean r
+                    WHERE {' AND '.join(where_clauses)}
+                    GROUP BY donor_key, donor_name, donor_address, donor_city, donor_state, occupation, employer
+                    ORDER BY {order_by} {direction}, donor_name ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    params,
+                ).fetchall()
+
+                donors = []
+                for row in rows:
+                    donor = cls(
+                        id=None,
+                        name=row["donor_name"] or "Unknown Donor",
+                        address=row["donor_address"] or None,
+                        occupation=row["occupation"] or None,
+                        employer=row["employer"] or None,
+                        normalized_name="",
+                        normalized_address=None,
+                        created_at=None,
+                    )
+                    donor.total_amount = float(row["total_amount"] or 0.0)
+                    donor.contribution_count = int(row["contribution_count"] or 0)
+                    donor.committee_count = int(row["committee_count"] or 0)
+                    donor.donor_key = row["donor_key"] or None
+                    donor.donor_city = row["donor_city"] or None
+                    donor.donor_state = row["donor_state"] or None
+                    donor.source = "bulk_receipts"
+                    donors.append(donor)
+                return donors
+
+            if source != "bulk_receipts":
+                sort_map = {
+                    "name": "d.name",
+                    "address": "d.address",
+                    "occupation": "d.occupation",
+                    "employer": "d.employer",
+                    "total_amount": "total_amount",
+                    "contribution_count": "contribution_count",
+                    "committee_count": "committee_count",
+                    "created_at": "d.created_at",
+                }
+                order_by = sort_map.get(sort_by, "total_amount")
+                where_clauses: List[str] = []
+                params: List[object] = []
+                _append_date_range_filters(
+                    where_clauses,
+                    params,
+                    _normalized_date_sql("c.transaction_date"),
+                    date_from=transaction_date_from,
+                    date_to=transaction_date_to,
+                )
+                where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                params.extend([limit, offset])
+                cursor = conn.execute(
+                    f"""
+                    SELECT
+                        d.*,
+                        COALESCE(SUM(c.amount), 0) as total_amount,
+                        COUNT(c.id) as contribution_count,
+                        COUNT(DISTINCT r.committee_id) AS committee_count
+                    FROM donors d
+                    JOIN contributions c ON d.id = c.donor_id
+                    LEFT JOIN reports r ON r.id = c.report_id
+                    {where_sql}
+                    GROUP BY d.id
+                    ORDER BY {order_by} {direction}, d.id ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    params,
+                )
+                donors = []
+                for row in cursor.fetchall():
+                    donor = cls(
+                        id=row["id"],
+                        name=row["name"],
+                        address=row["address"],
+                        occupation=row["occupation"] if "occupation" in row.keys() else None,
+                        employer=row["employer"] if "employer" in row.keys() else None,
+                        normalized_name=row["normalized_name"],
+                        normalized_address=row["normalized_address"],
+                        created_at=row["created_at"],
+                    )
+                    donor.total_amount = row["total_amount"] or 0
+                    donor.contribution_count = row["contribution_count"] or 0
+                    donor.committee_count = row["committee_count"] or 0
+                    donor.source = source or "contributions"
+                    donors.append(donor)
+                return donors
+
         if source:
             if cls._local_entity_materialization_is_ready(conn, source):
                 # Keep entity mode fast by sorting on base entity columns only.
@@ -995,16 +1411,21 @@ class Donor:
             "employer": "d.employer",
             "total_amount": "total_amount",
             "contribution_count": "contribution_count",
+            "committee_count": "committee_count",
             "created_at": "d.created_at",
         }
         order_by = sort_map.get(sort_by, "total_amount")
-        direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
 
         cursor = conn.execute(
             f"""
-            SELECT d.*, COALESCE(SUM(c.amount), 0) as total_amount, COUNT(c.id) as contribution_count
+            SELECT
+                d.*,
+                COALESCE(SUM(c.amount), 0) as total_amount,
+                COUNT(c.id) as contribution_count,
+                COUNT(DISTINCT r.committee_id) AS committee_count
             FROM donors d
             LEFT JOIN contributions c ON d.id = c.donor_id
+            LEFT JOIN reports r ON r.id = c.report_id
             GROUP BY d.id
             ORDER BY {order_by} {direction}, d.id ASC
             LIMIT ? OFFSET ?
@@ -1025,13 +1446,79 @@ class Donor:
             )
             donor.total_amount = row["total_amount"] or 0
             donor.contribution_count = row["contribution_count"] or 0
+            donor.committee_count = row["committee_count"] or 0
             donors.append(donor)
         return donors
 
     @classmethod
-    def count(cls, conn: sqlite3.Connection) -> int:
+    def count(
+        cls,
+        conn: sqlite3.Connection,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> int:
         """Get total count of donors."""
         source = cls.get_directory_source(conn)
+        has_date_window = bool((transaction_date_from or "").strip() or (transaction_date_to or "").strip())
+
+        if has_date_window:
+            if (
+                source == "bulk_receipts"
+                and cls._bulk_receipts_has_donor_key_columns(conn)
+            ):
+                donor_key_expr = cls._bulk_donor_key_sql("r")
+                where_clauses: List[str] = [
+                    cls._bulk_receipts_base_filter_sql(conn, "r"),
+                    f"{donor_key_expr} <> ''",
+                ]
+                params: List[object] = []
+                _append_date_range_filters(
+                    where_clauses,
+                    params,
+                    _normalized_date_sql("r.received_date"),
+                    date_from=transaction_date_from,
+                    date_to=transaction_date_to,
+                )
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) as count
+                    FROM (
+                        SELECT {donor_key_expr} AS donor_key
+                        FROM bulk_receipts_clean r
+                        WHERE {' AND '.join(where_clauses)}
+                        GROUP BY donor_key
+                    )
+                    """,
+                    params,
+                ).fetchone()
+                return int(row["count"] or 0) if row else 0
+
+            if source != "bulk_receipts":
+                where_clauses: List[str] = []
+                params: List[object] = []
+                _append_date_range_filters(
+                    where_clauses,
+                    params,
+                    _normalized_date_sql("c.transaction_date"),
+                    date_from=transaction_date_from,
+                    date_to=transaction_date_to,
+                )
+                where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) as count
+                    FROM (
+                        SELECT d.id
+                        FROM donors d
+                        JOIN contributions c ON d.id = c.donor_id
+                        {where_sql}
+                        GROUP BY d.id
+                    )
+                    """,
+                    params,
+                ).fetchone()
+                return int(row["count"] or 0) if row else 0
+
         if source:
             if cls._local_entity_materialization_is_ready(conn, source):
                 cursor = conn.execute(
@@ -1058,19 +1545,36 @@ class Donor:
         return cursor.fetchone()["count"]
 
     @classmethod
-    def search(cls, conn: sqlite3.Connection, query: str, limit: int = 100) -> List["Donor"]:
+    def search(
+        cls,
+        conn: sqlite3.Connection,
+        query: str,
+        limit: int = 100,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> List["Donor"]:
         """Search donors by name."""
+        where_clauses: List[str] = ["(d.name LIKE ? OR d.normalized_name LIKE ?)"]
+        params: List[object] = [f"%{query}%", f"%{query}%"]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            _normalized_date_sql("c.transaction_date"),
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
+        params.append(limit)
         cursor = conn.execute(
-            """
+            f"""
             SELECT d.*, SUM(c.amount) as total_amount, COUNT(c.id) as contribution_count
             FROM donors d
             LEFT JOIN contributions c ON d.id = c.donor_id
-            WHERE d.name LIKE ? OR d.normalized_name LIKE ?
+            WHERE {' AND '.join(where_clauses)}
             GROUP BY d.id
             ORDER BY total_amount DESC
             LIMIT ?
             """,
-            (f"%{query}%", f"%{query}%", limit),
+            params,
         )
         donors = []
         for row in cursor.fetchall():
@@ -1095,9 +1599,80 @@ class Donor:
         conn: sqlite3.Connection,
         donor_key: str,
         source: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> Optional["Donor"]:
         """Get donor summary row by stable donor key."""
-        if not donor_key or not cls._table_exists(conn, "analytics_donor_summary"):
+        if not donor_key:
+            return None
+
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        resolved_source = source or cls.get_directory_source(conn) or "bulk_receipts"
+        if (
+            has_date_window
+            and resolved_source == "bulk_receipts"
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            donor_name_expr = cls._bulk_donor_name_sql("r")
+            donor_address_expr = cls._bulk_donor_address_sql("r")
+            where_clauses: List[str] = [
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+                f"{donor_key_expr} = ?",
+            ]
+            params: List[object] = [donor_key]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            row = conn.execute(
+                f"""
+                SELECT
+                    'bulk_receipts' AS source,
+                    {donor_key_expr} AS donor_key,
+                    NULL AS local_donor_id,
+                    {donor_name_expr} AS donor_name,
+                    {donor_address_expr} AS donor_address,
+                    COALESCE(NULLIF(TRIM(r.city), ''), NULL) AS donor_city,
+                    COALESCE(NULLIF(TRIM(r.state), ''), NULL) AS donor_state,
+                    COALESCE(NULLIF(TRIM(r.occupation), ''), NULL) AS occupation,
+                    COALESCE(NULLIF(TRIM(r.employer), ''), NULL) AS employer,
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS contribution_count,
+                    COUNT(DISTINCT r.committee_id_sbe) AS committee_count
+                FROM bulk_receipts_clean r
+                WHERE {' AND '.join(where_clauses)}
+                GROUP BY donor_key, donor_name, donor_address, donor_city, donor_state, occupation, employer
+                ORDER BY total_amount DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row:
+                donor = cls(
+                    id=None,
+                    name=row["donor_name"] or "Unknown Donor",
+                    address=row["donor_address"],
+                    occupation=row["occupation"],
+                    employer=row["employer"],
+                    normalized_name="",
+                    normalized_address=None,
+                    created_at=None,
+                )
+                donor.total_amount = float(row["total_amount"] or 0.0)
+                donor.contribution_count = int(row["contribution_count"] or 0)
+                donor.committee_count = int(row["committee_count"] or 0)
+                donor.donor_key = row["donor_key"]
+                donor.donor_city = row["donor_city"]
+                donor.donor_state = row["donor_state"]
+                donor.source = row["source"]
+                return donor
+            return None
+
+        if not cls._table_exists(conn, "analytics_donor_summary"):
             return None
 
         row = None
@@ -1179,12 +1754,77 @@ class Donor:
         conn: sqlite3.Connection,
         donor_key: str,
         source: str,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
         sort_by: str = "amount",
         sort_dir: str = "desc",
     ) -> List[dict]:
         """Get committee-level totals for a donor key."""
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        if (
+            has_date_window
+            and donor_key
+            and source == "bulk_receipts"
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            sort_map = {
+                "committee": "committee_name",
+                "amount": "total_amount",
+                "contribution_count": "contribution_count",
+            }
+            order_by = sort_map.get(sort_by, "total_amount")
+            direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            committee_name_expr = (
+                "COALESCE(MAX(c.committee_name), 'Committee ' || r.committee_id_sbe)"
+                if cls._table_exists(conn, "bulk_committees_clean")
+                else "'Committee ' || r.committee_id_sbe"
+            )
+            join_sql = (
+                "LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe"
+                if cls._table_exists(conn, "bulk_committees_clean")
+                else ""
+            )
+            where_clauses: List[str] = [
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+                f"{donor_key_expr} = ?",
+            ]
+            params: List[object] = [donor_key]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            rows = conn.execute(
+                f"""
+                SELECT
+                    CAST(r.committee_id_sbe AS TEXT) AS committee_id,
+                    {committee_name_expr} AS committee_name,
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS contribution_count
+                FROM bulk_receipts_clean r
+                {join_sql}
+                WHERE {' AND '.join(where_clauses)}
+                GROUP BY r.committee_id_sbe
+                ORDER BY {order_by} {direction}, committee_name ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+            return [
+                {
+                    "committee_id": row["committee_id"],
+                    "committee_name": row["committee_name"],
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "contribution_count": int(row["contribution_count"] or 0),
+                }
+                for row in rows
+            ]
+
         if (
             not donor_key
             or not source
@@ -1230,8 +1870,44 @@ class Donor:
         conn: sqlite3.Connection,
         donor_key: str,
         source: str,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
         """Count committee rows available for a donor key."""
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        if (
+            has_date_window
+            and donor_key
+            and source == "bulk_receipts"
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            where_clauses: List[str] = [
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+                f"{donor_key_expr} = ?",
+            ]
+            params: List[object] = [donor_key]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM (
+                    SELECT r.committee_id_sbe
+                    FROM bulk_receipts_clean r
+                    WHERE {' AND '.join(where_clauses)}
+                    GROUP BY r.committee_id_sbe
+                )
+                """,
+                params,
+            ).fetchone()
+            return int(row["count"] or 0) if row else 0
+
         if (
             not donor_key
             or not source
@@ -1255,6 +1931,8 @@ class Donor:
         conn: sqlite3.Connection,
         entity_id: str,
         source: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> Optional["Donor"]:
         """Get donor summary row by local donor entity id."""
         if (
@@ -1342,6 +2020,44 @@ class Donor:
         donor.entity_confidence_score = (
             float(row["confidence_score"]) if row["confidence_score"] is not None else None
         )
+
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        if (
+            has_date_window
+            and donor.source == "bulk_receipts"
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            where_clauses: List[str] = [
+                "m.source = ?",
+                "m.entity_id = ?",
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+            ]
+            params: List[object] = [donor.source, donor.entity_id or entity_id]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            agg_row = conn.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS contribution_count,
+                    COUNT(DISTINCT r.committee_id_sbe) AS committee_count
+                FROM donor_entity_local_member m
+                JOIN bulk_receipts_clean r
+                  ON {donor_key_expr} = m.donor_key
+                WHERE {' AND '.join(where_clauses)}
+                """,
+                params,
+            ).fetchone()
+            donor.total_amount = float(agg_row["total_amount"] or 0.0) if agg_row else 0.0
+            donor.contribution_count = int(agg_row["contribution_count"] or 0) if agg_row else 0
+            donor.committee_count = int(agg_row["committee_count"] or 0) if agg_row else 0
+
         return donor
 
     @classmethod
@@ -1350,12 +2066,81 @@ class Donor:
         conn: sqlite3.Connection,
         entity_id: str,
         source: str,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
         sort_by: str = "amount",
         sort_dir: str = "desc",
     ) -> List[dict]:
         """Get committee-level totals for a local donor entity."""
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        if (
+            has_date_window
+            and entity_id
+            and source == "bulk_receipts"
+            and cls._table_exists(conn, "donor_entity_local_member")
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            sort_map = {
+                "committee": "committee_name",
+                "amount": "total_amount",
+                "contribution_count": "contribution_count",
+            }
+            order_by = sort_map.get(sort_by, "total_amount")
+            direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            committee_name_expr = (
+                "COALESCE(MAX(c.committee_name), 'Committee ' || r.committee_id_sbe)"
+                if cls._table_exists(conn, "bulk_committees_clean")
+                else "'Committee ' || r.committee_id_sbe"
+            )
+            join_sql = (
+                "LEFT JOIN bulk_committees_clean c ON c.committee_id_sbe = r.committee_id_sbe"
+                if cls._table_exists(conn, "bulk_committees_clean")
+                else ""
+            )
+            where_clauses: List[str] = [
+                "m.source = ?",
+                "m.entity_id = ?",
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+            ]
+            params: List[object] = [source, entity_id]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            rows = conn.execute(
+                f"""
+                SELECT
+                    CAST(r.committee_id_sbe AS TEXT) AS committee_id,
+                    {committee_name_expr} AS committee_name,
+                    COALESCE(SUM(r.amount), 0) AS total_amount,
+                    COUNT(*) AS contribution_count
+                FROM donor_entity_local_member m
+                JOIN bulk_receipts_clean r
+                  ON {donor_key_expr} = m.donor_key
+                {join_sql}
+                WHERE {' AND '.join(where_clauses)}
+                GROUP BY r.committee_id_sbe
+                ORDER BY {order_by} {direction}, committee_name ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+            return [
+                {
+                    "committee_id": row["committee_id"],
+                    "committee_name": row["committee_name"],
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "contribution_count": int(row["contribution_count"] or 0),
+                }
+                for row in rows
+            ]
+
         if (
             not entity_id
             or not source
@@ -1407,8 +2192,48 @@ class Donor:
         conn: sqlite3.Connection,
         entity_id: str,
         source: str,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
         """Count committee rows available for a donor entity."""
+        has_date_window = bool((date_from or "").strip() or (date_to or "").strip())
+        if (
+            has_date_window
+            and entity_id
+            and source == "bulk_receipts"
+            and cls._table_exists(conn, "donor_entity_local_member")
+            and cls._bulk_receipts_has_donor_key_columns(conn)
+        ):
+            donor_key_expr = cls._bulk_donor_key_sql("r")
+            where_clauses: List[str] = [
+                "m.source = ?",
+                "m.entity_id = ?",
+                cls._bulk_receipts_base_filter_sql(conn, "r"),
+            ]
+            params: List[object] = [source, entity_id]
+            _append_date_range_filters(
+                where_clauses,
+                params,
+                _normalized_date_sql("r.received_date"),
+                date_from=date_from,
+                date_to=date_to,
+            )
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM (
+                    SELECT r.committee_id_sbe
+                    FROM donor_entity_local_member m
+                    JOIN bulk_receipts_clean r
+                      ON {donor_key_expr} = m.donor_key
+                    WHERE {' AND '.join(where_clauses)}
+                    GROUP BY r.committee_id_sbe
+                )
+                """,
+                params,
+            ).fetchone()
+            return int(row["count"] or 0) if row else 0
+
         if (
             not entity_id
             or not source
@@ -2153,18 +2978,31 @@ class Contribution:
         donor_id: int,
         limit: int = 100,
         offset: int = 0,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
         sort_by: str = "filed_date",
         sort_dir: str = "desc",
     ) -> List["Contribution"]:
         """Get contributions from a specific donor."""
+        tx_date_expr = _normalized_date_sql("c.transaction_date")
         sort_map = {
             "committee": "cm.name",
             "amount": "c.amount",
-            "filed_date": "r.filed_date",
+            "filed_date": tx_date_expr,
+            "transaction_date": tx_date_expr,
             "description": "c.description",
         }
-        order_by = sort_map.get(sort_by, "r.filed_date")
+        order_by = sort_map.get(sort_by, tx_date_expr)
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+        where_clauses: List[str] = ["c.donor_id = ?"]
+        params: List[object] = [donor_id]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
 
         cursor = conn.execute(
             f"""
@@ -2173,11 +3011,11 @@ class Contribution:
             JOIN donors d ON c.donor_id = d.id
             JOIN reports r ON c.report_id = r.id
             JOIN committees cm ON r.committee_id = cm.id
-            WHERE c.donor_id = ?
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY {order_by} {direction}, c.id DESC
             LIMIT ? OFFSET ?
             """,
-            (donor_id, limit, offset),
+            [*params, limit, offset],
         )
         return [cls._from_row(row) for row in cursor.fetchall()]
 
@@ -2188,18 +3026,31 @@ class Contribution:
         committee_id: int,
         limit: int = 100,
         offset: int = 0,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
         sort_by: str = "filed_date",
         sort_dir: str = "desc",
     ) -> List["Contribution"]:
         """Get contributions for a specific committee."""
+        tx_date_expr = _normalized_date_sql("c.transaction_date")
         sort_map = {
             "donor": "d.name",
             "amount": "c.amount",
-            "filed_date": "r.filed_date",
+            "filed_date": tx_date_expr,
+            "transaction_date": tx_date_expr,
             "description": "c.description",
         }
-        order_by = sort_map.get(sort_by, "r.filed_date")
+        order_by = sort_map.get(sort_by, tx_date_expr)
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+        where_clauses: List[str] = ["r.committee_id = ?"]
+        params: List[object] = [committee_id]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
 
         cursor = conn.execute(
             f"""
@@ -2207,11 +3058,11 @@ class Contribution:
             FROM contributions c
             JOIN donors d ON c.donor_id = d.id
             JOIN reports r ON c.report_id = r.id
-            WHERE r.committee_id = ?
+            WHERE {' AND '.join(where_clauses)}
             ORDER BY {order_by} {direction}, c.id DESC
             LIMIT ? OFFSET ?
             """,
-            (committee_id, limit, offset),
+            [*params, limit, offset],
         )
         return [cls._from_row(row) for row in cursor.fetchall()]
 
@@ -2228,27 +3079,84 @@ class Contribution:
         return cursor.fetchone()["total"]
 
     @classmethod
-    def total_by_committee(cls, conn: sqlite3.Connection, committee_id: int) -> float:
+    def total_by_committee(
+        cls,
+        conn: sqlite3.Connection,
+        committee_id: int,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> float:
         """Get total amount for a committee."""
+        tx_date_expr = _normalized_date_sql("c.transaction_date")
+        where_clauses: List[str] = ["r.committee_id = ?"]
+        params: List[object] = [committee_id]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
         cursor = conn.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(c.amount), 0) as total
             FROM contributions c
             JOIN reports r ON c.report_id = r.id
-            WHERE r.committee_id = ?
+            WHERE {' AND '.join(where_clauses)}
             """,
-            (committee_id,),
+            params,
         )
         return cursor.fetchone()["total"]
 
     @classmethod
-    def total_by_donor(cls, conn: sqlite3.Connection, donor_id: int) -> float:
+    def total_by_donor(
+        cls,
+        conn: sqlite3.Connection,
+        donor_id: int,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> float:
         """Get total amount from a donor."""
+        tx_date_expr = _normalized_date_sql("transaction_date")
+        where_clauses: List[str] = ["donor_id = ?"]
+        params: List[object] = [donor_id]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
         cursor = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) as total FROM contributions WHERE donor_id = ?",
-            (donor_id,),
+            f"SELECT COALESCE(SUM(amount), 0) as total FROM contributions WHERE {' AND '.join(where_clauses)}",
+            params,
         )
         return cursor.fetchone()["total"]
+
+    @classmethod
+    def count_by_donor(
+        cls,
+        conn: sqlite3.Connection,
+        donor_id: int,
+        transaction_date_from: Optional[str] = None,
+        transaction_date_to: Optional[str] = None,
+    ) -> int:
+        """Count contributions for a donor within an optional transaction-date window."""
+        tx_date_expr = _normalized_date_sql("transaction_date")
+        where_clauses: List[str] = ["donor_id = ?"]
+        params: List[object] = [donor_id]
+        _append_date_range_filters(
+            where_clauses,
+            params,
+            tx_date_expr,
+            date_from=transaction_date_from,
+            date_to=transaction_date_to,
+        )
+        cursor = conn.execute(
+            f"SELECT COUNT(*) as count FROM contributions WHERE {' AND '.join(where_clauses)}",
+            params,
+        )
+        return int(cursor.fetchone()["count"] or 0)
 
 
 @dataclass
@@ -2307,6 +3215,7 @@ class CandidateCommitteeFinanceAgg:
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
         start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -2367,6 +3276,29 @@ class CandidateCommitteeFinanceAgg:
                 )
                 params.append(start_date_term)
 
+        end_date_term = (end_date or "").strip()
+        if end_date_term:
+            if "period_end_date" in available_columns:
+                clauses.append("DATE(period_end_date) <= DATE(?)")
+                params.append(end_date_term)
+            elif "period_year" in available_columns and len(end_date_term) >= 4:
+                try:
+                    clauses.append("period_year <= ?")
+                    params.append(int(end_date_term[:4]))
+                except ValueError:
+                    pass
+            elif has_bulk_receipts_table:
+                clauses.append(
+                    """
+                    committee_id_sbe IN (
+                        SELECT DISTINCT committee_id_sbe
+                        FROM bulk_receipts_clean
+                        WHERE DATE(received_date) <= DATE(?)
+                    )
+                    """
+                )
+                params.append(end_date_term)
+
         if year is not None and "period_year" in available_columns:
             clauses.append("period_year = ?")
             params.append(int(year))
@@ -2396,6 +3328,7 @@ class CandidateCommitteeFinanceAgg:
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
         start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -2417,6 +3350,7 @@ class CandidateCommitteeFinanceAgg:
             candidate_party=candidate_party,
             committee_party=committee_party,
             start_date=start_date,
+            end_date=end_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -2440,6 +3374,7 @@ class CandidateCommitteeFinanceAgg:
         candidate_party: Optional[str] = None,
         committee_party: Optional[str] = None,
         start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         year: Optional[int] = None,
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
@@ -2506,6 +3441,7 @@ class CandidateCommitteeFinanceAgg:
             candidate_party=candidate_party,
             committee_party=committee_party,
             start_date=start_date,
+            end_date=end_date,
             year=year,
             cycle=cycle,
             min_receipts=min_receipts,
@@ -2668,6 +3604,8 @@ class CandidateCommitteeItemizedReceipt:
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
         archived: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
@@ -2702,6 +3640,16 @@ class CandidateCommitteeItemizedReceipt:
             clauses.append("COALESCE(r.amount, 0) <= ?")
             params.append(float(max_amount))
 
+        date_from_term = (date_from or "").strip()
+        if date_from_term:
+            clauses.append("DATE(r.received_date) >= DATE(?)")
+            params.append(date_from_term)
+
+        date_to_term = (date_to or "").strip()
+        if date_to_term:
+            clauses.append("DATE(r.received_date) <= DATE(?)")
+            params.append(date_to_term)
+
         archived_term = (archived or "no").strip().lower()
         if archived_term == "yes":
             clauses.append("COALESCE(r.is_archived, 0) = 1")
@@ -2723,6 +3671,8 @@ class CandidateCommitteeItemizedReceipt:
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
         archived: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
         if not cls.is_available(conn):
             return 0
@@ -2733,6 +3683,8 @@ class CandidateCommitteeItemizedReceipt:
             min_amount=min_amount,
             max_amount=max_amount,
             archived=archived,
+            date_from=date_from,
+            date_to=date_to,
         )
         row = conn.execute(
             f"""
@@ -2766,6 +3718,8 @@ class CandidateCommitteeItemizedReceipt:
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
         archived: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> List["CandidateCommitteeItemizedReceipt"]:
         if not cls.is_available(conn):
             return []
@@ -2793,6 +3747,8 @@ class CandidateCommitteeItemizedReceipt:
             min_amount=min_amount,
             max_amount=max_amount,
             archived=archived,
+            date_from=date_from,
+            date_to=date_to,
         )
 
         rows = conn.execute(
@@ -2988,6 +3944,8 @@ class CandidateCommitteeItemizedExpenditure:
         max_amount: Optional[float] = None,
         archived: str = "no",
         anomalies_only: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
@@ -3022,6 +3980,16 @@ class CandidateCommitteeItemizedExpenditure:
             clauses.append("COALESCE(e.amount, 0) <= ?")
             params.append(float(max_amount))
 
+        date_from_term = (date_from or "").strip()
+        if date_from_term:
+            clauses.append("DATE(e.expended_date) >= DATE(?)")
+            params.append(date_from_term)
+
+        date_to_term = (date_to or "").strip()
+        if date_to_term:
+            clauses.append("DATE(e.expended_date) <= DATE(?)")
+            params.append(date_to_term)
+
         archived_term = (archived or "no").strip().lower()
         if archived_term == "yes":
             clauses.append("COALESCE(e.is_archived, 0) = 1")
@@ -3048,6 +4016,8 @@ class CandidateCommitteeItemizedExpenditure:
         max_amount: Optional[float] = None,
         archived: str = "no",
         anomalies_only: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
         if not cls.is_available(conn):
             return 0
@@ -3059,6 +4029,8 @@ class CandidateCommitteeItemizedExpenditure:
             max_amount=max_amount,
             archived=archived,
             anomalies_only=anomalies_only,
+            date_from=date_from,
+            date_to=date_to,
         )
         row = conn.execute(
             f"""
@@ -3093,6 +4065,8 @@ class CandidateCommitteeItemizedExpenditure:
         max_amount: Optional[float] = None,
         archived: str = "no",
         anomalies_only: str = "no",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> List["CandidateCommitteeItemizedExpenditure"]:
         if not cls.is_available(conn):
             return []
@@ -3123,6 +4097,8 @@ class CandidateCommitteeItemizedExpenditure:
             max_amount=max_amount,
             archived=archived,
             anomalies_only=anomalies_only,
+            date_from=date_from,
+            date_to=date_to,
         )
 
         rows = conn.execute(
@@ -3248,6 +4224,9 @@ class D2ReceiptsRecon:
         search: Optional[str] = None,
         min_abs_diff: Optional[float] = None,
         min_receipt_rows: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        has_filed_docs_table: bool = False,
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
@@ -3278,6 +4257,35 @@ class D2ReceiptsRecon:
             )
             params.append(int(min_receipt_rows))
 
+        if has_filed_docs_table:
+            period_start_term = (period_start or "").strip()
+            if period_start_term:
+                clauses.append(
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM isbe_filed_docs fd
+                        WHERE fd.id = filed_doc_id
+                          AND DATE(fd.reporting_period_end) >= DATE(?)
+                    )
+                    """
+                )
+                params.append(period_start_term)
+
+            period_end_term = (period_end or "").strip()
+            if period_end_term:
+                clauses.append(
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM isbe_filed_docs fd
+                        WHERE fd.id = filed_doc_id
+                          AND DATE(fd.reporting_period_end) <= DATE(?)
+                    )
+                    """
+                )
+                params.append(period_end_term)
+
         if not clauses:
             return "", params
         return f" WHERE {' AND '.join(clauses)}", params
@@ -3289,14 +4297,22 @@ class D2ReceiptsRecon:
         search: Optional[str] = None,
         min_abs_diff: Optional[float] = None,
         min_receipt_rows: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
     ) -> int:
         if not cls._table_exists(conn):
             return 0
 
+        has_filed_docs_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'isbe_filed_docs'"
+        ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             search=search,
             min_abs_diff=min_abs_diff,
             min_receipt_rows=min_receipt_rows,
+            period_start=period_start,
+            period_end=period_end,
+            has_filed_docs_table=has_filed_docs_table,
         )
         row = conn.execute(
             f"SELECT COUNT(*) AS count FROM {cls.TABLE_NAME}{where_sql}",
@@ -3315,6 +4331,8 @@ class D2ReceiptsRecon:
         search: Optional[str] = None,
         min_abs_diff: Optional[float] = None,
         min_receipt_rows: Optional[int] = None,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
     ) -> List["D2ReceiptsRecon"]:
         if not cls._table_exists(conn):
             return []
@@ -3358,10 +4376,16 @@ class D2ReceiptsRecon:
                 receipts_minus_d2_total
             FROM {cls.TABLE_NAME}
         """
+        has_filed_docs_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'isbe_filed_docs'"
+        ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             search=search,
             min_abs_diff=min_abs_diff,
             min_receipt_rows=min_receipt_rows,
+            period_start=period_start,
+            period_end=period_end,
+            has_filed_docs_table=has_filed_docs_table,
         )
         query += where_sql
         query += f" ORDER BY {order_by} {direction}, committee_id_sbe ASC, filed_doc_id ASC LIMIT ? OFFSET ?"
@@ -3467,6 +4491,9 @@ class D2ExpendituresRecon:
         min_abs_diff: Optional[float] = None,
         min_expenditure_rows: Optional[int] = None,
         anomalies_only: str = "no",
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+        has_filed_docs_table: bool = False,
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
@@ -3497,6 +4524,35 @@ class D2ExpendituresRecon:
         if anomalies_term in {"yes", "true", "1"}:
             clauses.append("COALESCE(anomaly_row_count, 0) > 0")
 
+        if has_filed_docs_table:
+            period_start_term = (period_start or "").strip()
+            if period_start_term:
+                clauses.append(
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM isbe_filed_docs fd
+                        WHERE fd.id = filed_doc_id
+                          AND DATE(fd.reporting_period_end) >= DATE(?)
+                    )
+                    """
+                )
+                params.append(period_start_term)
+
+            period_end_term = (period_end or "").strip()
+            if period_end_term:
+                clauses.append(
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM isbe_filed_docs fd
+                        WHERE fd.id = filed_doc_id
+                          AND DATE(fd.reporting_period_end) <= DATE(?)
+                    )
+                    """
+                )
+                params.append(period_end_term)
+
         if not clauses:
             return "", params
         return f" WHERE {' AND '.join(clauses)}", params
@@ -3509,15 +4565,23 @@ class D2ExpendituresRecon:
         min_abs_diff: Optional[float] = None,
         min_expenditure_rows: Optional[int] = None,
         anomalies_only: str = "no",
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
     ) -> int:
         if not cls._table_exists(conn):
             return 0
 
+        has_filed_docs_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'isbe_filed_docs'"
+        ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             search=search,
             min_abs_diff=min_abs_diff,
             min_expenditure_rows=min_expenditure_rows,
             anomalies_only=anomalies_only,
+            period_start=period_start,
+            period_end=period_end,
+            has_filed_docs_table=has_filed_docs_table,
         )
         row = conn.execute(
             f"SELECT COUNT(*) AS count FROM {cls.TABLE_NAME}{where_sql}",
@@ -3537,6 +4601,8 @@ class D2ExpendituresRecon:
         min_abs_diff: Optional[float] = None,
         min_expenditure_rows: Optional[int] = None,
         anomalies_only: str = "no",
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
     ) -> List["D2ExpendituresRecon"]:
         if not cls._table_exists(conn):
             return []
@@ -3593,11 +4659,17 @@ class D2ExpendituresRecon:
                 part_9_minus_d2_independent_expenditures_itemized
             FROM {cls.TABLE_NAME}
         """
+        has_filed_docs_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'isbe_filed_docs'"
+        ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             search=search,
             min_abs_diff=min_abs_diff,
             min_expenditure_rows=min_expenditure_rows,
             anomalies_only=anomalies_only,
+            period_start=period_start,
+            period_end=period_end,
+            has_filed_docs_table=has_filed_docs_table,
         )
         query += where_sql
         query += f" ORDER BY {order_by} {direction}, committee_id_sbe ASC, filed_doc_id ASC LIMIT ? OFFSET ?"

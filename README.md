@@ -37,6 +37,8 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Web Application
 - Flask web UI with sortable/filterable tables, pagination, and CSV/JSON export
+- Global period filter propagation across legacy and modern pages (homepage, analytics, reports, committees, donors, and search categories)
+- Canonical date semantics for period filtering: report-driven views use `filed_date`; contribution-driven views use `transaction_date` (bulk-receipts fall back to `received_date` when transaction timestamps are unavailable)
 - Streamlined 3-group navigation (Explore, Analytics, Admin) with consolidated admin hub
 - Candidate/committee itemized inflow (receipts) and outflow (expenditures) drilldowns with CSV export
 - D2-vs-itemized reconciliation pages for both receipts and expenditures

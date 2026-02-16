@@ -2,6 +2,7 @@
 from flask import Blueprint, render_template, request, current_app, abort
 
 from database.models import Report, Contribution
+from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 reports_bp = Blueprint('reports', __name__)
 
@@ -10,6 +11,8 @@ reports_bp = Blueprint('reports', __name__)
 def list_reports():
     """List all reports."""
     conn = current_app.get_database()
+    period = get_active_period()
+    date_from, date_to = period_to_date_window(period)
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -32,14 +35,25 @@ def list_reports():
         limit=per_page,
         offset=offset,
         paper_filed=paper_filed,
+        filed_date_from=date_from,
+        filed_date_to=date_to,
         sort_by=sort_by,
         sort_dir=sort_dir
     )
-    total = Report.count(conn, paper_filed=paper_filed)
+    total = Report.count(
+        conn,
+        paper_filed=paper_filed,
+        filed_date_from=date_from,
+        filed_date_to=date_to,
+    )
     total_pages = (total + per_page - 1) // per_page
 
     # Get status counts
-    status_counts = Report.count_by_status(conn)
+    status_counts = Report.count_by_status(
+        conn,
+        filed_date_from=date_from,
+        filed_date_to=date_to,
+    )
 
     return render_template('reports/list.html',
                            reports=reports,
