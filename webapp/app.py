@@ -284,6 +284,11 @@ def create_app(config=None):
     if config:
         app.config.update(config)
 
+    # When TESTING with an explicit DATABASE_PATH, prefer it over DATABASE_URL
+    # so test fixtures use their own isolated SQLite database.
+    if app.config.get("TESTING") and config and "DATABASE_PATH" in config and "DATABASE_URL" not in config:
+        app.config["DATABASE_URL"] = ""
+
     resolved_database_target = (
         (app.config.get("DATABASE_URL") or "").strip()
         or (app.config.get("DATABASE_PATH") or "").strip()
