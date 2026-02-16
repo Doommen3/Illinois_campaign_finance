@@ -296,26 +296,29 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             """,
             (committee_id_sbe,),
         ).fetchall()
-        filing_history = [
-            {
+        filing_history = []
+        for row in filing_rows:
+            rdt = row["received_datetime"]
+            if rdt:
+                filed_date = rdt.strftime("%Y-%m-%d") if hasattr(rdt, "strftime") else str(rdt)[:10]
+            else:
+                filed_date = ""
+            filing_history.append({
                 "id": row["id"],
                 "doc_name": row["doc_name"] or "",
-                "received_datetime": row["received_datetime"] or "",
+                "received_datetime": str(rdt) if rdt else "",
+                "filed_date": filed_date,
                 "period_begin": row["reporting_period_begin"] or "",
                 "period_end": row["reporting_period_end"] or "",
-            }
-            for row in filing_rows
-        ]
+            })
         # Derive original founding date from earliest Statement of Organization
         d1_dates = [
-            f["received_datetime"]
+            f["filed_date"]
             for f in filing_history
-            if f["doc_name"] == "Statement of Organization" and f["received_datetime"]
+            if f["doc_name"] == "Statement of Organization" and f["filed_date"]
         ]
         if d1_dates:
-            founding_dt = min(d1_dates)
-            # Extract date portion (YYYY-MM-DD) from datetime string
-            founding_date = str(founding_dt)[:10]
+            founding_date = min(d1_dates)
             committee_meta["founding_date"] = founding_date
             # If founding_date differs from creation_date, flag as re-activated
             creation = committee_meta.get("creation_date")

@@ -110,7 +110,7 @@
             {% for filing in profile.filing_history %}
             <tr>
                 <td>{{ filing.doc_name }}</td>
-                <td>{{ filing.received_datetime[:10] if filing.received_datetime|length > 10 else filing.received_datetime }}</td>
+                <td>{{ filing.filed_date }}</td>
                 <td>{% if filing.period_begin %}{{ filing.period_begin }} to {{ filing.period_end }}{% else %}&mdash;{% endif %}</td>
             </tr>
             {% endfor %}
