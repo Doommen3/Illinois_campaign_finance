@@ -79,7 +79,7 @@ def _run_query_with_timeout(conn, query_fn, timeout_ms: int) -> tuple[object, fl
 
 def _table_exists(conn, table_name: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
         (table_name,),
     ).fetchone()
     return row is not None
@@ -651,55 +651,102 @@ def _bulk_donor_name_sql(alias: str = "r") -> str:
 
 
 def _search_local_candidates(conn, query: str, limit: int = 30) -> list[dict]:
-    if not _table_exists(conn, "bulk_candidate_committee_finance_agg"):
-        return []
-
-    has_office = _column_exists(conn, "bulk_candidate_committee_finance_agg", "office_sought")
-    has_period_end = _column_exists(conn, "bulk_candidate_committee_finance_agg", "period_end_date")
-    office_expr = "MAX(COALESCE(office_sought, '')) AS office_sought" if has_office else "NULL AS office_sought"
-    latest_expr = "MAX(period_end_date) AS latest_period_end" if has_period_end else "NULL AS latest_period_end"
-
-    rows = conn.execute(
-        f"""
-        SELECT
-            candidate_id,
-            candidate_full_name,
-            {office_expr},
-            COUNT(DISTINCT committee_id_sbe) AS committee_count,
-            COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0) AS total_receipts,
-            {latest_expr}
-        FROM bulk_candidate_committee_finance_agg
-        WHERE
-            COALESCE(candidate_full_name, '') LIKE ?
-            OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
-        GROUP BY candidate_id, candidate_full_name
-        ORDER BY total_receipts DESC, candidate_full_name ASC
-        LIMIT ?
-        """,
-        (f"%{query}%", f"%{query}%", limit),
-    ).fetchall()
-
     output = []
-    for row in rows:
-        candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
-        output.append(
-            {
-                "scope": "local",
-                "candidate_id": row["candidate_id"],
-                "candidate_name": candidate_name,
-                "office": row["office_sought"] or "",
-                "committee_count": int(row["committee_count"] or 0),
-                "total_receipts": float(row["total_receipts"] or 0.0),
-                "latest_period_end": row["latest_period_end"],
-                "provenance": {
-                    "source_table": "bulk_candidate_committee_finance_agg",
-                    "source_filing_link": None,
-                    "import_batch": "ISBE bulk import aggregate",
-                    "sync_timestamp": row["latest_period_end"] or "not available",
-                    "normalization_notes": "Candidate names are deduped by candidate_id in aggregate rows.",
-                },
-            }
-        )
+    found_ids = set()
+
+    # Primary: search via agg table (candidates with committees + financials)
+    if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
+        has_office = _column_exists(conn, "bulk_candidate_committee_finance_agg", "office_sought")
+        has_period_end = _column_exists(conn, "bulk_candidate_committee_finance_agg", "period_end_date")
+        office_expr = "MAX(COALESCE(office_sought, '')) AS office_sought" if has_office else "NULL AS office_sought"
+        latest_expr = "MAX(period_end_date) AS latest_period_end" if has_period_end else "NULL AS latest_period_end"
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                candidate_id,
+                candidate_full_name,
+                {office_expr},
+                COUNT(DISTINCT committee_id_sbe) AS committee_count,
+                COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0) AS total_receipts,
+                {latest_expr}
+            FROM bulk_candidate_committee_finance_agg
+            WHERE
+                COALESCE(candidate_full_name, '') LIKE ?
+                OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
+            GROUP BY candidate_id, candidate_full_name
+            ORDER BY total_receipts DESC, candidate_full_name ASC
+            LIMIT ?
+            """,
+            (f"%{query}%", f"%{query}%", limit),
+        ).fetchall()
+
+        for row in rows:
+            candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
+            found_ids.add(row["candidate_id"])
+            output.append(
+                {
+                    "scope": "local",
+                    "candidate_id": row["candidate_id"],
+                    "candidate_name": candidate_name,
+                    "office": row["office_sought"] or "",
+                    "committee_count": int(row["committee_count"] or 0),
+                    "total_receipts": float(row["total_receipts"] or 0.0),
+                    "latest_period_end": row["latest_period_end"],
+                    "provenance": {
+                        "source_table": "bulk_candidate_committee_finance_agg",
+                        "source_filing_link": None,
+                        "import_batch": "ISBE bulk import aggregate",
+                        "sync_timestamp": row["latest_period_end"] or "not available",
+                        "normalization_notes": "Candidate names are deduped by candidate_id in aggregate rows.",
+                    },
+                }
+            )
+
+    # Fallback: search bulk_candidates_clean for candidates without committees
+    if len(output) < limit and _table_exists(conn, "bulk_candidates_clean"):
+        remaining = limit - len(output)
+        fallback_rows = conn.execute(
+            """
+            SELECT
+                candidate_id,
+                candidate_full_name,
+                office_sought
+            FROM bulk_candidates_clean
+            WHERE
+                COALESCE(candidate_full_name, '') LIKE ?
+                OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
+            ORDER BY candidate_full_name ASC
+            LIMIT ?
+            """,
+            (f"%{query}%", f"%{query}%", remaining + len(found_ids)),
+        ).fetchall()
+
+        for row in fallback_rows:
+            if row["candidate_id"] in found_ids:
+                continue
+            if len(output) >= limit:
+                break
+            candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
+            output.append(
+                {
+                    "scope": "local",
+                    "candidate_id": row["candidate_id"],
+                    "candidate_name": candidate_name,
+                    "office": row["office_sought"] or "",
+                    "committee_count": 0,
+                    "total_receipts": 0.0,
+                    "latest_period_end": None,
+                    "provenance": {
+                        "source_table": "bulk_candidates_clean",
+                        "source_filing_link": None,
+                        "import_batch": "ISBE sunshine import",
+                        "sync_timestamp": "not available",
+                        "normalization_notes": "Candidate without committee link; no financial data available.",
+                    },
+                }
+            )
+
     return output
 
 

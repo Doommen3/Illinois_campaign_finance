@@ -15,7 +15,7 @@ from psycopg.rows import dict_row
 
 
 _SQLITE_TABLE_EXISTS_RE = re.compile(
-    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*=\s*'table'\s+AND\s+name\s*=\s*\?\s*$",
+    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*(?:=\s*'table'|IN\s*\(\s*'table'\s*,\s*'view'\s*\))\s+AND\s+name\s*=\s*\?\s*$",
     re.IGNORECASE,
 )
 _PRAGMA_TABLE_INFO_RE = re.compile(

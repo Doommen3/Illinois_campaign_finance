@@ -565,7 +565,7 @@ class Donor:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (table_name,),
         ).fetchone()
         return row is not None
@@ -2280,7 +2280,7 @@ class CandidateCommitteeFinanceAgg:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (cls.TABLE_NAME,),
         ).fetchone()
         return row is not None
@@ -2407,7 +2407,7 @@ class CandidateCommitteeFinanceAgg:
 
         available_columns = cls._column_names(conn)
         has_bulk_receipts_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bulk_receipts_clean'"
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'bulk_receipts_clean'"
         ).fetchone() is not None
         where_sql, params = cls._build_filter_sql(
             available_columns=available_columns,
@@ -2451,7 +2451,7 @@ class CandidateCommitteeFinanceAgg:
 
         available_columns = cls._column_names(conn)
         has_bulk_receipts_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bulk_receipts_clean'"
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'bulk_receipts_clean'"
         ).fetchone() is not None
         sort_map = {
             "candidate_id": "candidate_id",
@@ -2608,7 +2608,7 @@ class CandidateCommitteeItemizedReceipt:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (table_name,),
         ).fetchone()
         return row is not None
@@ -2927,7 +2927,7 @@ class CandidateCommitteeItemizedExpenditure:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (table_name,),
         ).fetchone()
         return row is not None
@@ -3233,7 +3233,7 @@ class D2ReceiptsRecon:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (cls.TABLE_NAME,),
         ).fetchone()
         return row is not None
@@ -3451,7 +3451,7 @@ class D2ExpendituresRecon:
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection) -> bool:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (cls.TABLE_NAME,),
         ).fetchone()
         return row is not None

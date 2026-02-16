@@ -362,7 +362,7 @@ def requeue_reports_for_detail_scrape(conn: sqlite3.Connection, report_ids: List
 def normalize_bulk_receipt_dates(conn: sqlite3.Connection, apply: bool = False) -> dict:
     """Normalize bulk receipt dates to YYYY-MM-DD and preserve raw datetime values."""
     table_row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bulk_receipts_clean'"
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='bulk_receipts_clean'"
     ).fetchone()
     if not table_row:
         return {

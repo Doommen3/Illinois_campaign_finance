@@ -823,7 +823,7 @@ class CommitteeUrlSeeder:
 
     def _table_exists(self, table_name: str) -> bool:
         row = self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (table_name,),
         ).fetchone()
         return row is not None

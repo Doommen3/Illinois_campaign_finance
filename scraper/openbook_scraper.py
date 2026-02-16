@@ -61,6 +61,13 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
 
 
+def _normalize_vendor_key(text: str) -> str:
+    """Normalize vendor keys/names for exact comparisons."""
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text.strip().upper())
+
+
 def _clean_html_cell(text: str) -> str:
     """Unescape HTML entities, strip tags, then collapse whitespace."""
     if not text:
@@ -74,7 +81,7 @@ def _table_exists(conn, table_name: str) -> bool:
     """Check if a table exists (works on both SQLite and Postgres via compat layer)."""
     try:
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
             (table_name,),
         ).fetchone()
         return row is not None
@@ -86,6 +93,7 @@ def _pick_best_match(
     term: str,
     suggestions: List[Dict[str, str]],
     pick_first: bool = False,
+    person_exact_only: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Pick the best vendor match from autosuggest results.
 
@@ -93,6 +101,18 @@ def _pick_best_match(
     Returns dict with vendor_key, vendor_label, match_method, confidence or None.
     """
     if not suggestions:
+        return None
+
+    if person_exact_only:
+        normalized_term = _normalize_vendor_key(term)
+        for s in suggestions:
+            if _normalize_vendor_key(s["id"]) == normalized_term:
+                return {
+                    "vendor_key": s["id"],
+                    "vendor_label": s["value"],
+                    "match_method": "exact",
+                    "confidence": 1.0,
+                }
         return None
 
     upper_term = term.upper().strip()
@@ -224,7 +244,7 @@ def generate_search_terms(name: str) -> List[str]:
 
     Examples:
         "COMCAST OF ILLINOIS III INC" -> ["COMCAST", "COMCAST OF ILLINOIS III INC"]
-        "SMITH, JOHN" -> ["SMITH"]
+        "SMITH, JOHN" -> ["SMITH, JOHN"]
         "COMED" -> ["COMED", "COMMONWEALTH EDISON"]
         "DELOITTE" -> ["DELOITTE"]
     """
@@ -238,24 +258,15 @@ def generate_search_terms(name: str) -> List[str]:
     terms: List[str] = []
 
     # --- Person detection ---
-    # If comma present and part after comma is NOT a known suffix, treat as person
+    if _is_person_name(cleaned):
+        terms.append(cleaned)
+        return _dedupe_filter(terms)
+
+    # Company with comma before suffix: strip suffix, continue
     if "," in cleaned:
         parts = cleaned.split(",", 1)
         before_comma = parts[0].strip()
-        after_comma = parts[1].strip()
-
-        # Check if after-comma part is a known company suffix (e.g., "CATERPILLAR, INC")
-        after_tokens = after_comma.split()
-        is_suffix = all(t in _STRIP_SUFFIXES for t in after_tokens) if after_tokens else False
-
-        if not is_suffix and after_tokens:
-            # Person name: "SMITH, JOHN" -> extract last name
-            last_name = before_comma
-            if len(last_name) >= 3:
-                terms.append(last_name)
-            return _dedupe_filter(terms)
-        else:
-            # Company with comma before suffix: strip suffix, continue
+        if before_comma:
             cleaned = before_comma
 
     # --- Suffix / geo / roman stripping ---
@@ -956,7 +967,12 @@ class OpenBookScraper:
             logger.info("No autosuggest results for '%s'", term)
             return None
 
-        result = _pick_best_match(term, suggestions, pick_first=pick_first)
+        result = _pick_best_match(
+            term,
+            suggestions,
+            pick_first=pick_first,
+            person_exact_only=_is_person_name(vendor_name),
+        )
         if result is None:
             logger.info("No confident match for '%s' among %d suggestions", term, len(suggestions))
         return result
@@ -995,7 +1011,12 @@ class OpenBookScraper:
             logger.info("No autosuggest results for '%s'", term)
             return None
 
-        result = _pick_best_match(term, suggestions, pick_first=pick_first)
+        result = _pick_best_match(
+            term,
+            suggestions,
+            pick_first=pick_first,
+            person_exact_only=_is_person_name(vendor_name),
+        )
         if result is None:
             logger.info("No confident match for '%s' among %d suggestions", term, len(suggestions))
         return result
@@ -1012,8 +1033,12 @@ class OpenBookScraper:
         For each search term, queries the autosuggest API and scores all
         results. Returns deduplicated matches sorted by confidence descending.
         """
+        person_exact_only = _is_person_name(seed_text)
         if search_terms is None:
-            search_terms = generate_search_terms(seed_text)
+            if person_exact_only:
+                search_terms = [_normalize_vendor_key(seed_text)]
+            else:
+                search_terms = generate_search_terms(seed_text)
 
         if not search_terms:
             logger.warning("No search terms generated for '%s'", seed_text)
@@ -1023,6 +1048,7 @@ class OpenBookScraper:
         all_suggestions: Dict[str, Dict[str, str]] = {}
         term_for_suggestion: Dict[str, str] = {}
 
+        normalized_seed = _normalize_vendor_key(seed_text) if person_exact_only else ""
         for term in search_terms:
             term_truncated = term.strip()[:60]
             if len(term_truncated) < 3:
@@ -1049,6 +1075,8 @@ class OpenBookScraper:
                 continue
 
             for s in suggestions:
+                if person_exact_only and _normalize_vendor_key(s["id"]) != normalized_seed:
+                    continue
                 vk = s["id"].strip()
                 if vk not in all_suggestions:
                     all_suggestions[vk] = s
@@ -1057,6 +1085,24 @@ class OpenBookScraper:
         if not all_suggestions:
             logger.info("No autosuggest results for '%s' (tried: %s)", seed_text, search_terms)
             return []
+
+        if person_exact_only:
+            scored: List[Dict[str, Any]] = []
+            for s in all_suggestions.values():
+                vk = s["id"].strip()
+                scored.append({
+                    "vendor_key": vk,
+                    "vendor_label": s["value"],
+                    "match_method": "exact",
+                    "confidence": 1.0,
+                    "search_term": term_for_suggestion.get(vk, search_terms[0]),
+                })
+            scored.sort(key=lambda r: r["confidence"], reverse=True)
+            logger.info(
+                "Resolved '%s' -> %d exact matches (searched: %s)",
+                seed_text, len(scored), ", ".join(search_terms),
+            )
+            return scored
 
         # Score all collected suggestions against the seed text
         unique_suggestions = list(all_suggestions.values())
