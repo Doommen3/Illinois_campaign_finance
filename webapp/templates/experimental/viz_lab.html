@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block title %}Visualization Lab - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Visualization Lab</h1>
+<p class="subtitle">Local-only experimental gallery for candidate race, payee, entity-resolution, and network prototypes.</p>
+<p class="help-text">These views are intentionally experimental and isolated under <code>/experimental</code>. They are built for local evaluation and easy rollback.</p>
+
+<section class="status-section viz-lab-banner">
+    <h2>Experimental Scope</h2>
+    <p class="help-text">
+        Route: <code>/experimental/viz-lab</code> |
+        Feature flag: <code>EXPERIMENTAL_VIZ_LAB_ENABLED</code>
+    </p>
+    <p class="help-text">Current period: <strong>{{ time_period.label }}</strong> {% if date_from or date_to %}| Date window: <strong>{{ date_from if date_from else 'earliest' }}</strong> to <strong>{{ date_to if date_to else 'latest' }}</strong>{% endif %}</p>
+</section>
+
+<form class="search-form analytics-form" method="get" action="{{ url_for('experimental.viz_lab', prototype_key=active_prototype) if active_prototype else url_for('experimental.viz_lab') }}">
+    <input type="hidden" name="period" value="{{ period_key }}">
+    <label>
+        Date From
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </label>
+    <label>
+        Date To
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </label>
+    <button type="submit">Apply Window</button>
+    {% if active_prototype %}
+    <a class="analytics-subnav-link" href="{{ url_for('experimental.viz_lab', period=period_key, date_from=date_from if date_from else None, date_to=date_to if date_to else None) }}">Show All Prototypes</a>
+    {% endif %}
+</form>
+
+<section class="status-section">
+    <h2>Prototype Index</h2>
+    <div class="viz-lab-index-grid">
+        {% for prototype in prototypes %}
+        <article class="viz-lab-index-card">
+            <h3><a href="{{ prototype.detail_url }}">{{ prototype.title }}</a></h3>
+            <p class="help-text">{{ prototype.description }}</p>
+            <p class="help-text"><strong>Question:</strong> {{ prototype.question }}</p>
+            <p class="help-text"><strong>Data source:</strong> <code>{{ prototype.data_source }}</code></p>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="status-section">
+    <h2>Visibility Toggles</h2>
+    <div class="viz-lab-toggle-grid">
+        {% for prototype in prototypes %}
+        <label class="viz-lab-toggle">
+            <input
+                type="checkbox"
+                class="viz-lab-visibility-toggle"
+                data-target="{{ prototype.key }}"
+                {% if not active_prototype or active_prototype == prototype.key %}checked{% endif %}
+            >
+            <span>{{ prototype.title }}</span>
+        </label>
+        {% endfor %}
+    </div>
+</section>
+
+{% for prototype in prototypes %}
+<section
+    class="status-section viz-lab-card {% if active_prototype and active_prototype != prototype.key %}viz-lab-card-hidden{% endif %}"
+    id="prototype-{{ prototype.key }}"
+    data-prototype-card="{{ prototype.key }}"
+    data-endpoint="{{ prototype.endpoint }}"
+>
+    <h2>{{ prototype.title }} <span class="period-badge">Experimental</span></h2>
+    <p class="help-text">{{ prototype.description }}</p>
+    <p class="help-text"><strong>Question:</strong> {{ prototype.question }}</p>
+    <p class="help-text"><strong>Data source:</strong> <code>{{ prototype.data_source }}</code></p>
+
+    {% if prototype.key == "network_slice" %}
+    <div class="graph-controls viz-lab-network-controls" data-network-controls="network_slice">
+        <label>
+            Edge Threshold
+            <input type="number" name="edge_threshold" min="0" step="500" value="5000">
+        </label>
+        <label>
+            Edge Limit
+            <input type="number" name="edge_limit" min="100" max="2000" step="50" value="600">
+        </label>
+        <label>
+            Node Cap
+            <input type="number" name="node_cap" min="40" max="600" step="10" value="150">
+        </label>
+        <label>
+            Node Type
+            <select name="node_type">
+                <option value="all" selected>All</option>
+                <option value="donor">Donor</option>
+                <option value="committee">Committee</option>
+                <option value="candidate">Candidate</option>
+            </select>
+        </label>
+        <label>
+            Mode
+            <select name="mode">
+                <option value="fast" selected>Fast</option>
+                <option value="safe">Safe</option>
+            </select>
+        </label>
+        <label>
+            K (Pivots)
+            <select name="k">
+                <option value="16">16</option>
+                <option value="32" selected>32</option>
+                <option value="64">64</option>
+                <option value="128">128</option>
+            </select>
+        </label>
+        <label>
+            Weight Mode
+            <select name="weight_mode">
+                <option value="weighted" selected>Weighted</option>
+                <option value="unweighted">Unweighted</option>
+            </select>
+        </label>
+        <label class="graph-check">
+            <input type="checkbox" name="compute_communities" checked>
+            Communities
+        </label>
+        <label>
+            Search
+            <input type="text" name="search" value="" placeholder="Name contains...">
+        </label>
+        <button type="button" data-network-apply="network_slice">Apply Filters</button>
+        <button type="button" data-network-advanced="network_slice">Compute Advanced Metrics</button>
+    </div>
+    <p class="help-text">Advanced metrics run only when you click <strong>Compute Advanced Metrics</strong>. Default loads are degree-only.</p>
+    {% endif %}
+
+    <div class="network-svg-wrap viz-lab-canvas-wrap">
+        <canvas id="viz-chart-{{ prototype.key }}" height="240"></canvas>
+    </div>
+    <p class="help-text viz-lab-runtime" id="viz-runtime-{{ prototype.key }}">Loading...</p>
+    {% if prototype.key == "network_slice" %}
+    <p class="help-text" id="viz-network-meta">Advanced metrics not computed yet.</p>
+    {% endif %}
+
+    <div class="two-column">
+        <div class="column">
+            <h3>Notes</h3>
+            <ul class="viz-lab-list" id="viz-notes-{{ prototype.key }}">
+                <li>Loading notes...</li>
+            </ul>
+        </div>
+        <div class="column">
+            <h3>Sanity Check</h3>
+            <ul class="viz-lab-list" id="viz-sanity-{{ prototype.key }}">
+                <li>Loading checks...</li>
+            </ul>
+        </div>
+    </div>
+
+    {% if prototype.key == "network_slice" %}
+    <div class="two-column">
+        <div class="column">
+            <h3>Community Summary</h3>
+            <div class="table-scroll">
+                <table class="data-table" id="viz-community-table-{{ prototype.key }}">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="column">
+            <h3>Edge Preview</h3>
+            <div class="table-scroll">
+                <table class="data-table" id="viz-edge-table-{{ prototype.key }}">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="table-scroll">
+        <table class="data-table" id="viz-table-{{ prototype.key }}">
+            <thead></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div class="viz-lab-pager" data-prototype-pager="{{ prototype.key }}">
+        <button type="button" data-pager-action="prev" data-prototype="{{ prototype.key }}">Previous</button>
+        <span id="viz-page-{{ prototype.key }}">Page 1</span>
+        <button type="button" data-pager-action="next" data-prototype="{{ prototype.key }}">Next</button>
+    </div>
+</section>
+{% endfor %}
+
+<section class="status-section" id="district-map-shell">
+    <h2>Illinois District Map Shell <span class="period-badge">Pending Assets</span></h2>
+    <p class="help-text">UI shell is in place for Phase D. Click mock districts below to validate panel behavior while waiting on real geometry assets.</p>
+    <div class="viz-lab-map-shell">
+        <div class="viz-lab-map-mock">
+            <button type="button" class="viz-map-mock-district" data-district="IL-H-01">IL-H-01</button>
+            <button type="button" class="viz-map-mock-district" data-district="IL-H-07">IL-H-07</button>
+            <button type="button" class="viz-map-mock-district" data-district="IL-H-13">IL-H-13</button>
+            <button type="button" class="viz-map-mock-district" data-district="IL-S-26">IL-S-26</button>
+            <button type="button" class="viz-map-mock-district" data-district="IL-R-042">IL-R-042</button>
+        </div>
+        <div class="viz-lab-map-detail" id="viz-map-detail">
+            <p class="help-text"><strong>Selected district:</strong> none</p>
+            <p class="help-text">Mock totals appear here until GeoJSON/TopoJSON is available.</p>
+        </div>
+    </div>
+    <h3>Required Geometry Files</h3>
+    <ul class="viz-lab-list">
+        {% for asset in district_asset_status.assets %}
+        <li>
+            <code>{{ asset.filename }}</code> -
+            {% if asset.exists %}found{% else %}missing{% endif %}
+            (<code>{{ asset.path }}</code>)
+        </li>
+        {% endfor %}
+    </ul>
+    {% if district_asset_status.all_present %}
+    <p class="help-text">All district assets are present. Next step is wiring real boundary joins and hover/click stats.</p>
+    {% else %}
+    <p class="help-text">District geometry assets are still required before the real clickable map can be enabled.</p>
+    {% endif %}
+</section>
+
+<script id="viz-lab-prototypes" type="application/json">{{ prototypes|tojson }}</script>
+<script id="viz-lab-state" type="application/json">{{ {'active_prototype': active_prototype, 'period_key': period_key, 'date_from': date_from, 'date_to': date_to}|tojson }}</script>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/experimental_viz_lab.js', v='20260216-1') }}"></script>
+{% endblock %}

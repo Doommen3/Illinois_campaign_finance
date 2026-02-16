@@ -42,6 +42,11 @@ APP_ENV = (os.environ.get('APP_ENV') or 'development').strip().lower()
 FLASK_SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production').strip()
 FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
 PUBLIC_CONTACT_EMAIL = os.environ.get('PUBLIC_CONTACT_EMAIL', '').strip()
+EXPERIMENTAL_VIZ_LAB_ENABLED = _env_bool(
+    'EXPERIMENTAL_VIZ_LAB_ENABLED',
+    default=APP_ENV not in {'production', 'prod', 'staging'},
+)
+EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS = int(os.environ.get('EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS', 180))
 
 # API
 API_KEYS = _env_list('API_KEYS')

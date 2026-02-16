@@ -258,6 +258,8 @@ def create_app(config=None):
             "DATABASE_TARGET": app_config.DATABASE_TARGET,
             "PUBLIC_CONTACT_EMAIL": app_config.PUBLIC_CONTACT_EMAIL,
             "APP_ENV": app_config.APP_ENV,
+            "EXPERIMENTAL_VIZ_LAB_ENABLED": _as_bool(app_config.EXPERIMENTAL_VIZ_LAB_ENABLED),
+            "EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS": int(app_config.EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS),
             "API_KEYS": list(app_config.API_KEYS),
             "API_REQUIRE_KEY": _as_bool(app_config.API_REQUIRE_KEY),
             "API_RATE_LIMIT_PER_MINUTE": int(app_config.API_RATE_LIMIT_PER_MINUTE),
@@ -396,6 +398,7 @@ def create_app(config=None):
     from webapp.routes.lobbying import lobbying_bp
     from webapp.routes.irs527 import irs527_bp
     from webapp.routes.openbook import openbook_bp
+    from webapp.routes.experimental import experimental_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -413,6 +416,7 @@ def create_app(config=None):
     app.register_blueprint(lobbying_bp, url_prefix='/lobbying')
     app.register_blueprint(irs527_bp, url_prefix='/527')
     app.register_blueprint(openbook_bp, url_prefix='/openbook')
+    app.register_blueprint(experimental_bp, url_prefix='/experimental')
 
     @app.errorhandler(404)
     def not_found(error):
@@ -496,6 +500,7 @@ def create_app(config=None):
             global_data_status=data_status,
             time_period=get_active_period(),
             time_periods=TIME_PERIODS,
+            experimental_viz_lab_enabled=_as_bool(app.config.get("EXPERIMENTAL_VIZ_LAB_ENABLED", False)),
         )
 
     return app

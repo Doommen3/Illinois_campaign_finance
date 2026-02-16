@@ -13,7 +13,7 @@ __pycache__/
 
 # Large local datasets and generated artifacts
 Bulk_download/
-data/
+data/*
 output/
 tmp/
 
@@ -27,3 +27,9 @@ tmp/
 # Large analytical exports
 *.parquet
 *.feather
+
+# Keep curated geometry assets in version control
+!data/geometry/
+!data/geometry/il/
+!data/geometry/il/*.json
+!data/geometry/il/README.md

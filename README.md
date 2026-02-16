@@ -65,6 +65,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Dashboard 527 Dark Money summary card with organization count, total expenditures, director-donor overlaps, and lobbying entity count
 - Person Intelligence page for unified name search across all data sources (state donors, candidates, 527 directors, lobbying entities/clients, federal FEC contributors)
 - Session authentication with consolidated admin tool hub
+- Experimental visualization lab (`/experimental/viz-lab`) with local-only feature-flag gating, prototype-level notes/sanity checks, date-window-aware JSON endpoints, and paginated prototype tables
 
 ## Tech Stack
 
@@ -137,6 +138,9 @@ python run.py import-openbook-batch --generate-seeds --max-vendors 50
 # Disable smart search to use raw vendor names verbatim
 python run.py import-openbook-batch --no-smart-search --max-vendors 50
 # OpenBook web routes: /openbook/ and /openbook/<vendor_key>
+
+# Build Illinois district geometry assets for maps (TopoJSON + key validation)
+python3 scripts/build_geometry.py --maps-root /Users/devin/Illinois_campaign_finance/Maps
 
 # Run cross-matching across all data sources
 python run.py run-cross-matching --only all --parallel --workers 4
@@ -251,6 +255,24 @@ Visit `http://localhost:5000` to access the dashboard.
 - `docs/network_analysis_plan.md` — network model, metrics plan, and lightweight-first compute strategy
 - `docs/illinois_clickable_district_map_plan.md` — local/federal district geometry + join-key strategy
 - `docs/ameren_lobbying_case_study.md` — reproducible Ameren relationship queries and normalization notes
+
+## Illinois Geometry Assets (TIGER/Line)
+
+- Output directory: `data/geometry/il/`
+- Build script: `python3 scripts/build_geometry.py --maps-root /Users/devin/Illinois_campaign_finance/Maps`
+- Validation script: `python3 scripts/validate_geometry_keys.py`
+- Outputs:
+  - `data/geometry/il/il_cd119.topo.json` (Congressional, 119th)
+  - `data/geometry/il/il_sldl.topo.json` (State House)
+  - `data/geometry/il/il_sldu.topo.json` (State Senate)
+- Key semantics:
+  - Congressional joins: use `district_key` (string `"01"`..`"17"`), with convenience `district` integer.
+  - State House/Senate joins: use `district` integer (`1..118`, `1..59`).
+  - All layers include stable `geoid` string plus raw code fields (`CD119FP`, `SLDLST`, `SLDUST`).
+- Build notes:
+  - Script accepts either unzipped layer folders (`tl_2025_17_*`) or same-name `.zip` files under `--maps-root`.
+  - Placeholder districts are dropped (`ZZ` / `ZZZ` codes).
+  - Simplification uses mapshaper weighted topology-preserving simplification at `8%` with `keep-shapes`.
 
 ## Testing
 
@@ -397,6 +419,8 @@ Environment variables (set in `.env` or export directly):
 | `DATABASE_PATH` | `data/campaign_finance.db` | Legacy SQLite path (deprecated, unused) |
 | `FEC_API_KEY` | *(empty)* | FEC API key for federal data sync |
 | `APP_ENV` | `development` | Runtime environment (`development`, `staging`, `production`) |
+| `EXPERIMENTAL_VIZ_LAB_ENABLED` | `true` outside production/staging | Enable `/experimental/viz-lab` prototype gallery routes |
+| `EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS` | `180` | TTL for Viz Lab in-process endpoint cache |
 | `FLASK_SECRET_KEY` | `dev-secret-key...` | Flask session secret |
 | `FLASK_DEBUG` | `false` | Enable Flask debug mode |
 | `API_KEYS` | *(empty)* | Comma-separated API keys for `/api/*` |
@@ -457,6 +481,14 @@ Environment variables (set in `.env` or export directly):
   - `idx_isbe_condensed_receipts_donor_name_trgm`
   - `idx_isbe_condensed_receipts_donor_key_trgm`
 - `refresh-analytics --with-snapshot` now supports PostgreSQL timestamp objects in snapshot metadata parsing and can build NLP spending summary from `bulk_expenditures_clean` when legacy `contributions` is absent.
+- Experimental Viz Lab endpoints (`/experimental/viz-lab/data/*`) use bounded set-based aggregates + in-process TTL caching keyed by period/date/filter bundle.
+- `/experimental/viz-lab/data/network_slice` advanced metrics are explicit opt-in (`compute_advanced=1`) and cap-bounded:
+  - Params: `mode=fast|safe`, `k` (8..128), `compute_communities`, `weight_mode=weighted|unweighted`, `edge_threshold`, `edge_limit`, `node_cap`.
+  - Fast profile: `max_nodes=160`, `max_edges=700`, default `k=32`.
+  - Safe profile: `max_nodes=260`, `max_edges=1200`, default `k=64`.
+  - Requests over caps are refused before metric compute and return actionable guidance to tighten filters.
+  - Advanced metric payload includes per-node `degree`, `weighted_degree`, `betweenness_approx`, `community_id`, `bridge_ratio` plus `graph_meta` (`compute_ms`, `k`, caps, edge types, cache hit, mode/weight mode).
+  - Cache key includes full graph filter identity plus advanced controls (`compute_advanced`, `compute_communities`, `mode`, `k`, `weight_mode`, thresholds/caps, period/date window).
 - Expected behavior: first request after cache expiry/restart can still be slower; subsequent warm requests should be significantly faster.
 
 ## Server Deployment

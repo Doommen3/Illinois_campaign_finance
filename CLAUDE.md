@@ -42,9 +42,12 @@ python run.py runserver --port 5000
 | `database/irs527_loader.py` | IRS 527 FullDataFile parser |
 | `database/federal_fec.py` | FEC API integration |
 | `scripts/isbe_sunshine_etl.py` | ISBE bulk data ETL (PostgreSQL-native, adapted from illinois-sunshine) |
+| `scripts/build_geometry.py` | Build IL TIGER/Line district TopoJSON assets + run key validation |
+| `scripts/validate_geometry_keys.py` | Validate geometry join keys/ranges/types for CD/SLDL/SLDU outputs |
 | `scraper/openbook_scraper.py` | OpenBook Comptroller scraper + smart search |
 | `scraper/comptroller_contracts.py` | Comptroller State Contracts DataTables scraper |
-| `webapp/routes/` | 15 Flask route modules |
+| `webapp/routes/` | 16 Flask route modules |
+| `webapp/routes/experimental.py` | Local-only experimental viz lab (`/experimental/viz-lab`) + cached prototype APIs |
 | `webapp/templates/` | 50+ Jinja2 templates |
 | `docs/` | Runbooks and planning docs (graphs roadmap, network plan, district map plan, case studies) |
 | `tests/` | pytest suite |
@@ -63,6 +66,12 @@ python run.py runserver --port 5000
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
 5. **City of Chicago (Socrata)** - Contracts, payments, lobbyist contributions, and lobbying activity (Phase 1 API ingest)
 6. **OpenBook Illinois Comptroller** - State contract data and campaign contribution records via HTTP autosuggest API + search scraping (`scraper/openbook_scraper.py`)
+7. **Census TIGER/Line District Geometry** - Illinois district boundaries for map layers (`tl_2025_17_cd119`, `tl_2025_17_sldl`, `tl_2025_17_sldu`) built into `data/geometry/il/*.topo.json` via `scripts/build_geometry.py`
+   - Validation command: `python3 scripts/validate_geometry_keys.py`
+   - Join keys:
+     - Congressional: `district_key` string (`"01"`..`"17"`) and `district` int (`1..17`)
+     - State House/Senate: `district` int (`1..118` / `1..59`)
+     - All layers: `geoid` string plus raw code fields (`CD119FP`, `SLDLST`, `SLDUST`)
 
 ### Cross-Matching Engine
 
@@ -90,8 +99,20 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `/analytics/geo-drilldown`
    - `/federal-finance/geo-drilldown`
    - `/527/dark-money` (summary stats)
+   - `/experimental/viz-lab/data/*` (prototype gallery endpoints)
+- Viz Lab network advanced metrics (`/experimental/viz-lab/data/network_slice`) contract:
+  - Advanced metrics run only when explicitly requested (`compute_advanced=1`), otherwise endpoint stays degree-only.
+  - Params: `mode=fast|safe`, `k` (8..128), `compute_communities`, `weight_mode=weighted|unweighted`, `edge_threshold`, `edge_limit`, `node_cap`.
+  - Safety caps applied before compute:
+    - fast: `max_nodes=160`, `max_edges=700`, default `k=32`
+    - safe: `max_nodes=260`, `max_edges=1200`, default `k=64`
+  - Oversized requests must return a refusal payload with suggested tighter settings (no heavy compute attempt).
+  - `graph_meta` must include: `compute_ms`, `k`, caps (max/applied/actual), `cache_hit`, `edge_type_set`, `mode`, `weight_mode`.
+  - Cache key must include all advanced params + date/filter identity to prevent metric cross-talk.
 - Config flags in `config.py`:
    - `ROUTE_PERF_CACHE_ENABLED`
+   - `EXPERIMENTAL_VIZ_LAB_ENABLED`
+   - `EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS`
    - `DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS`
    - `DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS`

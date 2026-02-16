@@ -10,6 +10,11 @@ import re
 import sqlite3
 from typing import Optional
 
+try:
+    import networkx as nx
+except Exception:  # pragma: no cover - optional dependency fallback
+    nx = None
+
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
@@ -3392,6 +3397,285 @@ def _compute_graph_centrality(nodes: list[dict], edges: list[dict], limit: int =
 
     output.sort(key=lambda row: (row["weighted_degree"], row["degree"], row["label"]), reverse=True)
     return output[: max(1, int(limit))]
+
+
+def _normalize_weight_mode(weight_mode: str | None) -> str:
+    mode = (weight_mode or "").strip().lower()
+    if mode not in {"weighted", "unweighted"}:
+        return "weighted"
+    return mode
+
+
+def _build_metric_graph(nodes: list[dict], edges: list[dict]):
+    if nx is None:
+        return None
+
+    graph = nx.Graph()
+    for row in nodes:
+        node_id = str(row.get("id") or row.get("node_id") or "").strip()
+        if not node_id:
+            continue
+        graph.add_node(
+            node_id,
+            label=row.get("label") or node_id,
+            node_type=row.get("node_type") or "node",
+            system=row.get("system"),
+        )
+
+    for row in edges:
+        source = str(row.get("source") or "").strip()
+        target = str(row.get("target") or "").strip()
+        if not source or not target or source == target:
+            continue
+        if source not in graph or target not in graph:
+            continue
+        weight = float(row.get("weight") or 0.0)
+        if graph.has_edge(source, target):
+            graph[source][target]["weight"] = float(graph[source][target].get("weight") or 0.0) + weight
+            graph[source][target]["edge_count"] = int(graph[source][target].get("edge_count") or 1) + 1
+        else:
+            graph.add_edge(source, target, weight=weight, edge_count=1)
+    return graph
+
+
+def compute_betweenness_approx(
+    G,
+    k: int = 32,
+    seed: int = 42,
+    weight_mode: str = "weighted",
+) -> dict[str, float]:
+    """Compute sampled-pivot betweenness centrality for a graph."""
+    if nx is None or G is None:
+        return {}
+    node_count = int(G.number_of_nodes())
+    if node_count <= 0:
+        return {}
+
+    resolved_k = max(1, min(int(k), node_count))
+    resolved_mode = _normalize_weight_mode(weight_mode)
+    weight_attr = "weight" if resolved_mode == "weighted" else None
+
+    try:
+        values = nx.betweenness_centrality(
+            G,
+            k=resolved_k,
+            normalized=True,
+            weight=weight_attr,
+            seed=int(seed),
+        )
+    except Exception:
+        return {str(node_id): 0.0 for node_id in G.nodes}
+    return {str(node_id): float(score or 0.0) for node_id, score in values.items()}
+
+
+def _compute_communities_with_method(
+    G,
+    *,
+    weight_mode: str = "weighted",
+    seed: int = 42,
+) -> tuple[dict[str, int], str]:
+    if nx is None or G is None:
+        return {}, "networkx_unavailable"
+
+    node_ids = sorted(str(node_id) for node_id in G.nodes)
+    if not node_ids:
+        return {}, "no_nodes"
+    if int(G.number_of_edges()) <= 0:
+        return {node_id: idx + 1 for idx, node_id in enumerate(node_ids)}, "singleton_components"
+
+    weight_attr = "weight" if _normalize_weight_mode(weight_mode) == "weighted" else None
+    method = "greedy_modularity"
+    communities = None
+    try:
+        from networkx.algorithms import community as nx_community
+
+        if hasattr(nx_community, "louvain_communities"):
+            communities = nx_community.louvain_communities(
+                G,
+                weight=weight_attr,
+                seed=int(seed),
+            )
+            method = "louvain"
+        else:
+            communities = nx_community.greedy_modularity_communities(
+                G,
+                weight=weight_attr,
+            )
+            method = "greedy_modularity"
+    except Exception:
+        communities = [{node_id} for node_id in node_ids]
+        method = "singleton_fallback"
+
+    normalized_communities: list[list[str]] = []
+    if communities is not None:
+        for community_nodes in communities:
+            member_ids = sorted(str(node_id) for node_id in community_nodes)
+            if member_ids:
+                normalized_communities.append(member_ids)
+    normalized_communities.sort(key=lambda members: (-len(members), members[0]))
+
+    assignments: dict[str, int] = {}
+    next_id = 1
+    for members in normalized_communities:
+        for node_id in members:
+            assignments[node_id] = next_id
+        next_id += 1
+
+    for node_id in node_ids:
+        if node_id not in assignments:
+            assignments[node_id] = next_id
+            next_id += 1
+
+    return assignments, method
+
+
+def compute_communities(G) -> dict[str, int]:
+    """Return stable community IDs per node."""
+    assignments, _method = _compute_communities_with_method(G)
+    return assignments
+
+
+def compute_bridge_ratio(
+    nodes: list[dict],
+    edges: list[dict],
+    node_system_labels: dict[str, str | None],
+) -> dict[str, float | None]:
+    """Compute per-node bridge ratio using existing system labels.
+
+    bridge_ratio = cross-system edges / edges with known labels.
+    Nodes without labels return None.
+    """
+    node_ids = [
+        str(row.get("id") or row.get("node_id") or "").strip()
+        for row in nodes
+        if str(row.get("id") or row.get("node_id") or "").strip()
+    ]
+    node_ids_set = set(node_ids)
+    cross_counts: dict[str, int] = defaultdict(int)
+    known_counts: dict[str, int] = defaultdict(int)
+
+    for row in edges:
+        source = str(row.get("source") or "").strip()
+        target = str(row.get("target") or "").strip()
+        if source not in node_ids_set or target not in node_ids_set:
+            continue
+        source_system = (node_system_labels.get(source) or "").strip().lower()
+        target_system = (node_system_labels.get(target) or "").strip().lower()
+        if not source_system or not target_system:
+            continue
+        known_counts[source] += 1
+        known_counts[target] += 1
+        if source_system != target_system:
+            cross_counts[source] += 1
+            cross_counts[target] += 1
+
+    ratios: dict[str, float | None] = {}
+    for node_id in node_ids:
+        label = (node_system_labels.get(node_id) or "").strip()
+        if not label:
+            ratios[node_id] = None
+            continue
+        denominator = int(known_counts.get(node_id, 0))
+        if denominator <= 0:
+            ratios[node_id] = 0.0
+            continue
+        ratios[node_id] = float(cross_counts.get(node_id, 0)) / float(denominator)
+    return ratios
+
+
+def compute_advanced_network_metrics(
+    nodes: list[dict],
+    edges: list[dict],
+    *,
+    k: int = 32,
+    seed: int = 42,
+    weight_mode: str = "weighted",
+    compute_communities_flag: bool = True,
+) -> dict:
+    """Compute advanced network metrics on bounded node/edge sets."""
+    normalized_mode = _normalize_weight_mode(weight_mode)
+    graph = _build_metric_graph(nodes, edges)
+    warnings: list[str] = []
+
+    node_map = {
+        str(row.get("id") or row.get("node_id") or "").strip(): row
+        for row in nodes
+        if str(row.get("id") or row.get("node_id") or "").strip()
+    }
+    weighted_degree: dict[str, float] = defaultdict(float)
+    degree: dict[str, int] = defaultdict(int)
+    for row in edges:
+        source = str(row.get("source") or "").strip()
+        target = str(row.get("target") or "").strip()
+        if source not in node_map or target not in node_map:
+            continue
+        weight = float(row.get("weight") or 0.0)
+        weighted_degree[source] += weight
+        weighted_degree[target] += weight
+        degree[source] += 1
+        degree[target] += 1
+
+    resolved_k = max(1, min(int(k), max(1, len(node_map))))
+    betweenness = compute_betweenness_approx(
+        graph,
+        k=resolved_k,
+        seed=seed,
+        weight_mode=normalized_mode,
+    )
+    if not betweenness:
+        warnings.append("Betweenness approximation unavailable; defaulted to zeros.")
+
+    if compute_communities_flag:
+        community_assignments, community_method = _compute_communities_with_method(
+            graph,
+            weight_mode=normalized_mode,
+            seed=seed,
+        )
+    else:
+        community_assignments = {}
+        community_method = "disabled"
+
+    node_system_labels = {
+        node_id: (row.get("system") if row.get("system") is not None else None)
+        for node_id, row in node_map.items()
+    }
+    bridge_ratios = compute_bridge_ratio(nodes, edges, node_system_labels)
+    missing_system_labels = sum(
+        1 for node_id in node_map.keys() if not (node_system_labels.get(node_id) or "").strip()
+    )
+    if missing_system_labels > 0:
+        warnings.append(
+            f"Bridge ratio used known system labels only; {missing_system_labels} node(s) had missing system labels."
+        )
+
+    node_metrics: dict[str, dict] = {}
+    for node_id, row in node_map.items():
+        node_metrics[node_id] = {
+            "node_id": node_id,
+            "label": row.get("label") or node_id,
+            "node_type": row.get("node_type") or "node",
+            "system": row.get("system"),
+            "degree": int(degree.get(node_id, 0)),
+            "weighted_degree": round(float(weighted_degree.get(node_id, 0.0)), 2),
+            "betweenness_approx": round(float(betweenness.get(node_id, 0.0)), 6),
+            "community_id": community_assignments.get(node_id),
+            "bridge_ratio": (
+                round(float(bridge_ratios[node_id]), 6)
+                if bridge_ratios.get(node_id) is not None
+                else None
+            ),
+        }
+
+    return {
+        "node_metrics": node_metrics,
+        "meta": {
+            "k": resolved_k,
+            "seed": int(seed),
+            "weight_mode": normalized_mode,
+            "community_method": community_method,
+            "warnings": warnings,
+        },
+    }
 
 
 def _empty_relationship_graph(**summary_fields) -> dict:
