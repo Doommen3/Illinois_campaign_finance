@@ -32,6 +32,8 @@ _top_donors_cache = {
     "key": None,
 }
 _top_donors_cache_lock = threading.Lock()
+_search_results_cache: OrderedDict[str, dict] = OrderedDict()
+_search_results_cache_lock = threading.Lock()
 
 SEARCH_TYPES = {
     "all",
@@ -151,6 +153,41 @@ def _apply_date_window_clauses(
         params.append(end[:10])
 
 
+def _text_date_window_clause(
+    column: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    prefix: str = "AND",
+) -> tuple[str, list[object]]:
+    start_iso = (date_from or "").strip()[:10]
+    end_iso = (date_to or "").strip()[:10]
+    if not start_iso and not end_iso:
+        return "", []
+
+    iso_parts: list[str] = []
+    iso_params: list[object] = []
+    compact_parts: list[str] = []
+    compact_params: list[object] = []
+
+    if start_iso:
+        iso_parts.append(f"{column} >= ?")
+        iso_params.append(start_iso)
+        compact_parts.append(f"{column} >= ?")
+        compact_params.append(start_iso.replace("-", ""))
+    if end_iso:
+        iso_parts.append(f"{column} <= ?")
+        iso_params.append(end_iso)
+        compact_parts.append(f"{column} <= ?")
+        compact_params.append(end_iso.replace("-", ""))
+
+    if not iso_parts:
+        return "", []
+
+    clause = f" {prefix} (({' AND '.join(iso_parts)}) OR ({' AND '.join(compact_parts)}))"
+    return clause, iso_params + compact_params
+
+
 def _scalar(conn, sql: str, params=(), default=0):
     try:
         row = conn.execute(sql, params).fetchone()
@@ -186,6 +223,74 @@ def _period_cache_token(period) -> str:
     if not period:
         return key
     return f"{key}:{period.get('start_date') or ''}:{period.get('end_date') or ''}"
+
+
+def _search_results_cache_enabled() -> bool:
+    return bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+
+
+def _search_results_cache_ttl_seconds() -> int:
+    return max(15, int(current_app.config.get("SEARCH_RESULTS_CACHE_TTL_SECONDS", 120)))
+
+
+def _search_results_cache_max_entries() -> int:
+    return max(16, int(current_app.config.get("SEARCH_RESULTS_CACHE_MAX_ENTRIES", 256)))
+
+
+def _is_filed_doc_query(query: str) -> bool:
+    text = (query or "").strip()
+    return bool(text) and text.isdigit()
+
+
+def _is_donor_key_query(query: str) -> bool:
+    text = (query or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if "|" in lowered or ":" in lowered:
+        return True
+    digit_count = sum(1 for ch in lowered if ch.isdigit())
+    return digit_count >= 3
+
+
+def _search_results_cache_key(period, query: str, search_type: str) -> str:
+    period_key = _period_cache_token(period)
+    return f"{period_key}:{search_type}:{query.strip().lower()}"
+
+
+def _get_cached_search_results(period, query: str, search_type: str) -> dict | None:
+    if not _search_results_cache_enabled():
+        return None
+    key = _search_results_cache_key(period, query, search_type)
+    now = time.monotonic()
+    with _search_results_cache_lock:
+        entry = _search_results_cache.get(key)
+        if not entry:
+            return None
+        if float(entry.get("expires_at", 0.0)) <= now:
+            _search_results_cache.pop(key, None)
+            return None
+        _search_results_cache.move_to_end(key)
+        payload = entry.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+
+def _set_cached_search_results(period, query: str, search_type: str, payload: dict) -> None:
+    if not _search_results_cache_enabled():
+        return
+    key = _search_results_cache_key(period, query, search_type)
+    now = time.monotonic()
+    max_entries = _search_results_cache_max_entries()
+    with _search_results_cache_lock:
+        _search_results_cache.pop(key, None)
+        _search_results_cache[key] = {
+            "payload": payload,
+            "expires_at": now + float(_search_results_cache_ttl_seconds()),
+        }
+        while len(_search_results_cache) > max_entries:
+            _search_results_cache.popitem(last=False)
 
 
 def _call_build_dashboard_insights(conn, period=None) -> dict:
@@ -1033,6 +1138,8 @@ def _search_filed_docs(
     filed_date_to: str | None = None,
 ) -> list[dict]:
     rows: list[dict] = []
+    query_text = (query or "").strip()
+    is_numeric_query = _is_filed_doc_query(query_text)
     has_date_window = bool((filed_date_from or "").strip() or (filed_date_to or "").strip())
     has_filed_docs = _table_exists(conn, "isbe_filed_docs")
     filed_doc_date_expr = None
@@ -1046,15 +1153,12 @@ def _search_filed_docs(
 
     if _table_exists(conn, "bulk_d2_receipts_recon"):
         d2_join_sql = "JOIN isbe_filed_docs fd ON fd.id = d.filed_doc_id" if filed_doc_date_expr else ""
-        d2_where = [
-            """
-            (
-                COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?
-                OR COALESCE(d.committee_name, '') LIKE ?
-            )
-            """
-        ]
-        d2_params: list[object] = [f"%{query}%", f"%{query}%"]
+        if is_numeric_query:
+            d2_where = ["d.filed_doc_id = ?"]
+            d2_params: list[object] = [int(query_text)]
+        else:
+            d2_where = ["COALESCE(d.committee_name, '') LIKE ?"]
+            d2_params = [f"%{query_text}%"]
         if has_date_window:
             if filed_doc_date_expr:
                 _apply_date_window_clauses(
@@ -1107,13 +1211,12 @@ def _search_filed_docs(
                 }
             )
 
-    if _table_exists(conn, "bulk_receipts_clean"):
+    if _table_exists(conn, "bulk_receipts_clean") and is_numeric_query:
         receipts_join_sql = "JOIN isbe_filed_docs fd ON fd.id = r.filed_doc_id" if filed_doc_date_expr else ""
         receipts_where = [
-            "r.filed_doc_id IS NOT NULL",
-            "CAST(r.filed_doc_id AS TEXT) LIKE ?",
+            "r.filed_doc_id = ?",
         ]
-        receipt_params: list[object] = [f"%{query}%"]
+        receipt_params: list[object] = [int(query_text)]
         if has_date_window:
             if filed_doc_date_expr:
                 _apply_date_window_clauses(
@@ -1254,27 +1357,53 @@ def _search_donor_keys(
     else:
         if not _table_exists(conn, "analytics_donor_summary"):
             return []
-        rows = conn.execute(
-            """
-            SELECT
-                source,
-                donor_key,
-                donor_name,
-                donor_city,
-                donor_state,
-                total_amount,
-                contribution_count,
-                committee_count,
-                updated_at
-            FROM analytics_donor_summary
-            WHERE
-                donor_key LIKE ?
-                OR donor_name LIKE ?
-            ORDER BY total_amount DESC, donor_name ASC
-            LIMIT ?
-            """,
-            (f"%{query}%", f"%{query}%", limit),
-        ).fetchall()
+        rows = []
+        seen_keys: set[tuple[str, str]] = set()
+        query_text = (query or "").strip()
+        prefix_pattern = f"{query_text}%"
+        contains_pattern = f"%{query_text}%"
+        key_like_query = _is_donor_key_query(query_text)
+
+        def _fetch_from_source(source_name: str, pattern: str):
+            return conn.execute(
+                """
+                SELECT
+                    source,
+                    donor_key,
+                    donor_name,
+                    donor_city,
+                    donor_state,
+                    total_amount,
+                    contribution_count,
+                    committee_count,
+                    updated_at
+                FROM analytics_donor_summary
+                WHERE source = ?
+                  AND (donor_key LIKE ? OR donor_name LIKE ?)
+                ORDER BY total_amount DESC, donor_name ASC
+                LIMIT ?
+                """,
+                (source_name, pattern, pattern, limit),
+            ).fetchall()
+
+        def _append_rows(batch_rows):
+            for row in batch_rows:
+                row_key = (str(row["source"] or ""), str(row["donor_key"] or ""))
+                if row_key in seen_keys:
+                    continue
+                seen_keys.add(row_key)
+                rows.append(row)
+                if len(rows) >= limit:
+                    return
+
+        _append_rows(_fetch_from_source("bulk_receipts", prefix_pattern))
+        if len(rows) < limit:
+            _append_rows(_fetch_from_source("contributions", prefix_pattern))
+
+        if key_like_query and len(rows) < limit:
+            _append_rows(_fetch_from_source("bulk_receipts", contains_pattern))
+            if len(rows) < limit:
+                _append_rows(_fetch_from_source("contributions", contains_pattern))
 
     output = []
     for row in rows:
@@ -2351,9 +2480,10 @@ def investigate_workspace():
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
-    from webapp.utils.time_filter import get_active_period, period_qmark_date_clause
+    from webapp.utils.time_filter import get_active_period, period_to_date_window
     conn = current_app.get_database()
     period = get_active_period()
+    date_from, date_to = period_to_date_window(period)
 
     stats, freshness = _get_candidate_stats_cached(conn, period=period)
     stats['legacy_reports'] = Report.count(conn)
@@ -2377,11 +2507,15 @@ def index():
         stats['irs527_orgs'] = 0
 
     if _table_exists(conn, "irs527_expenditures"):
-        exp_clause, exp_params = period_qmark_date_clause("date", period)
+        exp_clause, exp_params = _text_date_window_clause(
+            "date",
+            date_from=date_from,
+            date_to=date_to,
+        )
         stats['irs527_total_expenditures'] = float(
             _scalar(
                 conn,
-                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_expenditures WHERE COALESCE(amount, 0) > 0{exp_clause}",
+                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_expenditures WHERE amount > 0{exp_clause}",
                 params=tuple(exp_params),
                 default=0,
             )
@@ -2401,11 +2535,15 @@ def index():
         stats['irs527_director_donor_matches'] = 0
 
     if _table_exists(conn, "irs527_contributions"):
-        contrib_clause, contrib_params = period_qmark_date_clause("date", period)
+        contrib_clause, contrib_params = _text_date_window_clause(
+            "date",
+            date_from=date_from,
+            date_to=date_to,
+        )
         stats['irs527_total_contributions_received'] = float(
             _scalar(
                 conn,
-                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contrib_clause}",
+                f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE amount > 0{contrib_clause}",
                 params=tuple(contrib_params),
                 default=0,
             )
@@ -2413,7 +2551,7 @@ def index():
         stats['irs527_contribution_records'] = int(
             _scalar(
                 conn,
-                f"SELECT COUNT(*) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contrib_clause}",
+                f"SELECT COUNT(*) FROM irs527_contributions WHERE amount > 0{contrib_clause}",
                 params=tuple(contrib_params),
                 default=0,
             )
@@ -2491,6 +2629,8 @@ def search():
         'min_query_length': min_query_len,
         'max_query_length': max_query_len,
         'query_too_short': is_short_query,
+        'cache_hit': False,
+        'skipped_sections': [],
         'timed_out_sections': [],
         'errored_sections': [],
         'slow_sections': [],
@@ -2513,6 +2653,14 @@ def search():
     search_start = time.perf_counter()
 
     if query and not is_short_query:
+        cached_payload = _get_cached_search_results(period, query, search_type)
+        if cached_payload is not None:
+            for section_name in ("committees", "donors", "candidates", "reports", "filed_docs", "donor_keys"):
+                results[section_name] = cached_payload.get(section_name, [])
+            search_meta["cache_hit"] = True
+            search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)
+            return render_template('search.html', **results)
+
         short_mode = len(query) < 4
         committee_limit = 30 if short_mode else 50
         donor_limit = 30 if short_mode else 50
@@ -2521,6 +2669,13 @@ def search():
         report_limit = 20 if short_mode else 30
         filed_doc_limit = 20 if short_mode else 30
         donor_key_limit = 20 if short_mode else 30
+        allow_filed_docs = search_type == "filed_docs" or (search_type == "all" and _is_filed_doc_query(query))
+        allow_donor_keys = search_type == "donor_keys" or (search_type == "all" and _is_donor_key_query(query))
+
+        if search_type in ('all', 'filed_docs') and not allow_filed_docs:
+            search_meta["skipped_sections"].append("filed_docs")
+        if search_type in ('all', 'donor_keys') and not allow_donor_keys:
+            search_meta["skipped_sections"].append("donor_keys")
 
         def _run_section(section_name: str, callback):
             try:
@@ -2601,7 +2756,7 @@ def search():
                 ),
             )
 
-        if search_type in ('all', 'filed_docs'):
+        if search_type in ('all', 'filed_docs') and allow_filed_docs:
             results['filed_docs'] = _run_section(
                 'filed_docs',
                 lambda: _search_filed_docs(
@@ -2613,7 +2768,7 @@ def search():
                 ),
             )
 
-        if search_type in ('all', 'donor_keys'):
+        if search_type in ('all', 'donor_keys') and allow_donor_keys:
             results['donor_keys'] = _run_section(
                 'donor_keys',
                 lambda: _search_donor_keys(
@@ -2623,6 +2778,21 @@ def search():
                     date_from=date_from,
                     date_to=date_to,
                 ),
+            )
+
+        if not search_meta["timed_out_sections"] and not search_meta["errored_sections"]:
+            _set_cached_search_results(
+                period,
+                query,
+                search_type,
+                {
+                    "committees": results["committees"],
+                    "donors": results["donors"],
+                    "candidates": results["candidates"],
+                    "reports": results["reports"],
+                    "filed_docs": results["filed_docs"],
+                    "donor_keys": results["donor_keys"],
+                },
             )
 
     search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)

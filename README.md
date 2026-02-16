@@ -371,6 +371,8 @@ Environment variables (set in `.env` or export directly):
 | `SEARCH_MAX_QUERY_LENGTH` | `64` | Max search input length before truncation |
 | `SEARCH_QUERY_TIMEOUT_MS` | `700` | Per-section query timeout guardrail on `/search` |
 | `SEARCH_SLOW_QUERY_MS` | `400` | Threshold for slow-search warning logs |
+| `SEARCH_RESULTS_CACHE_TTL_SECONDS` | `120` | TTL for in-process cached `/search` responses (by period + query + type) |
+| `SEARCH_RESULTS_CACHE_MAX_ENTRIES` | `256` | Max retained cached `/search` keys before LRU eviction |
 | `FEDERAL_VIEW_CACHE_ENABLED` | `true` | Enable snapshot caching for heavy federal views |
 | `FEDERAL_OVERVIEW_CACHE_TTL_SECONDS` | `900` | Cache TTL for federal overview computations |
 | `FEDERAL_NETWORKS_CACHE_TTL_SECONDS` | `600` | Cache TTL for federal network/overlap graphs |
@@ -401,6 +403,14 @@ Environment variables (set in `.env` or export directly):
 - Homepage now reuses cached insights and top-donor datasets; top donors prefer `analytics_donor_summary` for faster reads when available.
 - Added startup prewarm (`DASHBOARD_PREWARM_ENABLED`) to reduce first-visit latency after process restart.
 - Added `irs527_contributor_rollup` population in the IRS 527 loader path so dark-money and contribution-facing summaries avoid repeated full-table scans.
+- Added `/search` response caching and section guards:
+  - `filed_docs` search runs only for doc-like queries in `type=all`.
+  - `donor_keys` search runs only for key-like queries in `type=all`.
+  - explicit `type=filed_docs` / `type=donor_keys` still forces those sections.
+- Added index-backed 527 query optimizations:
+  - use `amount > 0` predicates (instead of `COALESCE(amount, 0) > 0`) so numeric indexes are used.
+  - date filters use dual-format text ranges (`YYYY-MM-DD` and `YYYYMMDD`) to stay index-friendly without `DATE(column)` wrappers.
+  - new indexes: `idx_irs527_contributions_name_amount`, `idx_irs527_contributions_date_amount`, `idx_irs527_expenditures_date_amount`.
 - Expected behavior: first request after cache expiry/restart can still be slower; subsequent warm requests should be significantly faster.
 
 ## Server Deployment

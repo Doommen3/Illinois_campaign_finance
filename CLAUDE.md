@@ -94,6 +94,8 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS`
    - `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_PREWARM_ENABLED`
+   - `SEARCH_RESULTS_CACHE_TTL_SECONDS`
+   - `SEARCH_RESULTS_CACHE_MAX_ENTRIES`
    - `SOCRATA_APP_NAME`
    - `SOCRATA_APP_TOKEN`
    - `SOCRATA_APP_SECRET`
@@ -104,6 +106,15 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `SOCRATA_API_MIN_INTERVAL_SECONDS`
 - Homepage donor query fast path uses `analytics_donor_summary` (fallback remains legacy donor totals query if the summary table is absent).
 - 527 contribution ingest now populates `irs527_contributor_rollup` to reduce expensive recomputation for contribution summary metrics.
+- Search route performance guardrails:
+  - In `type=all`, `filed_docs` runs only for doc-id-like queries.
+  - In `type=all`, `donor_keys` runs only for donor-key-like queries.
+  - Search responses are cached in-process by `period + query + type`.
+- 527 contribution/expenditure route queries should prefer indexable predicates (`amount > 0`) and dual-format date range filters (`YYYY-MM-DD` + `YYYYMMDD`) over `DATE(column)` wrappers.
+- Required 527 indexes for perf-sensitive routes:
+  - `idx_irs527_contributions_name_amount`
+  - `idx_irs527_contributions_date_amount`
+  - `idx_irs527_expenditures_date_amount`
 - Global time-filter canonical semantics:
    - Report-driven pages/queries filter by `filed_date`.
    - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).

@@ -1059,6 +1059,7 @@ CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_ein ON irs527_expenditures(ei
 CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_state ON irs527_expenditures(state);
 CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_recipient ON irs527_expenditures(recipient_name);
 CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_amount ON irs527_expenditures(amount DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_expenditures_date_amount ON irs527_expenditures(date, amount DESC);
 
 CREATE TABLE IF NOT EXISTS irs527_election_authority (
     rowid_local INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1183,6 +1184,8 @@ CREATE INDEX IF NOT EXISTS idx_irs527_contributions_ein ON irs527_contributions(
 CREATE INDEX IF NOT EXISTS idx_irs527_contributions_state ON irs527_contributions(state);
 CREATE INDEX IF NOT EXISTS idx_irs527_contributions_name ON irs527_contributions(contributor_name);
 CREATE INDEX IF NOT EXISTS idx_irs527_contributions_amount ON irs527_contributions(amount DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_contributions_name_amount ON irs527_contributions(contributor_name, amount DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_contributions_date_amount ON irs527_contributions(date, amount DESC);
 
 CREATE TABLE IF NOT EXISTS irs527_contribution_rollup (
     ein TEXT PRIMARY KEY,

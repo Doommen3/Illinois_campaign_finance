@@ -44,6 +44,41 @@ def _resolved_transaction_window() -> tuple[dict, str | None, str | None]:
     return period, date_from, date_to
 
 
+def _text_date_window_clause(
+    column: str,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    prefix: str = "AND",
+) -> tuple[str, list[object]]:
+    start_iso = (date_from or "").strip()[:10]
+    end_iso = (date_to or "").strip()[:10]
+    if not start_iso and not end_iso:
+        return "", []
+
+    iso_parts: list[str] = []
+    iso_params: list[object] = []
+    compact_parts: list[str] = []
+    compact_params: list[object] = []
+
+    if start_iso:
+        iso_parts.append(f"{column} >= ?")
+        iso_params.append(start_iso)
+        compact_parts.append(f"{column} >= ?")
+        compact_params.append(start_iso.replace("-", ""))
+    if end_iso:
+        iso_parts.append(f"{column} <= ?")
+        iso_params.append(end_iso)
+        compact_parts.append(f"{column} <= ?")
+        compact_params.append(end_iso.replace("-", ""))
+
+    if not iso_parts:
+        return "", []
+
+    clause = f" {prefix} (({' AND '.join(iso_parts)}) OR ({' AND '.join(compact_parts)}))"
+    return clause, iso_params + compact_params
+
+
 def _get_dark_money_contribution_stats(
     conn,
     *,
@@ -70,25 +105,22 @@ def _get_dark_money_contribution_stats(
 
     contribution_stats = {"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []}
 
-    contribution_date_clause = ""
-    contribution_date_params: list[object] = []
-    if date_from:
-        contribution_date_clause += " AND DATE(date) >= DATE(?)"
-        contribution_date_params.append(date_from)
-    if date_to:
-        contribution_date_clause += " AND DATE(date) <= DATE(?)"
-        contribution_date_params.append(date_to)
+    contribution_date_clause, contribution_date_params = _text_date_window_clause(
+        "date",
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     if _table_exists(conn, "irs527_contributions"):
         contribution_stats["total_amount"] = float(_scalar(
             conn,
-            f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contribution_date_clause}",
+            f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE amount > 0{contribution_date_clause}",
             params=tuple(contribution_date_params),
             default=0,
         ))
         contribution_stats["row_count"] = int(_scalar(
             conn,
-            f"SELECT COUNT(*) FROM irs527_contributions WHERE COALESCE(amount, 0) > 0{contribution_date_clause}",
+            f"SELECT COUNT(*) FROM irs527_contributions WHERE amount > 0{contribution_date_clause}",
             params=tuple(contribution_date_params),
             default=0,
         ))
@@ -103,7 +135,7 @@ def _get_dark_money_contribution_stats(
             SELECT contributor_name, SUM(amount) AS total_amount, COUNT(*) AS cnt
             FROM irs527_contributions
             WHERE contributor_name IS NOT NULL AND contributor_name != ''
-              AND COALESCE(amount, 0) > 0
+              AND amount > 0
               {contribution_date_clause}
             GROUP BY contributor_name
             ORDER BY total_amount DESC
@@ -147,7 +179,7 @@ def list_orgs():
         return render_template('irs527/list.html', orgs=[], total=0,
                                page=1, total_pages=1, query='')
 
-    page = request.args.get('page', 1, type=int)
+    page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
     offset = (page - 1) * per_page
     query = request.args.get('q', '').strip()
@@ -163,18 +195,16 @@ def list_orgs():
     expenditure_join_sql = ""
     expenditure_join_params: list[object] = []
     if _table_exists(conn, "irs527_expenditures"):
-        expenditure_date_clause = ""
-        if date_from:
-            expenditure_date_clause += " AND DATE(date) >= DATE(?)"
-            expenditure_join_params.append(date_from)
-        if date_to:
-            expenditure_date_clause += " AND DATE(date) <= DATE(?)"
-            expenditure_join_params.append(date_to)
+        expenditure_date_clause, expenditure_join_params = _text_date_window_clause(
+            "date",
+            date_from=date_from,
+            date_to=date_to,
+        )
         expenditure_join_sql = f"""
         LEFT JOIN (
             SELECT ein, COALESCE(SUM(amount), 0) AS total_expenditures
             FROM irs527_expenditures
-            WHERE COALESCE(amount, 0) > 0
+            WHERE amount > 0
             {expenditure_date_clause}
             GROUP BY ein
         ) ex ON ex.ein = o.ein
@@ -183,18 +213,16 @@ def list_orgs():
     contribution_join_sql = ""
     contribution_join_params: list[object] = []
     if _table_exists(conn, "irs527_contributions"):
-        contribution_date_clause = ""
-        if date_from:
-            contribution_date_clause += " AND DATE(date) >= DATE(?)"
-            contribution_join_params.append(date_from)
-        if date_to:
-            contribution_date_clause += " AND DATE(date) <= DATE(?)"
-            contribution_join_params.append(date_to)
+        contribution_date_clause, contribution_join_params = _text_date_window_clause(
+            "date",
+            date_from=date_from,
+            date_to=date_to,
+        )
         contribution_join_sql = f"""
         LEFT JOIN (
             SELECT ein, COALESCE(SUM(amount), 0) AS total_contributions
             FROM irs527_contributions
-            WHERE COALESCE(amount, 0) > 0
+            WHERE amount > 0
             {contribution_date_clause}
             GROUP BY ein
         ) ic ON ic.ein = o.ein
@@ -298,23 +326,19 @@ def org_detail(ein):
         "latest_period": (financial_row["latest_period"] if financial_row else None),
     }
 
-    exp_date_clause = ""
-    exp_date_params: list[object] = [ein]
-    if date_from:
-        exp_date_clause += " AND DATE(date) >= DATE(?)"
-        exp_date_params.append(date_from)
-    if date_to:
-        exp_date_clause += " AND DATE(date) <= DATE(?)"
-        exp_date_params.append(date_to)
+    exp_date_clause, exp_date_window_params = _text_date_window_clause(
+        "date",
+        date_from=date_from,
+        date_to=date_to,
+    )
+    exp_date_params: list[object] = [ein, *exp_date_window_params]
 
-    contrib_date_clause = ""
-    contrib_date_params: list[object] = [ein]
-    if date_from:
-        contrib_date_clause += " AND DATE(date) >= DATE(?)"
-        contrib_date_params.append(date_from)
-    if date_to:
-        contrib_date_clause += " AND DATE(date) <= DATE(?)"
-        contrib_date_params.append(date_to)
+    contrib_date_clause, contrib_date_window_params = _text_date_window_clause(
+        "date",
+        date_from=date_from,
+        date_to=date_to,
+    )
+    contrib_date_params: list[object] = [ein, *contrib_date_window_params]
 
     transaction_dates: list[str] = []
     if _table_exists(conn, "irs527_expenditures"):
@@ -326,7 +350,7 @@ def org_detail(ein):
                 MAX(date) AS last_date
             FROM irs527_expenditures
             WHERE ein = ?
-              AND COALESCE(amount, 0) > 0
+              AND amount > 0
               {exp_date_clause}
             """,
             tuple(exp_date_params),
@@ -347,7 +371,7 @@ def org_detail(ein):
                 MAX(date) AS last_date
             FROM irs527_contributions
             WHERE ein = ?
-              AND COALESCE(amount, 0) > 0
+              AND amount > 0
               {contrib_date_clause}
             """,
             tuple(contrib_date_params),
@@ -458,7 +482,7 @@ def org_detail(ein):
         ).fetchall()
         contribution_total = float(_scalar(
             conn,
-            f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE ein = ? AND COALESCE(amount, 0) > 0{contrib_date_clause}",
+            f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE ein = ? AND amount > 0{contrib_date_clause}",
             params=tuple(contrib_date_params),
             default=0,
         ))
@@ -486,7 +510,7 @@ def dark_money():
                                page=1, total_pages=1, sort='score', sort_dir='desc',
                                contribution_stats={"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []})
 
-    page = request.args.get('page', 1, type=int)
+    page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
     offset = (page - 1) * per_page
     sort = request.args.get('sort', 'score')
@@ -501,14 +525,11 @@ def dark_money():
     has_expenditures = _table_exists(conn, "irs527_expenditures")
     filtered_by_date = has_expenditures and bool(date_from or date_to)
     if filtered_by_date:
-        date_clause = ""
-        date_params: list[object] = []
-        if date_from:
-            date_clause += " AND DATE(e.date) >= DATE(?)"
-            date_params.append(date_from)
-        if date_to:
-            date_clause += " AND DATE(e.date) <= DATE(?)"
-            date_params.append(date_to)
+        date_clause, date_params = _text_date_window_clause(
+            "e.date",
+            date_from=date_from,
+            date_to=date_to,
+        )
         total = int(
             _scalar(
                 conn,

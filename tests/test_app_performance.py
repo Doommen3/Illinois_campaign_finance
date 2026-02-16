@@ -148,11 +148,76 @@ def test_relationships_network_cached_across_requests(tmp_path: Path, monkeypatc
     monkeypatch.setattr(analytics_routes, "get_irs527_ecosystem_graph", fake_ecosystem)
 
     client = app.test_client()
-    first = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31")
-    second = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31")
+    first = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31&load_mode=full")
+    second = client.get("/analytics/relationships?date_from=2025-01-01&date_to=2025-12-31&load_mode=full")
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert call_count["value"] == 5
     assert graph_date_args["lobbying"] == {"date_from": "2025-01-01", "date_to": "2025-12-31"}
     assert graph_date_args["ecosystem"] == {"date_from": "2025-01-01", "date_to": "2025-12-31"}
+
+
+def test_search_results_cached_across_requests(tmp_path: Path, monkeypatch):
+    db_path = str(tmp_path / "search_cache.db")
+    init_db(db_path)
+
+    main_routes._search_results_cache.clear()
+    call_count = {"value": 0}
+
+    def fake_search_reports(*args, **kwargs):
+        call_count["value"] += 1
+        return []
+
+    monkeypatch.setattr(main_routes, "_search_reports", fake_search_reports)
+
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE_PATH": db_path,
+            "ROUTE_PERF_CACHE_ENABLED": True,
+            "SEARCH_RESULTS_CACHE_TTL_SECONDS": 60,
+            "SEARCH_RESULTS_CACHE_MAX_ENTRIES": 64,
+        }
+    )
+
+    client = app.test_client()
+    first = client.get("/search?q=sample&type=reports")
+    second = client.get("/search?q=sample&type=reports")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert call_count["value"] == 1
+
+
+def test_search_all_skips_heavy_sections_for_non_key_queries(tmp_path: Path, monkeypatch):
+    db_path = str(tmp_path / "search_sections.db")
+    init_db(db_path)
+
+    call_count = {"filed_docs": 0, "donor_keys": 0}
+
+    def fake_filed_docs(*args, **kwargs):
+        call_count["filed_docs"] += 1
+        return []
+
+    def fake_donor_keys(*args, **kwargs):
+        call_count["donor_keys"] += 1
+        return []
+
+    monkeypatch.setattr(main_routes, "_search_filed_docs", fake_filed_docs)
+    monkeypatch.setattr(main_routes, "_search_donor_keys", fake_donor_keys)
+
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE_PATH": db_path,
+            "ROUTE_PERF_CACHE_ENABLED": False,
+        }
+    )
+
+    client = app.test_client()
+    response = client.get("/search?q=illinois&type=all")
+
+    assert response.status_code == 200
+    assert call_count["filed_docs"] == 0
+    assert call_count["donor_keys"] == 0
