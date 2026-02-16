@@ -2678,51 +2678,42 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
     conn.execute("DELETE FROM analytics_large_contributions WHERE source = 'contributions'")
     conn.execute("DELETE FROM analytics_donor_summary WHERE source = 'contributions'")
 
-    donor_rows = conn.execute(
+    conn.execute(
         """
+        INSERT INTO analytics_donor_committee_agg (
+            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            occupation, employer, committee_id, committee_name, total_amount, contribution_count, updated_at
+        )
         SELECT
-            d.id AS donor_id,
-            d.name AS donor_name,
-            d.address AS donor_address,
-            c.id AS committee_id,
-            c.name AS committee_name,
+            'contributions' AS source,
+            'donor:' || d.id AS donor_key,
+            COALESCE(d.name, 'Donor ' || d.id) AS donor_name,
+            COALESCE(d.address, '') AS donor_address,
+            NULL AS donor_city,
+            NULL AS donor_state,
+            NULL AS occupation,
+            NULL AS employer,
+            CAST(c.id AS TEXT) AS committee_id,
+            COALESCE(c.name, 'Committee ' || c.id) AS committee_name,
             COALESCE(SUM(ct.amount), 0) AS total_amount,
-            COUNT(ct.id) AS contribution_count
+            COUNT(ct.id) AS contribution_count,
+            CURRENT_TIMESTAMP AS updated_at
         FROM contributions ct
         JOIN donors d ON d.id = ct.donor_id
         JOIN reports r ON r.id = ct.report_id
         JOIN committees c ON c.id = r.committee_id
         GROUP BY d.id, c.id
         """
-    ).fetchall()
-    donor_payload = [
-        (
-            "contributions",
-            f"donor:{row['donor_id']}",
-            row["donor_name"] or f"Donor {row['donor_id']}",
-            row["donor_address"] or "",
-            None,
-            None,
-            None,
-            None,
-            str(row["committee_id"]),
-            row["committee_name"] or f"Committee {row['committee_id']}",
-            float(row["total_amount"] or 0.0),
-            int(row["contribution_count"] or 0),
-        )
-        for row in donor_rows
-    ]
-    if donor_payload:
-        conn.executemany(
+    )
+    donor_inserted = int(
+        conn.execute(
             """
-            INSERT INTO analytics_donor_committee_agg (
-                source, donor_key, donor_name, donor_address, donor_city, donor_state,
-                occupation, employer, committee_id, committee_name, total_amount, contribution_count, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            donor_payload,
-        )
-        donor_inserted = len(donor_payload)
+            SELECT COUNT(*) AS count
+            FROM analytics_donor_committee_agg
+            WHERE source = 'contributions'
+            """
+        ).fetchone()["count"]
+    )
 
     conn.execute(
         """
@@ -2761,88 +2752,111 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
         ).fetchone()["count"]
     )
 
-    monthly_totals: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
-    rows = conn.execute(
-        """
+    month_key_expr = """
+        CASE
+            WHEN ct.transaction_date IS NOT NULL AND TRIM(ct.transaction_date) != '' THEN
+                CASE
+                    WHEN ct.transaction_date LIKE '____-__-__%' THEN SUBSTR(ct.transaction_date, 1, 7)
+                    WHEN ct.transaction_date LIKE '____-__' THEN SUBSTR(ct.transaction_date, 1, 7)
+                    WHEN ct.transaction_date LIKE '__/__/____%' THEN SUBSTR(ct.transaction_date, 7, 4) || '-' || SUBSTR(ct.transaction_date, 1, 2)
+                    WHEN ct.transaction_date LIKE '__/__/__%' THEN '20' || SUBSTR(ct.transaction_date, 7, 2) || '-' || SUBSTR(ct.transaction_date, 1, 2)
+                    ELSE NULL
+                END
+            WHEN r.filed_date IS NOT NULL AND TRIM(r.filed_date) != '' THEN
+                CASE
+                    WHEN r.filed_date LIKE '____-__-__%' THEN SUBSTR(r.filed_date, 1, 7)
+                    WHEN r.filed_date LIKE '____-__' THEN SUBSTR(r.filed_date, 1, 7)
+                    WHEN r.filed_date LIKE '__/__/____%' THEN SUBSTR(r.filed_date, 7, 4) || '-' || SUBSTR(r.filed_date, 1, 2)
+                    WHEN r.filed_date LIKE '__/__/__%' THEN '20' || SUBSTR(r.filed_date, 7, 2) || '-' || SUBSTR(r.filed_date, 1, 2)
+                    ELSE NULL
+                END
+            ELSE NULL
+        END
+    """
+    conn.execute(
+        f"""
+        INSERT INTO analytics_committee_monthly_totals (
+            source, committee_name, month_key, month_total, contribution_count, updated_at
+        )
         SELECT
+            'contributions' AS source,
+            src.committee_name,
+            src.month_key,
+            ROUND(COALESCE(SUM(src.amount), 0), 2) AS month_total,
+            COUNT(*) AS contribution_count,
+            CURRENT_TIMESTAMP AS updated_at
+        FROM (
+            SELECT
+                ct.amount AS amount,
+                COALESCE(c.name, 'Unknown Committee') AS committee_name,
+                {month_key_expr} AS month_key
+            FROM contributions ct
+            JOIN reports r ON r.id = ct.report_id
+            JOIN committees c ON c.id = r.committee_id
+            WHERE ct.amount IS NOT NULL AND ct.amount > 0
+        ) src
+        WHERE src.month_key IS NOT NULL
+          AND LENGTH(src.month_key) = 7
+        GROUP BY src.committee_name, src.month_key
+        """
+    )
+    monthly_inserted = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM analytics_committee_monthly_totals
+            WHERE source = 'contributions'
+            """
+        ).fetchone()["count"]
+    )
+
+    p95_row = conn.execute(
+        """
+        WITH ordered AS (
+            SELECT
+                amount,
+                ROW_NUMBER() OVER (ORDER BY amount) AS rn,
+                COUNT(*) OVER () AS cnt
+            FROM contributions
+            WHERE amount IS NOT NULL AND amount > 0
+        )
+        SELECT amount
+        FROM ordered
+        WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+        LIMIT 1
+        """
+    ).fetchone()
+    p95 = float(p95_row["amount"] or 0.0) if p95_row else 0.0
+    large_threshold = max(5000.0, p95 * 2.0)
+    conn.execute(
+        """
+        INSERT INTO analytics_large_contributions (
+            source, committee_name, donor_name, event_date, amount, large_threshold
+        )
+        SELECT
+            'contributions' AS source,
+            COALESCE(c.name, 'Unknown Committee') AS committee_name,
+            'Unknown Donor' AS donor_name,
+            COALESCE(NULLIF(TRIM(ct.transaction_date), ''), NULLIF(TRIM(r.filed_date), '')) AS event_date,
             ct.amount AS amount,
-            ct.transaction_date AS transaction_date,
-            r.filed_date AS filed_date,
-            c.name AS committee_name
+            ? AS large_threshold
         FROM contributions ct
         JOIN reports r ON r.id = ct.report_id
         JOIN committees c ON c.id = r.committee_id
-        WHERE ct.amount IS NOT NULL AND ct.amount > 0
-        """
-    ).fetchall()
-
-    amounts = []
-    large_candidate_rows = []
-    for row in rows:
-        amount = float(row["amount"] or 0.0)
-        amounts.append(amount)
-
-        event_date = _parse_date(row["transaction_date"]) or _parse_date(row["filed_date"])
-        if event_date:
-            month_key = event_date.strftime("%Y-%m")
-            key = (row["committee_name"] or "Unknown Committee", month_key)
-            monthly_totals[key][0] += amount
-            monthly_totals[key][1] += 1
-
-        large_candidate_rows.append(
-            {
-                "committee_name": row["committee_name"] or "Unknown Committee",
-                "event_date": row["transaction_date"] or row["filed_date"],
-                "amount": amount,
-                "donor_name": None,
-            }
-        )
-
-    monthly_payload = [
-        (
-            "contributions",
-            committee_name,
-            month_key,
-            round(total_amount, 2),
-            int(contribution_count),
-        )
-        for (committee_name, month_key), (total_amount, contribution_count) in monthly_totals.items()
-    ]
-    if monthly_payload:
-        conn.executemany(
+        WHERE ct.amount IS NOT NULL
+          AND ct.amount >= ?
+        """,
+        (float(large_threshold), float(large_threshold)),
+    )
+    large_inserted = int(
+        conn.execute(
             """
-            INSERT INTO analytics_committee_monthly_totals (
-                source, committee_name, month_key, month_total, contribution_count, updated_at
-            ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            monthly_payload,
-        )
-        monthly_inserted = len(monthly_payload)
-
-    p95 = _percentile(amounts, 0.95) if amounts else 0.0
-    large_threshold = max(5000.0, p95 * 2.0)
-    large_payload = [
-        (
-            "contributions",
-            row["committee_name"],
-            row["donor_name"] or "Unknown Donor",
-            row["event_date"],
-            float(row["amount"] or 0.0),
-            large_threshold,
-        )
-        for row in large_candidate_rows
-        if float(row["amount"] or 0.0) >= large_threshold
-    ]
-    if large_payload:
-        conn.executemany(
+            SELECT COUNT(*) AS count
+            FROM analytics_large_contributions
+            WHERE source = 'contributions'
             """
-            INSERT INTO analytics_large_contributions (
-                source, committee_name, donor_name, event_date, amount, large_threshold
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            large_payload,
-        )
-        large_inserted = len(large_payload)
+        ).fetchone()["count"]
+    )
 
     conn.execute(
         """

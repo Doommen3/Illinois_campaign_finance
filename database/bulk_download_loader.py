@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 import sqlite3
 import sys
@@ -76,6 +77,7 @@ def _to_bool(value: str | None) -> Optional[int]:
     return None
 
 
+@lru_cache(maxsize=131072)
 def _normalize_bulk_receipt_date(value: str | None) -> tuple[Optional[str], Optional[str]]:
     """Normalize receipt date to YYYY-MM-DD and preserve raw datetime text when present."""
     cleaned = _clean_text(value)

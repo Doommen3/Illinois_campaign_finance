@@ -733,64 +733,70 @@ def _seed_rows_from_csv(csv_path: Path, default_cycle: int | None) -> list[dict]
 
 
 def _upsert_seed_rows(conn: sqlite3.Connection, seed_rows: list[dict], source_file: str) -> None:
-    for row in seed_rows:
-        conn.execute(
-            """
-            INSERT INTO fec_il_candidate_seed (
-                candidate_key,
-                as_of_date,
-                cycle,
-                office,
-                office_code,
-                district,
-                district_code,
-                party,
-                party_code,
-                election_stage,
-                candidate_name,
-                normalized_candidate_name,
-                write_in,
-                already_listed_general,
-                source_file,
-                source_row_number
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(candidate_key) DO UPDATE SET
-                as_of_date = excluded.as_of_date,
-                cycle = excluded.cycle,
-                office = excluded.office,
-                office_code = excluded.office_code,
-                district = excluded.district,
-                district_code = excluded.district_code,
-                party = excluded.party,
-                party_code = excluded.party_code,
-                election_stage = excluded.election_stage,
-                candidate_name = excluded.candidate_name,
-                normalized_candidate_name = excluded.normalized_candidate_name,
-                write_in = excluded.write_in,
-                already_listed_general = excluded.already_listed_general,
-                source_file = excluded.source_file,
-                source_row_number = excluded.source_row_number,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                row["candidate_key"],
-                row["as_of_date"],
-                row["cycle"],
-                row["office"],
-                row["office_code"],
-                row["district"],
-                row["district_code"],
-                row["party"],
-                row["party_code"],
-                row["election_stage"],
-                row["candidate_name"],
-                row["normalized_candidate_name"],
-                row["write_in"],
-                row["already_listed_general"],
-                source_file,
-                row["source_row_number"],
-            ),
+    if not seed_rows:
+        return
+
+    payload = [
+        (
+            row["candidate_key"],
+            row["as_of_date"],
+            row["cycle"],
+            row["office"],
+            row["office_code"],
+            row["district"],
+            row["district_code"],
+            row["party"],
+            row["party_code"],
+            row["election_stage"],
+            row["candidate_name"],
+            row["normalized_candidate_name"],
+            row["write_in"],
+            row["already_listed_general"],
+            source_file,
+            row["source_row_number"],
         )
+        for row in seed_rows
+    ]
+    conn.executemany(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key,
+            as_of_date,
+            cycle,
+            office,
+            office_code,
+            district,
+            district_code,
+            party,
+            party_code,
+            election_stage,
+            candidate_name,
+            normalized_candidate_name,
+            write_in,
+            already_listed_general,
+            source_file,
+            source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_key) DO UPDATE SET
+            as_of_date = excluded.as_of_date,
+            cycle = excluded.cycle,
+            office = excluded.office,
+            office_code = excluded.office_code,
+            district = excluded.district,
+            district_code = excluded.district_code,
+            party = excluded.party,
+            party_code = excluded.party_code,
+            election_stage = excluded.election_stage,
+            candidate_name = excluded.candidate_name,
+            normalized_candidate_name = excluded.normalized_candidate_name,
+            write_in = excluded.write_in,
+            already_listed_general = excluded.already_listed_general,
+            source_file = excluded.source_file,
+            source_row_number = excluded.source_row_number,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        payload,
+    )
 
 
 def _score_candidate_match(seed: dict, candidate: dict) -> float:
@@ -961,44 +967,12 @@ def _upsert_candidate_committees(
     cycle: int,
     committees: list[dict],
 ) -> int:
-    count = 0
+    payload: list[tuple[Any, ...]] = []
     for committee in committees:
         committee_id = _clean_text(committee.get("committee_id"))
         if not committee_id:
             continue
-
-        conn.execute(
-            """
-            INSERT INTO fec_candidate_committees (
-                candidate_id,
-                committee_id,
-                cycle,
-                committee_name,
-                committee_type,
-                committee_designation,
-                committee_designation_full,
-                filing_frequency,
-                committee_party,
-                committee_city,
-                committee_state,
-                committee_zip,
-                is_principal,
-                source_payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(candidate_id, committee_id, cycle) DO UPDATE SET
-                committee_name = excluded.committee_name,
-                committee_type = excluded.committee_type,
-                committee_designation = excluded.committee_designation,
-                committee_designation_full = excluded.committee_designation_full,
-                filing_frequency = excluded.filing_frequency,
-                committee_party = excluded.committee_party,
-                committee_city = excluded.committee_city,
-                committee_state = excluded.committee_state,
-                committee_zip = excluded.committee_zip,
-                is_principal = excluded.is_principal,
-                source_payload_json = excluded.source_payload_json,
-                updated_at = CURRENT_TIMESTAMP
-            """,
+        payload.append(
             (
                 candidate_id,
                 committee_id,
@@ -1014,10 +988,47 @@ def _upsert_candidate_committees(
                 committee.get("committee_zip"),
                 committee.get("is_principal") or 0,
                 committee.get("source_payload_json"),
-            ),
+            )
         )
-        count += 1
-    return count
+
+    if not payload:
+        return 0
+
+    conn.executemany(
+        """
+        INSERT INTO fec_candidate_committees (
+            candidate_id,
+            committee_id,
+            cycle,
+            committee_name,
+            committee_type,
+            committee_designation,
+            committee_designation_full,
+            filing_frequency,
+            committee_party,
+            committee_city,
+            committee_state,
+            committee_zip,
+            is_principal,
+            source_payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_id, committee_id, cycle) DO UPDATE SET
+            committee_name = excluded.committee_name,
+            committee_type = excluded.committee_type,
+            committee_designation = excluded.committee_designation,
+            committee_designation_full = excluded.committee_designation_full,
+            filing_frequency = excluded.filing_frequency,
+            committee_party = excluded.committee_party,
+            committee_city = excluded.committee_city,
+            committee_state = excluded.committee_state,
+            committee_zip = excluded.committee_zip,
+            is_principal = excluded.is_principal,
+            source_payload_json = excluded.source_payload_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        payload,
+    )
+    return len(payload)
 
 
 def _safe_float(value: Any) -> float:
