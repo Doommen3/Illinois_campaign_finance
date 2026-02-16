@@ -30,6 +30,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     has_analytics_agg = _table_exists(conn, "analytics_donor_committee_agg")
     has_officers = _table_exists(conn, "isbe_officers")
     has_isbe_committees = _table_exists(conn, "isbe_committees")
+    has_filed_docs = _table_exists(conn, "isbe_filed_docs")
 
     committee_name = ""
     committee_meta = {}
@@ -283,6 +284,44 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             for row in officer_rows
         ]
 
+    filing_history: list[dict] = []
+    if has_filed_docs:
+        filing_rows = conn.execute(
+            """
+            SELECT id, doc_name, received_datetime,
+                   reporting_period_begin, reporting_period_end
+            FROM isbe_filed_docs
+            WHERE committee_id = ?
+            ORDER BY received_datetime DESC, id DESC
+            """,
+            (committee_id_sbe,),
+        ).fetchall()
+        filing_history = [
+            {
+                "id": row["id"],
+                "doc_name": row["doc_name"] or "",
+                "received_datetime": row["received_datetime"] or "",
+                "period_begin": row["reporting_period_begin"] or "",
+                "period_end": row["reporting_period_end"] or "",
+            }
+            for row in filing_rows
+        ]
+        # Derive original founding date from earliest Statement of Organization
+        d1_dates = [
+            f["received_datetime"]
+            for f in filing_history
+            if f["doc_name"] == "Statement of Organization" and f["received_datetime"]
+        ]
+        if d1_dates:
+            founding_dt = min(d1_dates)
+            # Extract date portion (YYYY-MM-DD) from datetime string
+            founding_date = str(founding_dt)[:10]
+            committee_meta["founding_date"] = founding_date
+            # If founding_date differs from creation_date, flag as re-activated
+            creation = committee_meta.get("creation_date")
+            if creation and str(creation)[:10] != founding_date:
+                committee_meta["reactivation_date"] = str(creation)[:10]
+
     return {
         "committee_id_sbe": committee_id_sbe,
         "committee_name": committee_name or f"Committee {committee_id_sbe}",
@@ -291,6 +330,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         "expenditures_summary": expenditures_summary,
         "candidate_links": candidate_links,
         "officers": officers,
+        "filing_history": filing_history,
         "top_donors": top_donors,
         "top_payees": top_payees,
     }

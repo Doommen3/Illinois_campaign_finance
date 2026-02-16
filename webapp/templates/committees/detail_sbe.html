@@ -17,7 +17,15 @@
         {% if profile.committee_meta.committee_type %} | Type: <strong>{{ profile.committee_meta.committee_type }}</strong>{% endif %}
         {% if profile.committee_meta.party %} | Party: <strong>{{ profile.committee_meta.party }}</strong>{% endif %}
     </p>
-    {% if profile.committee_meta.creation_date %}
+    {% if profile.committee_meta.founding_date %}
+    <p class="subtitle">
+        Founded: <strong>{{ profile.committee_meta.founding_date }}</strong>
+        {% if profile.committee_meta.reactivation_date %}
+            | Re-activated: <strong>{{ profile.committee_meta.reactivation_date }}</strong>
+        {% endif %}
+        {% if profile.committee_meta.creation_amount %} | Initial Funds: <strong>{{ format_currency(profile.committee_meta.creation_amount) }}</strong>{% endif %}
+    </p>
+    {% elif profile.committee_meta.creation_date %}
     <p class="subtitle">
         Created: <strong>{{ profile.committee_meta.creation_date }}</strong>
         {% if profile.committee_meta.creation_amount %} | Initial Funds: <strong>{{ format_currency(profile.committee_meta.creation_amount) }}</strong>{% endif %}
@@ -84,6 +92,26 @@
                 <td>{{ officer.name }}</td>
                 <td>{{ officer.title }}</td>
                 <td>{{ officer.city }}{% if officer.state %}, {{ officer.state }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if profile.filing_history %}
+<div class="status-section">
+    <h2>Filing History</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Document</th><th>Filed</th><th>Reporting Period</th></tr>
+        </thead>
+        <tbody>
+            {% for filing in profile.filing_history %}
+            <tr>
+                <td>{{ filing.doc_name }}</td>
+                <td>{{ filing.received_datetime[:10] if filing.received_datetime|length > 10 else filing.received_datetime }}</td>
+                <td>{% if filing.period_begin %}{{ filing.period_begin }} to {{ filing.period_end }}{% else %}&mdash;{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>

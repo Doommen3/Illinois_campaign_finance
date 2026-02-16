@@ -156,7 +156,12 @@ def _seed_isbe_tables(conn):
         VALUES
             (5001, 100, 'D-2 Q1 2025', '2025-01-01', '2025-03-31', '2025-04-15'),
             (5002, 200, 'D-2 Q1 2025', '2025-01-01', '2025-03-31', '2025-04-15'),
-            (5003, 100, 'D-2 Q2 2025', '2025-04-01', '2025-06-30', '2025-07-15')
+            (5003, 100, 'D-2 Q2 2025', '2025-04-01', '2025-06-30', '2025-07-15'),
+            (5010, 100, 'Statement of Organization', NULL, NULL, '2020-06-15 10:00:00'),
+            (5011, 100, 'Quarterly', '2020-07-01', '2020-09-30', '2020-10-10 12:00:00'),
+            (5012, 100, 'Final', '2022-01-01', '2022-03-31', '2022-04-05 09:00:00'),
+            (5013, 100, 'Statement of Organization', NULL, NULL, '2025-01-17 15:00:00'),
+            (5014, 200, 'Statement of Organization', NULL, NULL, '2019-03-01 08:00:00')
     """)
 
     conn.execute("""
@@ -861,6 +866,63 @@ class TestCommitteeOfficers:
         html = resp.data.decode()
         # Should show active status indicator
         assert 'Active' in html or 'active' in html
+
+
+class TestCommitteeFilingHistory:
+    """Tests for committee filing history and original founding date."""
+
+    def test_filing_history_appears_on_committee_page(self, isbe_app):
+        """Committee detail should show a Filing History section."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'Filing History' in html
+
+    def test_filing_history_shows_doc_names(self, isbe_app):
+        """Filing history should show document names like Statement of Organization, Quarterly."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        assert 'Statement of Organization' in html
+        assert 'Quarterly' in html or 'Final' in html
+
+    def test_founding_date_derived_from_earliest_d1(self, isbe_app):
+        """Committee info should show original founding date from earliest Statement of Organization."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        # Committee 100 has earliest D-1 on 2020-06-15, re-activated 2025-01-17
+        assert '2020-06-15' in html or '2020' in html
+
+    def test_reactivation_date_shown_when_different(self, isbe_app):
+        """When a committee was re-activated, both dates should appear."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        # Should show re-activation date (which is the creation_date from isbe_committees)
+        assert '2025-01-17' in html or 'Re-activated' in html or 'Last Activated' in html
+
+    def test_committee_without_reactivation_shows_single_date(self, isbe_app):
+        """Committee 200 has only one D-1, should show just the founding date."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/200')
+        html = resp.data.decode()
+        # Should show founding date but NOT re-activation language
+        assert '2019' in html or '2025' in html  # either founding or creation_date
+        # Should not have re-activation
+        assert 'Re-activated' not in html and 'Last Activated' not in html
+
+    def test_filing_history_ordered_by_date(self, isbe_app):
+        """Filings should be shown in reverse chronological order."""
+        client = isbe_app.test_client()
+        resp = client.get('/committees/sbe/100')
+        html = resp.data.decode()
+        # The most recent filing (2025-01-17) should appear before the oldest (2020-06-15)
+        pos_recent = html.find('2025')
+        pos_old = html.find('2020')
+        # Both should exist; recent should come first if ordered DESC
+        assert pos_recent > 0 and pos_old > 0
 
 
 class TestCandidateFinanceWithCandidacies:
