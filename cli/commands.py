@@ -193,6 +193,37 @@ def import_bulk_download_command(directory, refresh_analytics):
         conn.close()
 
 
+@cli.command('sunshine-import')
+@click.option('--bulk-dir', default='Bulk_download', show_default=True,
+              help='Directory containing ISBE bulk .txt files')
+@click.option('--download', is_flag=True,
+              help='Download missing files from elections.il.gov')
+@click.option('--tables', default='',
+              help='Comma-separated list of tables to load (default: all)')
+@click.option('--skip-views', is_flag=True,
+              help='Skip materialized view creation')
+def sunshine_import_command(bulk_dir, download, tables, skip_views):
+    """Import ISBE data using illinois-sunshine ETL (PostgreSQL-native).
+
+    Loads all 12 ISBE bulk file types into isbe_* tables with proper FKs,
+    then creates materialized views for deduplication (condensed_receipts,
+    condensed_expenditures) and summary (committee_money, candidate_money).
+    """
+    import subprocess
+    cmd = [sys.executable, 'scripts/isbe_sunshine_etl.py',
+           '--bulk-dir', bulk_dir]
+    if download:
+        cmd.append('--download')
+    if tables:
+        cmd.extend(['--tables', tables])
+    if skip_views:
+        cmd.append('--skip-views')
+    if config.DATABASE_URL:
+        cmd.extend(['--db-url', config.DATABASE_URL])
+    click.echo(f'Running: {" ".join(cmd)}')
+    result = subprocess.run(cmd)
+    sys.exit(result.returncode)
+
 @cli.command('clean-data')
 @click.option('--apply', is_flag=True, help='Apply changes (default is dry-run)')
 @click.option('--only', 'scope', type=click.Choice(['all', 'committees', 'donors']),
@@ -255,7 +286,9 @@ def clean_data_command(apply, scope):
               help='Minimum amount for inline seed generation')
 @click.option('--no-smart-search', is_flag=True, default=False,
               help='Disable smart search term generation (use raw seed text)')
-def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount, no_smart_search):
+@click.option('--sources', type=str, default=None,
+              help='Comma-separated seed sources (default: all). Options: expenditures,lobbying,chicago,fec,isbe')
+def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount, no_smart_search, sources):
     """Batch-resolve and scrape all pending OpenBook vendor seeds via HTTP."""
     conn = get_db(config.DATABASE_TARGET)
     max_errs = max_consecutive_errors if max_consecutive_errors is not None else config.OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS
@@ -282,6 +315,7 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
                 conn,
                 min_amount=min_amt,
                 limit_per_source=config.OPENBOOK_SEED_LIMIT_PER_SOURCE,
+                sources=sources or "all",
             )
             click.echo(f'  Seeds generated: {seed_stats.get("total_new_seeds", 0)} new')
 

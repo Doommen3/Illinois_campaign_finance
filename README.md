@@ -69,7 +69,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Python 3.12** — Core language
 - **Flask 3.0** — Web framework (Jinja2 templates)
 - **Playwright** — Async browser automation for scraping
-- **SQLite** — Database (WAL mode, 59-table schema, optimized pragmas)
+- **PostgreSQL 16** — Database (local and production)
 - **Click** — CLI command framework
 - **pytest** — Test suite
 
@@ -77,6 +77,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 
 ### Prerequisites
 - Python 3.12+
+- PostgreSQL 16+ (local: `brew install postgresql@16`)
 - An FEC API key (optional, for federal data sync)
 
 ### Setup
@@ -86,8 +87,12 @@ source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 
+# PostgreSQL setup (one-time)
+createdb ilcf
+export DATABASE_URL=postgresql://$(whoami)@localhost/ilcf
+
 # Optional: configure environment
-cp .env.example .env  # Add FEC_API_KEY, FLASK_SECRET_KEY, etc.
+cp .env.example .env  # Add DATABASE_URL, FEC_API_KEY, FLASK_SECRET_KEY, etc.
 ```
 
 ### Initialize and Load Data
@@ -95,8 +100,12 @@ cp .env.example .env  # Add FEC_API_KEY, FLASK_SECRET_KEY, etc.
 # Create database schema
 python run.py init-db
 
-# Import ISBE bulk download files
-python run.py import-bulk-download --directory Bulk_download
+# Import ISBE data via illinois-sunshine ETL (preferred — PostgreSQL-native)
+# Downloads missing files automatically with --download
+python run.py sunshine-import --bulk-dir Bulk_download --download
+
+# Legacy ISBE import (still works, loads into bulk_*_clean tables)
+# python run.py import-bulk-download --directory Bulk_download
 
 # Build analytics materialized views
 python run.py refresh-analytics
@@ -145,46 +154,13 @@ Compute-heavy workflow recommendation:
 - For commands expected to take significant CPU time (for example `import-irs527` and `run-cross-matching --only all`), consider running on your local machine first.
 - Prefer uploading resulting files or derived outputs to the server, and use server-side execution for steps that must run directly against production data.
 
-PostgreSQL (self-hosted) migration runbook:
-- See `docs/postgres_self_hosted_runbook.md` for install, migration, verification, backup, and cutover checklists.
-- Migration helper scripts:
-  - `scripts/postgres/migrate_sqlite_to_postgres.py`
-  - `scripts/postgres/verify_sqlite_postgres_counts.py`
-
-PostgreSQL runtime mode (web service):
-- The web runtime can now use PostgreSQL by setting `DATABASE_URL`.
-- If `DATABASE_URL` is set, the app uses it as the DB target; otherwise it falls back to `DATABASE_PATH` (SQLite).
-- Recommended staged cutover:
-  1. Keep SQLite value in `DATABASE_PATH` as rollback target.
-  2. Set `DATABASE_URL=postgresql://...` in the service environment.
-  3. Restart web service and run endpoint smoke checks.
-  4. If needed, unset `DATABASE_URL` and restart to roll back to SQLite immediately.
-  - Optional short-downtime cutover (simpler and now validated):
-    1. Ensure migration parity check reports `mismatches=0`.
-    2. Deploy latest app code and restart once on SQLite (`./scripts/deploy.sh`).
-    3. Set `DATABASE_URL` in `/srv/illinois_campaign_finance/shared/.env`.
-    4. Restart `ilcf-web.service` (brief downtime window).
-    5. Sweep critical endpoints:
-      - `/`, `/search?q=Chicago`, `/candidates`, `/federal-finance/`, `/analytics/`, `/lobbying/`, `/527/`, `/527/dark-money`
-    6. Confirm app runtime uses PostgreSQL:
-      ```bash
-      sudo -u app bash -lc 'cd /srv/illinois_campaign_finance/app && set -a && source /srv/illinois_campaign_finance/shared/.env && set +a && /srv/illinois_campaign_finance/shared/venv/bin/python3 - <<"PY"
-  from database.connection import get_db
-  conn = get_db()
-  print(type(conn).__name__)
-  row = conn.execute("SELECT current_database() AS db").fetchone()
-  print(row["db"] if isinstance(row, dict) else row[0])
-  conn.close()
-  PY'
-      ```
-      Expected: `PostgresCompatConnection` and `ilcf`.
-    7. If a regression appears, rollback immediately:
-      - Remove (or blank) `DATABASE_URL` in `.env`
-      - `systemctl restart ilcf-web.service`
-  - If a temporary debug server was used, shut it down after cutover:
-    ```bash
-    pkill -f 'run.py runserver --port 5051' || true
-    ```
+PostgreSQL:
+- PostgreSQL is the primary and only supported database for both local development and production.
+- `DATABASE_URL` must be set in all environments:
+  - Local: `DATABASE_URL=postgresql://devin@localhost/ilcf`
+  - Prod: set in `/srv/illinois_campaign_finance/shared/.env`
+- See `docs/postgres_self_hosted_runbook.md` for install, backup, and maintenance checklists.
+- Legacy migration scripts (from the SQLite→PostgreSQL migration) are in `scripts/postgres/` for reference only.
 
 ### Run Scrapers (Optional)
 ```bash
@@ -261,7 +237,7 @@ Visit `http://localhost:5000` to access the dashboard.
 ├── docs/                   Data update guide, roadmaps, checklists
 │   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
-└── data/                   SQLite database
+└── data/                   Legacy data directory (SQLite database deprecated)
 ```
 
 ## Testing
@@ -380,7 +356,8 @@ Environment variables (set in `.env` or export directly):
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_PATH` | `data/campaign_finance.db` | SQLite database path |
+| `DATABASE_URL` | `postgresql://devin@localhost/ilcf` | PostgreSQL connection string (required) |
+| `DATABASE_PATH` | `data/campaign_finance.db` | Legacy SQLite path (deprecated, unused) |
 | `FEC_API_KEY` | *(empty)* | FEC API key for federal data sync |
 | `APP_ENV` | `development` | Runtime environment (`development`, `staging`, `production`) |
 | `FLASK_SECRET_KEY` | `dev-secret-key...` | Flask session secret |
@@ -390,7 +367,7 @@ Environment variables (set in `.env` or export directly):
 | `API_RATE_LIMIT_PER_MINUTE` | `120` | Per-key/per-IP API request budget per minute |
 | `SEARCH_MIN_QUERY_LENGTH` | `2` | Minimum search length for non-numeric queries |
 | `SEARCH_MAX_QUERY_LENGTH` | `64` | Max search input length before truncation |
-| `SEARCH_QUERY_TIMEOUT_MS` | `700` | Per-section SQLite timeout guardrail on `/search` |
+| `SEARCH_QUERY_TIMEOUT_MS` | `700` | Per-section query timeout guardrail on `/search` |
 | `SEARCH_SLOW_QUERY_MS` | `400` | Threshold for slow-search warning logs |
 | `FEDERAL_VIEW_CACHE_ENABLED` | `true` | Enable snapshot caching for heavy federal views |
 | `FEDERAL_OVERVIEW_CACHE_TTL_SECONDS` | `900` | Cache TTL for federal overview computations |
@@ -471,7 +448,7 @@ First sync transfers the full ~5.5GB DB. Subsequent syncs use rsync's delta algo
 │   ├── scripts/
 │   │   └── sync-fec.sh         FEC sync automation
 │   ├── data/
-│   │   └── campaign_finance.db SQLite database
+│   │   └── (legacy — database now in PostgreSQL)
 │   └── ...
 └── shared/                     Persistent data across deploys
     ├── venv/                   Python virtual environment (used by systemd + CLI)
@@ -640,8 +617,7 @@ scp -i ~/.ssh/hetzner_ed25519 \
 
 # Server: optional DB backup before import
 ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56
-sqlite3 /srv/illinois_campaign_finance/shared/data/campaign_finance.db \
-  \".backup '/srv/illinois_campaign_finance/shared/data/campaign_finance_$(date +%F_%H%M%S).bak'\"
+pg_dump -Fc ilcf > /srv/illinois_campaign_finance/shared/data/ilcf_$(date +%F_%H%M%S).dump
 
 # Server: run bulk import (loads latest committees/d2/candidates/links/receipts/expenditures files)
 cd /srv/illinois_campaign_finance/app
@@ -853,7 +829,7 @@ $PYTHON run.py repair-irs527-reports \
 Post-repair verification:
 
 ```bash
-sqlite3 /srv/illinois_campaign_finance/shared/data/campaign_finance.db <<'SQL'
+psql ilcf <<'SQL'
 SELECT COUNT(*) AS reports, COUNT(DISTINCT ein) AS distinct_eins FROM irs527_reports;
 SELECT ein, COUNT(*) AS c, SUM(total_contributions), SUM(total_expenditures)
 FROM irs527_reports
@@ -868,7 +844,7 @@ SQL
 ```
 
 Notes:
-- Run SQL inside `sqlite3` (or heredoc as above). Raw SQL pasted directly into bash will fail with `syntax error near unexpected token '('`.
+- Run SQL inside `psql` (or heredoc as above). Raw SQL pasted directly into bash will fail with `syntax error near unexpected token '('`.
 - `--replace-existing` deletes current `irs527_reports` rows before rebuilding to remove bad legacy rows.
 
 ### Hourly Schedule E Catch-Up (independent expenditures)

@@ -18,12 +18,16 @@ def _env_list(name: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-# Database
+# Database — PostgreSQL is primary (local and production)
+DATABASE_URL = os.environ.get(
+    'DATABASE_URL',
+    'postgresql://devin@localhost/ilcf'
+)
+# Legacy SQLite path (deprecated — kept for backward compat during transition)
 DATABASE_PATH = os.environ.get(
     'DATABASE_PATH',
     str(BASE_DIR / 'data' / 'campaign_finance.db')
 )
-DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
 DATABASE_TARGET = DATABASE_URL or DATABASE_PATH
 
 # Rate limiting
@@ -84,6 +88,7 @@ OPENBOOK_BATCH_MAX_DELAY = float(os.environ.get('OPENBOOK_BATCH_MAX_DELAY', 2.0)
 OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS = int(os.environ.get('OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS', 10))
 OPENBOOK_BATCH_WITH_DETAILS = _env_bool('OPENBOOK_BATCH_WITH_DETAILS', default=True)
 OPENBOOK_DETAIL_MAX_ERROR_RETRIES = int(os.environ.get('OPENBOOK_DETAIL_MAX_ERROR_RETRIES', 2))
+OPENBOOK_ISBE_SEED_LIMIT = int(os.environ.get('OPENBOOK_ISBE_SEED_LIMIT', 5000))
 
 # Federal Election Commission (FEC) sync
 FEC_API_KEY = os.environ.get('FEC_API_KEY', '')

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, 59-table SQLite schema, 5.5GB+ database.
+Full-stack political finance transparency platform that aggregates, analyzes, and visualizes Illinois campaign finance data from state (ISBE) and federal (FEC) sources, plus IL SOS lobbying data and IRS 527 political organization filings. ~200K lines of code, PostgreSQL database (local: `ilcf`, prod: `ilcf`), 5.5GB+.
 
 ## Local Development Machine
 
@@ -17,13 +17,14 @@ Full-stack political finance transparency platform that aggregates, analyzes, an
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+export DATABASE_URL=postgresql://devin@localhost/ilcf
 python run.py init-db
 python run.py runserver --port 5000
 ```
 
 ## Architecture
 
-- **Backend**: Python 3.12, Flask 3.0, SQLite (WAL mode)
+- **Backend**: Python 3.12, Flask 3.0, PostgreSQL 16
 - **Frontend**: Jinja2 templates, vanilla JS, CSS-only tabbed interfaces
 - **Scraping**: Playwright async with ASP.NET ViewState handling
 - **CLI**: Click framework via `run.py`
@@ -34,12 +35,13 @@ python run.py runserver --port 5000
 | Path | Purpose |
 |------|---------|
 | `cli/commands.py` | All CLI commands |
-| `database/schema.sql` | 57-table DDL schema |
+| `database/schema.sql` | DDL schema |
 | `database/models.py` | Dataclass-based ORM |
 | `database/analytics.py` | Network, anomaly, concentration analytics |
 | `database/cross_matching.py` | Jaccard-based cross-dataset matching engine |
 | `database/irs527_loader.py` | IRS 527 FullDataFile parser |
 | `database/federal_fec.py` | FEC API integration |
+| `scripts/isbe_sunshine_etl.py` | ISBE bulk data ETL (PostgreSQL-native, adapted from illinois-sunshine) |
 | `scraper/openbook_scraper.py` | OpenBook Comptroller scraper + smart search |
 | `scraper/comptroller_contracts.py` | Comptroller State Contracts DataTables scraper |
 | `webapp/routes/` | 15 Flask route modules |
@@ -48,7 +50,12 @@ python run.py runserver --port 5000
 
 ### Data Sources
 
-1. **ISBE** (state) - Committees, candidates, receipts, expenditures, D-2 reports
+1. **ISBE** (state) - Committees, candidates, receipts, expenditures, D-2 reports, filed docs, candidacies, officers, investments
+   - **Primary ETL**: `scripts/isbe_sunshine_etl.py` (adapted from datamade/illinois-sunshine)
+   - Loads 12 ISBE bulk files into `isbe_*` tables with FK constraints
+   - Creates materialized views: `isbe_condensed_receipts`, `isbe_condensed_expenditures` (dedup amended filings), `isbe_committee_money`, `isbe_candidate_money`
+   - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download]`
+   - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (still works, but `isbe_*` tables are preferred)
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
 3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
@@ -69,9 +76,9 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - Lobbying client -> 527 org (Jaccard 0.80)
 - Federal donor -> local donor (zip+state+name)
 
-**Performance note**: Phase 1 (name matching) uses Python dict-based sparse inverted indexes — each match function builds an in-memory token→entity index, then iterates candidates. This is faster than matrix operations for small token sets (3–8 tokens per name). Phase 2 (address matching) runs as SQL-native `INSERT...SELECT` with `pg_trgm` similarity on Postgres (parallel merge join, ~10s for 25M candidate pairs) and falls back to Python dict matching on SQLite.
+**Performance note**: Phase 1 (name matching) uses Python dict-based sparse inverted indexes — each match function builds an in-memory token→entity index, then iterates candidates. This is faster than matrix operations for small token sets (3–8 tokens per name). Phase 2 (address matching) runs as SQL-native `INSERT...SELECT` with `pg_trgm` similarity on PostgreSQL (parallel merge join, ~10s for 25M candidate pairs).
 
-**numpy/scipy policy**: Not currently used. Acceptable to add if a concrete use case arises (e.g., embedding-based similarity, large dense matrix operations). For current workloads, Python set operations (Phase 1) and Postgres pg_trgm (Phase 2) are faster than sparse matrix alternatives. When adding, prefer Apple Silicon-optimized builds (numpy with Accelerate, scipy with vecLib).
+**numpy/scipy policy**: Not currently used. Acceptable to add if a concrete use case arises (e.g., embedding-based similarity, large dense matrix operations). For current workloads, Python set operations (Phase 1) and PostgreSQL pg_trgm (Phase 2) are faster than sparse matrix alternatives. When adding, prefer Apple Silicon-optimized builds (numpy with Accelerate, scipy with vecLib).
 
 ### Route Performance Caching (2026-02)
 
@@ -140,18 +147,19 @@ For any significant code path (imports, migrations, cross-matching, analytics re
 
 5. **Documentation Requirement**
    - Update `README.md` (and relevant runbooks) with the fastest known command pattern and caveats.
-   - Explicitly call out when a "fast" mode is unsafe in production (for example lock contention, high WAL pressure, or memory risk).
+   - Explicitly call out when a "fast" mode is unsafe in production (for example lock contention or memory risk).
 
 ## Code Style
 
 - Primary stack: Python (backend), HTML/CSS/JavaScript (frontend).
-- Always use SQLite-safe threading patterns (check_same_thread=False or connection-per-request) in Flask apps.
+- Use PostgreSQL connection pooling patterns in Flask apps (connection-per-request via app context).
 - When writing shell commands for the user to copy, ensure they are single-line or properly escaped.
 - Follow existing patterns: dataclass models, Jinja2 templates extending `base.html`, route blueprints.
 - Use `_table_exists()` checks before querying cross-matching tables (they may not exist in fresh DBs).
 - Use `_scalar()` helper for safe single-value queries with defaults.
-- Prefer `INSERT OR REPLACE` for idempotent upserts.
+- Prefer `INSERT ... ON CONFLICT DO UPDATE` (upsert) for idempotent writes.
 - Use chunked batch inserts (`_chunked()` helper) for large data loads.
+- Use `psql` for ad-hoc queries, not `sqlite3`. Local DB: `psql ilcf`. Prod: `psql -h localhost ilcf`.
 
 ## New Dataset Integration Workflow (Required)
 
@@ -188,19 +196,10 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 - **Long-running server tasks (>10 minutes)**: Do NOT run these autonomously via Claude. Instead, provide the user with the exact command to run so they can execute it themselves, watch the output, and see it through to completion. Examples: `run-cross-matching --only all`, `import-irs527`, `refresh-analytics` on large datasets. Always estimate the runtime before handing off.
    - **Exception (OpenBook only):** Long-running OpenBook scrape/import commands (for example `import-openbook-batch` and related OpenBook scraping flows) are allowed to run autonomously via Claude when explicitly requested.
 - For long-running server tasks, provide the fastest validated safe command first (including flags like incremental mode), then provide fallback/recovery commands.
-- Runtime DB selection: if `DATABASE_URL` is set, the web app targets PostgreSQL at runtime; if unset, it falls back to `DATABASE_PATH` (SQLite).
-- Safe runtime cutover policy:
-   1. Require successful migration parity check (`mismatches=0`) before switching service env.
-   2. Keep `DATABASE_PATH` unchanged for rollback.
-   3. Add `DATABASE_URL` in service env, restart service, run endpoint sweep.
-   4. On any critical regression, remove `DATABASE_URL` and restart immediately.
-- Validated short-downtime cutover mode (allowed and often faster):
-   1. Announce a short maintenance window.
-   2. Deploy latest code (`./scripts/deploy.sh`) before switching DB target.
-   3. Set `DATABASE_URL` in `/srv/illinois_campaign_finance/shared/.env`.
-   4. Restart `ilcf-web.service` and run full endpoint sweep.
-   5. Confirm runtime backend from app context (`PostgresCompatConnection`, `current_database() = ilcf`).
-   6. If any critical route fails, rollback immediately by unsetting `DATABASE_URL` and restarting service.
+- Runtime DB: PostgreSQL is the primary and only supported database. `DATABASE_URL` must be set in all environments.
+  - Local: `DATABASE_URL=postgresql://devin@localhost/ilcf`
+  - Prod: `DATABASE_URL` set in `/srv/illinois_campaign_finance/shared/.env`
+- SQLite (`DATABASE_PATH`) is deprecated and will be removed. Do not use it for new development.
 - After any debug cutover test, always stop temporary debug servers (`run.py runserver --port 5051`) to avoid stale processes.
 
 ### Server Details
@@ -213,7 +212,7 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 | Python | `/srv/illinois_campaign_finance/shared/venv/bin/python3` |
 | Pip | `/srv/illinois_campaign_finance/shared/venv/bin/pip` |
 | Env file | `/srv/illinois_campaign_finance/shared/.env` |
-| DB | `/srv/illinois_campaign_finance/shared/data/campaign_finance.db` |
+| DB | PostgreSQL `ilcf` (local: `postgresql://devin@localhost/ilcf`, prod: via `DATABASE_URL` in `.env`) |
 | Web service | `ilcf-web.service` |
 | Legacy service (keep disabled) | `illinois-web.service` |
 
@@ -285,20 +284,20 @@ $PYTHON run.py <command>
 
 ### Syncing Production DB to Local
 
-Use `scripts/pull-db.sh` to pull the production SQLite DB to your local machine. The script checkpoints the WAL, backs up the existing local DB, and uses rsync for efficient incremental transfers.
+Use `pg_dump`/`pg_restore` or `scripts/pull-db.sh` (if adapted for PostgreSQL) to sync production data. The production database is PostgreSQL on the Hetzner VPS.
 
 ```bash
-# Full sync (interactive — ssh-agent handles passphrase)
-./scripts/pull-db.sh
+# Dump from prod (via SSH tunnel or direct)
+ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 \
+  "pg_dump -Fc ilcf" > data/ilcf_prod.dump
 
-# Dry run (show what would transfer)
-./scripts/pull-db.sh --dry-run
+# Restore locally
+pg_restore --clean --if-exists -d ilcf data/ilcf_prod.dump
 ```
 
-**Important**: Do NOT run `init-db`, `run-cross-matching`, or other DB-writing commands on the server while rsync is in progress — they write to the WAL and can cause an inconsistent local copy. Finish the pull first, then run migrations.
+**Important**: Do NOT run `init-db`, `run-cross-matching`, or other DB-writing commands on the server while a dump is in progress.
 
-Local DB path: `data/campaign_finance.db` (matches `config.DATABASE_PATH` default).
-Backups retained: 3 most recent in `data/backups/`.
+Local DB: `postgresql://devin@localhost/ilcf` (matches `config.DATABASE_URL` default).
 
 ### Endpoint Sweep
 
@@ -370,8 +369,7 @@ python run.py refresh-analytics --with-snapshot
 
 ## Database Notes
 
-- 57-table schema in `database/schema.sql`
-- WAL mode enabled for concurrent reads
+- PostgreSQL 16 database (`ilcf`) with schema defined in `database/schema.sql`
 - Materialized views refreshed via `refresh-analytics` CLI command
 - Cross-matching results stored in dedicated match tables:
   - `irs527_director_donor_matches` — name-based director↔donor
