@@ -20,17 +20,24 @@ def _normalized_date_sql(column: str) -> str:
     month_expr = f"SUBSTR({text_expr}, 1, {first_slash_expr} - 1)"
     day_expr = f"SUBSTR({remainder_expr}, 1, {second_slash_expr} - 1)"
     year_expr = f"SUBSTR({remainder_expr}, {second_slash_expr} + 1, 4)"
+    year_padded = (
+        f"SUBSTR('0000' || CAST({year_expr} AS TEXT), "
+        f"LENGTH('0000' || CAST({year_expr} AS TEXT)) - 3, 4)"
+    )
+    month_padded = (
+        f"SUBSTR('00' || CAST({month_expr} AS TEXT), "
+        f"LENGTH('00' || CAST({month_expr} AS TEXT)) - 1, 2)"
+    )
+    day_padded = (
+        f"SUBSTR('00' || CAST({day_expr} AS TEXT), "
+        f"LENGTH('00' || CAST({day_expr} AS TEXT)) - 1, 2)"
+    )
     return f"""(
         CASE
             WHEN {text_expr} = '' THEN NULL
             WHEN {first_slash_expr} > 0 AND {second_slash_expr} > 0 THEN
                 DATE(
-                    PRINTF(
-                        '%04d-%02d-%02d',
-                        CAST({year_expr} AS INTEGER),
-                        CAST({month_expr} AS INTEGER),
-                        CAST({day_expr} AS INTEGER)
-                    )
+                    {year_padded} || '-' || {month_padded} || '-' || {day_padded}
                 )
             ELSE DATE(SUBSTR({text_expr}, 1, 10))
         END

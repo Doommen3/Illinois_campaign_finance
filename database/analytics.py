@@ -4033,7 +4033,7 @@ def get_candidate_competition_networks(
                         COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_key
                     FROM fec_schedule_a_contributions sa
                     WHERE sa.candidate_id IS NOT NULL
-                    GROUP BY donor_key
+                    GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id)
                     ORDER BY SUM(sa.contribution_receipt_amount) DESC
                     LIMIT ?
                 ),
