@@ -109,7 +109,22 @@
                     {% for row in geo_summary.states %}
                     <tr>
                         <td>{{ row.state }}</td>
-                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>
+                            <a href="{{ url_for(
+                                'analytics.geo_drilldown',
+                                geo_type='state',
+                                geo_value=row.state,
+                                load_mode=load_mode,
+                                date_from=date_from,
+                                date_to=date_to,
+                                months=months,
+                                geo_state_limit=geo_state_limit,
+                                geo_city_limit=geo_city_limit,
+                                source_page='geography',
+                                range=time_period_key,
+                                period=time_period_key
+                            ) }}">{{ format_currency(row.total_amount) }}</a>
+                        </td>
                         <td>{{ row.contribution_count }}</td>
                         <td>{{ row.donor_count }}</td>
                     </tr>
@@ -144,7 +159,23 @@
                     <tr>
                         <td>{{ row.city }}</td>
                         <td>{{ row.state }}</td>
-                        <td>{{ format_currency(row.total_amount) }}</td>
+                        <td>
+                            <a href="{{ url_for(
+                                'analytics.geo_drilldown',
+                                geo_type='city',
+                                geo_value=row.city,
+                                geo_state=row.state,
+                                load_mode=load_mode,
+                                date_from=date_from,
+                                date_to=date_to,
+                                months=months,
+                                geo_state_limit=geo_state_limit,
+                                geo_city_limit=geo_city_limit,
+                                source_page='geography',
+                                range=time_period_key,
+                                period=time_period_key
+                            ) }}">{{ format_currency(row.total_amount) }}</a>
+                        </td>
                         <td>{{ row.contribution_count }}</td>
                     </tr>
                     {% else %}
@@ -161,5 +192,5 @@
         </table>
     </div>
 </div>
-<p><a href="{{ url_for('api.analytics_geo', state_limit=geo_state_limit, city_limit=geo_city_limit) }}">Geo JSON endpoint</a></p>
+<p><a href="{{ url_for('api.analytics_geo', state_limit=geo_state_limit, city_limit=geo_city_limit, date_from=date_from, date_to=date_to) }}">Geo JSON endpoint</a></p>
 {% endblock %}

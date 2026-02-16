@@ -27,7 +27,7 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - **Risk Explainability** — Per-flag explainability payloads (rule, baseline, threshold, percentile context)
 - **Concentration Metrics** — Herfindahl-Hirschman Index (HHI), Gini coefficient, top-N donor share
 - **Time-Series Intelligence** — Monthly aggregation, 3-month moving averages, month-over-month change
-- **Geographic Analysis** — State and city-level donor aggregation from parsed addresses
+- **Geographic Analysis** — State and city-level donor aggregation from parsed addresses, with shareable geo drilldown routes from aggregate totals
 - **NLP Categorization** — Keyword-based expenditure classification
 - **Entity Resolution** — Jaccard similarity candidate matching across state/federal records
 - **Cross-Matching Engine** — Lobbying-to-donor, lobbying-to-expenditure, 527-to-committee, 527-expenditure-to-committee, 527-director-to-donor (exhaustive), 527-director-to-candidate (state + federal), 527-director-address-to-donor, 527-org-address-to-committee/donor, and lobbying-to-527 matching
@@ -713,6 +713,7 @@ Notes:
 | `/federal-finance/influence` | Influence scores for donors and candidates (PageRank, degree, weighted) |
 | `/federal-finance/follow-the-money` | Multi-hop donor path tracing with interactive SVG visualization |
 | `/federal-finance/geography` | Geographic concentration analysis (states, cities, HHI per race) |
+| `/federal-finance/geo-drilldown` | Paginated/sortable donor-to-candidate detail rows for a selected state/city aggregate (`geo_type`, `geo_value`, optional `geo_state`, `range`) |
 | `/federal-finance/matching` | Federal/local donor matching diagnostics, overlap analysis, and local-vs-federal bubble scatter |
 | `/federal-finance/<candidate_id>` | Federal candidate detail with tabbed A/B/E drilldowns |
 | `/federal-finance/races/<office_code>/<district_code>/outside-spending` | Race-level Schedule E drilldown with filters, sorting, pagination, and itemized transactions |
@@ -721,6 +722,7 @@ Notes:
 | `/admin/federal-receipt-audit` | Internal mismatch flags: FEC reported totals vs synced Schedule A subtotals |
 | `/admin/federal-disbursement-audit` | Internal mismatch flags: FEC reported disbursements vs synced Schedule B subtotals |
 | `/analytics/` | Network, anomaly, concentration, and geographic analytics |
+| `/analytics/geo-drilldown` | Paginated/sortable donor-to-committee detail rows for a selected state/city aggregate (`geo_type`, `geo_value`, optional `geo_state`, date window/range) |
 | `/analytics/relationships` | Relationship-specific graph lab: co-giving and committee-similarity arc views, candidate competition, and alluvial lobbying/527 pathways |
 | `/analytics/risk` | Risk flags with explainability and distribution visualizations |
 | `/donors` | Cross-committee donor directory |

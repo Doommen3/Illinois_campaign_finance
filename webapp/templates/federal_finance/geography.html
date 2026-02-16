@@ -39,7 +39,19 @@
                 {% for row in geographic.states %}
                 <tr>
                     <td>{{ row.state }}</td>
-                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>
+                        <a href="{{ url_for(
+                            'federal_finance.federal_geo_drilldown',
+                            geo_type='state',
+                            geo_value=row.state,
+                            cycle=cycle,
+                            analysis_office=analysis_office,
+                            analysis_district=analysis_district,
+                            source_page='geography',
+                            range=time_period.key,
+                            period=time_period.key
+                        ) }}">{{ format_currency(row.total_amount) }}</a>
+                    </td>
                     <td>{{ row.contribution_count }}</td>
                     <td>{{ row.donor_count }}</td>
                 </tr>
@@ -62,7 +74,20 @@
                 <tr>
                     <td>{{ row.city }}</td>
                     <td>{{ row.state }}</td>
-                    <td>{{ format_currency(row.total_amount) }}</td>
+                    <td>
+                        <a href="{{ url_for(
+                            'federal_finance.federal_geo_drilldown',
+                            geo_type='city',
+                            geo_value=row.city,
+                            geo_state=row.state,
+                            cycle=cycle,
+                            analysis_office=analysis_office,
+                            analysis_district=analysis_district,
+                            source_page='geography',
+                            range=time_period.key,
+                            period=time_period.key
+                        ) }}">{{ format_currency(row.total_amount) }}</a>
+                    </td>
                     <td>{{ row.contribution_count }}</td>
                 </tr>
                 {% else %}

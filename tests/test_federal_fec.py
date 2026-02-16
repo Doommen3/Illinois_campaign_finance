@@ -18,6 +18,7 @@ from database.federal_fec import (
     get_federal_donor_network_clusters,
     get_federal_donor_segmentation,
     get_federal_follow_the_money,
+    get_federal_geo_drilldown,
     get_federal_geographic_concentration,
     get_federal_influence_scores,
     get_federal_multilayer_network_graph,
@@ -2427,6 +2428,18 @@ def test_federal_advanced_analytics(tmp_path: Path):
     assert len(chicago_rows) == 1
     assert chicago_rows[0]["total_amount"] == 2000.0
     assert any(row["state"] == "IL" for row in geo["states"])
+    geo_drilldown = get_federal_geo_drilldown(
+        conn,
+        cycle=2026,
+        geo_type="state",
+        geo_value="IL",
+        page=1,
+        per_page=25,
+        sort_by="total_amount",
+        sort_dir="desc",
+    )
+    assert geo_drilldown["summary"]["sum_check_delta"] == 0.0
+    assert geo_drilldown["summary"]["total_amount"] >= geo_drilldown["summary"]["page_total_amount"]
 
     matches = get_federal_local_donor_matches(
         conn,

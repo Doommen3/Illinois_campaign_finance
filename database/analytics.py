@@ -1968,6 +1968,181 @@ def get_geo_summary(
     }
 
 
+def get_geo_drilldown(
+    conn: sqlite3.Connection,
+    geo_type: str,
+    geo_value: str,
+    geo_state: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+    sort_by: str = "total_amount",
+    sort_dir: str = "desc",
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Return paginated donor->committee rows backing a geographic aggregate."""
+    geo_type_key = "city" if (geo_type or "").strip().lower() == "city" else "state"
+    value_text = (geo_value or "").strip()
+    state_filter = (geo_state or "").strip().upper()
+    city_filter = _city_key(value_text)
+    if geo_type_key == "state":
+        state_filter = value_text.upper()
+    elif not state_filter and "," in value_text:
+        city_part, state_part = value_text.rsplit(",", 1)
+        value_text = city_part.strip()
+        city_filter = _city_key(value_text)
+        state_filter = state_part.strip().upper()
+
+    page = max(1, int(page or 1))
+    per_page = min(max(int(per_page or 50), 10), 250)
+    sort_key = (sort_by or "").strip().lower()
+    if sort_key not in {"total_amount", "contribution_count", "donor_name", "committee_name"}:
+        sort_key = "total_amount"
+    sort_direction = "asc" if (sort_dir or "").strip().lower() == "asc" else "desc"
+
+    empty_summary = {
+        "geo_type": geo_type_key,
+        "geo_value": value_text,
+        "geo_state": state_filter,
+        "geo_label": f"{_city_display(value_text) or value_text}, {state_filter}" if geo_type_key == "city" else state_filter,
+        "total_amount": 0.0,
+        "contribution_count": 0,
+        "donor_count": 0,
+        "detail_row_count": 0,
+        "page_total_amount": 0.0,
+        "page_contribution_count": 0,
+        "sum_check_delta": 0.0,
+    }
+    if not state_filter:
+        return {
+            "source": _donor_flow_source(conn),
+            "rows": [],
+            "summary": empty_summary,
+            "pagination": {"page": page, "per_page": per_page, "total_rows": 0, "total_pages": 0},
+            "sort": {"sort_by": sort_key, "sort_dir": sort_direction},
+            "date_from": (date_from or "").strip() or None,
+            "date_to": (date_to or "").strip() or None,
+        }
+
+    donor_committee_rows, donor_source = _get_donor_committee_rows(
+        conn,
+        min_edge_amount=0.0,
+        limit=None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    detail_rows: list[dict] = []
+    donor_keys: set[str] = set()
+    total_amount = 0.0
+    total_contribution_count = 0
+    for row in donor_committee_rows:
+        donor_city = (row.get("donor_city") or "").strip()
+        donor_state = (row.get("donor_state") or "").strip().upper()
+        if not donor_city and not donor_state:
+            parsed_city, parsed_state = _extract_city_state(row.get("donor_address"))
+            donor_city = donor_city or (parsed_city or "")
+            donor_state = donor_state or ((parsed_state or "").strip().upper())
+        if donor_state != state_filter:
+            continue
+
+        display_city = _city_display(donor_city)
+        if geo_type_key == "city" and _city_key(display_city) != city_filter:
+            continue
+
+        amount = float(row.get("total_amount") or 0.0)
+        contribution_count = int(row.get("contribution_count") or 0)
+        donor_key = str(row.get("donor_key") or "").strip()
+        if donor_key:
+            donor_keys.add(donor_key)
+        total_amount += amount
+        total_contribution_count += contribution_count
+        detail_rows.append(
+            {
+                "donor_key": donor_key,
+                "donor_name": row.get("donor_name") or "Unknown Donor",
+                "donor_city": display_city,
+                "donor_state": donor_state,
+                "committee_id": row.get("committee_id"),
+                "committee_name": row.get("committee_name") or "Unknown Committee",
+                "total_amount": round(amount, 2),
+                "contribution_count": contribution_count,
+            }
+        )
+
+    reverse = sort_direction == "desc"
+    if sort_key == "contribution_count":
+        detail_rows.sort(
+            key=lambda row: (
+                int(row.get("contribution_count") or 0),
+                float(row.get("total_amount") or 0.0),
+                (row.get("donor_name") or "").lower(),
+            ),
+            reverse=reverse,
+        )
+    elif sort_key == "donor_name":
+        detail_rows.sort(
+            key=lambda row: (
+                (row.get("donor_name") or "").lower(),
+                float(row.get("total_amount") or 0.0),
+            ),
+            reverse=reverse,
+        )
+    elif sort_key == "committee_name":
+        detail_rows.sort(
+            key=lambda row: (
+                (row.get("committee_name") or "").lower(),
+                float(row.get("total_amount") or 0.0),
+            ),
+            reverse=reverse,
+        )
+    else:
+        detail_rows.sort(
+            key=lambda row: (
+                float(row.get("total_amount") or 0.0),
+                int(row.get("contribution_count") or 0),
+                (row.get("donor_name") or "").lower(),
+            ),
+            reverse=reverse,
+        )
+
+    total_rows = len(detail_rows)
+    total_pages = (total_rows + per_page - 1) // per_page if total_rows else 0
+    if total_pages and page > total_pages:
+        page = total_pages
+    offset = (page - 1) * per_page
+    page_rows = detail_rows[offset : offset + per_page]
+    page_total_amount = round(sum(float(row.get("total_amount") or 0.0) for row in page_rows), 2)
+    page_contribution_count = sum(int(row.get("contribution_count") or 0) for row in page_rows)
+    detail_sum_amount = round(sum(float(row.get("total_amount") or 0.0) for row in detail_rows), 2)
+
+    summary = {
+        "geo_type": geo_type_key,
+        "geo_value": value_text,
+        "geo_state": state_filter,
+        "geo_label": (
+            f"{_city_display(value_text) or value_text}, {state_filter}" if geo_type_key == "city" else state_filter
+        ),
+        "total_amount": round(total_amount, 2),
+        "contribution_count": total_contribution_count,
+        "donor_count": len(donor_keys),
+        "detail_row_count": total_rows,
+        "page_total_amount": page_total_amount,
+        "page_contribution_count": page_contribution_count,
+        "sum_check_delta": round(round(total_amount, 2) - detail_sum_amount, 2),
+    }
+
+    return {
+        "source": donor_source,
+        "rows": page_rows,
+        "summary": summary,
+        "pagination": {"page": page, "per_page": per_page, "total_rows": total_rows, "total_pages": total_pages},
+        "sort": {"sort_by": sort_key, "sort_dir": sort_direction},
+        "date_from": (date_from or "").strip() or None,
+        "date_to": (date_to or "").strip() or None,
+    }
+
+
 def get_reconciliation_outliers(
     conn: sqlite3.Connection,
     limit: int = 25,

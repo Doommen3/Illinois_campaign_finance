@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Geo Drilldown - Illinois Campaign Finance Tracker{% endblock %}
+
+{% macro sort_link(field, label) -%}
+<a href="{{ url_for(
+    'analytics.geo_drilldown',
+    geo_type=drilldown.summary.geo_type,
+    geo_value=drilldown.summary.geo_value,
+    geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
+    page=1,
+    per_page=drilldown.pagination.per_page,
+    sort=field,
+    dir='asc' if drilldown.sort.sort_by != field or drilldown.sort.sort_dir == 'desc' else 'desc',
+    load_mode=load_mode,
+    date_from=date_from,
+    date_to=date_to,
+    months=months,
+    geo_state_limit=geo_state_limit,
+    geo_city_limit=geo_city_limit,
+    source_page=source_page,
+    range=range_key,
+    period=time_period_key
+) }}">
+    {{ label }}{% if drilldown.sort.sort_by == field %} {{ '↑' if drilldown.sort.sort_dir == 'asc' else '↓' }}{% endif %}
+</a>
+{%- endmacro %}
+
+{% block content %}
+<h1>Geo Drilldown: {{ drilldown.summary.geo_label if drilldown.summary.geo_label else 'Unknown' }}</h1>
+<p class="subtitle">Donor-to-committee rows behind the selected geography aggregate.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<p>
+    <a href="{{ back_url }}">&#8592; Back to geography snapshot</a>
+</p>
+
+<div class="status-section">
+    <p>
+        Total amount: <strong>{{ format_currency(drilldown.summary.total_amount) }}</strong>
+        | Contributions: <strong>{{ drilldown.summary.contribution_count }}</strong>
+        | Donors: <strong>{{ drilldown.summary.donor_count }}</strong>
+        | Detail rows: <strong>{{ drilldown.summary.detail_row_count }}</strong>
+    </p>
+    <p>
+        Page subtotal: <strong>{{ format_currency(drilldown.summary.page_total_amount) }}</strong>
+        | Page contributions: <strong>{{ drilldown.summary.page_contribution_count }}</strong>
+        | Sum check delta: <strong>{{ format_currency(drilldown.summary.sum_check_delta) }}</strong>
+    </p>
+    <p class="help-text">
+        Source: {{ drilldown.source }}{% if drilldown.date_from or drilldown.date_to %} | Date window: {{ drilldown.date_from if drilldown.date_from else 'earliest' }} to {{ drilldown.date_to if drilldown.date_to else 'latest' }}{% endif %}
+    </p>
+</div>
+
+<div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>{{ sort_link('donor_name', 'Donor') }}</th>
+                <th>City</th>
+                <th>State</th>
+                <th>{{ sort_link('committee_name', 'Committee') }}</th>
+                <th>{{ sort_link('total_amount', 'Total Amount') }}</th>
+                <th>{{ sort_link('contribution_count', 'Contributions') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in drilldown.rows %}
+            <tr>
+                <td>{{ row.donor_name }}</td>
+                <td>{{ row.donor_city if row.donor_city else '-' }}</td>
+                <td>{{ row.donor_state if row.donor_state else '-' }}</td>
+                <td>{{ row.committee_name }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No matching drilldown rows for this geography and date range.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if drilldown.pagination.total_pages > 1 %}
+<nav class="pagination">
+    {% if drilldown.pagination.page > 1 %}
+    <a href="{{ url_for(
+        'analytics.geo_drilldown',
+        geo_type=drilldown.summary.geo_type,
+        geo_value=drilldown.summary.geo_value,
+        geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
+        page=drilldown.pagination.page-1,
+        per_page=drilldown.pagination.per_page,
+        sort=drilldown.sort.sort_by,
+        dir=drilldown.sort.sort_dir,
+        load_mode=load_mode,
+        date_from=date_from,
+        date_to=date_to,
+        months=months,
+        geo_state_limit=geo_state_limit,
+        geo_city_limit=geo_city_limit,
+        source_page=source_page,
+        range=range_key,
+        period=time_period_key
+    ) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ drilldown.pagination.page }} of {{ drilldown.pagination.total_pages }}</span>
+
+    {% if drilldown.pagination.page < drilldown.pagination.total_pages %}
+    <a href="{{ url_for(
+        'analytics.geo_drilldown',
+        geo_type=drilldown.summary.geo_type,
+        geo_value=drilldown.summary.geo_value,
+        geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
+        page=drilldown.pagination.page+1,
+        per_page=drilldown.pagination.per_page,
+        sort=drilldown.sort.sort_by,
+        dir=drilldown.sort.sort_dir,
+        load_mode=load_mode,
+        date_from=date_from,
+        date_to=date_to,
+        months=months,
+        geo_state_limit=geo_state_limit,
+        geo_city_limit=geo_city_limit,
+        source_page=source_page,
+        range=range_key,
+        period=time_period_key
+    ) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

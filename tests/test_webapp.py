@@ -1115,6 +1115,17 @@ class TestWebApp:
         assert geography_page.status_code == 200
         assert b'Geography' in geography_page.data or b'Geographic' in geography_page.data
 
+        geo_drilldown_state = client.get('/federal-finance/geo-drilldown?cycle=2026&geo_type=state&geo_value=IL')
+        assert geo_drilldown_state.status_code == 200
+        assert b'Federal Geo Drilldown: IL' in geo_drilldown_state.data
+        assert b'Jane Donor' in geo_drilldown_state.data
+
+        geo_drilldown_city = client.get(
+            '/federal-finance/geo-drilldown?cycle=2026&geo_type=city&geo_value=Chicago&geo_state=IL'
+        )
+        assert geo_drilldown_city.status_code == 200
+        assert b'Federal Geo Drilldown: Chicago, IL' in geo_drilldown_city.data
+
         intelligence = client.get('/federal-finance/donor-intelligence?cycle=2026')
         assert intelligence.status_code == 200
         assert b'Federal Donor Intelligence' in intelligence.data

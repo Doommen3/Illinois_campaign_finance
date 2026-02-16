@@ -8180,6 +8180,167 @@ def get_federal_geographic_concentration(
     }
 
 
+def get_federal_geo_drilldown(
+    conn: sqlite3.Connection,
+    cycle: int | None = None,
+    office_code: str | None = None,
+    district_code: str | None = None,
+    geo_type: str = "state",
+    geo_value: str = "",
+    geo_state: str | None = None,
+    page: int = 1,
+    per_page: int = 50,
+    sort_by: str = "total_amount",
+    sort_dir: str = "desc",
+) -> dict:
+    """Return paginated donor->candidate rows backing a federal geo aggregate."""
+    geo_type_key = "city" if _clean_text(geo_type).lower() == "city" else "state"
+    value_text = _clean_text(geo_value)
+    state_filter = _clean_text(geo_state).upper()
+    city_filter = _clean_text(value_text).lower()
+    if geo_type_key == "state":
+        state_filter = value_text.upper()
+    elif not state_filter and "," in value_text:
+        city_part, state_part = value_text.rsplit(",", 1)
+        value_text = _clean_text(city_part)
+        city_filter = value_text.lower()
+        state_filter = _clean_text(state_part).upper()
+
+    page = max(1, int(page or 1))
+    per_page = min(max(int(per_page or 50), 10), 250)
+    sort_key = _clean_text(sort_by).lower()
+    if sort_key not in {"total_amount", "contribution_count", "donor_name", "candidate_name", "race_label"}:
+        sort_key = "total_amount"
+    sort_direction = "asc" if _clean_text(sort_dir).lower() == "asc" else "desc"
+
+    rows, _candidate_meta, office_filter, district_filter = _filtered_edge_rows(
+        conn,
+        cycle=cycle,
+        office_code=office_code,
+        district_code=district_code,
+    )
+
+    detail_rows: list[dict] = []
+    donor_keys: set[str] = set()
+    candidate_ids: set[str] = set()
+    total_amount = 0.0
+    total_contribution_count = 0
+    for row in rows:
+        donor_state = _clean_text(row.get("donor_state")).upper()
+        donor_city = _clean_text(row.get("donor_city")).title()
+        if donor_state != state_filter:
+            continue
+        if geo_type_key == "city" and _clean_text(donor_city).lower() != city_filter:
+            continue
+
+        amount = float(row.get("total_amount") or 0.0)
+        contribution_count = int(row.get("contribution_count") or 0)
+        donor_key = _clean_text(row.get("donor_entity_key"))
+        candidate_id = _clean_text(row.get("candidate_id"))
+        if donor_key:
+            donor_keys.add(donor_key)
+        if candidate_id:
+            candidate_ids.add(candidate_id)
+        total_amount += amount
+        total_contribution_count += contribution_count
+        detail_rows.append(
+            {
+                "donor_entity_key": donor_key,
+                "donor_name": _clean_text(row.get("donor_name")) or "Unknown Donor",
+                "donor_city": donor_city or None,
+                "donor_state": donor_state,
+                "candidate_id": candidate_id,
+                "candidate_name": _clean_text(row.get("candidate_name")) or candidate_id or "Unknown Candidate",
+                "office_display": _clean_text(row.get("office_display")) or "Unknown Office",
+                "district_display": _clean_text(row.get("district_display")) or "-",
+                "race_label": _clean_text(row.get("race_label")) or "Unknown Office - -",
+                "total_amount": round(amount, 2),
+                "contribution_count": contribution_count,
+                "earliest_contribution_date": row.get("earliest_contribution_date"),
+                "latest_contribution_date": row.get("latest_contribution_date"),
+            }
+        )
+
+    reverse = sort_direction == "desc"
+    if sort_key == "contribution_count":
+        detail_rows.sort(
+            key=lambda row: (
+                int(row.get("contribution_count") or 0),
+                float(row.get("total_amount") or 0.0),
+                _clean_text(row.get("donor_name")).lower(),
+            ),
+            reverse=reverse,
+        )
+    elif sort_key == "donor_name":
+        detail_rows.sort(
+            key=lambda row: (
+                _clean_text(row.get("donor_name")).lower(),
+                float(row.get("total_amount") or 0.0),
+            ),
+            reverse=reverse,
+        )
+    elif sort_key == "candidate_name":
+        detail_rows.sort(
+            key=lambda row: (
+                _clean_text(row.get("candidate_name")).lower(),
+                float(row.get("total_amount") or 0.0),
+            ),
+            reverse=reverse,
+        )
+    elif sort_key == "race_label":
+        detail_rows.sort(
+            key=lambda row: (
+                _clean_text(row.get("race_label")).lower(),
+                float(row.get("total_amount") or 0.0),
+            ),
+            reverse=reverse,
+        )
+    else:
+        detail_rows.sort(
+            key=lambda row: (
+                float(row.get("total_amount") or 0.0),
+                int(row.get("contribution_count") or 0),
+                _clean_text(row.get("donor_name")).lower(),
+            ),
+            reverse=reverse,
+        )
+
+    total_rows = len(detail_rows)
+    total_pages = (total_rows + per_page - 1) // per_page if total_rows else 0
+    if total_pages and page > total_pages:
+        page = total_pages
+    offset = (page - 1) * per_page
+    page_rows = detail_rows[offset : offset + per_page]
+    page_total_amount = round(sum(float(row.get("total_amount") or 0.0) for row in page_rows), 2)
+    page_contribution_count = sum(int(row.get("contribution_count") or 0) for row in page_rows)
+    detail_sum_amount = round(sum(float(row.get("total_amount") or 0.0) for row in detail_rows), 2)
+
+    summary = {
+        "geo_type": geo_type_key,
+        "geo_value": value_text,
+        "geo_state": state_filter,
+        "geo_label": f"{value_text}, {state_filter}" if geo_type_key == "city" else state_filter,
+        "total_amount": round(total_amount, 2),
+        "contribution_count": total_contribution_count,
+        "donor_count": len(donor_keys),
+        "candidate_count": len(candidate_ids),
+        "detail_row_count": total_rows,
+        "page_total_amount": page_total_amount,
+        "page_contribution_count": page_contribution_count,
+        "sum_check_delta": round(round(total_amount, 2) - detail_sum_amount, 2),
+    }
+
+    return {
+        "cycle": cycle,
+        "office_filter": office_filter or None,
+        "district_filter": district_filter or None,
+        "rows": page_rows,
+        "summary": summary,
+        "pagination": {"page": page, "per_page": per_page, "total_rows": total_rows, "total_pages": total_pages},
+        "sort": {"sort_by": sort_key, "sort_dir": sort_direction},
+    }
+
+
 def get_federal_local_donor_matches(
     conn: sqlite3.Connection,
     cycle: int | None = None,

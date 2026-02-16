@@ -14,6 +14,7 @@ from database.analytics import (
     get_dashboard_snapshot,
     get_donor_cogiving_network,
     get_donor_concentration,
+    get_geo_drilldown,
     get_geo_summary,
     get_irs527_ecosystem_graph,
     get_lobbying_influence_graph,
@@ -393,6 +394,17 @@ def test_analytics_service_outputs(analytics_conn):
     chicago_rows = [row for row in geo["cities"] if row["state"] == "IL" and row["city"] == "Chicago"]
     assert len(chicago_rows) == 1
     assert not any(row["city"] == "CHICAGO" for row in geo["cities"])
+    geo_drilldown = get_geo_drilldown(
+        analytics_conn,
+        geo_type="state",
+        geo_value="IL",
+        page=1,
+        per_page=25,
+        sort_by="total_amount",
+        sort_dir="desc",
+    )
+    assert geo_drilldown["summary"]["sum_check_delta"] == 0.0
+    assert geo_drilldown["summary"]["total_amount"] >= geo_drilldown["summary"]["page_total_amount"]
 
     nlp = get_nlp_spending_summary(analytics_conn, limit=20)
     categories = {row["category"] for row in nlp}
@@ -1131,6 +1143,22 @@ def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
     assert b"Time-Series Intelligence" in geography.data
     assert b"Geospatial Summary - States" in geography.data
     assert b"Skipped in quick mode" not in geography.data
+
+
+def test_analytics_geo_drilldown_route(analytics_client):
+    state_resp = analytics_client.get(
+        "/analytics/geo-drilldown?geo_type=state&geo_value=IL&load_mode=full&period=all"
+    )
+    assert state_resp.status_code == 200
+    assert b"Geo Drilldown: IL" in state_resp.data
+    assert b"Sum check delta" in state_resp.data
+    assert b"Committee One" in state_resp.data
+
+    city_resp = analytics_client.get(
+        "/analytics/geo-drilldown?geo_type=city&geo_value=Chicago&geo_state=IL&load_mode=full&period=all"
+    )
+    assert city_resp.status_code == 200
+    assert b"Geo Drilldown: Chicago, IL" in city_resp.data
 
 
 def test_analytics_networks_full_mode_survives_optional_graph_failures(analytics_client, monkeypatch):

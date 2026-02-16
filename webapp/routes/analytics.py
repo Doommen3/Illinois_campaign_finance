@@ -1,9 +1,10 @@
 """Analytics dashboard routes."""
 from concurrent.futures import ThreadPoolExecutor
+import json
 import threading
 import time
 
-from flask import Blueprint, abort, current_app, render_template, request
+from flask import Blueprint, abort, current_app, render_template, request, url_for
 
 from database.analytics import (
     build_dashboard_full_snapshot,
@@ -12,6 +13,7 @@ from database.analytics import (
     get_committee_similarity_network,
     get_donor_cogiving_network,
     get_dashboard_snapshot,
+    get_geo_drilldown,
     get_irs527_ecosystem_graph,
     get_lobbying_influence_graph,
     get_nlp_spending_summary,
@@ -38,6 +40,8 @@ _relationships_cache = {
     "key": None,
 }
 _relationships_cache_lock = threading.Lock()
+_geo_drilldown_cache: dict[str, dict] = {}
+_geo_drilldown_cache_lock = threading.Lock()
 
 
 def _is_true_arg(value: str | None) -> bool:
@@ -70,6 +74,43 @@ def _empty_network() -> dict:
 
 def _empty_geo_summary() -> dict:
     return {"states": [], "cities": []}
+
+
+def _get_cached_geo_drilldown(cache_key: str) -> dict | None:
+    now = time.monotonic()
+    with _geo_drilldown_cache_lock:
+        entry = _geo_drilldown_cache.get(cache_key)
+        if not entry:
+            return None
+        if float(entry.get("expires_at", 0.0)) <= now:
+            _geo_drilldown_cache.pop(cache_key, None)
+            return None
+        return entry.get("payload")
+
+
+def _store_cached_geo_drilldown(cache_key: str, payload: dict, ttl_seconds: int) -> None:
+    now = time.monotonic()
+    with _geo_drilldown_cache_lock:
+        _geo_drilldown_cache[cache_key] = {
+            "payload": payload,
+            "expires_at": now + max(15, int(ttl_seconds)),
+            "updated_at": now,
+        }
+        if len(_geo_drilldown_cache) > 96:
+            stale_keys = [
+                key
+                for key, entry in _geo_drilldown_cache.items()
+                if float(entry.get("expires_at", 0.0)) <= now
+            ]
+            for key in stale_keys:
+                _geo_drilldown_cache.pop(key, None)
+            if len(_geo_drilldown_cache) > 96:
+                oldest_keys = sorted(
+                    _geo_drilldown_cache.keys(),
+                    key=lambda key: float(_geo_drilldown_cache[key].get("updated_at", 0.0)),
+                )[: len(_geo_drilldown_cache) - 96]
+                for key in oldest_keys:
+                    _geo_drilldown_cache.pop(key, None)
 
 
 def _parse_filters() -> dict:
@@ -559,6 +600,92 @@ def geography():
         **_base_context("geography", filters, snapshot_state),
         geo_summary=geo_summary,
         time_series=time_series,
+    )
+
+
+@analytics_bp.route("/geo-drilldown")
+def geo_drilldown():
+    """Render state/city donor->committee drilldown for a geography aggregate cell."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+
+    geo_type = (request.args.get("geo_type", "state", type=str) or "state").strip().lower()
+    geo_value = (request.args.get("geo_value", "", type=str) or "").strip()
+    geo_state = (request.args.get("geo_state", "", type=str) or "").strip().upper()
+    source_page = (request.args.get("source_page", "geography", type=str) or "geography").strip().lower()
+    range_key = (request.args.get("range", "", type=str) or "").strip() or filters["time_period_key"]
+
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    per_page = min(max(request.args.get("per_page", 50, type=int) or 50, 10), 250)
+    sort_by = (request.args.get("sort", "total_amount", type=str) or "total_amount").strip().lower()
+    sort_dir = (request.args.get("dir", "desc", type=str) or "desc").strip().lower()
+
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    cache_ttl = max(15, int(current_app.config.get("ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS", 180)))
+    cache_params = {
+        "version": 1,
+        "range": range_key,
+        "period": filters["time_period_key"],
+        "date_from": filters["date_from"],
+        "date_to": filters["date_to"],
+        "geo_type": geo_type,
+        "geo_value": geo_value,
+        "geo_state": geo_state,
+        "page": page,
+        "per_page": per_page,
+        "sort": sort_by,
+        "dir": sort_dir,
+    }
+    cache_key = json.dumps(cache_params, sort_keys=True, separators=(",", ":"))
+
+    drilldown = _get_cached_geo_drilldown(cache_key) if cache_enabled else None
+    if drilldown is None:
+        drilldown = get_geo_drilldown(
+            conn,
+            geo_type=geo_type,
+            geo_value=geo_value,
+            geo_state=geo_state,
+            page=page,
+            per_page=per_page,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        if cache_enabled:
+            _store_cached_geo_drilldown(cache_key, drilldown, cache_ttl)
+
+    if source_page == "overview":
+        back_url = url_for(
+            "analytics.dashboard",
+            load_mode=filters["load_mode"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+            months=filters["months"],
+            geo_state_limit=filters["geo_state_limit"],
+            geo_city_limit=filters["geo_city_limit"],
+            period=filters["time_period_key"],
+        )
+    else:
+        back_url = url_for(
+            "analytics.geography",
+            load_mode=filters["load_mode"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+            months=filters["months"],
+            geo_state_limit=filters["geo_state_limit"],
+            geo_city_limit=filters["geo_city_limit"],
+            period=filters["time_period_key"],
+        )
+
+    return render_template(
+        "analytics/geo_drilldown.html",
+        active_page="geography",
+        **filters,
+        range_key=range_key,
+        source_page=source_page,
+        drilldown=drilldown,
+        back_url=back_url,
     )
 
 

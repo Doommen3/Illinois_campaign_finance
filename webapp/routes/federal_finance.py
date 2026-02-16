@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import csv
 from io import StringIO
+import json
+import threading
+import time
 
-from flask import Blueprint, Response, current_app, render_template, request
+from flask import Blueprint, Response, current_app, render_template, request, url_for
 
 from database.models import Donor
 from webapp.utils.time_filter import get_active_period, period_cycle
@@ -17,6 +20,7 @@ from database.federal_fec import (
     get_federal_donor_network_clusters,
     get_federal_donor_segmentation,
     get_federal_follow_the_money,
+    get_federal_geo_drilldown,
     get_federal_geographic_concentration,
     get_federal_influence_scores,
     get_federal_multilayer_network_graph,
@@ -33,6 +37,8 @@ from database.federal_fec import (
 )
 
 federal_finance_bp = Blueprint('federal_finance', __name__)
+_federal_geo_drilldown_cache: dict[str, dict] = {}
+_federal_geo_drilldown_cache_lock = threading.Lock()
 
 
 def _parse_shared_filters() -> tuple[int | None, int, str, str]:
@@ -74,6 +80,43 @@ def _federal_cache_ttl(config_key: str, default_seconds: int) -> int:
 
 def _federal_cache_refresh_requested() -> bool:
     return request.args.get('refresh_cache', 0, type=int) == 1
+
+
+def _get_cached_federal_geo_drilldown(cache_key: str) -> dict | None:
+    now = time.monotonic()
+    with _federal_geo_drilldown_cache_lock:
+        entry = _federal_geo_drilldown_cache.get(cache_key)
+        if not entry:
+            return None
+        if float(entry.get('expires_at', 0.0)) <= now:
+            _federal_geo_drilldown_cache.pop(cache_key, None)
+            return None
+        return entry.get('payload')
+
+
+def _store_cached_federal_geo_drilldown(cache_key: str, payload: dict, ttl_seconds: int) -> None:
+    now = time.monotonic()
+    with _federal_geo_drilldown_cache_lock:
+        _federal_geo_drilldown_cache[cache_key] = {
+            'payload': payload,
+            'expires_at': now + max(15, int(ttl_seconds)),
+            'updated_at': now,
+        }
+        if len(_federal_geo_drilldown_cache) > 96:
+            stale_keys = [
+                key
+                for key, entry in _federal_geo_drilldown_cache.items()
+                if float(entry.get('expires_at', 0.0)) <= now
+            ]
+            for key in stale_keys:
+                _federal_geo_drilldown_cache.pop(key, None)
+            if len(_federal_geo_drilldown_cache) > 96:
+                oldest_keys = sorted(
+                    _federal_geo_drilldown_cache.keys(),
+                    key=lambda key: float(_federal_geo_drilldown_cache[key].get('updated_at', 0.0)),
+                )[: len(_federal_geo_drilldown_cache) - 96]
+                for key in oldest_keys:
+                    _federal_geo_drilldown_cache.pop(key, None)
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -707,6 +750,115 @@ def federal_geography():
         'federal_finance/geography.html',
         **_base_context('geography', table_available, cycle, analysis_office, analysis_district),
         geographic=geographic,
+    )
+
+
+@federal_finance_bp.route('/geo-drilldown')
+def federal_geo_drilldown():
+    """Render donor->candidate detail rows behind geographic aggregates."""
+    conn = current_app.get_database()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    table_available = federal_data_available(conn)
+
+    geo_type = (request.args.get('geo_type', 'state', type=str) or 'state').strip().lower()
+    geo_value = (request.args.get('geo_value', '', type=str) or '').strip()
+    geo_state = (request.args.get('geo_state', '', type=str) or '').strip().upper()
+    source_page = (request.args.get('source_page', 'overview', type=str) or 'overview').strip().lower()
+    period = get_active_period()
+    range_key = (request.args.get('range', '', type=str) or '').strip() or (period.get('key') or '')
+
+    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    per_page = min(max(request.args.get('per_page', 50, type=int) or 50, 10), 250)
+    sort_by = (request.args.get('sort', 'total_amount', type=str) or 'total_amount').strip().lower()
+    sort_dir = (request.args.get('dir', 'desc', type=str) or 'desc').strip().lower()
+
+    drilldown = {
+        'rows': [],
+        'summary': {
+            'geo_type': geo_type,
+            'geo_value': geo_value,
+            'geo_state': geo_state,
+            'geo_label': f'{geo_value}, {geo_state}' if geo_type == 'city' else geo_value.upper(),
+            'total_amount': 0.0,
+            'contribution_count': 0,
+            'donor_count': 0,
+            'candidate_count': 0,
+            'detail_row_count': 0,
+            'page_total_amount': 0.0,
+            'page_contribution_count': 0,
+            'sum_check_delta': 0.0,
+        },
+        'pagination': {'page': page, 'per_page': per_page, 'total_rows': 0, 'total_pages': 0},
+        'sort': {'sort_by': sort_by, 'sort_dir': sort_dir},
+        'cycle': cycle_filter,
+        'office_filter': analysis_office or None,
+        'district_filter': analysis_district or None,
+    }
+
+    if table_available and geo_value:
+        cache_enabled = bool(current_app.config.get('ROUTE_PERF_CACHE_ENABLED', not current_app.config.get('TESTING', False)))
+        cache_ttl = max(15, int(current_app.config.get('FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 180)))
+        cache_params = {
+            'version': 1,
+            'range': range_key,
+            'period': period.get('key'),
+            'cycle': cycle_filter,
+            'analysis_office': analysis_office or '',
+            'analysis_district': analysis_district or '',
+            'geo_type': geo_type,
+            'geo_value': geo_value,
+            'geo_state': geo_state,
+            'page': page,
+            'per_page': per_page,
+            'sort': sort_by,
+            'dir': sort_dir,
+        }
+        cache_key = json.dumps(cache_params, sort_keys=True, separators=(',', ':'))
+
+        cached = _get_cached_federal_geo_drilldown(cache_key) if cache_enabled else None
+        if cached is not None:
+            drilldown = cached
+        else:
+            drilldown = get_federal_geo_drilldown(
+                conn,
+                cycle=cycle_filter,
+                office_code=analysis_office or None,
+                district_code=analysis_district or None,
+                geo_type=geo_type,
+                geo_value=geo_value,
+                geo_state=geo_state,
+                page=page,
+                per_page=per_page,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+            if cache_enabled:
+                _store_cached_federal_geo_drilldown(cache_key, drilldown, cache_ttl)
+
+    if source_page == 'geography':
+        back_url = url_for(
+            'federal_finance.federal_geography',
+            cycle=cycle,
+            analysis_office=analysis_office,
+            analysis_district=analysis_district,
+            period=period.get('key'),
+        )
+    else:
+        back_url = url_for(
+            'federal_finance.federal_overview',
+            cycle=cycle,
+            analysis_office=analysis_office,
+            analysis_district=analysis_district,
+            period=period.get('key'),
+        )
+
+    return render_template(
+        'federal_finance/geo_drilldown.html',
+        **_base_context('geography', table_available, cycle, analysis_office, analysis_district),
+        drilldown=drilldown,
+        source_page=source_page,
+        range_key=range_key,
+        back_url=back_url,
     )
 
 

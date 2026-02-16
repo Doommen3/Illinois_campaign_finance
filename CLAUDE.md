@@ -87,6 +87,8 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - Heavy routes with in-process TTL caching:
    - `/` (homepage candidate stats, top donors, and dashboard insights)
    - `/analytics/relationships`
+   - `/analytics/geo-drilldown`
+   - `/federal-finance/geo-drilldown`
    - `/527/dark-money` (summary stats)
 - Config flags in `config.py`:
    - `ROUTE_PERF_CACHE_ENABLED`
@@ -94,6 +96,8 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS`
    - `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS`
+   - `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS`
+   - `FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS`
    - `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_PREWARM_ENABLED`
    - `SEARCH_RESULTS_CACHE_TTL_SECONDS`
@@ -134,6 +138,7 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - Report-driven pages/queries filter by `filed_date`.
    - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).
    - Legacy routes (`/reports`, `/donors`, `/committees`, and search report/filed-doc/donor-key sections) are expected to propagate the active global period window end-to-end.
+   - Geo drilldown cache keys must include range + geo coordinates (`period/range`, `date_from/date_to` where applicable, `geo_type`, `geo_value`, optional `geo_state`) plus pagination/sort params.
 - Benchmarking guidance:
    - Always measure at least one **cold** pass and one **warm** pass.
    - For reliable warm numbers, run 2-3 warm passes and use median.
@@ -370,6 +375,8 @@ Local DB: `postgresql://devin@localhost/ilcf` (matches `config.DATABASE_URL` def
 After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). Critical routes:
 - `/`, `/search?q=Chicago`, `/candidates`
 - `/federal-finance/`, `/analytics/`, `/lobbying/`, `/527/`
+- `/federal-finance/geo-drilldown?geo_type=state&geo_value=IL&cycle=2026`
+- `/analytics/geo-drilldown?geo_type=state&geo_value=IL&period=all`
 - `/federal-finance/races/H/01/outside-spending?cycle=2026`
 - `/527/dark-money`, `/527/<ein>`
 
