@@ -312,6 +312,31 @@ For any non-trivial pipeline, import, migration, cross-matching run, or route/qu
 - Route performance:
   - Prefer summary/materialized tables and route TTL cache fast paths before adding heavier compute in request time.
 
+### Setup/ETL Optimization Notes (2026-02-16)
+
+- `database/analytics.py`:
+  - `_refresh_materialized_contributions()` now uses set-based SQL inserts for donor-committee aggregates, monthly totals, and large-contribution materialization (replacing Python row loops/dicts/lists).
+- `database/irs527_loader.py`:
+  - Illinois-only EIN discovery now uses lightweight field extraction in the first pass (instead of full row parsing) for `load_irs527_full_file()`, `reload_irs527_reports()`, and `reload_irs527_contributions()`.
+  - Corrected expenditure-state index used by Illinois filtering (`_is_illinois_expenditure` now reads the state slot).
+- `database/bulk_download_loader.py`:
+  - `_normalize_bulk_receipt_date()` now uses LRU caching to avoid repeated date parsing work for recurring date strings in large receipt files.
+- `database/federal_fec.py`:
+  - `_upsert_seed_rows()` and `_upsert_candidate_committees()` now batch with `executemany()` rather than per-row upserts.
+
+Bounded synthetic benchmarks (fast local checks, not full production runs):
+- `_refresh_materialized_contributions` (300k synthetic contributions): ~2.07s -> ~0.79s (~2.6x faster).
+- IRS Illinois EIN first-pass extraction (800k synthetic lines): ~1.34s -> ~0.23s (~5.9x faster).
+- Receipt date normalization loop (2M repeated date values): ~13.65s -> ~0.09s (~150x faster with cache hits).
+
+For full-volume validation, run on your data and capture elapsed + row counts:
+
+```bash
+python run.py refresh-analytics --skip-snapshot
+python run.py import-irs527 --file <FullDataFile.txt> --illinois-only
+python run.py import-bulk-download --directory <Bulk_download_dir>
+```
+
 ## New Data Integration Checklist (Required)
 
 Whenever a new dataset or new columns are added, treat integration as a full-system task (not just ingestion):

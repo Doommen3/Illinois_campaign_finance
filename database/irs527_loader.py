@@ -305,9 +305,45 @@ def _is_illinois_org(parsed: tuple) -> bool:
 
 def _is_illinois_expenditure(parsed: tuple) -> bool:
     """Check if expenditure has IL state."""
-    # state is at index 8 in the expenditure tuple
-    state = parsed[8]
+    # state is at index 7 in the expenditure tuple
+    state = parsed[7]
     return state is not None and state.upper() == "IL"
+
+
+def _is_illinois_state(value: str | None) -> bool:
+    return (value or "").strip().upper() == "IL"
+
+
+def _collect_illinois_eins(file_path: Path, *, include_contributions: bool) -> set[str]:
+    """Fast first-pass EIN collector for Illinois-only filtering."""
+    il_eins: set[str] = set()
+    with file_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n\r")
+            if not line:
+                continue
+            line = _strip_bom_prefix(line)
+            fields = line.split("|")
+            if not fields:
+                continue
+
+            record_type = fields[0]
+            if record_type == "1":
+                ein = _clean_text(_safe_get(fields, 6))
+                org_state = _clean_text(_safe_get(fields, 11))
+                if ein and _is_illinois_state(org_state):
+                    il_eins.add(ein)
+            elif record_type == "B":
+                ein = _clean_text(_safe_get(fields, 4))
+                recipient_state = _clean_text(_safe_get(fields, 9))
+                if ein and _is_illinois_state(recipient_state):
+                    il_eins.add(ein)
+            elif include_contributions and record_type == "A":
+                ein = _clean_text(_safe_get(fields, 4))
+                contributor_state = _clean_text(_safe_get(fields, 9))
+                if ein and _is_illinois_state(contributor_state):
+                    il_eins.add(ein)
+    return il_eins
 
 
 def load_irs527_full_file(
@@ -349,35 +385,8 @@ def load_irs527_full_file(
     # If illinois_only, first pass to collect IL EINs
     il_eins: set[str] | None = None
     if illinois_only:
-        il_eins = set()
         logger.info("First pass: collecting Illinois EINs...")
-        with file_path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n\r")
-                if not line:
-                    continue
-                line = _strip_bom_prefix(line)
-                fields = line.split("|")
-                record_type = fields[0] if fields else ""
-
-                if record_type == "1":
-                    parsed = _parse_org(fields)
-                    if parsed and _is_illinois_org(parsed):
-                        il_eins.add(parsed[0])
-                elif record_type == "B":
-                    parsed = _parse_expenditure(fields)
-                    if parsed and _is_illinois_expenditure(parsed):
-                        ein = parsed[1]
-                        if ein:
-                            il_eins.add(ein)
-                elif record_type == "A":
-                    parsed = _parse_contribution(fields)
-                    if parsed:
-                        contributor_state = (parsed[7] or "").strip().upper()
-                        if contributor_state == "IL":
-                            ein = parsed[1]
-                            if ein:
-                                il_eins.add(ein)
+        il_eins = _collect_illinois_eins(file_path, include_contributions=True)
         logger.info("Found %d Illinois-related EINs", len(il_eins))
 
     # Buffers for batch inserts
@@ -678,26 +687,8 @@ def reload_irs527_reports(
 
     il_eins: set[str] | None = None
     if illinois_only:
-        il_eins = set()
         logger.info("First pass: collecting Illinois EINs for report rebuild...")
-        with file_path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n\r")
-                if not line:
-                    continue
-                line = _strip_bom_prefix(line)
-                fields = line.split("|")
-                record_type = fields[0] if fields else ""
-                if record_type == "1":
-                    parsed = _parse_org(fields)
-                    if parsed and _is_illinois_org(parsed):
-                        il_eins.add(parsed[0])
-                elif record_type == "B":
-                    parsed = _parse_expenditure(fields)
-                    if parsed and _is_illinois_expenditure(parsed):
-                        ein = parsed[1]
-                        if ein:
-                            il_eins.add(ein)
+        il_eins = _collect_illinois_eins(file_path, include_contributions=False)
         logger.info("Illinois EIN set size for report rebuild: %d", len(il_eins))
 
     if replace_existing:
@@ -811,35 +802,8 @@ def reload_irs527_contributions(
 
     il_eins: set[str] | None = None
     if illinois_only:
-        il_eins = set()
         logger.info("First pass: collecting Illinois EINs for contribution rebuild...")
-        with file_path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n\r")
-                if not line:
-                    continue
-                line = _strip_bom_prefix(line)
-                fields = line.split("|")
-                record_type = fields[0] if fields else ""
-
-                if record_type == "1":
-                    parsed = _parse_org(fields)
-                    if parsed and _is_illinois_org(parsed):
-                        il_eins.add(parsed[0])
-                elif record_type == "A":
-                    parsed = _parse_contribution(fields)
-                    if parsed:
-                        contributor_state = (parsed[7] or "").strip().upper()
-                        if contributor_state == "IL":
-                            ein = parsed[1]
-                            if ein:
-                                il_eins.add(ein)
-                elif record_type == "B":
-                    parsed = _parse_expenditure(fields)
-                    if parsed and _is_illinois_expenditure(parsed):
-                        ein = parsed[1]
-                        if ein:
-                            il_eins.add(ein)
+        il_eins = _collect_illinois_eins(file_path, include_contributions=True)
         logger.info("Illinois EIN set size for contribution rebuild: %d", len(il_eins))
 
     if replace_existing:

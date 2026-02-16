@@ -178,6 +178,23 @@ For any significant code path (imports, migrations, cross-matching, analytics re
    - Update `README.md` (and relevant runbooks) with the fastest known command pattern and caveats.
    - Explicitly call out when a "fast" mode is unsafe in production (for example lock contention or memory risk).
 
+### Setup/ETL Performance Notes (2026-02-16)
+
+- `database/analytics.py`:
+  - `_refresh_materialized_contributions()` is SQL-first (set-based `INSERT ... SELECT`) for donor aggregates, monthly totals, and large-contribution rows; avoid reintroducing Python row-loop aggregation here.
+- `database/irs527_loader.py`:
+  - Illinois-only first pass uses lightweight field extraction (`record_type` + EIN/state indexes) instead of full parser tuple builds.
+  - Expenditure IL-state lookup uses the state slot in parsed tuples (index 7).
+- `database/bulk_download_loader.py`:
+  - Receipt date normalization is LRU-cached for repeated values in multi-million-row imports.
+- `database/federal_fec.py`:
+  - Candidate seed and committee upserts are batched via `executemany()`; prefer this pattern for similar high-row upsert paths.
+
+Bounded synthetic benchmark deltas (local):
+- analytics contributions materialization: ~2.07s -> ~0.79s on 300k synthetic contribution rows.
+- IRS Illinois EIN first-pass extraction: ~1.34s -> ~0.23s on 800k synthetic lines.
+- receipt date normalization loop: ~13.65s -> ~0.09s on 2M repeated values.
+
 ## Code Style
 
 - Primary stack: Python (backend), HTML/CSS/JavaScript (frontend).
