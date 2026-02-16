@@ -1670,7 +1670,7 @@ class TestWebApp:
 
         rendered_sql = "\n".join(conn.sql_history)
         assert "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(receipts_minus_d2_total AS TEXT)), '') AS REAL), 0)) AS abs_diff" in rendered_sql
-        assert "COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?" in rendered_sql
+        assert "d.filed_doc_id = ?" in rendered_sql
 
     def test_d2_receipts_recon_filters_use_postgres_safe_casts(self):
         where_sql, _params = D2ReceiptsRecon._build_filter_sql(search="9001", min_abs_diff=10, min_receipt_rows=2)
