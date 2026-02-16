@@ -9,8 +9,11 @@ from database.connection import get_db, init_db
 from scraper.openbook_scraper import (
     OpenBookScraper,
     _HttpSession,
+    _is_person_name,
     _pick_best_match,
     _score_all_matches,
+    _score_one,
+    _clean_html_cell,
     generate_search_terms,
     parse_contracts_html,
     parse_contract_detail_html,
@@ -785,15 +788,15 @@ class TestGenerateSearchTerms:
     """Tests for smart search term generation from vendor names."""
 
     def test_person_name_last_first(self):
-        """SMITH, JOHN -> ['SMITH']"""
+        """SMITH, JOHN -> ['SMITH, JOHN'] (full name only at high confidence)"""
         result = generate_search_terms("SMITH, JOHN")
-        assert "SMITH" in result
+        assert "SMITH, JOHN" in result
         assert "JOHN" not in result
 
     def test_person_name_last_first_middle(self):
-        """SMITH, JOHN A -> ['SMITH']"""
+        """SMITH, JOHN A -> ['SMITH, JOHN A'] (full name only at high confidence)"""
         result = generate_search_terms("SMITH, JOHN A")
-        assert "SMITH" in result
+        assert "SMITH, JOHN A" in result
         assert len(result) >= 1
 
     def test_person_vs_company_comma_before_suffix(self):
@@ -1050,5 +1053,311 @@ class TestResolveAllMatchesHTTP:
         monkeypatch.setattr(scraper.rate_limiter, "record_success", lambda: None)
 
         results = scraper.resolve_all_matches_http("SMITH, JOHN", FakeSession())
-        # Should have searched "SMITH" not "SMITH, JOHN"
-        assert any("SMITH" == t for t in searched_terms)
+        # Should search full person name "SMITH, JOHN"
+        assert any("SMITH, JOHN" == t for t in searched_terms)
+
+
+# ---------------------------------------------------------------------------
+# Contribution parsing with HTML entities tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseContributionsEntities:
+    """Tests for contribution parsing with HTML entities and junk row filtering."""
+
+    @pytest.fixture
+    def entity_html(self):
+        return (FIXTURES_DIR / "contributions_with_entities.html").read_text()
+
+    def test_entities_skips_junk_rows(self, entity_html):
+        """Header/nbsp rows should be filtered out."""
+        contribs = parse_contributions_html(entity_html, "TEST_VENDOR")
+        # Only 2 valid data rows (header-in-td row with &nbsp; is filtered)
+        names = [c["contributor_name"] for c in contribs]
+        assert "&nbsp;" not in " ".join(names)
+        assert "Received By" not in names
+
+    def test_entity_ampersand_unescaped(self, entity_html):
+        """&amp; in contributor name should become &."""
+        contribs = parse_contributions_html(entity_html, "TEST_VENDOR")
+        amp_rows = [c for c in contribs if "&" in c["contributor_name"]]
+        assert len(amp_rows) >= 1
+        assert amp_rows[0]["contributor_name"] == "SMITH & ASSOCIATES"
+
+    def test_date_validation_filters_non_dates(self, entity_html):
+        """Only rows with valid date strings pass through."""
+        contribs = parse_contributions_html(entity_html, "TEST_VENDOR")
+        for c in contribs:
+            # All dates should match MM/DD/YYYY pattern
+            import re
+            assert re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", c["contribution_date"])
+
+    def test_valid_row_count(self, entity_html):
+        """Should parse exactly 2 valid data rows."""
+        contribs = parse_contributions_html(entity_html, "TEST_VENDOR")
+        assert len(contribs) == 2
+
+
+# ---------------------------------------------------------------------------
+# Short prefix scoring penalty tests
+# ---------------------------------------------------------------------------
+
+
+class TestShortPrefixPenalty:
+    """Tests for short single-token prefix scoring penalty."""
+
+    def test_short_single_token_prefix_penalized(self):
+        """'BUSH' vs 'BUSHMASTER FIREARMS' -> 0.5 (penalized)."""
+        method, confidence = _score_one("BUSH", "BUSHMASTER FIREARMS")
+        assert method == "prefix"
+        assert confidence == 0.5
+
+    def test_long_single_token_prefix_normal(self):
+        """'COMCAST' vs 'COMCAST CORP' -> 0.9 (normal)."""
+        method, confidence = _score_one("COMCAST", "COMCAST CORP")
+        assert method == "prefix"
+        assert confidence == 0.9
+
+    def test_multi_token_prefix_normal(self):
+        """'ACME CORP' vs 'ACME CORPORATION INC' -> 0.9 (multi-token, not penalized)."""
+        method, confidence = _score_one("ACME CORP", "ACME CORPORATION INC")
+        # This is fuzzy since "ACME CORP" doesn't prefix-match "ACME CORPORATION INC"
+        # but let's test a true multi-token prefix
+        method2, confidence2 = _score_one("ACME CORPORATION", "ACME CORPORATION INC")
+        assert method2 == "prefix"
+        assert confidence2 == 0.9
+
+    def test_five_char_single_token_penalized(self):
+        """'TERRY' (5 chars) vs 'TERRY CONSTRUCTION' -> 0.5."""
+        method, confidence = _score_one("TERRY", "TERRY CONSTRUCTION")
+        assert method == "prefix"
+        assert confidence == 0.5
+
+    def test_six_char_single_token_normal(self):
+        """'DELOITTE' (8 chars) vs 'DELOITTE CONSULTING' -> 0.9."""
+        method, confidence = _score_one("DELOITTE", "DELOITTE CONSULTING")
+        assert method == "prefix"
+        assert confidence == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Contract detail with tr attributes tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseContractDetailAttributes:
+    """Tests for contract detail parsing with class attributes on tr elements."""
+
+    @pytest.fixture
+    def detail_attrs_html(self):
+        return (FIXTURES_DIR / "contract_detail_with_attributes.html").read_text()
+
+    def test_parse_detail_with_tr_attributes(self, detail_attrs_html):
+        """Rows with class='odd'/'even' attributes should still be parsed."""
+        rows = parse_contract_detail_html(
+            detail_attrs_html,
+            vendor_key="TEST VENDOR",
+            contract_number="C-999",
+            fiscal_year=2026,
+        )
+        assert len(rows) == 3
+
+    def test_parse_detail_amounts(self, detail_attrs_html):
+        rows = parse_contract_detail_html(
+            detail_attrs_html,
+            vendor_key="TEST VENDOR",
+            contract_number="C-999",
+            fiscal_year=2026,
+        )
+        amounts = [r["payment_amount"] for r in rows]
+        assert 15000.00 in amounts
+        assert 25500.75 in amounts
+        assert 8200.00 in amounts
+
+    def test_parse_detail_dates(self, detail_attrs_html):
+        rows = parse_contract_detail_html(
+            detail_attrs_html,
+            vendor_key="TEST VENDOR",
+            contract_number="C-999",
+            fiscal_year=2026,
+        )
+        dates = [r["issue_date"] for r in rows]
+        assert "2/15/26" in dates
+        assert "1/10/26" in dates
+        assert "12/5/25" in dates
+
+
+# ---------------------------------------------------------------------------
+# _is_person_name helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsPersonName:
+    """Tests for _is_person_name() helper."""
+
+    def test_person_last_first(self):
+        assert _is_person_name("SMITH, JOHN") is True
+
+    def test_person_last_first_middle(self):
+        assert _is_person_name("SMITH, JOHN A") is True
+
+    def test_company_with_suffix(self):
+        """CATERPILLAR, INC -> not a person."""
+        assert _is_person_name("CATERPILLAR, INC") is False
+
+    def test_company_with_llc(self):
+        assert _is_person_name("ACME, LLC") is False
+
+    def test_no_comma(self):
+        assert _is_person_name("COMCAST CORPORATION") is False
+
+    def test_empty_string(self):
+        assert _is_person_name("") is False
+
+    def test_none(self):
+        assert _is_person_name(None) is False
+
+    def test_comma_but_empty_after(self):
+        assert _is_person_name("SOMETHING,") is False
+
+    def test_company_inc_corp(self):
+        """COMPANY, INC CORP -> all suffixes."""
+        assert _is_person_name("COMPANY, INC CORP") is False
+
+
+# ---------------------------------------------------------------------------
+# ISBE seed generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestSeedGenerationISBE:
+    """Tests for ISBE seed generation from bulk_expenditures_clean."""
+
+    @pytest.fixture
+    def db_conn(self, tmp_path):
+        db_path = str(tmp_path / "test_isbe_seeds.db")
+        init_db(db_path)
+        conn = get_db(db_path)
+        # Create bulk_expenditures_clean table (minimal schema)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bulk_expenditures_clean (
+                id INTEGER PRIMARY KEY,
+                payee_last_or_business_name TEXT,
+                amount REAL,
+                is_amount_anomalous INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_seeds_from_isbe(self, db_conn):
+        """Only business names (not persons) should be seeded."""
+        db_conn.execute(
+            "INSERT INTO bulk_expenditures_clean (payee_last_or_business_name, amount) "
+            "VALUES ('ACME CORPORATION', 50000.0)"
+        )
+        db_conn.execute(
+            "INSERT INTO bulk_expenditures_clean (payee_last_or_business_name, amount) "
+            "VALUES ('SMITH, JOHN', 50000.0)"
+        )
+        db_conn.execute(
+            "INSERT INTO bulk_expenditures_clean (payee_last_or_business_name, amount) "
+            "VALUES ('TINY VENDOR', 500.0)"
+        )
+        db_conn.commit()
+
+        stats = OpenBookScraper.generate_seeds(
+            db_conn, min_amount=10000.0, limit_per_source=100, sources="isbe",
+        )
+        assert stats["isbe_seeds"] == 1  # Only ACME CORPORATION (person skipped, tiny below min)
+        assert stats["total_new_seeds"] == 1
+
+        row = db_conn.execute(
+            "SELECT * FROM openbook_vendor_seed WHERE seed_text = 'ACME CORPORATION'"
+        ).fetchone()
+        assert row is not None
+        assert row["seed_source"] == "isbe"
+
+    def test_isbe_skips_anomalous(self, db_conn):
+        """Rows with is_amount_anomalous=1 should be excluded."""
+        db_conn.execute(
+            "INSERT INTO bulk_expenditures_clean (payee_last_or_business_name, amount, is_amount_anomalous) "
+            "VALUES ('ANOMALOUS VENDOR', 100000.0, 1)"
+        )
+        db_conn.commit()
+
+        stats = OpenBookScraper.generate_seeds(
+            db_conn, min_amount=10000.0, limit_per_source=100, sources="isbe",
+        )
+        assert stats["isbe_seeds"] == 0
+
+    def test_isbe_seeds_idempotent(self, db_conn):
+        """Re-running ISBE seed generation shouldn't create duplicates."""
+        db_conn.execute(
+            "INSERT INTO bulk_expenditures_clean (payee_last_or_business_name, amount) "
+            "VALUES ('REPEAT CORP', 50000.0)"
+        )
+        db_conn.commit()
+
+        stats1 = OpenBookScraper.generate_seeds(
+            db_conn, min_amount=10000.0, limit_per_source=100, sources="isbe",
+        )
+        assert stats1["isbe_seeds"] == 1
+
+        stats2 = OpenBookScraper.generate_seeds(
+            db_conn, min_amount=10000.0, limit_per_source=100, sources="isbe",
+        )
+        assert stats2["isbe_seeds"] == 0
+
+        count = db_conn.execute(
+            "SELECT COUNT(*) as cnt FROM openbook_vendor_seed WHERE seed_text = 'REPEAT CORP'"
+        ).fetchone()["cnt"]
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# CLI sources option test
+# ---------------------------------------------------------------------------
+
+
+class TestSourcesOption:
+    """Tests for comma-separated sources parsing."""
+
+    def test_sources_comma_separated(self):
+        """Verify comma-separated string splits correctly."""
+        sources = "fec,isbe"
+        result = [s.strip() for s in sources.split(",")]
+        assert result == ["fec", "isbe"]
+
+    def test_sources_with_spaces(self):
+        sources = "fec, isbe, lobbying"
+        result = [s.strip() for s in sources.split(",")]
+        assert result == ["fec", "isbe", "lobbying"]
+
+
+# ---------------------------------------------------------------------------
+# _clean_html_cell helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestCleanHtmlCell:
+    """Tests for _clean_html_cell() HTML entity + tag stripping."""
+
+    def test_unescape_amp(self):
+        assert _clean_html_cell("SMITH &amp; JONES") == "SMITH & JONES"
+
+    def test_unescape_nbsp(self):
+        assert _clean_html_cell("&nbsp;") == ""
+
+    def test_strip_tags(self):
+        assert _clean_html_cell("<b>BOLD</b>") == "BOLD"
+
+    def test_collapse_whitespace(self):
+        assert _clean_html_cell("  lots   of    space  ") == "lots of space"
+
+    def test_empty(self):
+        assert _clean_html_cell("") == ""
+
+    def test_none(self):
+        assert _clean_html_cell(None) == ""

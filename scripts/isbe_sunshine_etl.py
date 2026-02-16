@@ -1378,7 +1378,7 @@ def create_materialized_views(conn):
 
 COMPAT_VIEWS_DDL = """
 -- Backward-compatible views: isbe_* tables → bulk_*_clean shape
--- These allow existing queries/routes to work without modification
+-- Column names MUST match bulk_*_clean exactly so existing routes work.
 
 DROP VIEW IF EXISTS isbe_bulk_receipts_clean_compat CASCADE;
 CREATE VIEW isbe_bulk_receipts_clean_compat AS
@@ -1425,8 +1425,8 @@ SELECT
   e.committee_id AS committee_id_sbe,
   e.filed_doc_id,
   e.etrans_id AS electronic_transaction_id,
-  e.last_name AS last_or_business_name,
-  e.first_name,
+  e.last_name AS payee_last_or_business_name,
+  e.first_name AS payee_first_name,
   e.expended_date::text AS expended_date,
   e.amount,
   e.aggregate_amount,
@@ -1438,12 +1438,13 @@ SELECT
   e.purpose,
   e.candidate_name,
   e.office,
-  CASE WHEN e.supporting THEN 1 ELSE 0 END AS supporting,
-  CASE WHEN e.opposing THEN 1 ELSE 0 END AS opposing,
+  CASE WHEN e.supporting THEN 1 ELSE 0 END AS is_supporting,
+  CASE WHEN e.opposing THEN 1 ELSE 0 END AS is_opposing,
   CASE WHEN e.archived THEN 1 ELSE 0 END AS is_archived,
   e.country,
   CASE WHEN e.redaction_requested THEN 1 ELSE 0 END AS redaction_requested,
-  0 AS is_amount_anomalous,
+  0::integer AS is_amount_anomalous,
+  NULL::text AS anomaly_reason,
   NULL::text AS source_file,
   NULL::bigint AS source_row_number
 FROM isbe_expenditures e;
@@ -1452,19 +1453,33 @@ DROP VIEW IF EXISTS isbe_bulk_committees_clean_compat CASCADE;
 CREATE VIEW isbe_bulk_committees_clean_compat AS
 SELECT
   c.id AS committee_id_sbe,
-  c.type AS type_of_committee,
-  c.state_committee,
-  c.local_committee,
-  c.refer_name,
-  c.name,
-  c.address1, c.address2, c.address3,
-  c.city, c.state, c.zipcode,
-  c.active,
+  c.type AS committee_type,
+  0::integer AS is_state_committee_obsolete,
+  c.state_committee AS state_committee_id_obsolete,
+  0::integer AS is_local_committee_obsolete,
+  c.local_committee AS local_committee_id_obsolete,
+  c.refer_name AS reference_name,
+  c.name AS committee_name,
+  c.address1 AS address_line_1,
+  c.address2 AS address_line_2,
+  c.address3 AS address_line_3,
+  c.city, c.state,
+  c.zipcode AS postal_code,
+  CASE WHEN c.active THEN 'A' ELSE 'F' END AS committee_status_code,
   c.status_date::text AS status_date,
   c.creation_date::text AS creation_date,
-  c.creation_amount,
-  c.party,
-  c.purpose
+  c.creation_amount AS creation_funds_available,
+  NULL::text AS residual_funds_return_to_contributors,
+  NULL::text AS residual_funds_to_political_committee,
+  NULL::text AS residual_funds_to_charity,
+  NULL::text AS residual_funds_per_ilcs_9_5,
+  NULL::text AS residual_funds_description,
+  NULL::text AS candidate_support_or_oppose,
+  NULL::text AS policy_support_or_oppose,
+  c.party AS party_affiliation,
+  c.purpose AS committee_purpose,
+  NULL::text AS source_file,
+  NULL::bigint AS source_row_number
 FROM isbe_committees c;
 
 DROP VIEW IF EXISTS isbe_bulk_candidates_clean_compat CASCADE;
@@ -1473,15 +1488,103 @@ SELECT
   c.id AS candidate_id,
   c.last_name,
   c.first_name,
-  c.address1, c.address2,
-  c.city, c.state, c.zipcode,
-  c.office,
+  TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')) AS candidate_full_name,
+  c.address1 AS address_line_1,
+  c.address2 AS address_line_2,
+  c.city, c.state,
+  c.zipcode AS postal_code,
+  c.office AS office_sought,
   c.district_type,
   c.district,
   c.residence_county,
   c.party AS party_affiliation,
-  CASE WHEN c.redaction_requested THEN 1 ELSE 0 END AS redaction_requested
+  CASE WHEN c.redaction_requested THEN 1 ELSE 0 END AS redaction_requested,
+  NULL::text AS source_file,
+  NULL::bigint AS source_row_number
 FROM isbe_candidates c;
+
+-- Additional compat views for link/aggregation tables
+
+DROP VIEW IF EXISTS isbe_bulk_d2_totals_clean_compat CASCADE;
+CREATE VIEW isbe_bulk_d2_totals_clean_compat AS
+SELECT
+  d.id AS d2_totals_record_id,
+  d.committee_id AS committee_id_sbe,
+  d.filed_doc_id,
+  d.beginning_funds_avail AS beginning_funds_available,
+  d.individual_itemized AS individual_contributions_itemized,
+  d.individual_non_itemized AS individual_contributions_non_itemized,
+  NULL::double precision AS transfers_in_itemized,
+  NULL::double precision AS transfers_in_non_itemized,
+  NULL::double precision AS loans_received_itemized,
+  NULL::double precision AS loans_received_non_itemized,
+  NULL::double precision AS other_receipts_itemized,
+  NULL::double precision AS other_receipts_non_itemized,
+  d.total_receipts,
+  d.inkind_itemized AS in_kind_contributions_itemized,
+  d.inkind_non_itemized AS in_kind_contributions_non_itemized,
+  d.total_inkind AS total_in_kind_contributions,
+  NULL::double precision AS transfers_out_itemized,
+  NULL::double precision AS transfers_out_non_itemized,
+  NULL::double precision AS loans_made_itemized,
+  NULL::double precision AS loans_made_non_itemized,
+  d.expenditures_itemized,
+  d.expenditures_non_itemized,
+  d.independent_expenditures_itemized,
+  d.independent_expenditures_non_itemized,
+  d.total_expenditures,
+  d.debts_itemized AS debts_obligations_itemized,
+  d.debts_non_itemized AS debts_obligations_non_itemized,
+  d.total_debts AS total_debts_obligations,
+  d.total_investments,
+  d.end_funds_available AS ending_funds_available,
+  CASE WHEN d.archived THEN 1 ELSE 0 END AS is_archived,
+  NULL::text AS source_file,
+  NULL::bigint AS source_row_number
+FROM isbe_d2_reports d;
+
+DROP VIEW IF EXISTS isbe_bulk_cmte_candidate_links_clean_compat CASCADE;
+CREATE VIEW isbe_bulk_cmte_candidate_links_clean_compat AS
+SELECT
+  cc.id AS link_record_id,
+  cc.committee_id AS committee_id_sbe,
+  cc.candidate_id,
+  NULL::text AS source_file,
+  NULL::bigint AS source_row_number
+FROM isbe_candidate_committees cc;
+
+DROP VIEW IF EXISTS isbe_bulk_committee_candidate_links_compat CASCADE;
+CREATE VIEW isbe_bulk_committee_candidate_links_compat AS
+SELECT
+  cc.id AS link_record_id,
+  cc.committee_id AS committee_id_sbe,
+  cc.candidate_id,
+  cm.name AS committee_name,
+  cm.refer_name AS reference_name,
+  cm.type AS committee_type,
+  cm.party AS committee_party_affiliation,
+  CASE WHEN cm.active THEN 'A' ELSE 'F' END AS committee_status_code,
+  cm.city AS committee_city,
+  cm.state AS committee_state,
+  cm.zipcode AS committee_postal_code,
+  cm.purpose AS committee_purpose,
+  ca.last_name,
+  ca.first_name,
+  TRIM(COALESCE(ca.first_name, '') || ' ' || COALESCE(ca.last_name, '')) AS candidate_full_name,
+  ca.office AS office_sought,
+  ca.district_type,
+  ca.district,
+  ca.residence_county,
+  ca.party AS candidate_party_affiliation,
+  ca.city AS candidate_city,
+  ca.state AS candidate_state,
+  ca.zipcode AS candidate_postal_code,
+  NULL::text AS link_source_file,
+  NULL::text AS candidate_source_file,
+  NULL::text AS committee_source_file
+FROM isbe_candidate_committees cc
+LEFT JOIN isbe_committees cm ON cm.id = cc.committee_id
+LEFT JOIN isbe_candidates ca ON ca.id = cc.candidate_id;
 """
 
 
