@@ -576,8 +576,8 @@ CREATE UNIQUE INDEX ON isbe_candidate_money (candidate_id, committee_id);
 # ---------------------------------------------------------------------------
 
 def connect():
-    """Return a psycopg2 connection."""
-    return psycopg2.connect(DB_URL)
+    """Return a psycopg connection."""
+    return psycopg.connect(DB_URL)
 
 
 def find_file(bulk_dir: Path, stem: str) -> Path | None:
