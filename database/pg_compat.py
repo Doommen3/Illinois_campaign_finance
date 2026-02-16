@@ -15,7 +15,7 @@ from psycopg.rows import dict_row
 
 
 _SQLITE_TABLE_EXISTS_RE = re.compile(
-    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*(?:=\s*'table'|IN\s*\(\s*'table'\s*,\s*'view'\s*\))\s+AND\s+name\s*=\s*\?\s*$",
+    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*(?:=\s*'table'|IN\s*\(\s*'table'\s*,\s*'view'\s*\))\s+AND\s+name\s*=\s*(?:\?|'(?P<inline_name>[^']+)')\s*$",
     re.IGNORECASE,
 )
 _PRAGMA_TABLE_INFO_RE = re.compile(
@@ -85,8 +85,12 @@ class PostgresCompatCursor:
         bound_params = tuple(params or ())
         stripped = sql.strip()
 
-        if _SQLITE_TABLE_EXISTS_RE.match(stripped):
-            table_name = str(bound_params[0]) if bound_params else ""
+        m = _SQLITE_TABLE_EXISTS_RE.match(stripped)
+        if m:
+            if bound_params:
+                table_name = str(bound_params[0])
+            else:
+                table_name = m.group("inline_name") or ""
             self._fake_rows = self._conn._sqlite_master_table_exists(table_name)
             self._fake_index = 0
             return self
