@@ -239,11 +239,18 @@ Visit `http://localhost:5000` to access the dashboard.
 │   ├── fec-schedule-b-catchup.sh  Hourly Schedule B backfill wrapper
 │   └── fec-schedule-e-catchup.sh  Hourly Schedule E backfill wrapper
 ├── tests/                  pytest suite (20+ test modules)
-├── docs/                   Data update guide, roadmaps, checklists
+├── docs/                   Data update guide, roadmaps, checklists, analysis plans
 │   └── systemd/            Sample unit/timer files (including Schedule E catch-up)
 ├── Bulk_download/          ISBE bulk export TXT files
 └── data/                   Legacy data directory (SQLite database deprecated)
 ```
+
+## Planning Docs
+
+- `docs/graphs_roadmap.md` — chart roadmap with required joins, filters, and performance notes
+- `docs/network_analysis_plan.md` — network model, metrics plan, and lightweight-first compute strategy
+- `docs/illinois_clickable_district_map_plan.md` — local/federal district geometry + join-key strategy
+- `docs/ameren_lobbying_case_study.md` — reproducible Ameren relationship queries and normalization notes
 
 ## Testing
 

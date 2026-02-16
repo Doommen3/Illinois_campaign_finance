@@ -46,6 +46,7 @@ python run.py runserver --port 5000
 | `scraper/comptroller_contracts.py` | Comptroller State Contracts DataTables scraper |
 | `webapp/routes/` | 15 Flask route modules |
 | `webapp/templates/` | 50+ Jinja2 templates |
+| `docs/` | Runbooks and planning docs (graphs roadmap, network plan, district map plan, case studies) |
 | `tests/` | pytest suite |
 
 ### Data Sources
