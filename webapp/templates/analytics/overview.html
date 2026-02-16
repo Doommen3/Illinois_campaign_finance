@@ -102,7 +102,11 @@
         <tbody>
             {% for row in state_race_analytics %}
             <tr>
-                <td>{{ row.race_label }}</td>
+                <td>
+                    <a href="{{ url_for('analytics.state_race_detail', race_key=row.race_key, period=time_period_key, date_from=explicit_date_from if explicit_date_from else None, date_to=explicit_date_to if explicit_date_to else None, election_cycle=election_cycle if election_cycle is not none else None) }}">
+                        {{ row.race_label }}
+                    </a>
+                </td>
                 <td>{{ row.candidate_count }}</td>
                 <td>{{ row.donor_count }}</td>
                 <td>{{ row.contribution_count }}</td>

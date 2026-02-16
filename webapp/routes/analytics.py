@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
-from flask import Blueprint, current_app, render_template, request
+from flask import Blueprint, abort, current_app, render_template, request
 
 from database.analytics import (
     build_dashboard_full_snapshot,
@@ -17,6 +17,7 @@ from database.analytics import (
     get_nlp_spending_summary,
     get_reconciliation_outliers,
     get_state_race_analytics,
+    get_state_race_detail,
     get_state_federal_overlap_graph,
     get_time_series,
     get_vendor_expenditure_network,
@@ -109,6 +110,8 @@ def _parse_filters() -> dict:
         "recon_min_abs_diff": recon_min_abs_diff,
         "date_from": date_from or "",
         "date_to": date_to or "",
+        "explicit_date_from": explicit_date_from,
+        "explicit_date_to": explicit_date_to,
         "time_period_key": period["key"],
     }
 
@@ -389,6 +392,37 @@ def dashboard():
         latest_time_point=latest_time_point,
         state_race_table_available=state_race_table_available,
         state_race_analytics=state_race_analytics,
+        election_cycle=election_cycle,
+    )
+
+
+@analytics_bp.route("/state-races/<race_key>")
+def state_race_detail(race_key: str):
+    """Render a state race detail page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    election_cycle = request.args.get("election_cycle", type=int)
+    race_detail = get_state_race_detail(
+        conn,
+        race_key=race_key,
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        election_cycle=election_cycle,
+    )
+    if not race_detail:
+        abort(404)
+
+    return render_template(
+        "analytics/state_race_detail.html",
+        active_page="overview",
+        load_mode=filters["load_mode"],
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        time_period_key=filters["time_period_key"],
+        explicit_date_from=filters["explicit_date_from"],
+        explicit_date_to=filters["explicit_date_to"],
+        election_cycle=election_cycle,
+        race_detail=race_detail,
     )
 
 

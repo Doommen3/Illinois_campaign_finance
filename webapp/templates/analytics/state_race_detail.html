@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}State Race Detail - {{ race_detail.race_label }}{% endblock %}
+
+{% block content %}
+<h1>State Race Detail</h1>
+<p class="subtitle">{{ race_detail.race_label }}</p>
+
+{% include "analytics/_subnav.html" %}
+
+<p>
+    <a href="{{ url_for('analytics.dashboard', load_mode=load_mode, period=time_period_key, date_from=explicit_date_from if explicit_date_from else None, date_to=explicit_date_to if explicit_date_to else None, election_cycle=election_cycle if election_cycle is not none else None) }}">
+        Back to Top State Races
+    </a>
+</p>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Candidates</h3>
+        <div class="stat-value">{{ race_detail.candidate_count }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Donors</h3>
+        <div class="stat-value">{{ race_detail.donor_count }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Contributions</h3>
+        <div class="stat-value">{{ race_detail.contribution_count }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Total Amount</h3>
+        <div class="stat-value">{{ format_currency(race_detail.total_amount) }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Outside Spending (E)</h3>
+        <div class="stat-value">{{ format_currency(race_detail.outside_spending_total) }}</div>
+    </div>
+    <div class="stat-card">
+        <h3>Outside Pressure Ratio</h3>
+        <div class="stat-value">{{ (race_detail.outside_pressure_ratio * 100)|round(2) }}%</div>
+    </div>
+</div>
+
+<div class="status-section">
+    <h2>Candidate Committee Rows</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Candidate</th>
+                <th>Candidate ID</th>
+                <th>Committee</th>
+                <th>Committee ID</th>
+                <th>Receipts Total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in race_detail.candidate_rows %}
+            <tr>
+                <td>{{ row.candidate_name }}</td>
+                <td>{{ row.candidate_id if row.candidate_id else '-' }}</td>
+                <td>{{ row.committee_name }}</td>
+                <td>{{ row.committee_id_sbe if row.committee_id_sbe else '-' }}</td>
+                <td>{{ format_currency(row.candidate_receipts_total) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No candidate rows for this race.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Committee Contribution Rows</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee ID</th>
+                <th>Contributions</th>
+                <th>Donors</th>
+                <th>Total Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in race_detail.committee_receipt_rows %}
+            <tr>
+                <td>{{ row.committee_id_sbe }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No committee receipt rows for this race.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="status-section">
+    <h2>Outside Spending Rows (D-2 Part 9)</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Candidate</th>
+                <th>Total Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in race_detail.outside_spending_rows %}
+            <tr>
+                <td>{{ row.candidate_name }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="2">No outside spending rows for this race.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

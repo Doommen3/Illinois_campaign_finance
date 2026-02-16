@@ -2016,15 +2016,38 @@ def get_reconciliation_outliers(
     ]
 
 
-def get_state_race_analytics(
+def _race_slug_token(value: str | None) -> str:
+    token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(value))
+    token = token.strip("-")
+    return token or "na"
+
+
+def _state_race_slug(office_sought: str, district_type: str, district: str) -> str:
+    normalized_office = _normalize_name(office_sought) or "unknown-office"
+    normalized_district_type = _normalize_name(district_type) or "unknown-district-type"
+    normalized_district = _normalize_name(district) or "na"
+    stable_key = f"{normalized_office}|{normalized_district_type}|{normalized_district}"
+    digest = hashlib.sha1(stable_key.encode("utf-8")).hexdigest()[:10]
+
+    tokens = [
+        _race_slug_token(office_sought),
+        _race_slug_token(district_type),
+    ]
+    district_token = _race_slug_token(district)
+    if district_token != "na":
+        tokens.append(district_token)
+    slug_prefix = "-".join(tokens)
+    return f"{slug_prefix}-{digest}"
+
+
+def _build_state_race_analytics_rows(
     conn: sqlite3.Connection,
     *,
-    limit: int = 12,
     date_from: str | None = None,
     date_to: str | None = None,
     election_cycle: int | None = None,
+    include_supporting_rows: bool = False,
 ) -> list[dict]:
-    """Return state race-level analytics using bulk ISBE tables when available."""
     required_tables = {
         "bulk_candidate_committee_finance_agg",
         "bulk_receipts_clean",
@@ -2065,10 +2088,18 @@ def get_state_race_analytics(
             TRIM(COALESCE(district_type, '')) AS district_type,
             TRIM(COALESCE(district, '')) AS district,
             CAST(committee_id_sbe AS TEXT) AS committee_id_sbe,
+            TRIM(COALESCE(committee_name, '')) AS committee_name,
             COALESCE(SUM(CAST(sum_total_receipts AS DOUBLE PRECISION)), 0.0) AS candidate_receipts_total
         FROM bulk_candidate_committee_finance_agg
         {candidate_where}
-        GROUP BY candidate_id, candidate_full_name, office_sought, district_type, district, committee_id_sbe
+        GROUP BY
+            candidate_id,
+            candidate_full_name,
+            office_sought,
+            district_type,
+            district,
+            committee_id_sbe,
+            committee_name
         """,
         where_params,
     ).fetchall()
@@ -2084,42 +2115,60 @@ def get_state_race_analytics(
         office_sought = row["office_sought"] or "Unknown Office"
         district_type = row["district_type"] or "Unknown District Type"
         district = row["district"] or ""
-        race_key = f"{office_sought}|{district_type}|{district}"
+        race_identity = f"{office_sought}|{district_type}|{district}"
         race_label = f"{office_sought} - {district_type}{(' ' + district) if district else ''}"
 
         race = races.setdefault(
-            race_key,
+            race_identity,
             {
+                "race_key": _state_race_slug(office_sought, district_type, district),
                 "race_label": race_label,
-                "candidate_ids": set(),
+                "office_sought": office_sought,
+                "district_type": district_type,
+                "district": district,
+                "candidate_tokens": set(),
                 "candidate_receipts": defaultdict(float),
                 "candidate_receipts_total": 0.0,
                 "donor_count": 0,
                 "contribution_count": 0,
                 "total_amount": 0.0,
                 "outside_spending_total": 0.0,
+                "candidate_rows": [],
+                "committee_receipt_rows": [],
+                "outside_spending_rows": [],
             },
         )
 
         candidate_id = (row["candidate_id"] or "").strip()
         candidate_name = (row["candidate_full_name"] or "").strip()
-        if candidate_id:
-            race["candidate_ids"].add(candidate_id)
+        committee_id = (row["committee_id_sbe"] or "").strip()
+        committee_name = (row["committee_name"] or "").strip()
+
+        candidate_token = candidate_id or candidate_name.upper() or committee_id
+        if candidate_token:
+            race["candidate_tokens"].add(candidate_token)
 
         receipts_total = float(row["candidate_receipts_total"] or 0.0)
-        if candidate_id:
-            race["candidate_receipts"][candidate_id] += receipts_total
-        else:
-            fallback_key = candidate_name or "unknown"
-            race["candidate_receipts"][fallback_key] += receipts_total
+        receipt_bucket_key = candidate_id or candidate_name or candidate_token or "unknown"
+        race["candidate_receipts"][receipt_bucket_key] += receipts_total
         race["candidate_receipts_total"] += receipts_total
 
-        committee_id = (row["committee_id_sbe"] or "").strip()
         if committee_id:
-            committee_to_races[committee_id].add(race_key)
+            committee_to_races[committee_id].add(race_identity)
 
         if candidate_name:
-            candidate_name_to_races[candidate_name.upper()].add(race_key)
+            candidate_name_to_races[candidate_name.upper()].add(race_identity)
+
+        if include_supporting_rows:
+            race["candidate_rows"].append(
+                {
+                    "candidate_id": candidate_id,
+                    "candidate_name": candidate_name or "Unknown Candidate",
+                    "committee_id_sbe": committee_id,
+                    "committee_name": committee_name or (f"Committee {committee_id}" if committee_id else "Unknown Committee"),
+                    "candidate_receipts_total": round(receipts_total, 2),
+                }
+            )
 
     receipts_date_column_exists = _column_exists(conn, "bulk_receipts_clean", "received_date")
     donor_name_candidates: list[str] = []
@@ -2168,15 +2217,26 @@ def get_state_race_analytics(
         committee_id = (row["committee_id_sbe"] or "").strip()
         if not committee_id:
             continue
-        for race_key in committee_to_races.get(committee_id, set()):
-            race = races.get(race_key)
+        contribution_count = int(row["contribution_count"] or 0)
+        committee_donor_count = int(row["donor_count"] or 0)
+        committee_total_amount = float(row["total_amount"] or 0.0)
+
+        for race_identity in committee_to_races.get(committee_id, set()):
+            race = races.get(race_identity)
             if not race:
                 continue
-            race["contribution_count"] += int(row["contribution_count"] or 0)
-            race["total_amount"] += float(row["total_amount"] or 0.0)
-            race.setdefault("_donor_count_by_race", 0)
+            race["contribution_count"] += contribution_count
+            race["total_amount"] += committee_total_amount
+            if include_supporting_rows:
+                race["committee_receipt_rows"].append(
+                    {
+                        "committee_id_sbe": committee_id,
+                        "contribution_count": contribution_count,
+                        "donor_count": committee_donor_count,
+                        "total_amount": round(committee_total_amount, 2),
+                    }
+                )
 
-    race_donor_counts: dict[str, int] = defaultdict(int)
     donor_rows = conn.execute(
         f"""
         SELECT
@@ -2187,16 +2247,17 @@ def get_state_race_analytics(
         """,
         receipt_params,
     ).fetchall()
+    race_donor_counts: dict[str, int] = defaultdict(int)
     race_donor_sets: dict[str, set[str]] = defaultdict(set)
     for row in donor_rows:
         committee_id = (row["committee_id_sbe"] or "").strip()
         donor_key = (row["donor_key"] or "").strip()
         if not committee_id or not donor_key:
             continue
-        for race_key in committee_to_races.get(committee_id, set()):
-            race_donor_sets[race_key].add(donor_key)
-    for race_key, donors in race_donor_sets.items():
-        race_donor_counts[race_key] = len(donors)
+        for race_identity in committee_to_races.get(committee_id, set()):
+            race_donor_sets[race_identity].add(donor_key)
+    for race_identity, donors in race_donor_sets.items():
+        race_donor_counts[race_identity] = len(donors)
 
     expenditure_part_exists = _column_exists(conn, "bulk_expenditures_clean", "d2_part_code")
     expenditure_amount_exists = _column_exists(conn, "bulk_expenditures_clean", "amount")
@@ -2219,6 +2280,7 @@ def get_state_race_analytics(
             f"""
             SELECT
                 UPPER(TRIM(COALESCE(e.candidate_name, ''))) AS candidate_name_key,
+                MIN(NULLIF(TRIM(COALESCE(e.candidate_name, '')), '')) AS candidate_name,
                 COALESCE(SUM(COALESCE(e.amount, 0.0)), 0.0) AS total_amount
             FROM bulk_expenditures_clean e
             WHERE {' AND '.join(exp_where_parts)}
@@ -2230,33 +2292,71 @@ def get_state_race_analytics(
             candidate_name_key = (row["candidate_name_key"] or "").strip()
             if not candidate_name_key:
                 continue
-            for race_key in candidate_name_to_races.get(candidate_name_key, set()):
-                race = races.get(race_key)
-                if race:
-                    race["outside_spending_total"] += float(row["total_amount"] or 0.0)
+            candidate_name = (row["candidate_name"] or "").strip() or candidate_name_key
+            outside_amount = float(row["total_amount"] or 0.0)
+            for race_identity in candidate_name_to_races.get(candidate_name_key, set()):
+                race = races.get(race_identity)
+                if not race:
+                    continue
+                race["outside_spending_total"] += outside_amount
+                if include_supporting_rows:
+                    race["outside_spending_rows"].append(
+                        {
+                            "candidate_name": candidate_name,
+                            "total_amount": round(outside_amount, 2),
+                        }
+                    )
 
     output: list[dict] = []
-    for race_key, race in races.items():
+    for race_identity, race in races.items():
         total_amount = float(race["total_amount"] or 0.0)
         outside_spending_total = float(race["outside_spending_total"] or 0.0)
         candidate_receipts_total = float(race["candidate_receipts_total"] or 0.0)
         top_candidate_amount = max((float(v or 0.0) for v in race["candidate_receipts"].values()), default=0.0)
-
         outside_pressure_ratio = (outside_spending_total / total_amount) if total_amount > 0 else 0.0
         top_candidate_share = (top_candidate_amount / candidate_receipts_total) if candidate_receipts_total > 0 else 0.0
 
-        output.append(
-            {
-                "race_label": race["race_label"],
-                "candidate_count": len(race["candidate_ids"]),
-                "donor_count": int(race_donor_counts.get(race_key, 0)),
-                "contribution_count": int(race["contribution_count"] or 0),
-                "total_amount": round(total_amount, 2),
-                "outside_spending_total": round(outside_spending_total, 2),
-                "outside_pressure_ratio": round(outside_pressure_ratio, 4),
-                "top_candidate_share": round(top_candidate_share, 4),
-            }
-        )
+        payload = {
+            "race_key": race["race_key"],
+            "race_label": race["race_label"],
+            "office_sought": race["office_sought"],
+            "district_type": race["district_type"],
+            "district": race["district"],
+            "candidate_count": len(race["candidate_tokens"]),
+            "donor_count": int(race_donor_counts.get(race_identity, 0)),
+            "contribution_count": int(race["contribution_count"] or 0),
+            "total_amount": round(total_amount, 2),
+            "outside_spending_total": round(outside_spending_total, 2),
+            "outside_pressure_ratio": round(outside_pressure_ratio, 4),
+            "top_candidate_share": round(top_candidate_share, 4),
+        }
+        if include_supporting_rows:
+            payload["candidate_rows"] = sorted(
+                race["candidate_rows"],
+                key=lambda row: (
+                    float(row["candidate_receipts_total"] or 0.0),
+                    row["candidate_name"],
+                ),
+                reverse=True,
+            )
+            payload["committee_receipt_rows"] = sorted(
+                race["committee_receipt_rows"],
+                key=lambda row: (
+                    float(row["total_amount"] or 0.0),
+                    int(row["contribution_count"] or 0),
+                    row["committee_id_sbe"],
+                ),
+                reverse=True,
+            )
+            payload["outside_spending_rows"] = sorted(
+                race["outside_spending_rows"],
+                key=lambda row: (
+                    float(row["total_amount"] or 0.0),
+                    row["candidate_name"],
+                ),
+                reverse=True,
+            )
+        output.append(payload)
 
     output.sort(
         key=lambda row: (
@@ -2266,7 +2366,52 @@ def get_state_race_analytics(
         ),
         reverse=True,
     )
-    return output[: max(1, int(limit))]
+    return output
+
+
+def get_state_race_analytics(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 12,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    election_cycle: int | None = None,
+) -> list[dict]:
+    """Return state race-level analytics using bulk ISBE tables when available."""
+    rows = _build_state_race_analytics_rows(
+        conn,
+        date_from=date_from,
+        date_to=date_to,
+        election_cycle=election_cycle,
+        include_supporting_rows=False,
+    )
+    return rows[: max(1, int(limit))]
+
+
+def get_state_race_detail(
+    conn: sqlite3.Connection,
+    *,
+    race_key: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    election_cycle: int | None = None,
+) -> dict | None:
+    """Return detail payload for one race key, or None if missing."""
+    normalized_race_key = (race_key or "").strip()
+    if not normalized_race_key:
+        return None
+
+    rows = _build_state_race_analytics_rows(
+        conn,
+        date_from=date_from,
+        date_to=date_to,
+        election_cycle=election_cycle,
+        include_supporting_rows=True,
+    )
+    for row in rows:
+        if (row.get("race_key") or "").strip() == normalized_race_key:
+            return row
+    return None
 
 
 def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:

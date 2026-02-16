@@ -1,5 +1,7 @@
 """Tests for analytics features (network, anomalies, concentration, trends, geo, NLP)."""
 from pathlib import Path
+import re
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -215,6 +217,7 @@ def _seed_analytics_dataset(conn):
             (1001, "Donor One", "1A", 50001, 0, 5000.0, "2026-01-05", "2026-01-05 12:00:00"),
             (1001, "Donor Two", "1A", 50002, 0, 2000.0, "2026-01-06", "2026-01-06 12:00:00"),
             (1002, "Donor One", "1A", 50003, 0, 3000.0, "2026-01-07", "2026-01-07 12:00:00"),
+            (1001, "Legacy Donor", "1A", 50004, 0, 4000.0, "2024-06-10", "2024-06-10 12:00:00"),
         ],
     )
 
@@ -236,6 +239,7 @@ def _seed_analytics_dataset(conn):
             (50001, 0),
             (50002, 0),
             (50003, 0),
+            (50004, 0),
         ],
     )
 
@@ -263,6 +267,7 @@ def _seed_analytics_dataset(conn):
             (1001, "Vendor One", "Candidate Alpha", "9A", 0, 1500.0, "2026-01-08"),
             (1001, "Vendor One", "Candidate Alpha", "1A", 0, 999.0, "2026-01-08"),
             (1001, "Vendor One", "Candidate Alpha", "9A", 1, 888.0, "2026-01-08"),
+            (1001, "Legacy Vendor", "Candidate Alpha", "9A", 0, 600.0, "2024-07-15"),
         ],
     )
 
@@ -313,6 +318,16 @@ def _seed_analytics_dataset(conn):
         ),
     )
     conn.commit()
+
+
+def _extract_top_state_race_href(response_data: bytes, race_label: str) -> str:
+    html = response_data.decode("utf-8")
+    match = re.search(
+        rf'href="([^"]*?/analytics/state-races/[^"]+)"[^>]*>\s*{re.escape(race_label)}\s*</a>',
+        html,
+    )
+    assert match is not None, f"Missing state race link for label: {race_label}"
+    return match.group(1)
 
 
 @pytest.fixture
@@ -1022,6 +1037,61 @@ def test_analytics_dashboard_route_loads(analytics_client):
         assert title in page_response.data
         assert b"Analytics section navigation" in page_response.data
         assert marker in page_response.data
+
+
+def test_top_state_races_rows_include_clickable_hrefs(analytics_client):
+    response = analytics_client.get("/analytics/?period=2026cycle")
+    assert response.status_code == 200
+
+    href = _extract_top_state_race_href(response.data, "Governor - Statewide At-Large")
+    parsed = urlparse(href)
+    params = parse_qs(parsed.query)
+
+    assert parsed.path.startswith("/analytics/state-races/")
+    assert params.get("period") == ["2026cycle"]
+    assert "date_from" not in params
+    assert "date_to" not in params
+
+
+def test_state_race_detail_route_returns_200_for_valid_race(analytics_client):
+    overview = analytics_client.get("/analytics/?period=2026cycle")
+    assert overview.status_code == 200
+    href = _extract_top_state_race_href(overview.data, "Governor - Statewide At-Large")
+
+    detail = analytics_client.get(href)
+    assert detail.status_code == 200
+    assert b"State Race Detail" in detail.data
+    assert b"Governor - Statewide At-Large" in detail.data
+    assert b"Candidate Committee Rows" in detail.data
+    assert b"Committee Contribution Rows" in detail.data
+    assert b"Outside Spending Rows" in detail.data
+
+
+def test_state_race_detail_route_returns_404_for_invalid_race_key(analytics_client):
+    response = analytics_client.get("/analytics/state-races/not-a-real-race-key?period=2026cycle")
+    assert response.status_code == 404
+
+
+def test_state_race_detail_period_propagation_changes_output(analytics_client):
+    cycle_overview = analytics_client.get("/analytics/?period=2026cycle")
+    assert cycle_overview.status_code == 200
+    cycle_href = _extract_top_state_race_href(cycle_overview.data, "Governor - Statewide At-Large")
+    cycle_detail = analytics_client.get(cycle_href)
+    assert cycle_detail.status_code == 200
+    assert b"$10,000.00" in cycle_detail.data
+    assert b"$1,500.00" in cycle_detail.data
+
+    all_overview = analytics_client.get("/analytics/?period=all")
+    assert all_overview.status_code == 200
+    all_href = _extract_top_state_race_href(all_overview.data, "Governor - Statewide At-Large")
+    all_parsed = urlparse(all_href)
+    all_params = parse_qs(all_parsed.query)
+    assert all_params.get("period") == ["all"]
+
+    all_detail = analytics_client.get(all_href)
+    assert all_detail.status_code == 200
+    assert b"$14,000.00" in all_detail.data
+    assert b"$2,100.00" in all_detail.data
 
 
 def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
