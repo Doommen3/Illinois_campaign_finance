@@ -1369,6 +1369,38 @@ def update_officer_committees(conn):
     print(f"    {updated:,} officers updated with committee_id.")
 
 
+def infer_missing_candidate_links(conn):
+    """Infer candidate-committee links from refer_name when CmteCandidateLinks is incomplete.
+
+    ISBE's CmteCandidateLinks.txt doesn't always contain rows for every
+    candidate-committee pair, especially for newer committees.  The committee
+    refer_name field (e.g. 'Atcha, Haroon') can be matched to candidates.
+    """
+    print("  Inferring missing candidate-committee links from refer_name...")
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO isbe_candidate_committees (id, committee_id, candidate_id)
+            SELECT (SELECT COALESCE(MAX(id), 0) FROM isbe_candidate_committees) + ROW_NUMBER() OVER (),
+                   c.id, ca.id
+            FROM (
+                SELECT DISTINCT c2.id, ca2.id AS candidate_id
+                FROM isbe_committees c2
+                JOIN isbe_candidates ca2
+                  ON LOWER(TRIM(c2.refer_name)) = LOWER(TRIM(ca2.last_name || ', ' || ca2.first_name))
+                LEFT JOIN isbe_candidate_committees cc
+                  ON cc.committee_id = c2.id AND cc.candidate_id = ca2.id
+                WHERE cc.id IS NULL
+                  AND c2.refer_name IS NOT NULL
+                  AND c2.refer_name != ''
+            ) sub
+            JOIN isbe_committees c ON c.id = sub.id
+            JOIN isbe_candidates ca ON ca.id = sub.candidate_id
+        """)
+        inserted = cur.rowcount
+    conn.commit()
+    print(f"    {inserted:,} inferred links inserted.")
+
+
 def create_materialized_views(conn):
     """Create all materialized views."""
     print("Creating materialized views...")
@@ -1732,6 +1764,8 @@ def main():
             merge_prev_officers(conn)
         if "CmteOfficerLinks.txt" in files_to_load:
             update_officer_committees(conn)
+        if "CmteCandidateLinks.txt" in files_to_load:
+            infer_missing_candidate_links(conn)
 
         # Materialized views
         if not args.skip_views:
