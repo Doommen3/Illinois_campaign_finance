@@ -1286,7 +1286,7 @@ def _upsert_schedule_rows(
                 _clean_text(row.get("image_number")) or None,
                 api_source_identifier,
                 _clean_text(row.get("amendment_indicator")) or None,
-                _clean_text(row.get("file_number")) or None,
+                _clean_text(str(row["file_number"])) if row.get("file_number") is not None else None,
                 _clean_text(row.get("transaction_id")) or None,
             )
         )
@@ -1456,7 +1456,7 @@ def _upsert_schedule_b_rows(
                 api_source_identifier,
                 _clean_text(row.get("amendment_indicator")) or None,
                 _clean_text(row.get("disbursement_purpose_category")) or None,
-                _clean_text(row.get("file_number")) or None,
+                _clean_text(str(row["file_number"])) if row.get("file_number") is not None else None,
                 _clean_text(row.get("transaction_id")) or None,
             )
         )
@@ -1620,8 +1620,8 @@ def _upsert_schedule_e_rows(
                 api_source_identifier,
                 1 if row.get("is_notice") is True else (0 if row.get("is_notice") is False else None),
                 1 if row.get("most_recent") is True else (0 if row.get("most_recent") is False else None),
-                _clean_text(row.get("file_number")) or None,
-                _clean_text(row.get("previous_file_number")) or None,
+                _clean_text(str(row["file_number"])) if row.get("file_number") is not None else None,
+                _clean_text(str(row["previous_file_number"])) if row.get("previous_file_number") is not None else None,
                 _clean_text(row.get("amendment_indicator")) or None,
                 _clean_text(row.get("transaction_id")) or None,
             )
