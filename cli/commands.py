@@ -307,7 +307,11 @@ def clean_data_command(apply, scope):
               help='Disable smart search term generation (use raw seed text)')
 @click.option('--sources', type=str, default=None,
               help='Comma-separated seed sources (default: all). Options: expenditures,lobbying,chicago,fec,isbe')
-def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount, no_smart_search, sources):
+@click.option('--seed-source', type=str, default=None,
+              help='Optional exact seed_source filter for targeted runs (e.g., ameren_case_study)')
+@click.option('--seed-like', type=str, default=None,
+              help='Optional SQL LIKE pattern on seed_text (e.g., AMEREN%%)')
+def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_errors, generate_seeds, min_amount, no_smart_search, sources, seed_source, seed_like):
     """Batch-resolve and scrape all pending OpenBook vendor seeds via HTTP."""
     conn = get_db(config.DATABASE_TARGET)
     max_errs = max_consecutive_errors if max_consecutive_errors is not None else config.OPENBOOK_BATCH_MAX_CONSECUTIVE_ERRORS
@@ -340,6 +344,7 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
 
         click.echo(f'Starting OpenBook batch import (max_vendors={max_vendors or "all"}, '
                    f'pick_first={pick_first}, smart_search={use_smart_search}, '
+                   f'seed_source={seed_source or "all"}, seed_like={seed_like or "none"}, '
                    f'with_details={with_details}, '
                    f'max_consecutive_errors={max_errs})...')
 
@@ -350,6 +355,8 @@ def import_openbook_batch_command(max_vendors, pick_first, max_consecutive_error
             max_detail_error_retries=max_detail_error_retries,
             max_consecutive_errors=max_errs,
             use_smart_search=use_smart_search,
+            seed_source=(seed_source or '').strip() or None,
+            seed_like=(seed_like or '').strip() or None,
             progress_callback=progress_callback,
         )
 

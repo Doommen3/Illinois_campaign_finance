@@ -1,0 +1,4 @@
+entity_id,canonical_name,entity_type,confidence_score,lobby_names[],pac_names[],committee_names[],donor_names[],527_names[],addresses[],officers[],ein,first_seen_date,last_seen_date,channel_lobby,channel_527,channel_campaign,evidence_count_lobby,evidence_count_527,evidence_count_campaign
+lobby_client:1,Alpha Inc,lobbying,0.9,"[\"Alpha Inc\"]",[],[],[],[],[],[],,"2022-01-01","2024-12-31",1,0,0,2,0,0
+irs527:2,Beta Org,irs527,0.8,[],[],[],[],"[\"Beta Org\"]",[],[],12-3456789,"2021-01-01","2024-12-31",0,1,0,0,3,0
+committee:3,Gamma Committee,campaign,0.7,[],[],"[\"Gamma Committee\"]",[],[],[],[],,"2020-01-01","2024-12-31",0,0,1,0,0,5

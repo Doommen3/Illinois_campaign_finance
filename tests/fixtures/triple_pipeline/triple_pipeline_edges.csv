@@ -1,0 +1,3 @@
+source_entity_id,source_name,target_entity_id,target_name,edge_type,weight,weight_unit,evidence_table,evidence_ref
+lobby_client:1,Alpha Inc,irs527:2,Beta Org,lobby_client_527_match,1,count,lobbying_entity_clients,1:2:2024
+irs527:2,Beta Org,committee:3,Gamma Committee,irs527_expenditure_committee,5000,usd,irs527_expenditures,2:3:2024

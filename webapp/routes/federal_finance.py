@@ -1377,6 +1377,10 @@ def federal_candidate_detail(candidate_id: str):
                     row.get('category_code_full'),
                     row.get('disbursement_amount'),
                     row.get('memo_text'),
+                    row.get('amendment_indicator'),
+                    row.get('disbursement_purpose_category'),
+                    row.get('file_number'),
+                    row.get('transaction_id'),
                 ]
                 for row in schedule_b_rows
             ]
@@ -1401,6 +1405,10 @@ def federal_candidate_detail(candidate_id: str):
                     'category_code_full',
                     'disbursement_amount',
                     'memo_text',
+                    'amendment_indicator',
+                    'disbursement_purpose_category',
+                    'file_number',
+                    'transaction_id',
                 ],
                 filename=f"federal_candidate_{candidate_id}_schedule_b.csv",
             )
@@ -1442,6 +1450,12 @@ def federal_candidate_detail(candidate_id: str):
                     row.get('expenditure_amount'),
                     row.get('expenditure_description'),
                     row.get('memo_text'),
+                    row.get('is_notice'),
+                    row.get('most_recent'),
+                    row.get('amendment_indicator'),
+                    row.get('file_number'),
+                    row.get('previous_file_number'),
+                    row.get('transaction_id'),
                 ]
                 for row in schedule_e_rows
             ]
@@ -1466,6 +1480,12 @@ def federal_candidate_detail(candidate_id: str):
                     'expenditure_amount',
                     'expenditure_description',
                     'memo_text',
+                    'is_notice',
+                    'most_recent',
+                    'amendment_indicator',
+                    'file_number',
+                    'previous_file_number',
+                    'transaction_id',
                 ],
                 filename=f"federal_candidate_{candidate_id}_schedule_e.csv",
             )

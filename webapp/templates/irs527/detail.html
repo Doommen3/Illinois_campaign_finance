@@ -29,6 +29,41 @@
 </section>
 {% endif %}
 
+{% if reports %}
+<section class="status-section">
+    <h2>Filing History ({{ reports|length }} Reports)</h2>
+    <p class="help-text">Individual IRS Form 8872 periodic reports filed by this organization, showing reporting period and schedule totals.</p>
+    <div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Form ID</th>
+                <th>Period Start</th>
+                <th>Period End</th>
+                <th>Schedule A (Contributions)</th>
+                <th>Schedule B (Expenditures)</th>
+                <th>Quarter</th>
+                <th>Filed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in reports %}
+            <tr>
+                <td>{{ r.form_id or '-' }}</td>
+                <td>{{ r.period_start or '-' }}</td>
+                <td>{{ r.period_end or '-' }}</td>
+                <td>{{ format_currency(r.total_contributions) }}</td>
+                <td>{{ format_currency(r.total_expenditures) }}</td>
+                <td>{{ r.qtr_indicator or '-' }}</td>
+                <td>{{ r.insert_datetime[:10] if r.insert_datetime else '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% endif %}
+
 {% if committee_matches %}
 <h2>Matched IL Committees</h2>
 <table class="data-table">
@@ -122,31 +157,96 @@
 </table>
 {% endif %}
 
-{% if contributions %}
-<h2>Contributions To This Organization (Top {{ contributions|length }})</h2>
-<p class="help-text">Schedule A contributions received by this 527 organization from IRS Form 8872 filings.</p>
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>Contributor</th>
-            <th>City</th>
-            <th>State</th>
-            <th>Amount</th>
-            <th>Date</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for c in contributions %}
-        <tr>
-            <td>{{ c.contributor_name or '-' }}</td>
-            <td>{{ c.city or '-' }}</td>
-            <td>{{ c.state or '-' }}</td>
-            <td>{{ format_currency(c.amount) }}</td>
-            <td>{{ c.date or '-' }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+{% if top_contributors %}
+<section class="status-section">
+    <h2>Top Contributors ({{ contribution_count }} records, {{ format_currency(contribution_total) }} total)</h2>
+    <p class="help-text">Top 10 contributors to this 527 organization by total amount.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Contributor</th>
+                <th>Total Amount</th>
+                <th>Records</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in top_contributors %}
+            <tr>
+                <td>{{ c.contributor_name }}</td>
+                <td>{{ format_currency(c.total_amount) }}</td>
+                <td>{{ c.contribution_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+
+{% if contributions or contrib_search %}
+<section class="status-section">
+    <h2>Contributions To This Organization{% if not contrib_search %} (Top {{ contributions|length }}){% endif %}</h2>
+    <p class="help-text">Schedule A contributions received by this 527 organization from IRS Form 8872 filings.</p>
+    <form method="get" action="" style="margin-bottom: 1em;">
+        <input type="text" name="contrib_q" value="{{ contrib_search }}" placeholder="Search contributors..." style="padding: 4px 8px; width: 250px;">
+        <button type="submit" style="padding: 4px 12px;">Search</button>
+        {% if contrib_search %}<a href="{{ request.path }}" style="margin-left: 8px;">Clear</a>{% endif %}
+    </form>
+    {% if contributions %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Contributor</th>
+                <th>City</th>
+                <th>State</th>
+                <th>Employer</th>
+                <th>Occupation</th>
+                <th>Amount</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in contributions %}
+            <tr>
+                <td>{{ c.contributor_name or '-' }}</td>
+                <td>{{ c.city or '-' }}</td>
+                <td>{{ c.state or '-' }}</td>
+                <td>{{ c.contributor_employer or '-' }}</td>
+                <td>{{ c.contributor_occupation or '-' }}</td>
+                <td>{{ format_currency(c.amount) }}</td>
+                <td>{{ c.date or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No matching contributions found.</p>
+    {% endif %}
+</section>
+{% endif %}
+
+{% if top_recipients %}
+<section class="status-section">
+    <h2>Top Expenditure Recipients ({{ expenditure_count }} records, {{ format_currency(financial.total_expenditures) }} total)</h2>
+    <p class="help-text">Top 10 recipients of expenditures from this 527 organization.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Recipient</th>
+                <th>Total Amount</th>
+                <th>Records</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in top_recipients %}
+            <tr>
+                <td>{{ r.recipient_name }}</td>
+                <td>{{ format_currency(r.total_amount) }}</td>
+                <td>{{ r.expenditure_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
 {% endif %}
 
 {% if expenditures %}

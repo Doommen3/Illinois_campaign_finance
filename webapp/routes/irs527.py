@@ -465,27 +465,106 @@ def org_detail(ein):
         for row in dcm_rows:
             director_candidate_matches.setdefault(row["director_name"], []).append(row)
 
-    # Contributions to this org
+    # Individual reports timeline (8872 filings)
+    reports = []
+    if _table_exists(conn, "irs527_reports"):
+        reports = conn.execute(
+            """
+            SELECT
+                form_id, period_start, period_end,
+                COALESCE(total_contributions, 0) AS total_contributions,
+                COALESCE(total_expenditures, 0) AS total_expenditures,
+                qtr_indicator, insert_datetime
+            FROM irs527_reports
+            WHERE ein = ?
+            ORDER BY period_end DESC, period_start DESC
+            """,
+            (ein,),
+        ).fetchall()
+
+    # Contributions to this org (with search + aggregates)
     contributions = []
-    contribution_total = 0
+    contribution_total = 0.0
+    contribution_count = 0
+    top_contributors = []
+    contrib_search = request.args.get("contrib_q", "").strip()
     if _table_exists(conn, "irs527_contributions"):
+        contrib_search_clause = ""
+        contrib_search_params: list[object] = []
+        if contrib_search:
+            contrib_search_clause = " AND contributor_name LIKE ?"
+            contrib_search_params = [f"%{contrib_search}%"]
+
         contributions = conn.execute(
             f"""
-            SELECT contributor_name, city, state, amount, date
+            SELECT contributor_name, city, state, amount, date,
+                   contributor_employer, contributor_occupation
             FROM irs527_contributions
             WHERE ein = ?
               {contrib_date_clause}
+              {contrib_search_clause}
             ORDER BY amount DESC
             LIMIT 100
             """,
+            tuple(contrib_date_params + contrib_search_params),
+        ).fetchall()
+
+        agg_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt
+            FROM irs527_contributions
+            WHERE ein = ? AND amount > 0
+              {contrib_date_clause}
+            """,
+            tuple(contrib_date_params),
+        ).fetchone()
+        contribution_total = float(agg_row["total"] or 0) if agg_row else 0.0
+        contribution_count = int(agg_row["cnt"] or 0) if agg_row else 0
+
+        top_contributors = conn.execute(
+            f"""
+            SELECT contributor_name,
+                   COALESCE(SUM(amount), 0) AS total_amount,
+                   COUNT(*) AS contribution_count
+            FROM irs527_contributions
+            WHERE ein = ? AND contributor_name IS NOT NULL AND TRIM(contributor_name) != ''
+              {contrib_date_clause}
+            GROUP BY contributor_name
+            ORDER BY total_amount DESC
+            LIMIT 10
+            """,
             tuple(contrib_date_params),
         ).fetchall()
-        contribution_total = float(_scalar(
-            conn,
-            f"SELECT COALESCE(SUM(amount), 0) FROM irs527_contributions WHERE ein = ? AND amount > 0{contrib_date_clause}",
-            params=tuple(contrib_date_params),
-            default=0,
-        ))
+
+    # Top expenditure recipients
+    top_recipients = []
+    expenditure_count = 0
+    if _table_exists(conn, "irs527_expenditures"):
+        exp_agg_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM irs527_expenditures
+            WHERE ein = ?
+              {exp_date_clause}
+            """,
+            tuple(exp_date_params),
+        ).fetchone()
+        expenditure_count = int(exp_agg_row["cnt"] or 0) if exp_agg_row else 0
+
+        top_recipients = conn.execute(
+            f"""
+            SELECT recipient_name,
+                   COALESCE(SUM(amount), 0) AS total_amount,
+                   COUNT(*) AS expenditure_count
+            FROM irs527_expenditures
+            WHERE ein = ? AND recipient_name IS NOT NULL AND TRIM(recipient_name) != ''
+              {exp_date_clause}
+            GROUP BY recipient_name
+            ORDER BY total_amount DESC
+            LIMIT 10
+            """,
+            tuple(exp_date_params),
+        ).fetchall()
 
     return render_template('irs527/detail.html',
                            org=org, financial=financial,
@@ -493,9 +572,15 @@ def org_detail(ein):
                            expenditures=expenditures,
                            contributions=contributions,
                            contribution_total=contribution_total,
+                           contribution_count=contribution_count,
+                           top_contributors=top_contributors,
+                           top_recipients=top_recipients,
+                           expenditure_count=expenditure_count,
+                           contrib_search=contrib_search,
                            committee_matches=committee_matches,
                            director_donor_matches=director_donor_matches,
-                           director_candidate_matches=director_candidate_matches)
+                           director_candidate_matches=director_candidate_matches,
+                           reports=reports)
 
 
 @irs527_bp.route('/dark-money')

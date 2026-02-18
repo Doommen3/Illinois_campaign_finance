@@ -2176,6 +2176,8 @@ class OpenBookScraper:
         max_detail_error_retries: int = 2,
         max_consecutive_errors: int = 10,
         use_smart_search: bool = True,
+        seed_source: Optional[str] = None,
+        seed_like: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """Batch-resolve and scrape all pending seeds.
@@ -2204,16 +2206,28 @@ class OpenBookScraper:
         total_errors = 0
         consecutive_errors = 0
         vendors_processed = 0
+        filter_source = (seed_source or "").strip()
+        filter_like = (seed_like or "").strip()
+        unresolved_where = ["m.match_id IS NULL"]
+        unresolved_params: list = []
+        if filter_source:
+            unresolved_where.append("s.seed_source = ?")
+            unresolved_params.append(filter_source)
+        if filter_like:
+            unresolved_where.append("s.seed_text LIKE ?")
+            unresolved_params.append(filter_like)
+        unresolved_where_sql = " AND ".join(unresolved_where)
 
         # ------------------------------------------------------------------
         # Phase 1: Resolve unmatched seeds
         # ------------------------------------------------------------------
         unresolved = self.conn.execute(
-            """SELECT s.seed_id, s.seed_text, s.seed_source
+            f"""SELECT s.seed_id, s.seed_text, s.seed_source
                FROM openbook_vendor_seed s
                LEFT JOIN openbook_vendor_match m ON s.seed_id = m.seed_id
-               WHERE m.match_id IS NULL
+               WHERE {unresolved_where_sql}
                ORDER BY s.seed_id""",
+            tuple(unresolved_params),
         ).fetchall()
 
         total_to_resolve = len(unresolved)
@@ -2278,20 +2292,35 @@ class OpenBookScraper:
         # ------------------------------------------------------------------
         # Phase 2: Scrape resolved-but-unscraped vendor keys
         # ------------------------------------------------------------------
+        unscraped_where = [
+            "m.match_method != 'no_match'",
+            "m.openbook_vendor_key != ''",
+            "c.id IS NULL",
+        ]
+        unscraped_params: list = []
+        if filter_source:
+            unscraped_where.append("s.seed_source = ?")
+            unscraped_params.append(filter_source)
+        if filter_like:
+            unscraped_where.append("s.seed_text LIKE ?")
+            unscraped_params.append(filter_like)
+        unscraped_where_sql = " AND ".join(unscraped_where)
+
         unscraped = self.conn.execute(
-            """SELECT
+            f"""SELECT
                 m.openbook_vendor_key,
                 m.openbook_vendor_label,
                 MIN(m.seed_id) AS seed_id,
                 MIN(m.match_id) AS first_match_id
                FROM openbook_vendor_match m
+               JOIN openbook_vendor_seed s
+                 ON s.seed_id = m.seed_id
                LEFT JOIN openbook_contracts_raw c
                ON m.openbook_vendor_key = c.openbook_vendor_key
-               WHERE m.match_method != 'no_match'
-             AND m.openbook_vendor_key != ''
-             AND c.id IS NULL
+               WHERE {unscraped_where_sql}
                GROUP BY m.openbook_vendor_key, m.openbook_vendor_label
                ORDER BY MIN(m.match_id)""",
+            tuple(unscraped_params),
         ).fetchall()
 
         if max_vendors is not None:
@@ -2460,6 +2489,8 @@ class OpenBookScraper:
             "detail_errors": total_detail_errors,
             "errors": total_errors,
             "run_id": run_id,
+            "seed_source_filter": filter_source or None,
+            "seed_like_filter": filter_like or None,
         }
 
     # ------------------------------------------------------------------

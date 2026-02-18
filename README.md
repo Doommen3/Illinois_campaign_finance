@@ -67,6 +67,11 @@ A full-stack political finance transparency platform that aggregates, analyzes, 
 - Session authentication with consolidated admin tool hub
 - Experimental visualization lab (`/experimental/viz-lab`) with local-only feature-flag gating, prototype-level notes/sanity checks, date-window-aware JSON endpoints, and paginated prototype tables
 
+### Visualization Lab (Experimental)
+- Triple Pipeline visualization build: `python3 scripts/triple_pipeline_viz.py --outdir artifacts/triple_pipeline`
+- Outputs: `artifacts/triple_pipeline/graph.json`, `artifacts/triple_pipeline/triple_pipeline_viz_report.pdf`
+- View the interactive module at `/experimental/viz-lab/triple-pipeline` after running the build
+
 ## Tech Stack
 
 - **Python 3.12** — Core language
@@ -125,6 +130,7 @@ python run.py import-lobbying --file Bulk_download/ILSOS_Lobbying_activeandclien
 
 # Or import daily lobbyist/entity/client extract format
 python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_Daily_20260214.csv
+# Daily format captures lobbyist fields plus entity/client addresses and client status.
 
 # Import IRS 527 political org filings (IL-filtered by default)
 python run.py import-irs527 --file Bulk_download/IRS_data/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
@@ -137,6 +143,8 @@ python run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert
 python run.py import-openbook-batch --generate-seeds --max-vendors 50
 # Disable smart search to use raw vendor names verbatim
 python run.py import-openbook-batch --no-smart-search --max-vendors 50
+# Target a specific seed source / seed name pattern (for case-study scoped runs)
+python run.py import-openbook-batch --seed-source ameren_case_study --seed-like 'AMEREN%' --max-vendors 20
 # OpenBook web routes: /openbook/ and /openbook/<vendor_key>
 
 # Build Illinois district geometry assets for maps (TopoJSON + key validation)

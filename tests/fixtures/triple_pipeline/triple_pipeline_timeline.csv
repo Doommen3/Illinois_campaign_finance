@@ -1,0 +1,4 @@
+entity_id,canonical_name,month_key,lobbying_reports,campaign_receipts,campaign_expenditures,transfers_in,transfers_out,irs527_expenditures,irs527_contributions
+lobby_client:1,Alpha Inc,2024-01,2,0,0,0,0,0,0
+irs527:2,Beta Org,2024-01,0,0,0,0,0,100,200
+committee:3,Gamma Committee,2024-01,0,1000,500,0,0,0,0

@@ -221,6 +221,37 @@ def test_load_lobbying_csv_daily_file_header_aliases_and_lobbyist_registrations(
     ).fetchone()["c"]
     assert null_client_rows == 1
 
+    entity = conn.execute(
+        """
+        SELECT entity_name, address_1, address_2, city, state, postal_code
+        FROM lobbying_entities
+        WHERE entity_id = 110
+        """
+    ).fetchone()
+    assert entity is not None
+    assert entity["entity_name"] == "ENTITY ALPHA"
+    assert entity["address_1"] == "100 CAPITOL"
+    assert entity["address_2"] is None
+    assert entity["city"] == "SPRINGFIELD"
+    assert entity["state"] == "IL"
+    assert entity["postal_code"] == "62701"
+
+    client = conn.execute(
+        """
+        SELECT client_name, address_1, address_2, city, state, postal_code, status
+        FROM lobbying_clients
+        WHERE client_id = 501
+        """
+    ).fetchone()
+    assert client is not None
+    assert client["client_name"] == "CLIENT ALPHA"
+    assert client["address_1"] == "200 CLIENT RD"
+    assert client["address_2"] is None
+    assert client["city"] == "CHICAGO"
+    assert client["state"] == "IL"
+    assert client["postal_code"] == "60601"
+    assert client["status"] == "ACTIVE"
+
     conn.close()
 
 

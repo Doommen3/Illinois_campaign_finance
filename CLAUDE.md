@@ -407,6 +407,7 @@ After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). 
 ```bash
 python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_Daily_20260214.csv
 ```
+Daily extract imports persist lobbyist profile fields plus entity/client address fields and `client_status` where present.
 
 ### Import IRS 527 data
 ```bash
@@ -433,6 +434,11 @@ Smart search (default) generates shorter search terms from verbose vendor names
 (e.g., "COMCAST OF ILLINOIS III INC" → searches "COMCAST") and stores ALL
 matching vendors per seed. Disable with `--no-smart-search` to fall back to
 verbatim single-match resolution.
+
+Targeted case-study runs can restrict scope to specific seeds:
+```bash
+python run.py import-openbook-batch --seed-source ameren_case_study --seed-like 'AMEREN%' --max-vendors 20
+```
 
 Key functions in `scraper/openbook_scraper.py`:
 - `generate_search_terms(name)` — strips suffixes/geo/roman numerals, detects
@@ -461,6 +467,16 @@ python run.py run-cross-matching --only all
 python run.py refresh-analytics --with-snapshot
 ```
 
+### Triple Pipeline visualization build (experimental)
+```bash
+python3 scripts/triple_pipeline_viz.py --outdir artifacts/triple_pipeline
+```
+Outputs:
+- `artifacts/triple_pipeline/graph.json`
+- `artifacts/triple_pipeline/triple_pipeline_viz_report.pdf`
+- `artifacts/triple_pipeline/profile.json`
+Interactive module: `/experimental/viz-lab/triple-pipeline`
+
 ## Database Notes
 
 - PostgreSQL 16 database (`ilcf`) with schema defined in `database/schema.sql`
@@ -473,6 +489,8 @@ python run.py refresh-analytics --with-snapshot
   - `lobbying_donor_matches`, `lobbying_expenditure_matches`, etc.
 - `irs527_contributions` — parsed type-A records (who donates TO 527 orgs)
 - Lobbying raw dimensions and facts include:
+   - `lobbying_entities` — entity names with optional address/city/state/postal fields from daily SOS extracts
+   - `lobbying_clients` — client names with optional address/city/state/postal/status fields from daily SOS extracts
    - `lobbying_lobbyists` — lobbyist profile/contact/status rows
    - `lobbying_lobbyist_registrations` — lobbyist↔entity↔client/year registrations (nullable client for unassigned rows)
 - All IRS 527 tables prefixed with `irs527_`

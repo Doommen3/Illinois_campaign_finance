@@ -167,6 +167,37 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_version', 'materialization_version INTEGER NOT NULL DEFAULT 1')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_notes', 'materialization_notes TEXT')
     _ensure_column(conn, 'bulk_receipts_clean', 'received_datetime_raw', 'received_datetime_raw TEXT')
+    _ensure_column(conn, 'lobbying_entities', 'address_1', 'address_1 TEXT')
+    _ensure_column(conn, 'lobbying_entities', 'address_2', 'address_2 TEXT')
+    _ensure_column(conn, 'lobbying_entities', 'city', 'city TEXT')
+    _ensure_column(conn, 'lobbying_entities', 'state', 'state TEXT')
+    _ensure_column(conn, 'lobbying_entities', 'postal_code', 'postal_code TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'address_1', 'address_1 TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'address_2', 'address_2 TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'city', 'city TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'state', 'state TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'postal_code', 'postal_code TEXT')
+    _ensure_column(conn, 'lobbying_clients', 'status', 'status TEXT')
+    # Bundle A: FEC Schedule A provenance
+    _ensure_column(conn, 'fec_schedule_a_contributions', 'amendment_indicator', 'amendment_indicator TEXT')
+    _ensure_column(conn, 'fec_schedule_a_contributions', 'file_number', 'file_number TEXT')
+    _ensure_column(conn, 'fec_schedule_a_contributions', 'transaction_id', 'transaction_id TEXT')
+    # Bundle B: FEC Schedule B provenance + purpose
+    _ensure_column(conn, 'fec_schedule_b_disbursements', 'amendment_indicator', 'amendment_indicator TEXT')
+    _ensure_column(conn, 'fec_schedule_b_disbursements', 'disbursement_purpose_category', 'disbursement_purpose_category TEXT')
+    _ensure_column(conn, 'fec_schedule_b_disbursements', 'file_number', 'file_number TEXT')
+    _ensure_column(conn, 'fec_schedule_b_disbursements', 'transaction_id', 'transaction_id TEXT')
+    # Bundle C: FEC Schedule E notice + filing lineage
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'is_notice', 'is_notice INTEGER')
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'most_recent', 'most_recent INTEGER')
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'file_number', 'file_number TEXT')
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'previous_file_number', 'previous_file_number TEXT')
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'amendment_indicator', 'amendment_indicator TEXT')
+    _ensure_column(conn, 'fec_schedule_e_independent_expenditures', 'transaction_id', 'transaction_id TEXT')
+    # Bundle D: FEC Candidate Committee metadata
+    _ensure_column(conn, 'fec_candidate_committees', 'last_file_date', 'last_file_date TEXT')
+    _ensure_column(conn, 'fec_candidate_committees', 'first_file_date', 'first_file_date TEXT')
+    _ensure_column(conn, 'fec_candidate_committees', 'party_full', 'party_full TEXT')
 
     conn.executescript(schema)
 

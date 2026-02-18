@@ -956,6 +956,9 @@ def _extract_committees_from_candidate(candidate_payload: dict) -> list[dict]:
                 "committee_zip": committee.get("zip"),
                 "is_principal": 1 if _clean_text(committee.get("designation")) == "P" else 0,
                 "source_payload_json": json.dumps(committee, ensure_ascii=True),
+                "last_file_date": committee.get("last_file_date"),
+                "first_file_date": committee.get("first_file_date"),
+                "party_full": committee.get("party_full"),
             }
         )
     return output
@@ -988,6 +991,9 @@ def _upsert_candidate_committees(
                 committee.get("committee_zip"),
                 committee.get("is_principal") or 0,
                 committee.get("source_payload_json"),
+                committee.get("last_file_date"),
+                committee.get("first_file_date"),
+                committee.get("party_full"),
             )
         )
 
@@ -1010,8 +1016,11 @@ def _upsert_candidate_committees(
             committee_state,
             committee_zip,
             is_principal,
-            source_payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_payload_json,
+            last_file_date,
+            first_file_date,
+            party_full
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(candidate_id, committee_id, cycle) DO UPDATE SET
             committee_name = excluded.committee_name,
             committee_type = excluded.committee_type,
@@ -1024,6 +1033,9 @@ def _upsert_candidate_committees(
             committee_zip = excluded.committee_zip,
             is_principal = excluded.is_principal,
             source_payload_json = excluded.source_payload_json,
+            last_file_date = excluded.last_file_date,
+            first_file_date = excluded.first_file_date,
+            party_full = excluded.party_full,
             updated_at = CURRENT_TIMESTAMP
         """,
         payload,
@@ -1273,6 +1285,9 @@ def _upsert_schedule_rows(
                 _clean_text(row.get("load_date")) or None,
                 _clean_text(row.get("image_number")) or None,
                 api_source_identifier,
+                _clean_text(row.get("amendment_indicator")) or None,
+                _clean_text(row.get("file_number")) or None,
+                _clean_text(row.get("transaction_id")) or None,
             )
         )
 
@@ -1305,8 +1320,11 @@ def _upsert_schedule_rows(
             donor_entity_method,
             load_date,
             image_number,
-            api_source_identifier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            api_source_identifier,
+            amendment_indicator,
+            file_number,
+            transaction_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(sub_id) DO UPDATE SET
             cycle = excluded.cycle,
             candidate_id = excluded.candidate_id,
@@ -1334,6 +1352,9 @@ def _upsert_schedule_rows(
             load_date = excluded.load_date,
             image_number = excluded.image_number,
             api_source_identifier = excluded.api_source_identifier,
+            amendment_indicator = excluded.amendment_indicator,
+            file_number = excluded.file_number,
+            transaction_id = excluded.transaction_id,
             updated_at = CURRENT_TIMESTAMP
         """,
         payload_rows,
@@ -1433,6 +1454,10 @@ def _upsert_schedule_b_rows(
                 _clean_text(row.get("load_date")) or None,
                 _clean_text(row.get("image_number")) or None,
                 api_source_identifier,
+                _clean_text(row.get("amendment_indicator")) or None,
+                _clean_text(row.get("disbursement_purpose_category")) or None,
+                _clean_text(row.get("file_number")) or None,
+                _clean_text(row.get("transaction_id")) or None,
             )
         )
 
@@ -1468,8 +1493,12 @@ def _upsert_schedule_b_rows(
             two_year_transaction_period,
             load_date,
             image_number,
-            api_source_identifier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            api_source_identifier,
+            amendment_indicator,
+            disbursement_purpose_category,
+            file_number,
+            transaction_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(sub_id) DO UPDATE SET
             cycle = excluded.cycle,
             candidate_id = excluded.candidate_id,
@@ -1500,6 +1529,10 @@ def _upsert_schedule_b_rows(
             load_date = excluded.load_date,
             image_number = excluded.image_number,
             api_source_identifier = excluded.api_source_identifier,
+            amendment_indicator = excluded.amendment_indicator,
+            disbursement_purpose_category = excluded.disbursement_purpose_category,
+            file_number = excluded.file_number,
+            transaction_id = excluded.transaction_id,
             updated_at = CURRENT_TIMESTAMP
         """,
         payload_rows,
@@ -1585,6 +1618,12 @@ def _upsert_schedule_e_rows(
                 _clean_text(row.get("image_number")) or None,
                 _clean_text(row.get("load_date")) or None,
                 api_source_identifier,
+                1 if row.get("is_notice") is True else (0 if row.get("is_notice") is False else None),
+                1 if row.get("most_recent") is True else (0 if row.get("most_recent") is False else None),
+                _clean_text(row.get("file_number")) or None,
+                _clean_text(row.get("previous_file_number")) or None,
+                _clean_text(row.get("amendment_indicator")) or None,
+                _clean_text(row.get("transaction_id")) or None,
             )
         )
 
@@ -1618,8 +1657,14 @@ def _upsert_schedule_e_rows(
             line_number,
             image_number,
             load_date,
-            api_source_identifier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            api_source_identifier,
+            is_notice,
+            most_recent,
+            file_number,
+            previous_file_number,
+            amendment_indicator,
+            transaction_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(sub_id) DO UPDATE SET
             cycle = excluded.cycle,
             candidate_id = excluded.candidate_id,
@@ -1648,6 +1693,12 @@ def _upsert_schedule_e_rows(
             image_number = excluded.image_number,
             load_date = excluded.load_date,
             api_source_identifier = excluded.api_source_identifier,
+            is_notice = excluded.is_notice,
+            most_recent = excluded.most_recent,
+            file_number = excluded.file_number,
+            previous_file_number = excluded.previous_file_number,
+            amendment_indicator = excluded.amendment_indicator,
+            transaction_id = excluded.transaction_id,
             updated_at = CURRENT_TIMESTAMP
         """,
         payload_rows,
@@ -2148,6 +2199,9 @@ def sync_il_federal_fec(
                     "committee_zip": committee.get("zip"),
                     "is_principal": 1 if _clean_text(committee.get("designation")) == "P" else 0,
                     "source_payload_json": json.dumps(committee, ensure_ascii=True),
+                    "last_file_date": committee.get("last_file_date"),
+                    "first_file_date": committee.get("first_file_date"),
+                    "party_full": committee.get("party_full"),
                 }
                 for committee in fetched_committees
             ]
@@ -4908,7 +4962,10 @@ def get_federal_candidate_detail(
             memo_text,
             donor_key,
             donor_entity_key,
-            donor_entity_method
+            donor_entity_method,
+            amendment_indicator,
+            file_number,
+            transaction_id
         FROM fec_schedule_a_contributions
         {contribution_where}
         ORDER BY contribution_receipt_date DESC, contribution_receipt_amount DESC, sub_id DESC
@@ -4966,7 +5023,11 @@ def get_federal_candidate_detail(
                 disbursement_type_desc,
                 category_code,
                 category_code_full,
-                memo_text
+                memo_text,
+                amendment_indicator,
+                disbursement_purpose_category,
+                file_number,
+                transaction_id
             FROM fec_schedule_b_disbursements
             {schedule_b_where}
             ORDER BY {schedule_b_order_sql}
@@ -5025,7 +5086,13 @@ def get_federal_candidate_detail(
                 report_type,
                 line_number,
                 memo_text,
-                expenditure_description
+                expenditure_description,
+                is_notice,
+                most_recent,
+                file_number,
+                previous_file_number,
+                amendment_indicator,
+                transaction_id
             FROM fec_schedule_e_independent_expenditures
             {schedule_e_where}
             ORDER BY {schedule_e_order_sql}
@@ -5046,7 +5113,8 @@ def get_federal_candidate_detail(
 
     committee_rows = conn.execute(
         """
-        SELECT committee_id, committee_name, committee_designation, committee_designation_full, committee_type
+        SELECT committee_id, committee_name, committee_designation, committee_designation_full,
+               committee_type, last_file_date, first_file_date, party_full
         FROM fec_candidate_committees
         WHERE candidate_id = ?
           AND (? IS NULL OR cycle = ?)
@@ -5185,6 +5253,9 @@ def get_federal_candidate_detail(
                 "donor_key": row["donor_key"],
                 "donor_entity_key": row["donor_entity_key"],
                 "donor_entity_method": row["donor_entity_method"],
+                "amendment_indicator": row["amendment_indicator"] if "amendment_indicator" in row.keys() else None,
+                "file_number": row["file_number"] if "file_number" in row.keys() else None,
+                "transaction_id": row["transaction_id"] if "transaction_id" in row.keys() else None,
             }
             for row in contributions
         ],
@@ -5206,6 +5277,10 @@ def get_federal_candidate_detail(
                 "category_code": row["category_code"],
                 "category_code_full": row["category_code_full"],
                 "memo_text": row["memo_text"],
+                "amendment_indicator": row["amendment_indicator"] if "amendment_indicator" in row.keys() else None,
+                "disbursement_purpose_category": row["disbursement_purpose_category"] if "disbursement_purpose_category" in row.keys() else None,
+                "file_number": row["file_number"] if "file_number" in row.keys() else None,
+                "transaction_id": row["transaction_id"] if "transaction_id" in row.keys() else None,
             }
             for row in schedule_b_rows
         ],
@@ -5227,6 +5302,12 @@ def get_federal_candidate_detail(
                 "line_number": row["line_number"],
                 "memo_text": row["memo_text"],
                 "expenditure_description": row["expenditure_description"],
+                "is_notice": bool(row["is_notice"]) if "is_notice" in row.keys() and row["is_notice"] is not None else None,
+                "most_recent": bool(row["most_recent"]) if "most_recent" in row.keys() and row["most_recent"] is not None else None,
+                "file_number": row["file_number"] if "file_number" in row.keys() else None,
+                "previous_file_number": row["previous_file_number"] if "previous_file_number" in row.keys() else None,
+                "amendment_indicator": row["amendment_indicator"] if "amendment_indicator" in row.keys() else None,
+                "transaction_id": row["transaction_id"] if "transaction_id" in row.keys() else None,
             }
             for row in schedule_e_rows
         ],
@@ -5237,6 +5318,9 @@ def get_federal_candidate_detail(
                 "committee_designation": row["committee_designation"],
                 "committee_designation_full": row["committee_designation_full"],
                 "committee_type": row["committee_type"],
+                "last_file_date": row["last_file_date"] if "last_file_date" in row.keys() else None,
+                "first_file_date": row["first_file_date"] if "first_file_date" in row.keys() else None,
+                "party_full": row["party_full"] if "party_full" in row.keys() else None,
             }
             for row in committee_rows
         ],

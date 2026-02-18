@@ -399,6 +399,7 @@ def create_app(config=None):
     from webapp.routes.irs527 import irs527_bp
     from webapp.routes.openbook import openbook_bp
     from webapp.routes.experimental import experimental_bp
+    from webapp.routes.viz_lab import viz_lab_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -417,6 +418,7 @@ def create_app(config=None):
     app.register_blueprint(irs527_bp, url_prefix='/527')
     app.register_blueprint(openbook_bp, url_prefix='/openbook')
     app.register_blueprint(experimental_bp, url_prefix='/experimental')
+    app.register_blueprint(viz_lab_bp, url_prefix='/experimental/viz-lab')
 
     @app.errorhandler(404)
     def not_found(error):

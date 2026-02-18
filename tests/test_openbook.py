@@ -489,6 +489,128 @@ class TestOpenBookDB:
         assert count2 == 5
 
 
+class TestImportBatchSeedFiltering:
+    @pytest.fixture
+    def db_conn(self, tmp_path):
+        db_path = str(tmp_path / "test_openbook_batch_filters.db")
+        init_db(db_path)
+        conn = get_db(db_path)
+        yield conn
+        conn.close()
+
+    def test_import_batch_filters_by_seed_source(self, db_conn, monkeypatch):
+        scraper = OpenBookScraper(db_conn, headless=True)
+
+        ameren_seed = scraper._ensure_seed("AMEREN ILLINOIS", "ameren_case_study")
+        other_seed = scraper._ensure_seed("UNRELATED VENDOR", "other_source")
+        assert ameren_seed != other_seed
+
+        def fake_resolve(self, seed_text, session):  # noqa: ANN001
+            return [{
+                "vendor_key": seed_text,
+                "vendor_label": seed_text,
+                "match_method": "exact",
+                "confidence": 1.0,
+                "search_term": seed_text,
+            }]
+
+        async def fake_scrape(self, vendor_key, run_id, with_details=True, max_detail_error_retries=2):  # noqa: ANN001
+            return {
+                "contracts_count": 0,
+                "contracts_inserted": 0,
+                "contracts_updated": 0,
+                "contributions_count": 0,
+                "contributions_inserted": 0,
+                "contributions_updated": 0,
+                "detail_rows_inserted": 0,
+                "detail_rows_updated": 0,
+                "detail_no_data": 0,
+                "detail_errors": 0,
+                "error": None,
+            }
+
+        monkeypatch.setattr(OpenBookScraper, "resolve_all_matches_http", fake_resolve)
+        monkeypatch.setattr(OpenBookScraper, "_scrape_vendor_playwright", fake_scrape)
+
+        summary = scraper.import_batch(
+            seed_source="ameren_case_study",
+            use_smart_search=True,
+            with_details=False,
+            max_consecutive_errors=2,
+        )
+
+        assert summary["seeds_checked"] == 1
+        assert summary["resolved"] == 1
+        assert summary["vendors_scraped"] == 1
+        assert summary["seed_source_filter"] == "ameren_case_study"
+        assert summary["seed_like_filter"] is None
+
+        ameren_match_count = db_conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM openbook_vendor_match m
+            JOIN openbook_vendor_seed s ON s.seed_id = m.seed_id
+            WHERE s.seed_source = 'ameren_case_study'
+            """
+        ).fetchone()["cnt"]
+        other_match_count = db_conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM openbook_vendor_match m
+            JOIN openbook_vendor_seed s ON s.seed_id = m.seed_id
+            WHERE s.seed_source = 'other_source'
+            """
+        ).fetchone()["cnt"]
+        assert ameren_match_count >= 1
+        assert other_match_count == 0
+
+    def test_import_batch_filters_by_seed_like(self, db_conn, monkeypatch):
+        scraper = OpenBookScraper(db_conn, headless=True)
+
+        scraper._ensure_seed("AMEREN ILLINOIS", "ameren_case_study")
+        scraper._ensure_seed("AMEREN TRANSMISSION COMPANY OF ILLINOIS", "ameren_case_study")
+        scraper._ensure_seed("COMED", "ameren_case_study")
+
+        def fake_resolve(self, seed_text, session):  # noqa: ANN001
+            return [{
+                "vendor_key": seed_text,
+                "vendor_label": seed_text,
+                "match_method": "exact",
+                "confidence": 1.0,
+                "search_term": seed_text,
+            }]
+
+        async def fake_scrape(self, vendor_key, run_id, with_details=True, max_detail_error_retries=2):  # noqa: ANN001
+            return {
+                "contracts_count": 0,
+                "contracts_inserted": 0,
+                "contracts_updated": 0,
+                "contributions_count": 0,
+                "contributions_inserted": 0,
+                "contributions_updated": 0,
+                "detail_rows_inserted": 0,
+                "detail_rows_updated": 0,
+                "detail_no_data": 0,
+                "detail_errors": 0,
+                "error": None,
+            }
+
+        monkeypatch.setattr(OpenBookScraper, "resolve_all_matches_http", fake_resolve)
+        monkeypatch.setattr(OpenBookScraper, "_scrape_vendor_playwright", fake_scrape)
+
+        summary = scraper.import_batch(
+            seed_source="ameren_case_study",
+            seed_like="AMEREN%",
+            use_smart_search=True,
+            with_details=False,
+            max_consecutive_errors=2,
+        )
+
+        assert summary["seeds_checked"] == 2
+        assert summary["resolved"] == 2
+        assert summary["vendors_scraped"] == 2
+        assert summary["seed_source_filter"] == "ameren_case_study"
+        assert summary["seed_like_filter"] == "AMEREN%"
 # ---------------------------------------------------------------------------
 # _pick_best_match tests
 # ---------------------------------------------------------------------------

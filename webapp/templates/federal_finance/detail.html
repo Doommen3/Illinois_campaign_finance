@@ -155,8 +155,11 @@
                 <tr>
                     <th>Committee ID</th>
                     <th>Committee Name</th>
+                    <th>Party</th>
                     <th>Designation</th>
                     <th>Type</th>
+                    <th>First Filed</th>
+                    <th>Last Filed</th>
                 </tr>
             </thead>
             <tbody>
@@ -172,6 +175,7 @@
                         {{ committee.committee_name if committee.committee_name else '-' }}
                         {% endif %}
                     </td>
+                    <td>{{ committee.party_full if committee.party_full else '-' }}</td>
                     <td>
                         {{ committee.committee_designation if committee.committee_designation else '-' }}
                         {% if committee.committee_designation_full %}
@@ -179,9 +183,11 @@
                         {% endif %}
                     </td>
                     <td>{{ committee.committee_type if committee.committee_type else '-' }}</td>
+                    <td>{{ committee.first_file_date if committee.first_file_date else '-' }}</td>
+                    <td>{{ committee.last_file_date if committee.last_file_date else '-' }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4">No committee rows found.</td></tr>
+                <tr><td colspan="7">No committee rows found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -251,6 +257,7 @@
                     <th>Committee</th>
                     <th>Amount</th>
                     <th>Type</th>
+                    <th>Amend</th>
                 </tr>
             </thead>
             <tbody>
@@ -283,9 +290,10 @@
                     </td>
                     <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
                     <td>{{ row.receipt_type_desc if row.receipt_type_desc else (row.receipt_type if row.receipt_type else '-') }}</td>
+                    <td>{% if row.amendment_indicator %}{{ row.amendment_indicator }}{% else %}-{% endif %}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="8">No contribution rows found.</td></tr>
+                <tr><td colspan="9">No contribution rows found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -327,7 +335,9 @@
                     <th>Recipient Candidate</th>
                     <th>{{ schedule_b_sort_link('type', 'Type') }}</th>
                     <th>{{ schedule_b_sort_link('category', 'Category') }}</th>
+                    <th>Purpose</th>
                     <th>{{ schedule_b_sort_link('amount', 'Amount') }}</th>
+                    <th>Amend</th>
                 </tr>
             </thead>
             <tbody>
@@ -340,10 +350,12 @@
                     <td>{{ row.recipient_candidate_name if row.recipient_candidate_name else (row.recipient_candidate_id if row.recipient_candidate_id else '-') }}</td>
                     <td>{{ row.disbursement_type_desc if row.disbursement_type_desc else (row.disbursement_type if row.disbursement_type else '-') }}</td>
                     <td>{{ row.category_code_full if row.category_code_full else (row.category_code if row.category_code else '-') }}</td>
+                    <td>{{ row.disbursement_purpose_category if row.disbursement_purpose_category else '-' }}</td>
                     <td>{{ format_currency(row.disbursement_amount) }}</td>
+                    <td>{% if row.amendment_indicator %}{{ row.amendment_indicator }}{% else %}-{% endif %}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="8">No Schedule B rows found.</td></tr>
+                <tr><td colspan="10">No Schedule B rows found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -437,11 +449,13 @@
                     <th>{{ schedule_e_sort_link('category', 'Category') }}</th>
                     <th>Report/Line</th>
                     <th>{{ schedule_e_sort_link('amount', 'Amount') }}</th>
+                    <th>Notice</th>
+                    <th>Amend</th>
                 </tr>
             </thead>
             <tbody>
                 {% for row in detail.schedule_e_independent_expenditures %}
-                <tr>
+                <tr{% if row.most_recent == false %} style="opacity: 0.6"{% endif %}>
                     <td>{{ row.expenditure_date if row.expenditure_date else '-' }}</td>
                     <td>{{ row.support_oppose_indicator if row.support_oppose_indicator else '-' }}</td>
                     <td>{{ row.committee_name if row.committee_name else '-' }}</td>
@@ -450,9 +464,11 @@
                     <td>{{ row.category_code_full if row.category_code_full else (row.category_code if row.category_code else '-') }}</td>
                     <td>{{ row.report_type if row.report_type else '-' }}{% if row.line_number %} / {{ row.line_number }}{% endif %}</td>
                     <td>{{ format_currency(row.expenditure_amount) }}</td>
+                    <td>{% if row.is_notice %}Yes{% elif row.is_notice == false %}No{% else %}-{% endif %}</td>
+                    <td>{% if row.amendment_indicator %}{{ row.amendment_indicator }}{% else %}-{% endif %}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="8">No Schedule E rows found.</td></tr>
+                <tr><td colspan="10">No Schedule E rows found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

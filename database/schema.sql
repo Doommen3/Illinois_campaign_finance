@@ -447,6 +447,9 @@ CREATE TABLE IF NOT EXISTS fec_candidate_committees (
     committee_zip TEXT,
     is_principal INTEGER NOT NULL DEFAULT 0,
     source_payload_json TEXT,
+    last_file_date TEXT,
+    first_file_date TEXT,
+    party_full TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(candidate_id, committee_id, cycle)
 );
@@ -482,6 +485,9 @@ CREATE TABLE IF NOT EXISTS fec_schedule_a_contributions (
     load_date TEXT,
     image_number TEXT,
     api_source_identifier TEXT,
+    amendment_indicator TEXT,
+    file_number TEXT,
+    transaction_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -491,6 +497,7 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_committee ON fec_schedule_a_contribu
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_date ON fec_schedule_a_contributions(contribution_receipt_date);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_key ON fec_schedule_a_contributions(donor_key);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_donor_entity_key ON fec_schedule_a_contributions(donor_entity_key);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_a_file_number ON fec_schedule_a_contributions(file_number);
 
 CREATE TABLE IF NOT EXISTS fec_schedule_b_disbursements (
     sub_id TEXT PRIMARY KEY,
@@ -523,6 +530,10 @@ CREATE TABLE IF NOT EXISTS fec_schedule_b_disbursements (
     load_date TEXT,
     image_number TEXT,
     api_source_identifier TEXT,
+    amendment_indicator TEXT,
+    disbursement_purpose_category TEXT,
+    file_number TEXT,
+    transaction_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -535,6 +546,10 @@ CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_date
     ON fec_schedule_b_disbursements(disbursement_date);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_recipient
     ON fec_schedule_b_disbursements(recipient_name);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_file_number
+    ON fec_schedule_b_disbursements(file_number);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_b_purpose_category
+    ON fec_schedule_b_disbursements(disbursement_purpose_category);
 
 CREATE TABLE IF NOT EXISTS fec_schedule_e_independent_expenditures (
     sub_id TEXT PRIMARY KEY,
@@ -565,12 +580,22 @@ CREATE TABLE IF NOT EXISTS fec_schedule_e_independent_expenditures (
     image_number TEXT,
     load_date TEXT,
     api_source_identifier TEXT,
+    is_notice INTEGER,
+    most_recent INTEGER,
+    file_number TEXT,
+    previous_file_number TEXT,
+    amendment_indicator TEXT,
+    transaction_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_candidate
     ON fec_schedule_e_independent_expenditures(candidate_id, cycle);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_file_number
+    ON fec_schedule_e_independent_expenditures(file_number);
+CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_most_recent
+    ON fec_schedule_e_independent_expenditures(most_recent);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_committee
     ON fec_schedule_e_independent_expenditures(committee_id, cycle);
 CREATE INDEX IF NOT EXISTS idx_fec_schedule_e_date
@@ -724,6 +749,11 @@ CREATE TABLE IF NOT EXISTS lobbying_entities (
     entity_id INTEGER PRIMARY KEY,
     entity_name TEXT NOT NULL,
     reg_year INTEGER,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    postal_code TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -732,6 +762,12 @@ CREATE INDEX IF NOT EXISTS idx_lobbying_entities_name ON lobbying_entities(entit
 CREATE TABLE IF NOT EXISTS lobbying_clients (
     client_id INTEGER PRIMARY KEY,
     client_name TEXT NOT NULL,
+    address_1 TEXT,
+    address_2 TEXT,
+    city TEXT,
+    state TEXT,
+    postal_code TEXT,
+    status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

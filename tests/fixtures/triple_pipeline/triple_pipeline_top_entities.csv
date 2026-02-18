@@ -1,0 +1,3 @@
+rank,canonical_name,channels_count,confidence_score,total_lobby_reports,total_527_amount,total_campaign_amount,total_transfers_in,total_transfers_out,persistence_months,tri_channel_premium_metrics
+1,Beta Org,2,0.8,0,200,0,0,0,12,"{}"
+2,Gamma Committee,1,0.7,0,0,1000,0,0,12,"{}"

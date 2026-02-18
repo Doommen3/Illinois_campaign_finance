@@ -54,6 +54,7 @@
                     {% if experimental_viz_lab_enabled %}
                     <li><a href="{{ url_for('experimental.viz_lab', period=time_period.key) }}">Viz Lab</a></li>
                     {% endif %}
+                    <li><a href="{{ url_for('viz_lab.viz_lab_index', period=time_period.key) }}">Visualization Lab</a></li>
                 </ul>
             </div>
 
