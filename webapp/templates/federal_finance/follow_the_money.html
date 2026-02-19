@@ -40,16 +40,50 @@
 <div class="status-section">
     {% if follow_money.start_node_found %}
     <p class="subtitle">
-        Nodes: <strong>{{ follow_money.summary.node_count }}</strong> |
-        Edges: <strong>{{ follow_money.summary.edge_count }}</strong> |
+        Full network: <strong>{{ follow_money.summary.node_count }}</strong> nodes |
+        <strong>{{ follow_money.summary.edge_count }}</strong> edges |
         Candidates: <strong>{{ follow_money.summary.candidate_count }}</strong> |
         Committees: <strong>{{ follow_money.summary.committee_count }}</strong> |
-        Connected Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong>
+        Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong>
     </p>
-    <p class="help-text">Layered layout: each hop level is a column. Donor labels appear left, committee labels above, candidate labels right. Hover any node for details.</p>
-    <div class="network-svg-wrap" id="follow-money-wrap">
-        <svg id="follow-money-svg" role="img" aria-label="Follow the money multi hop network"></svg>
+    <div class="ftm-controls" id="ftm-controls">
+        <div class="ftm-controls-row">
+            <label class="ftm-control"><span>Mode:</span>
+                <select id="ftm-mode">
+                    <option value="topn" selected>Top donors by amount</option>
+                    <option value="paths">Strongest paths to candidates</option>
+                </select>
+            </label>
+            <label class="ftm-control" id="ftm-topn-group"><span>Top</span>
+                <input type="range" id="ftm-topn" min="5" max="50" value="15" step="5">
+                <strong id="ftm-topn-val">15</strong><span>per column</span>
+            </label>
+            <label class="ftm-control"><span>Min $</span>
+                <select id="ftm-min-amt">
+                    <option value="0" selected>$0</option>
+                    <option value="200">$200</option>
+                    <option value="500">$500</option>
+                    <option value="1000">$1,000</option>
+                    <option value="2500">$2,500</option>
+                    <option value="5000">$5,000</option>
+                    <option value="10000">$10,000</option>
+                    <option value="50000">$50,000</option>
+                </select>
+            </label>
+        </div>
+        <div class="ftm-controls-row">
+            <label class="ftm-toggle"><input type="checkbox" id="ftm-show-donors" checked> Donors</label>
+            <label class="ftm-toggle"><input type="checkbox" id="ftm-show-committees" checked> Committees</label>
+            <label class="ftm-toggle"><input type="checkbox" id="ftm-show-candidates" checked> Candidates</label>
+            <span style="flex:1;"></span>
+            <input type="text" id="ftm-search" class="ftm-search" placeholder="Search nodes...">
+        </div>
     </div>
+    <p class="ftm-render-info" id="ftm-render-info"></p>
+    <div class="network-svg-wrap" id="follow-money-wrap">
+        <svg id="follow-money-svg" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Follow the money network graph"></svg>
+    </div>
+    <div id="ftm-tooltip" class="ftm-tooltip"></div>
     {% elif follow_donor_key %}
     <p>No multi-hop network found for <strong>{{ follow_donor_key }}</strong> under current filters.</p>
     {% else %}
@@ -106,240 +140,494 @@
 
 <script>
 (() => {
-    const followGraph = {{ follow_money|tojson }} || {};
-    if (!followGraph.start_node_found) return;
+    /* ═══════════════════════════════════════════════════════════════════
+       Follow-the-Money Interactive Network Visualization
+       ─────────────────────────────────────────────────────────────────
+       Architecture:
+         1. Raw graph data from server (all nodes/edges)
+         2. Client-side state (topN, filters, mode, search, selection)
+         3. Pruning pipeline: type filter → amount filter → mode prune
+         4. Fixed-width layered layout (columns by hop distance)
+         5. SVG render with interactive tooltips + highlighting
+       ═══════════════════════════════════════════════════════════════════ */
 
-    const PARTY_COLORS = {
-        Democratic: "#2563eb", Republican: "#dc2626", Independent: "#0f766e",
-        Libertarian: "#d97706", Green: "#16a34a", Other: "#7c3aed", "Unknown Party": "#64748b",
+    const raw = {{ follow_money|tojson }} || {};
+    if (!raw.start_node_found) return;
+
+    const allNodes = raw.nodes || [];
+    const allEdges = raw.edges || [];
+    const startId = 'donor:' + raw.requested_donor_entity_key;
+
+    /* ── Constants ── */
+    const PC = {
+        Democratic: '#2563eb', Republican: '#dc2626', Independent: '#0f766e',
+        Libertarian: '#d97706', Green: '#16a34a', Other: '#7c3aed', 'Unknown Party': '#64748b'
     };
-    const svg = document.getElementById("follow-money-svg");
-    if (!svg) return;
+    const VBW = 1200, PAD_L = 140, PAD_R = 190, PAD_Y = 45;
 
-    const NS = "http://www.w3.org/2000/svg";
-    const el = (tag, attrs) => {
+    /* ── Precompute: node weights, lookup, adjacency ── */
+    const nw = new Map();
+    for (const e of allEdges) {
+        const w = +(e.weight || 0);
+        nw.set(e.source, (nw.get(e.source) || 0) + w);
+        nw.set(e.target, (nw.get(e.target) || 0) + w);
+    }
+    const byId = new Map(allNodes.map(n => [n.id, n]));
+    const adj = new Map();
+    for (const e of allEdges) {
+        if (!adj.has(e.source)) adj.set(e.source, []);
+        if (!adj.has(e.target)) adj.set(e.target, []);
+        adj.get(e.source).push({ nb: e.target, edge: e });
+        adj.get(e.target).push({ nb: e.source, edge: e });
+    }
+
+    /* ── State ── */
+    const S = { topN: 15, minAmt: 0, donors: true, cmtes: true, cands: true,
+                mode: 'topn', search: '', selId: null };
+
+    /* ── DOM ── */
+    const svg = document.getElementById('follow-money-svg');
+    const tipEl = document.getElementById('ftm-tooltip');
+    const infoEl = document.getElementById('ftm-render-info');
+    const NS = 'http://www.w3.org/2000/svg';
+
+    const mk = (tag, a) => {
         const e = document.createElementNS(NS, tag);
-        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+        for (const [k, v] of Object.entries(a)) e.setAttribute(k, String(v));
         return e;
     };
-    const shortLabel = (value, maxLen) => {
-        const text = String(value || "").trim() || "Unknown";
-        return text.length <= maxLen ? text : text.slice(0, maxLen - 1) + "…";
-    };
+    const fmt$ = n => n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M'
+                     : n >= 1e3 ? '$' + (n / 1e3).toFixed(1) + 'K'
+                     : '$' + Math.round(n).toLocaleString();
+    const clip = (s, m) => { const t = String(s || '').trim() || 'Unknown'; return t.length <= m ? t : t.slice(0, m - 1) + '\u2026'; };
 
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-    const nodes = followGraph.nodes || [];
-    const edges = followGraph.edges || [];
-
-    /* ── Build node weight index ── */
-    const nodeWeight = new Map();
-    for (const edge of edges) {
-        const w = Number(edge.weight || 0);
-        nodeWeight.set(edge.source, (nodeWeight.get(edge.source) || 0) + w);
-        nodeWeight.set(edge.target, (nodeWeight.get(edge.target) || 0) + w);
-    }
-
-    /* ── Group nodes by hop distance ── */
-    const hops = new Map();
-    for (const node of nodes) {
-        const hop = Number(node.hop_distance || 0);
-        if (!hops.has(hop)) hops.set(hop, []);
-        hops.get(hop).push(node);
-    }
-    const sortedHops = Array.from(hops.keys()).sort((a, b) => a - b);
-
-    /* Sort nodes within each column: candidates by name, others by weight desc */
-    for (const hop of sortedHops) {
-        const col = hops.get(hop);
-        col.sort((a, b) => {
-            if (a.node_type === "candidate" && b.node_type === "candidate")
-                return (a.label || "").localeCompare(b.label || "");
-            return (nodeWeight.get(b.id) || 0) - (nodeWeight.get(a.id) || 0);
-        });
-    }
-
-    /* ── Layout: compute dynamic dimensions ── */
-    const MIN_NODE_SPACING = 28;   /* minimum vertical px between node centers */
-    const PADDING_TOP = 50;
-    const PADDING_BOTTOM = 30;
-    const PADDING_LEFT = 30;
-    const LABEL_RIGHT_MARGIN = 180; /* space for right-side labels */
-    const COL_MIN_WIDTH = 220;     /* minimum horizontal gap between columns */
-
-    const maxColSize = Math.max(...sortedHops.map(h => (hops.get(h) || []).length), 1);
-    const svgHeight = Math.max(520, PADDING_TOP + maxColSize * MIN_NODE_SPACING + PADDING_BOTTOM);
-    const numCols = sortedHops.length || 1;
-    const svgWidth = Math.max(1000, PADDING_LEFT + numCols * COL_MIN_WIDTH + LABEL_RIGHT_MARGIN);
-
-    svg.setAttribute("viewBox", `0 0 ${svgWidth} ${svgHeight}`);
-
-    /* Also update the wrapper's CSS so the SVG can expand */
-    const wrap = document.getElementById("follow-money-wrap");
-    if (wrap) wrap.style.overflowY = "auto";
-    svg.style.height = Math.min(svgHeight, 900) + "px";
-
-    /* ── Assign positions ── */
-    const pos = new Map();
-    const colXPositions = [];
-    sortedHops.forEach((hop, hopIndex) => {
-        const col = hops.get(hop) || [];
-        const x = PADDING_LEFT + 60 + hopIndex * ((svgWidth - PADDING_LEFT - LABEL_RIGHT_MARGIN - 60) / Math.max(1, numCols - 1));
-        colXPositions.push(x);
-        const totalHeight = svgHeight - PADDING_TOP - PADDING_BOTTOM;
-        col.forEach((node, idx) => {
-            const y = col.length === 1
-                ? PADDING_TOP + totalHeight / 2
-                : PADDING_TOP + idx * (totalHeight / (col.length - 1));
-            pos.set(node.id, { x, y });
-        });
-    });
-
-    /* ── Create SVG groups for layering ── */
-    const gEdges = el("g", { class: "edges" });
-    const gNodes = el("g", { class: "nodes" });
-    const gLabels = el("g", { class: "labels" });
-    svg.appendChild(gEdges);
-    svg.appendChild(gNodes);
-    svg.appendChild(gLabels);
-
-    /* ── Draw column headers ── */
-    sortedHops.forEach((hop, hopIndex) => {
-        const x = colXPositions[hopIndex];
-        const headerText = hop === 0 ? "Donor" : `Hop ${hop}`;
-        const t = el("text", {
-            x, y: 20, fill: "#64748b", "font-size": "11px",
-            "text-anchor": "middle", "font-weight": "600"
-        });
-        t.textContent = headerText;
-        gLabels.appendChild(t);
-    });
-
-    /* ── Draw edges as curved paths ── */
-    /* Compute max edge weight for scaling */
-    let maxWeight = 0;
-    for (const edge of edges) maxWeight = Math.max(maxWeight, Number(edge.weight || 0));
-    const logMax = Math.log10(maxWeight + 1) || 1;
-
-    for (const edge of edges) {
-        const a = pos.get(edge.source);
-        const b = pos.get(edge.target);
-        if (!a || !b) continue;
-
-        const w = Number(edge.weight || 0);
-        const strokeWidth = Math.max(0.5, (Math.log10(w + 1) / logMax) * 3.5);
-        const color = edge.edge_type === "donor_committee" ? "#6366f1" : "#f87171";
-        /* Opacity: heavier edges more visible */
-        const opacity = 0.15 + 0.35 * (Math.log10(w + 1) / logMax);
-
-        /* Cubic bezier: control points at 40% and 60% of horizontal distance */
-        const dx = b.x - a.x;
-        const c1x = a.x + dx * 0.4;
-        const c2x = a.x + dx * 0.6;
-        const path = el("path", {
-            d: `M${a.x},${a.y} C${c1x},${a.y} ${c2x},${b.y} ${b.x},${b.y}`,
-            fill: "none",
-            stroke: color,
-            "stroke-width": strokeWidth,
-            "stroke-opacity": opacity,
-            "stroke-linecap": "round"
-        });
-        gEdges.appendChild(path);
-    }
-
-    /* ── Draw nodes ── */
-    for (const node of nodes) {
-        const p = pos.get(node.id);
-        if (!p) continue;
-        let fill = "#94a3b8";
-        let r = 5;
-        if (node.node_type === "donor") { fill = "#2563eb"; r = 8; }
-        if (node.node_type === "committee") { fill = "#0f766e"; r = 5; }
-        if (node.node_type === "candidate") {
-            const party = String(node.party_display || node.party_code || "Unknown Party");
-            fill = PARTY_COLORS[party] || "#b91c1c";
-            r = 5;
+    /* ═══ Pruning: Top-N per column ═══ */
+    function pruneTopN(nodes, edges, topN) {
+        const hg = new Map();
+        for (const n of nodes) {
+            const h = n.hop_distance || 0;
+            if (!hg.has(h)) hg.set(h, []);
+            hg.get(h).push(n);
         }
-        const circle = el("circle", {
-            cx: p.x, cy: p.y, r, fill,
-            stroke: "#fff", "stroke-width": "1.5"
-        });
-        /* Tooltip on hover */
-        const title = document.createElementNS(NS, "title");
-        let tipText = node.label || node.id;
-        if (node.node_type === "candidate" && node.office_display) tipText += ` (${node.office_display})`;
-        if (node.node_type === "candidate" && node.party_display) tipText += ` [${node.party_display}]`;
-        const nw = nodeWeight.get(node.id);
-        if (nw) tipText += ` — $${nw.toLocaleString()}`;
-        title.textContent = tipText;
-        circle.appendChild(title);
-        gNodes.appendChild(circle);
-    }
+        const kept = new Map();
+        const remap = new Map();   /* collapsed-id → summary-id */
 
-    /* ── Draw labels ── */
-    /* Strategy: donor labels to the left, candidate labels to the right,
-       committee labels above. This avoids overlapping the graph body. */
-    for (const node of nodes) {
-        const p = pos.get(node.id);
-        if (!p) continue;
-        const hop = Number(node.hop_distance || 0);
-        const isFirst = hop === 0;
-        const isLast = hop === sortedHops[sortedHops.length - 1];
-        let anchor, lx, maxLen;
-
-        if (isFirst) {
-            /* Donor: label to the left */
-            anchor = "end"; lx = p.x - 12; maxLen = 30;
-        } else if (isLast || node.node_type === "candidate") {
-            /* Candidates / last column: label to the right */
-            anchor = "start"; lx = p.x + 9; maxLen = 32;
-        } else {
-            /* Middle columns: label above */
-            anchor = "middle"; lx = p.x; maxLen = 22;
+        for (const [hop, grp] of hg) {
+            grp.sort((a, b) => (nw.get(b.id) || 0) - (nw.get(a.id) || 0));
+            let cnt = 0;
+            const rest = [];
+            for (const n of grp) {
+                if (n.id === startId || n.node_type === 'candidate') { kept.set(n.id, n); }
+                else if (cnt < topN) { kept.set(n.id, n); cnt++; }
+                else rest.push(n);
+            }
+            if (rest.length > 0) {
+                const sumW = rest.reduce((s, n) => s + (nw.get(n.id) || 0), 0);
+                const types = {};
+                for (const n of rest) types[n.node_type] = (types[n.node_type] || 0) + 1;
+                const main = Object.entries(types).sort((a, b) => b[1] - a[1])[0][0];
+                const sid = 'summary:' + hop;
+                kept.set(sid, {
+                    id: sid, node_type: 'summary', hop_distance: hop,
+                    label: '+' + rest.length + ' ' + main + (rest.length > 1 ? 's' : ''),
+                    collapsed_count: rest.length, collapsed_total: sumW, collapsed_types: types
+                });
+                for (const n of rest) remap.set(n.id, sid);
+            }
         }
 
-        const ly = (anchor === "middle") ? p.y - 9 : p.y + 3.5;
-        const fontSize = node.node_type === "donor" ? "11px" : "9px";
-        const fontWeight = node.node_type === "donor" ? "700" : "400";
-        const labelText = shortLabel(node.label || node.id, maxLen);
-
-        const t = el("text", {
-            x: lx, y: ly, fill: "#1e293b", "font-size": fontSize,
-            "text-anchor": anchor, "font-weight": fontWeight
-        });
-        t.textContent = labelText;
-        gLabels.appendChild(t);
+        /* Redirect & aggregate edges */
+        const eAgg = new Map();
+        for (const e of edges) {
+            let s = remap.get(e.source) || e.source;
+            let t = remap.get(e.target) || e.target;
+            if (s === t || !kept.has(s) || !kept.has(t)) continue;
+            const k = s < t ? s + '|' + t : t + '|' + s;
+            if (eAgg.has(k)) {
+                const x = eAgg.get(k);
+                x.weight += +(e.weight || 0);
+                x.contribution_count += (e.contribution_count || 0);
+            } else {
+                eAgg.set(k, {
+                    source: s < t ? s : t, target: s < t ? t : s,
+                    edge_type: e.edge_type, weight: +(e.weight || 0),
+                    contribution_count: e.contribution_count || 0,
+                    is_summary: remap.has(e.source) || remap.has(e.target)
+                });
+            }
+        }
+        return { nodes: Array.from(kept.values()), edges: Array.from(eAgg.values()) };
     }
 
-    /* ── Legend ── */
-    const legendY = svgHeight - 18;
-    const legendItems = [
-        { color: "#2563eb", label: "Donor" },
-        { color: "#0f766e", label: "Committee" },
-        { color: "#6366f1", label: "Donor→Committee", isLine: true },
-        { color: "#f87171", label: "Committee→Candidate", isLine: true },
-    ];
-    let legendX = 20;
-    for (const item of legendItems) {
-        if (item.isLine) {
-            const line = el("line", {
-                x1: legendX, y1: legendY - 4, x2: legendX + 18, y2: legendY - 4,
-                stroke: item.color, "stroke-width": "2.5", "stroke-opacity": "0.7"
+    /* ═══ Pruning: Strongest paths to candidates ═══ */
+    function prunePaths(nodes, edges) {
+        const cands = nodes.filter(n => n.node_type === 'candidate')
+                          .sort((a, b) => (nw.get(b.id) || 0) - (nw.get(a.id) || 0))
+                          .slice(0, 20);
+        if (!cands.length) return pruneTopN(nodes, edges, S.topN);
+
+        const pnSet = new Set([startId]);
+        const peKeys = new Set();
+
+        for (const c of cands) {
+            let cur = c.id;
+            const vis = new Set([cur]);
+            pnSet.add(cur);
+            while (cur !== startId) {
+                const cn = byId.get(cur);
+                if (!cn || (cn.hop_distance || 0) === 0) break;
+                const curH = cn.hop_distance;
+                let bestNb = null, bestW = -1, bestE = null;
+                for (const { nb, edge } of (adj.get(cur) || [])) {
+                    if (vis.has(nb)) continue;
+                    const nn = byId.get(nb);
+                    if (!nn || nn.hop_distance !== curH - 1) continue;
+                    const w = +(edge.weight || 0);
+                    if (w > bestW) { bestW = w; bestNb = nb; bestE = edge; }
+                }
+                if (!bestNb) break;
+                vis.add(bestNb);
+                pnSet.add(bestNb);
+                peKeys.add([cur, bestNb].sort().join('|') + '|' + bestE.edge_type);
+                cur = bestNb;
+            }
+        }
+        return {
+            nodes: nodes.filter(n => pnSet.has(n.id)),
+            edges: edges.filter(e => peKeys.has([e.source, e.target].sort().join('|') + '|' + e.edge_type))
+        };
+    }
+
+    /* ═══ Compute visible subgraph ═══ */
+    function computeVisible() {
+        let nodes = allNodes.filter(n => {
+            if (n.node_type === 'donor') return S.donors || n.id === startId;
+            if (n.node_type === 'committee') return S.cmtes;
+            if (n.node_type === 'candidate') return S.cands;
+            return true;
+        });
+        let edges = allEdges.filter(e => (+(e.weight || 0)) >= S.minAmt);
+        const nids = new Set(nodes.map(n => n.id));
+        edges = edges.filter(e => nids.has(e.source) && nids.has(e.target));
+        if (S.minAmt > 0) {
+            const conn = new Set([startId]);
+            for (const e of edges) { conn.add(e.source); conn.add(e.target); }
+            nodes = nodes.filter(n => conn.has(n.id));
+        }
+        return S.mode === 'paths' ? prunePaths(nodes, edges)
+                                  : pruneTopN(nodes, edges, S.topN);
+    }
+
+    /* ═══ Layout: fixed-width columns ═══ */
+    function doLayout(vis) {
+        const hg = new Map();
+        for (const n of vis.nodes) {
+            const h = n.hop_distance || 0;
+            if (!hg.has(h)) hg.set(h, []);
+            hg.get(h).push(n);
+        }
+        const hops = Array.from(hg.keys()).sort((a, b) => a - b);
+        for (const col of hg.values()) {
+            col.sort((a, b) => {
+                if (a.node_type === 'summary') return 1;
+                if (b.node_type === 'summary') return -1;
+                if (a.node_type === 'candidate' && b.node_type === 'candidate')
+                    return (a.label || '').localeCompare(b.label || '');
+                return (nw.get(b.id) || 0) - (nw.get(a.id) || 0);
             });
-            gLabels.appendChild(line);
-        } else {
-            gLabels.appendChild(el("circle", {
-                cx: legendX + 5, cy: legendY - 4, r: 5, fill: item.color
+        }
+        const maxCol = Math.max(1, ...hops.map(h => hg.get(h).length));
+        const vbH = Math.max(580, Math.min(1200, maxCol * 24 + PAD_Y * 2));
+        const nc = hops.length || 1;
+        const usW = VBW - PAD_L - PAD_R;
+        const pos = new Map(), colX = [];
+        hops.forEach((hop, i) => {
+            const col = hg.get(hop);
+            const x = nc === 1 ? VBW / 2 : PAD_L + i * (usW / (nc - 1));
+            colX.push(x);
+            const uH = vbH - PAD_Y * 2;
+            col.forEach((n, j) => {
+                const y = col.length === 1 ? PAD_Y + uH / 2
+                        : PAD_Y + j * (uH / (col.length - 1));
+                pos.set(n.id, { x, y });
+            });
+        });
+        return { pos, colX, hops, vbH, hg };
+    }
+
+    /* ═══ Render ═══ */
+    function render(vis, lay) {
+        const { nodes, edges } = vis;
+        const { pos, colX, hops, vbH, hg } = lay;
+
+        svg.setAttribute('viewBox', '0 0 ' + VBW + ' ' + vbH);
+        svg.style.height = Math.min(vbH, 800) + 'px';
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+        const gE = mk('g', {}), gN = mk('g', {}), gL = mk('g', {});
+        svg.appendChild(gE); svg.appendChild(gN); svg.appendChild(gL);
+
+        /* Search & selection state */
+        const sq = S.search.toLowerCase().trim();
+        const sActive = sq.length >= 2;
+        const matchS = n => !sActive || (n.label || '').toLowerCase().includes(sq);
+        const selNb = new Set();
+        if (S.selId) {
+            selNb.add(S.selId);
+            for (const e of edges) {
+                if (e.source === S.selId) selNb.add(e.target);
+                if (e.target === S.selId) selNb.add(e.source);
+            }
+        }
+        const hiN = id => {
+            if (sActive) { const n = byId.get(id) || nodes.find(x => x.id === id); return n ? matchS(n) : false; }
+            if (S.selId) return selNb.has(id);
+            return true;
+        };
+
+        /* Column headers */
+        hops.forEach((hop, i) => {
+            const col = hg.get(hop);
+            let hdr;
+            if (hop === 0) hdr = 'Start Donor';
+            else {
+                const tp = {};
+                for (const n of col) if (n.node_type !== 'summary') tp[n.node_type] = (tp[n.node_type] || 0) + 1;
+                const mt = Object.entries(tp).sort((a, b) => b[1] - a[1])[0];
+                hdr = 'Hop ' + hop + (mt ? ' (' + mt[0] + 's)' : '');
+            }
+            const t = mk('text', { x: colX[i], y: 20, fill: '#64748b', 'font-size': '11px',
+                                    'text-anchor': 'middle', 'font-weight': '600' });
+            t.textContent = hdr;
+            gL.appendChild(t);
+        });
+
+        /* Edges */
+        let maxW = 0;
+        for (const e of edges) maxW = Math.max(maxW, +(e.weight || 0));
+        const lm = Math.log10(maxW + 1) || 1;
+
+        for (const e of edges) {
+            const a = pos.get(e.source), b = pos.get(e.target);
+            if (!a || !b) continue;
+            const w = +(e.weight || 0);
+            const sw = Math.max(0.6, (Math.log10(w + 1) / lm) * 4.5);
+            const col = e.edge_type === 'donor_committee' ? '#6366f1' : '#ef4444';
+            const dim = (sActive || S.selId) && (!hiN(e.source) || !hiN(e.target));
+            const op = dim ? 0.03 : (0.12 + 0.45 * (Math.log10(w + 1) / lm));
+            const dx = b.x - a.x;
+            gE.appendChild(mk('path', {
+                d: 'M' + a.x + ',' + a.y + ' C' + (a.x + dx * 0.4) + ',' + a.y + ' ' +
+                   (a.x + dx * 0.6) + ',' + b.y + ' ' + b.x + ',' + b.y,
+                fill: 'none', stroke: col, 'stroke-width': sw, 'stroke-opacity': op,
+                'stroke-linecap': 'round',
+                'stroke-dasharray': e.is_summary ? '4,3' : 'none'
             }));
         }
-        const lt = el("text", {
-            x: legendX + 22, y: legendY, fill: "#475569", "font-size": "10px",
-            "text-anchor": "start"
-        });
-        lt.textContent = item.label;
-        gLabels.appendChild(lt);
-        legendX += 22 + item.label.length * 6 + 16;
+
+        /* Nodes */
+        for (const n of nodes) {
+            const p = pos.get(n.id);
+            if (!p) continue;
+            let fill = '#94a3b8', r = 5;
+            if (n.node_type === 'donor') { fill = '#2563eb'; r = n.id === startId ? 10 : 6; }
+            else if (n.node_type === 'committee') { fill = '#0f766e'; r = 6; }
+            else if (n.node_type === 'candidate') {
+                fill = PC[n.party_display || 'Unknown Party'] || '#b91c1c'; r = 7;
+            }
+            else if (n.node_type === 'summary') { fill = '#e2e8f0'; r = 11; }
+
+            /* Scale non-summary nodes by weight */
+            if (n.node_type !== 'summary') {
+                const v = nw.get(n.id) || 0;
+                if (v > 0) r = Math.max(r, Math.min(15, r + Math.log10(v + 1) * 0.7));
+            }
+
+            const dim = (sActive && !matchS(n)) || (S.selId && !selNb.has(n.id));
+            const g = mk('g', { style: 'cursor:pointer;opacity:' + (dim ? 0.15 : 1) });
+
+            if (n.node_type === 'summary') {
+                g.appendChild(mk('circle', {
+                    cx: p.x, cy: p.y, r, fill: '#e2e8f0', stroke: '#94a3b8',
+                    'stroke-width': '1.5', 'stroke-dasharray': '3,2'
+                }));
+            } else {
+                g.appendChild(mk('circle', {
+                    cx: p.x, cy: p.y, r, fill,
+                    stroke: n.id === S.selId ? '#facc15' : '#fff',
+                    'stroke-width': n.id === S.selId ? '3' : '1.5'
+                }));
+            }
+
+            g.addEventListener('mouseenter', ev => showTip(n, ev));
+            g.addEventListener('mouseleave', hideTip);
+            g.addEventListener('click', ev => { ev.stopPropagation(); clickNode(n.id); });
+            gN.appendChild(g);
+        }
+
+        /* Labels — show: start, candidates, committees, summary, top-8 others, search matches */
+        for (const n of nodes) {
+            const p = pos.get(n.id);
+            if (!p) continue;
+            const hop = n.hop_distance || 0;
+            const isFirst = hop === hops[0];
+            const isLast = hop === hops[hops.length - 1];
+
+            /* Determine if this label should display */
+            let show = false;
+            if (n.id === startId || n.node_type === 'candidate' || n.node_type === 'summary'
+                || n.node_type === 'committee') show = true;
+            else if (sActive && matchS(n)) show = true;
+            else if (S.selId && selNb.has(n.id)) show = true;
+            else {
+                const col = hg.get(hop) || [];
+                const rank = col.filter(c => c.node_type !== 'summary' && c.node_type !== 'candidate'
+                                             && c.node_type !== 'committee').findIndex(c => c.id === n.id);
+                show = rank >= 0 && rank < 8;
+            }
+            if (!show) continue;
+
+            let anchor, lx, maxLen;
+            if (isFirst) { anchor = 'end'; lx = p.x - 14; maxLen = 26; }
+            else if (isLast || n.node_type === 'candidate') { anchor = 'start'; lx = p.x + 12; maxLen = 28; }
+            else { anchor = 'start'; lx = p.x + 10; maxLen = 22; }
+
+            const ly = p.y + 3.5;
+            const dim = (sActive && !matchS(n)) || (S.selId && !selNb.has(n.id));
+            const fs = n.id === startId ? '11.5px' : n.node_type === 'summary' ? '10px' : '9.5px';
+            const fw = n.id === startId ? '700' : '400';
+
+            const t = mk('text', {
+                x: lx, y: ly, fill: dim ? '#94a3b8' : '#1e293b', 'font-size': fs,
+                'text-anchor': anchor, 'font-weight': fw, 'pointer-events': 'none'
+            });
+            t.textContent = clip(n.label || n.id, maxLen);
+            gL.appendChild(t);
+        }
+
+        /* Legend */
+        const ly = vbH - 12;
+        const items = [
+            { c: '#2563eb', l: 'Donor', circ: true },
+            { c: '#0f766e', l: 'Committee', circ: true },
+            { c: '#6366f1', l: 'Donor\u2192Cmte', line: true },
+            { c: '#ef4444', l: 'Cmte\u2192Candidate', line: true },
+            { c: '#e2e8f0', l: 'Collapsed', circ: true, dash: true },
+        ];
+        let lx = 20;
+        for (const it of items) {
+            if (it.line) {
+                gL.appendChild(mk('line', {
+                    x1: lx, y1: ly - 3, x2: lx + 16, y2: ly - 3,
+                    stroke: it.c, 'stroke-width': '2.5', 'stroke-opacity': '0.7'
+                }));
+            } else {
+                gL.appendChild(mk('circle', {
+                    cx: lx + 5, cy: ly - 3, r: 5, fill: it.c,
+                    stroke: it.dash ? '#94a3b8' : 'none', 'stroke-dasharray': it.dash ? '2,2' : 'none'
+                }));
+            }
+            const lt = mk('text', { x: lx + 18, y: ly + 1, fill: '#475569', 'font-size': '9.5px', 'text-anchor': 'start' });
+            lt.textContent = it.l;
+            gL.appendChild(lt);
+            lx += 18 + it.l.length * 5.5 + 14;
+        }
+
+        /* Info bar */
+        const shown = nodes.filter(n => n.node_type !== 'summary').length;
+        const coll = nodes.filter(n => n.node_type === 'summary').reduce((s, n) => s + (n.collapsed_count || 0), 0);
+        infoEl.textContent = 'Showing ' + shown + ' of ' + allNodes.length + ' nodes' +
+            (coll > 0 ? ' (' + coll + ' collapsed into summary nodes)' : '') +
+            ' | ' + edges.length + ' edges' +
+            (S.mode === 'paths' ? ' | Strongest-paths mode' : '');
     }
+
+    /* ═══ Tooltip ═══ */
+    function showTip(n, ev) {
+        const tc = 'ftm-tip-' + n.node_type;
+        const tl = n.node_type.charAt(0).toUpperCase() + n.node_type.slice(1);
+        let h = '<span class="ftm-tip-type ' + tc + '">' + tl + '</span> ';
+        h += '<strong>' + (n.label || n.id) + '</strong><br>';
+        if (n.node_type === 'candidate') {
+            if (n.office_display) h += 'Office: ' + n.office_display + '<br>';
+            if (n.party_display) h += 'Party: ' + n.party_display + '<br>';
+        }
+        if (n.node_type === 'summary') {
+            h += n.collapsed_count + ' nodes collapsed<br>';
+            h += 'Total flow: ' + fmt$(n.collapsed_total || 0) + '<br>';
+            if (n.collapsed_types) {
+                h += Object.entries(n.collapsed_types).map(([t, c]) => c + ' ' + t + 's').join(', ') + '<br>';
+            }
+        }
+        const v = nw.get(n.id);
+        if (v) h += 'Total flow: ' + fmt$(v) + '<br>';
+        h += 'Hop distance: ' + (n.hop_distance || 0);
+
+        /* Top connections */
+        const conns = (adj.get(n.id) || []).sort((a, b) => (+(b.edge.weight || 0)) - (+(a.edge.weight || 0))).slice(0, 5);
+        if (conns.length) {
+            h += '<br><br><em>Top connections:</em>';
+            for (const { nb, edge } of conns) {
+                const nn = byId.get(nb);
+                h += '<br>\u2192 ' + clip(nn ? nn.label : nb, 24) + ': ' + fmt$(+(edge.weight || 0));
+            }
+        }
+        tipEl.innerHTML = h;
+        tipEl.style.display = 'block';
+        /* Position: ensure tooltip stays within viewport */
+        const tx = Math.min(ev.clientX + 14, window.innerWidth - 340);
+        const ty = Math.min(ev.clientY - 10, window.innerHeight - 200);
+        tipEl.style.left = tx + 'px';
+        tipEl.style.top = ty + 'px';
+    }
+    function hideTip() { tipEl.style.display = 'none'; }
+
+    /* ═══ Click selection ═══ */
+    function clickNode(id) { S.selId = S.selId === id ? null : id; update(); }
+
+    /* ═══ Main update loop ═══ */
+    function update() {
+        const vis = computeVisible();
+        render(vis, doLayout(vis));
+    }
+
+    /* ═══ Control bindings ═══ */
+    const $mode = document.getElementById('ftm-mode');
+    const $topN = document.getElementById('ftm-topn');
+    const $topNV = document.getElementById('ftm-topn-val');
+    const $minA = document.getElementById('ftm-min-amt');
+    const $sDon = document.getElementById('ftm-show-donors');
+    const $sCmt = document.getElementById('ftm-show-committees');
+    const $sCnd = document.getElementById('ftm-show-candidates');
+    const $srch = document.getElementById('ftm-search');
+    const $tGrp = document.getElementById('ftm-topn-group');
+
+    $mode && $mode.addEventListener('change', () => {
+        S.mode = $mode.value;
+        if ($tGrp) $tGrp.style.display = S.mode === 'topn' ? '' : 'none';
+        update();
+    });
+    $topN && $topN.addEventListener('input', () => {
+        S.topN = +$topN.value; $topNV.textContent = $topN.value; update();
+    });
+    $minA && $minA.addEventListener('change', () => { S.minAmt = +$minA.value; update(); });
+    $sDon && $sDon.addEventListener('change', () => { S.donors = $sDon.checked; update(); });
+    $sCmt && $sCmt.addEventListener('change', () => { S.cmtes = $sCmt.checked; update(); });
+    $sCnd && $sCnd.addEventListener('change', () => { S.cands = $sCnd.checked; update(); });
+
+    let sTimer;
+    $srch && $srch.addEventListener('input', () => {
+        clearTimeout(sTimer);
+        sTimer = setTimeout(() => { S.search = $srch.value; update(); }, 200);
+    });
+
+    /* Click outside clears selection */
+    document.addEventListener('click', ev => {
+        if (S.selId && !svg.contains(ev.target)) { S.selId = null; update(); }
+    });
+
+    /* Initial render */
+    update();
 })();
 </script>
 {% endif %}
