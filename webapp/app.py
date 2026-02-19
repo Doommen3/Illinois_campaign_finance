@@ -443,7 +443,7 @@ def create_app(config=None):
 
     app.jinja_env.filters['confidence_label'] = confidence_label
 
-    if _as_bool(app.config.get("DASHBOARD_PREWARM_ENABLED", True)):
+    if _as_bool(app.config.get("DASHBOARD_PREWARM_ENABLED", True)) and not app.config.get("TESTING"):
         def _prewarm_dashboard_cache() -> None:
             try:
                 from webapp.routes.main import warm_dashboard_home_cache

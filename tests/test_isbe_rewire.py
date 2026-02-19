@@ -180,7 +180,7 @@ def _seed_isbe_tables(conn):
             independent_expenditures_itemized REAL, independent_expenditures_non_itemized REAL,
             debts_itemized REAL, debts_non_itemized REAL, total_debts REAL,
             total_investments REAL,
-            archived INTEGER DEFAULT 0
+            archived BOOLEAN DEFAULT FALSE
         )
     """)
     conn.execute("""
@@ -208,7 +208,7 @@ def _seed_isbe_tables(conn):
             vendor_last_name TEXT, vendor_first_name TEXT,
             vendor_address1 TEXT, vendor_address2 TEXT,
             vendor_city TEXT, vendor_state TEXT, vendor_zipcode TEXT,
-            archived INTEGER DEFAULT 0,
+            archived BOOLEAN DEFAULT FALSE,
             country TEXT,
             redaction_requested INTEGER DEFAULT 0
         )
@@ -240,7 +240,7 @@ def _seed_isbe_tables(conn):
             candidate_name TEXT, office TEXT,
             supporting INTEGER DEFAULT 0,
             opposing INTEGER DEFAULT 0,
-            archived INTEGER DEFAULT 0,
+            archived BOOLEAN DEFAULT FALSE,
             country TEXT,
             redaction_requested INTEGER DEFAULT 0
         )
@@ -418,20 +418,20 @@ def _create_candidate_finance_agg_view(conn):
                 WHEN fp.period_year % 2 = 0 THEN fp.period_year
                 ELSE fp.period_year + 1
             END AS election_cycle,
-            COUNT(DISTINCT CASE WHEN COALESCE(d2.archived, 0) = 0 THEN d2.filed_doc_id END) AS filing_count,
+            COUNT(DISTINCT CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN d2.filed_doc_id END) AS filing_count,
             COALESCE(
-                SUM(CASE WHEN COALESCE(d2.archived, 0) = 0 THEN COALESCE(d2.total_receipts, 0) ELSE 0 END),
+                SUM(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN COALESCE(d2.total_receipts, 0) ELSE 0 END),
                 0
             ) AS sum_total_receipts,
             COALESCE(
-                SUM(CASE WHEN COALESCE(d2.archived, 0) = 0 THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END),
+                SUM(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END),
                 0
             ) AS sum_total_expenditures,
             COALESCE(
-                MAX(CASE WHEN COALESCE(d2.archived, 0) = 0 THEN d2.end_funds_available END),
+                MAX(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN d2.end_funds_available END),
                 0
             ) AS max_ending_funds_available,
-            COALESCE(SUM(CASE WHEN d2.archived = 1 THEN 1 ELSE 0 END), 0) AS archived_filing_count,
+            COALESCE(SUM(CASE WHEN d2.archived = TRUE THEN 1 ELSE 0 END), 0) AS archived_filing_count,
             MIN(fp.period_start_date) AS period_start_date,
             MAX(fp.period_end_date) AS period_end_date
         FROM isbe_candidate_committees cc
@@ -551,7 +551,7 @@ class TestCandidateFinanceAggView:
         # Add an archived D2 report
         conn.execute("""
             INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, total_receipts, total_expenditures, end_funds_available, archived)
-            VALUES (9999, 100, 5001, 999999.0, 999999.0, 999999.0, TRUE)
+            VALUES (9999, 100, 5001, 999999.0, 999999.0, 999999.0, 1)
         """)
         conn.commit()
         row = conn.execute(
@@ -732,9 +732,9 @@ class TestEdgeCases:
         conn.execute("CREATE TABLE isbe_candidates (id INTEGER PRIMARY KEY, last_name TEXT, first_name TEXT, address1 TEXT, address2 TEXT, city TEXT, state TEXT, zipcode TEXT, office TEXT, district_type TEXT, district TEXT, residence_county TEXT, party TEXT, redaction_requested INTEGER DEFAULT 0)")
         conn.execute("CREATE TABLE isbe_candidate_committees (id INTEGER PRIMARY KEY AUTOINCREMENT, committee_id INTEGER, candidate_id INTEGER)")
         conn.execute("CREATE TABLE isbe_filed_docs (id INTEGER PRIMARY KEY, committee_id INTEGER, doc_name TEXT, doc_type TEXT, reporting_period_begin TEXT, reporting_period_end TEXT, received_datetime TEXT, filed_date TEXT)")
-        conn.execute("CREATE TABLE isbe_d2_reports (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, beginning_funds_avail REAL, total_receipts REAL, total_expenditures REAL, end_funds_available REAL, individual_itemized REAL, individual_non_itemized REAL, transfer_in REAL, loan_received REAL, other_receipts REAL, inkind_itemized REAL, inkind_non_itemized REAL, total_inkind REAL, expenditures_itemized REAL, expenditures_non_itemized REAL, independent_expenditures_itemized REAL, independent_expenditures_non_itemized REAL, debts_itemized REAL, debts_non_itemized REAL, total_debts REAL, total_investments REAL, archived INTEGER DEFAULT 0)")
-        conn.execute("CREATE TABLE isbe_receipts (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, etrans_id TEXT, last_name TEXT, first_name TEXT, received_date TEXT, amount REAL, aggregate_amount REAL, loan_amount REAL, occupation TEXT, employer TEXT, address1 TEXT, address2 TEXT, city TEXT, state TEXT, zipcode TEXT, d2_part TEXT, description TEXT, vendor_last_name TEXT, vendor_first_name TEXT, vendor_address1 TEXT, vendor_address2 TEXT, vendor_city TEXT, vendor_state TEXT, vendor_zipcode TEXT, archived INTEGER DEFAULT 0, country TEXT, redaction_requested INTEGER DEFAULT 0)")
-        conn.execute("CREATE TABLE isbe_expenditures (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, etrans_id TEXT, last_name TEXT, first_name TEXT, expended_date TEXT, amount REAL, aggregate_amount REAL, address1 TEXT, address2 TEXT, city TEXT, state TEXT, zipcode TEXT, d2_part TEXT, purpose TEXT, candidate_name TEXT, office TEXT, supporting INTEGER DEFAULT 0, opposing INTEGER DEFAULT 0, archived INTEGER DEFAULT 0, country TEXT, redaction_requested INTEGER DEFAULT 0)")
+        conn.execute("CREATE TABLE isbe_d2_reports (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, beginning_funds_avail REAL, total_receipts REAL, total_expenditures REAL, end_funds_available REAL, individual_itemized REAL, individual_non_itemized REAL, transfer_in REAL, loan_received REAL, other_receipts REAL, inkind_itemized REAL, inkind_non_itemized REAL, total_inkind REAL, expenditures_itemized REAL, expenditures_non_itemized REAL, independent_expenditures_itemized REAL, independent_expenditures_non_itemized REAL, debts_itemized REAL, debts_non_itemized REAL, total_debts REAL, total_investments REAL, archived BOOLEAN DEFAULT FALSE)")
+        conn.execute("CREATE TABLE isbe_receipts (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, etrans_id TEXT, last_name TEXT, first_name TEXT, received_date TEXT, amount REAL, aggregate_amount REAL, loan_amount REAL, occupation TEXT, employer TEXT, address1 TEXT, address2 TEXT, city TEXT, state TEXT, zipcode TEXT, d2_part TEXT, description TEXT, vendor_last_name TEXT, vendor_first_name TEXT, vendor_address1 TEXT, vendor_address2 TEXT, vendor_city TEXT, vendor_state TEXT, vendor_zipcode TEXT, archived BOOLEAN DEFAULT FALSE, country TEXT, redaction_requested INTEGER DEFAULT 0)")
+        conn.execute("CREATE TABLE isbe_expenditures (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, etrans_id TEXT, last_name TEXT, first_name TEXT, expended_date TEXT, amount REAL, aggregate_amount REAL, address1 TEXT, address2 TEXT, city TEXT, state TEXT, zipcode TEXT, d2_part TEXT, purpose TEXT, candidate_name TEXT, office TEXT, supporting BOOLEAN DEFAULT FALSE, opposing BOOLEAN DEFAULT FALSE, archived BOOLEAN DEFAULT FALSE, country TEXT, redaction_requested BOOLEAN DEFAULT FALSE)")
         conn.commit()
 
         _create_compat_views(conn)
@@ -984,7 +984,7 @@ def _seed_isbe_condensed_tables(conn):
             independent_expenditures_itemized REAL, independent_expenditures_non_itemized REAL,
             debts_itemized REAL, debts_non_itemized REAL, total_debts REAL,
             total_investments REAL,
-            archived INTEGER DEFAULT 0
+            archived BOOLEAN DEFAULT FALSE
         )
     """)
     conn.execute("""
@@ -1011,7 +1011,7 @@ def _seed_isbe_condensed_tables(conn):
             vendor_last_name TEXT, vendor_first_name TEXT,
             vendor_address1 TEXT, vendor_address2 TEXT,
             vendor_city TEXT, vendor_state TEXT, vendor_zipcode TEXT,
-            archived INTEGER DEFAULT 0,
+            archived BOOLEAN DEFAULT FALSE,
             country TEXT,
             redaction_requested INTEGER DEFAULT 0
         )

@@ -587,7 +587,7 @@ class Report:
 
         if paper_filed is not None:
             where_clauses.append("r.is_paper_filed = ?")
-            params.append(int(bool(paper_filed)))
+            params.append(bool(paper_filed))
         report_date_expr = _normalized_date_sql("r.filed_date")
         _append_date_range_filters(
             where_clauses,
@@ -667,7 +667,7 @@ class Report:
         params: List[object] = []
         if paper_filed is not None:
             where_clauses.append("is_paper_filed = ?")
-            params.append(int(bool(paper_filed)))
+            params.append(bool(paper_filed))
         report_date_expr = _normalized_date_sql("filed_date")
         _append_date_range_filters(
             where_clauses,
@@ -5340,7 +5340,7 @@ class AppUser:
                 SET password_hash = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (password_hash, int(bool(is_active)), existing.id),
+                (password_hash, bool(is_active), existing.id),
             )
             conn.commit()
             updated = cls.get_by_id(conn, existing.id)
@@ -5351,7 +5351,7 @@ class AppUser:
             INSERT INTO app_users (username, password_hash, is_active)
             VALUES (?, ?, ?)
             """,
-            (username, password_hash, int(bool(is_active))),
+            (username, password_hash, bool(is_active)),
         )
         conn.commit()
         created = cls.get_by_id(conn, cursor.lastrowid)

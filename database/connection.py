@@ -204,6 +204,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+_get_db_override = None  # Set by test conftest to redirect all callers
+
+
 def get_db(db_path: str = None) -> sqlite3.Connection:
     """Get a database connection.
 
@@ -214,6 +217,8 @@ def get_db(db_path: str = None) -> sqlite3.Connection:
     Returns:
         A sqlite3 connection with row factory set to sqlite3.Row
     """
+    if _get_db_override is not None:
+        return _get_db_override(db_path)
     db_target = (db_path or '').strip() if isinstance(db_path, str) else db_path
     if not db_target:
         db_target = (os.environ.get('DATABASE_URL') or '').strip()
@@ -253,12 +258,17 @@ def close_db(conn: sqlite3.Connection) -> None:
         conn.close()
 
 
+_init_db_override = None  # Set by test conftest to redirect all callers
+
+
 def init_db(db_path: str = None) -> None:
     """Initialize the database with the schema.
 
     Args:
         db_path: Optional path to the database file.
     """
+    if _init_db_override is not None:
+        return _init_db_override(db_path)
     db_target = (db_path or '').strip() if isinstance(db_path, str) else db_path
     if not db_target:
         db_target = (os.environ.get('DATABASE_URL') or '').strip()
