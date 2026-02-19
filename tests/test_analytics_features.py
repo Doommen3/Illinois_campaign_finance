@@ -1002,7 +1002,6 @@ def test_analytics_dashboard_route_loads(analytics_client):
     assert b"Analytics Overview" in response.data
     assert b"Analytics section navigation" in response.data
     assert b"Quick mode is active" in response.data
-    assert b"Heavy sections are available in Full mode after the snapshot completes." in response.data
     assert b"Donor-flow source" in response.data
     assert b'name="date_from"' in response.data
     assert b'name="date_to"' in response.data
@@ -1020,22 +1019,22 @@ def test_analytics_dashboard_route_loads(analytics_client):
         (
             "/analytics/networks",
             b"Analytics: Networks",
-            b"Skipped in quick mode. Switch to Full mode to compute the network.",
+            b"Network Graph Analytics",
         ),
         (
             "/analytics/risk",
             b"Analytics: Risk",
-            b"Skipped in quick mode. Switch to Full mode to compute anomaly flags.",
+            b"Anomaly Flags",
         ),
         (
             "/analytics/donors",
             b"Analytics: Donors",
-            b"Skipped in quick mode. Switch to Full mode to compute concentration metrics.",
+            b"NLP Spending Categories",
         ),
         (
             "/analytics/geography",
             b"Analytics: Geography",
-            b"Skipped in quick mode. Switch to Full mode to compute state-level geo summaries.",
+            b"Time-Series",
         ),
         (
             "/analytics/relationships",

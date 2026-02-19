@@ -16,6 +16,7 @@ from database.analytics import (
     get_donor_concentration,
     get_dashboard_snapshot,
     get_geo_drilldown,
+    get_geo_summary,
     get_irs527_ecosystem_graph,
     get_lobbying_influence_graph,
     get_network_graph,
@@ -427,6 +428,7 @@ def dashboard():
             limit=filters["recon_limit"],
             min_abs_diff=filters["recon_min_abs_diff"],
         )
+        snapshot_state["heavy_sections_loaded"] = True
 
     latest_time_point = time_series[-1] if time_series else None
     election_cycle = request.args.get("election_cycle", type=int)
@@ -516,6 +518,7 @@ def networks():
             ),
             _empty_network(),
         )
+        snapshot_state["heavy_sections_loaded"] = True
 
     vendor_network = _safe_optional_graph(
         "vendor_network",
@@ -584,6 +587,7 @@ def risk():
             limit=filters["recon_limit"],
             min_abs_diff=filters["recon_min_abs_diff"],
         )
+        snapshot_state["heavy_sections_loaded"] = True
 
     return render_template(
         "analytics/risk.html",
@@ -612,6 +616,7 @@ def donors():
             date_to=filters["date_to"],
         )
         nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
+        snapshot_state["heavy_sections_loaded"] = True
 
     return render_template(
         "analytics/donors.html",
@@ -629,16 +634,24 @@ def geography():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    geo_summary = payload.get("geo_summary", _empty_geo_summary()) if snapshot_state["heavy_sections_loaded"] else _empty_geo_summary()
     if snapshot_state["heavy_sections_loaded"]:
+        geo_summary = payload.get("geo_summary", _empty_geo_summary())
         time_series = payload.get("time_series", [])
     else:
+        geo_summary = get_geo_summary(
+            conn,
+            limit_states=filters.get("geo_state_limit", 15),
+            limit_cities=filters.get("geo_city_limit", 25),
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
         time_series = get_time_series(
             conn,
             months=filters["months"],
             date_from=filters["date_from"],
             date_to=filters["date_to"],
         )
+        snapshot_state["heavy_sections_loaded"] = True
 
     return render_template(
         "analytics/geography.html",
