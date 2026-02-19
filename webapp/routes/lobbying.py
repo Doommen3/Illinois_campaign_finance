@@ -913,7 +913,7 @@ def flows_data():
         if date_to:
             date_clause += " AND DATE(r.received_date) <= DATE(?)"
             date_params.append(date_to)
-        archived_clause = " AND COALESCE(r.is_archived, 0) = 0" if _column_exists(conn, "bulk_receipts_clean", "is_archived") else ""
+        archived_clause = " AND NOT COALESCE(r.is_archived::boolean, FALSE)" if _column_exists(conn, "bulk_receipts_clean", "is_archived") else ""
         rows = conn.execute(
             f"""
             WITH filtered_matches AS (

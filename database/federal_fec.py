@@ -1719,7 +1719,7 @@ def rebuild_fec_donor_identities(
     if not _column_exists(conn, "fec_schedule_a_contributions", "donor_entity_key"):
         return {"rows_scanned": 0, "rows_updated": 0, "cycle": cycle, "only_missing": bool(only_missing)}
 
-    where_clauses: list[str] = ["rowid > ?"]
+    where_clauses: list[str] = ["sub_id > ?"]
     params: list[Any] = [0]
     if cycle is not None:
         where_clauses.append("cycle = ?")
@@ -1727,7 +1727,7 @@ def rebuild_fec_donor_identities(
     if only_missing:
         where_clauses.append("(donor_entity_key IS NULL OR TRIM(donor_entity_key) = '')")
 
-    last_rowid = 0
+    last_sub_id = 0
     rows_scanned = 0
     rows_updated = 0
 
@@ -1735,7 +1735,6 @@ def rebuild_fec_donor_identities(
         rows = conn.execute(
             f"""
             SELECT
-                rowid,
                 sub_id,
                 contributor_name,
                 contributor_state,
@@ -1746,10 +1745,10 @@ def rebuild_fec_donor_identities(
                 donor_entity_method
             FROM fec_schedule_a_contributions
             WHERE {" AND ".join(where_clauses)}
-            ORDER BY rowid ASC
+            ORDER BY sub_id ASC
             LIMIT ?
             """,
-            [last_rowid, *params[1:], max(1, int(batch_size))],
+            [last_sub_id, *params[1:], max(1, int(batch_size))],
         ).fetchall()
         if not rows:
             break
@@ -1771,20 +1770,20 @@ def rebuild_fec_donor_identities(
             if existing_key == entity_key and existing_method == entity_method:
                 continue
 
-            updates.append((entity_key or None, entity_method or None, int(row["rowid"])))
+            updates.append((entity_key or None, entity_method or None, int(row["sub_id"])))
 
         if updates:
             conn.executemany(
                 """
                 UPDATE fec_schedule_a_contributions
                 SET donor_entity_key = ?, donor_entity_method = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE rowid = ?
+                WHERE sub_id = ?
                 """,
                 updates,
             )
             rows_updated += len(updates)
 
-        last_rowid = int(rows[-1]["rowid"])
+        last_sub_id = int(rows[-1]["sub_id"])
 
     if rows_updated:
         conn.commit()
@@ -2584,7 +2583,7 @@ def refresh_fec_transfer_source_committees(
         SELECT
             committee_id,
             cycle,
-            COALESCE(MAX(committee_name), committee_id) AS committee_name,
+            COALESCE(MAX(committee_name), MAX(committee_id)) AS committee_name,
             COUNT(*) AS transfer_count,
             COALESCE(SUM(disbursement_amount), 0.0) AS transfer_total_amount,
             COUNT(DISTINCT NULLIF(candidate_id, '')) AS source_candidate_count,
@@ -4365,7 +4364,8 @@ def backfill_fec_schedule_e(
          AND bs.cycle = m.cycle
         WHERE m.cycle = ?
           AND m.fec_candidate_id IS NOT NULL
-        GROUP BY m.fec_candidate_id, m.cycle
+        GROUP BY m.fec_candidate_id, m.cycle, m.fec_name, m.candidate_name,
+                 bs.next_last_index, bs.next_last_expenditure_date, bs.completed, bs.updated_at
         ORDER BY
             COALESCE(bs.completed, 0) ASC,
             CASE WHEN bs.updated_at IS NULL THEN 0 ELSE 1 END ASC,
@@ -5372,7 +5372,7 @@ def get_federal_committee_receipts(
     summary = conn.execute(
         f"""
         SELECT
-            COALESCE(MAX(committee_name), committee_id) AS committee_name,
+            COALESCE(MAX(committee_name), MAX(committee_id)) AS committee_name,
             COUNT(*) AS receipt_count,
             COALESCE(SUM(contribution_receipt_amount), 0.0) AS total_amount,
             COUNT(DISTINCT COALESCE(NULLIF(donor_entity_key, ''), NULLIF(donor_key, ''), NULLIF(contributor_name, ''))) AS donor_count,
@@ -7876,8 +7876,8 @@ def get_top_donor_entities(
         WHERE sa.candidate_id IS NOT NULL
           AND COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) IS NOT NULL
           {cycle_filter}
-        GROUP BY entity_key
-        HAVING total_amount > 0
+        GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id)
+        HAVING SUM(COALESCE(sa.contribution_receipt_amount, 0)) > 0
         ORDER BY total_amount DESC
         LIMIT ?
         """,

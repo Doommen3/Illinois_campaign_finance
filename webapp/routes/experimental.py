@@ -320,7 +320,7 @@ def _build_cumulative_inflow(
         "LENGTH(r.received_date) >= 7",
     ]
     if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-        receipt_filters.append("COALESCE(r.is_archived, 0) = 0")
+        receipt_filters.append("NOT COALESCE(r.is_archived::boolean, FALSE)")
     if _column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
         receipt_filters.append("COALESCE(r.d2_part_code, '') LIKE '1%'")
     receipt_filters.append("(? IS NULL OR r.received_date >= ?)")
@@ -514,7 +514,7 @@ def _build_payee_dominance(
         "TRIM(COALESCE(e.payee_last_or_business_name, '')) <> ''",
     ]
     if _column_exists(conn, "bulk_expenditures_clean", "is_archived"):
-        exp_filters.append("COALESCE(e.is_archived, 0) = 0")
+        exp_filters.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
     params: list[object] = []
     if has_expended_date:
         exp_filters.append("(? IS NULL OR e.expended_date >= ?)")

@@ -554,13 +554,13 @@ ISBE_RECEIPTS_MATERIALIZATION_VERSION = 3
 CONTRIBUTIONS_MATERIALIZATION_VERSION = 1
 
 _BULK_DONOR_RECEIPT_FILTER_SQL = (
-    "COALESCE(r.is_archived, 0) = 0 AND "
+    "NOT COALESCE(r.is_archived::boolean, FALSE) AND "
     "COALESCE(r.d2_part_code, '') LIKE '1%' AND "
     "EXISTS ("
     "SELECT 1 "
     "FROM bulk_d2_totals_clean d2 "
     "WHERE d2.filed_doc_id = r.filed_doc_id "
-    "  AND COALESCE(d2.is_archived, 0) = 0"
+    "  AND NOT COALESCE(d2.is_archived::boolean, FALSE)"
     ")"
 )
 
@@ -2493,7 +2493,7 @@ def _build_state_race_analytics_rows(
         exp_where_parts = ["COALESCE(e.d2_part_code, '') LIKE '9%'"]
         exp_params: list[object] = []
         if is_archived_exists:
-            exp_where_parts.append("COALESCE(e.is_archived, 0) = 0")
+            exp_where_parts.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
         if expended_date_exists and date_from:
             exp_where_parts.append("e.expended_date >= ?")
             exp_params.append(date_from)
@@ -3607,7 +3607,7 @@ def get_nlp_spending_summary(conn: sqlite3.Connection, limit: int = 20) -> list[
                 COALESCE(e.amount, 0) AS amount
             FROM bulk_expenditures_clean e
             WHERE COALESCE(e.amount, 0) > 0
-              AND COALESCE(e.is_archived, 0) = 0
+              AND NOT COALESCE(e.is_archived::boolean, FALSE)
             """
         ).fetchall()
 

@@ -968,20 +968,20 @@ def build_candidate_committee_joins(conn: sqlite3.Connection) -> dict:
                 WHEN fp.period_year % 2 = 0 THEN fp.period_year
                 ELSE fp.period_year + 1
             END AS election_cycle,
-            COUNT(DISTINCT CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN d2.filed_doc_id END) AS filing_count,
+            COUNT(DISTINCT CASE WHEN NOT COALESCE(d2.is_archived::boolean, FALSE) THEN d2.filed_doc_id END) AS filing_count,
             COALESCE(
-                SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN COALESCE(d2.total_receipts, 0) ELSE 0 END),
+                SUM(CASE WHEN NOT COALESCE(d2.is_archived::boolean, FALSE) THEN COALESCE(d2.total_receipts, 0) ELSE 0 END),
                 0
             ) AS sum_total_receipts,
             COALESCE(
-                SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END),
+                SUM(CASE WHEN NOT COALESCE(d2.is_archived::boolean, FALSE) THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END),
                 0
             ) AS sum_total_expenditures,
             COALESCE(
-                MAX(CASE WHEN COALESCE(d2.is_archived, 0) = 0 THEN d2.ending_funds_available END),
+                MAX(CASE WHEN NOT COALESCE(d2.is_archived::boolean, FALSE) THEN d2.ending_funds_available END),
                 0
             ) AS max_ending_funds_available,
-            COALESCE(SUM(CASE WHEN COALESCE(d2.is_archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived_filing_count,
+            COALESCE(SUM(CASE WHEN COALESCE(d2.is_archived::boolean, FALSE) THEN 1 ELSE 0 END), 0) AS archived_filing_count,
             MIN(fp.period_start_date) AS period_start_date,
             MAX(fp.period_end_date) AS period_end_date
         FROM bulk_committee_candidate_links cc
@@ -1092,7 +1092,7 @@ def build_receipts_joins(conn: sqlite3.Connection) -> dict:
                 MIN(received_date) AS first_receipt_date,
                 MAX(received_date) AS last_receipt_date
             FROM bulk_receipts_clean
-            WHERE COALESCE(is_archived, 0) = 0
+            WHERE NOT COALESCE(is_archived::boolean, FALSE)
             GROUP BY committee_id_sbe, filed_doc_id
         )
         SELECT
@@ -1131,20 +1131,20 @@ def build_receipts_joins(conn: sqlite3.Connection) -> dict:
             cc.committee_name,
             cc.committee_type,
             cc.committee_party_affiliation,
-            COUNT(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.receipt_record_id END) AS receipt_count,
-            COUNT(DISTINCT CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.filed_doc_id END) AS filing_count_with_receipts,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.amount, 0) ELSE 0 END), 0) AS sum_receipt_amount,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.aggregate_amount, 0) ELSE 0 END), 0) AS sum_aggregate_amount,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN COALESCE(r.loan_amount, 0) ELSE 0 END), 0) AS sum_loan_amount,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '1%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_1_contributions,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '2%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_2_transfers_in,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '3%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_3_loans_received,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '4%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_4_other_receipts,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '5%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_5_expenditures,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 0 AND r.d2_part_code LIKE '8%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_8_debts,
-            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived_receipt_count,
-            MIN(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.received_date END) AS first_receipt_date,
-            MAX(CASE WHEN COALESCE(r.is_archived, 0) = 0 THEN r.received_date END) AS last_receipt_date
+            COUNT(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN r.receipt_record_id END) AS receipt_count,
+            COUNT(DISTINCT CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN r.filed_doc_id END) AS filing_count_with_receipts,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN COALESCE(r.amount, 0) ELSE 0 END), 0) AS sum_receipt_amount,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN COALESCE(r.aggregate_amount, 0) ELSE 0 END), 0) AS sum_aggregate_amount,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN COALESCE(r.loan_amount, 0) ELSE 0 END), 0) AS sum_loan_amount,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '1%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_1_contributions,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '2%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_2_transfers_in,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '3%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_3_loans_received,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '4%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_4_other_receipts,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '5%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_5_expenditures,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) AND r.d2_part_code LIKE '8%' THEN r.amount ELSE 0 END), 0) AS sum_amount_part_8_debts,
+            COALESCE(SUM(CASE WHEN COALESCE(r.is_archived::boolean, FALSE) THEN 1 ELSE 0 END), 0) AS archived_receipt_count,
+            MIN(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN r.received_date END) AS first_receipt_date,
+            MAX(CASE WHEN NOT COALESCE(r.is_archived::boolean, FALSE) THEN r.received_date END) AS last_receipt_date
         FROM bulk_committee_candidate_links cc
         LEFT JOIN bulk_receipts_clean r
           ON r.committee_id_sbe = cc.committee_id_sbe
@@ -1243,7 +1243,7 @@ def build_expenditures_joins(conn: sqlite3.Connection) -> dict:
                 MIN(expended_date) AS first_expenditure_date,
                 MAX(expended_date) AS last_expenditure_date
             FROM bulk_expenditures_clean
-            WHERE COALESCE(is_archived, 0) = 0
+            WHERE NOT COALESCE(is_archived::boolean, FALSE)
             GROUP BY committee_id_sbe, filed_doc_id
         )
         SELECT
@@ -1305,18 +1305,18 @@ def build_expenditures_joins(conn: sqlite3.Connection) -> dict:
             cc.committee_name,
             cc.committee_type,
             cc.committee_party_affiliation,
-            COUNT(CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN e.expenditure_record_id END) AS expenditure_count,
-            COUNT(DISTINCT CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN e.filed_doc_id END) AS filing_count_with_expenditures,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_expenditure_amount,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN COALESCE(e.aggregate_amount, 0) ELSE 0 END), 0) AS sum_aggregate_amount,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 AND e.d2_part_code LIKE '6%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_6_transfers_out,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 AND e.d2_part_code LIKE '7%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_7_loans_made,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 AND e.d2_part_code LIKE '8%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_8_expenditures,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 0 AND e.d2_part_code LIKE '9%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_9_independent_expenditures,
-            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived, 0) = 1 THEN 1 ELSE 0 END), 0) AS archived_expenditure_count,
+            COUNT(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN e.expenditure_record_id END) AS expenditure_count,
+            COUNT(DISTINCT CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN e.filed_doc_id END) AS filing_count_with_expenditures,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_expenditure_amount,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN COALESCE(e.aggregate_amount, 0) ELSE 0 END), 0) AS sum_aggregate_amount,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) AND e.d2_part_code LIKE '6%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_6_transfers_out,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) AND e.d2_part_code LIKE '7%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_7_loans_made,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) AND e.d2_part_code LIKE '8%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_8_expenditures,
+            COALESCE(SUM(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) AND e.d2_part_code LIKE '9%' THEN COALESCE(e.amount, 0) ELSE 0 END), 0) AS sum_amount_part_9_independent_expenditures,
+            COALESCE(SUM(CASE WHEN COALESCE(e.is_archived::boolean, FALSE) THEN 1 ELSE 0 END), 0) AS archived_expenditure_count,
             COALESCE(SUM(CASE WHEN COALESCE(e.is_amount_anomalous, 0) = 1 THEN 1 ELSE 0 END), 0) AS anomaly_expenditure_count,
-            MIN(CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN e.expended_date END) AS first_expended_date,
-            MAX(CASE WHEN COALESCE(e.is_archived, 0) = 0 THEN e.expended_date END) AS last_expended_date
+            MIN(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN e.expended_date END) AS first_expended_date,
+            MAX(CASE WHEN NOT COALESCE(e.is_archived::boolean, FALSE) THEN e.expended_date END) AS last_expended_date
         FROM bulk_committee_candidate_links cc
         LEFT JOIN bulk_expenditures_clean e
           ON e.committee_id_sbe = cc.committee_id_sbe

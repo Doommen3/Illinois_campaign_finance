@@ -141,7 +141,7 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
                 """
                 SELECT MAX(received_date) AS max_date
                 FROM bulk_receipts_clean
-                WHERE COALESCE(is_archived, 0) = 0
+                WHERE NOT COALESCE(is_archived::boolean, FALSE)
                 """,
             )
         else:

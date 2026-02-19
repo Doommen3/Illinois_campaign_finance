@@ -93,7 +93,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     receipts_filter = "WHERE committee_id_sbe = ?"
     receipts_params = [committee_id_sbe]
     if has_bulk_receipts and _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-        receipts_filter += " AND COALESCE(is_archived, 0) = 0"
+        receipts_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
     rcpt_clause, rcpt_plist = period_qmark_date_clause("received_date", period)
     if rcpt_clause:
         receipts_filter += rcpt_clause
@@ -161,7 +161,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     expenditures_filter = "WHERE committee_id_sbe = ?"
     expenditures_params = [committee_id_sbe]
     if has_bulk_expenditures and _column_exists(conn, "bulk_expenditures_clean", "is_archived"):
-        expenditures_filter += " AND COALESCE(is_archived, 0) = 0"
+        expenditures_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
     exp_clause, exp_plist = period_qmark_date_clause("expended_date", period)
     if exp_clause:
         expenditures_filter += exp_clause

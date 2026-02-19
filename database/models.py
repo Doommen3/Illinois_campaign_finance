@@ -847,7 +847,7 @@ class Donor:
     def _bulk_receipts_base_filter_sql(cls, conn: sqlite3.Connection, alias: str = "r") -> str:
         clauses = [f"COALESCE({alias}.amount, 0) > 0"]
         if cls._column_exists(conn, "bulk_receipts_clean", "is_archived"):
-            clauses.append(f"COALESCE({alias}.is_archived, 0) = 0")
+            clauses.append(f"NOT COALESCE({alias}.is_archived::boolean, FALSE)")
         if cls._column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
             clauses.append(
                 f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"
@@ -3659,9 +3659,9 @@ class CandidateCommitteeItemizedReceipt:
 
         archived_term = (archived or "no").strip().lower()
         if archived_term == "yes":
-            clauses.append("COALESCE(r.is_archived, 0) = 1")
+            clauses.append("COALESCE(r.is_archived::boolean, FALSE)")
         elif archived_term == "no":
-            clauses.append("COALESCE(r.is_archived, 0) = 0")
+            clauses.append("NOT COALESCE(r.is_archived::boolean, FALSE)")
 
         if not clauses:
             return "", params
@@ -3999,9 +3999,9 @@ class CandidateCommitteeItemizedExpenditure:
 
         archived_term = (archived or "no").strip().lower()
         if archived_term == "yes":
-            clauses.append("COALESCE(e.is_archived, 0) = 1")
+            clauses.append("COALESCE(e.is_archived::boolean, FALSE)")
         elif archived_term == "no":
-            clauses.append("COALESCE(e.is_archived, 0) = 0")
+            clauses.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
 
         anomalies_term = (anomalies_only or "no").strip().lower()
         if anomalies_term in {"yes", "true", "1"}:
@@ -4511,8 +4511,8 @@ class D2ExpendituresRecon:
                 """
                 (
                     COALESCE(committee_name, '') LIKE ?
-                    OR CAST(COALESCE(committee_id_sbe, '') AS TEXT) LIKE ?
-                    OR CAST(COALESCE(filed_doc_id, '') AS TEXT) LIKE ?
+                    OR COALESCE(CAST(committee_id_sbe AS TEXT), '') LIKE ?
+                    OR COALESCE(CAST(filed_doc_id AS TEXT), '') LIKE ?
                 )
                 """
             )

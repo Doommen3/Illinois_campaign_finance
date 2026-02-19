@@ -548,7 +548,7 @@ def _get_candidate_stats(conn, period=None):
                 COALESCE(SUM(d2.total_receipts), 0) AS total_receipts,
                 COALESCE(SUM(d2.total_expenditures), 0) AS total_expenditures
             FROM bulk_d2_totals_clean d2{d2_period_join}
-            WHERE COALESCE(d2.is_archived, 0) = 0{d2_clause if d2_period_join else ''}
+            WHERE NOT COALESCE(d2.is_archived::boolean, FALSE){d2_clause if d2_period_join else ''}
             """,
             d2_period_params,
         ).fetchone()
@@ -558,7 +558,7 @@ def _get_candidate_stats(conn, period=None):
         stats['local_archived_filings'] = int(
             _scalar(
                 conn,
-                "SELECT COUNT(*) AS count FROM bulk_d2_totals_clean WHERE COALESCE(is_archived, 0) = 1",
+                "SELECT COUNT(*) AS count FROM bulk_d2_totals_clean WHERE COALESCE(is_archived::boolean, FALSE)",
                 default=0,
             )
         )
@@ -700,7 +700,7 @@ def _get_candidate_stats(conn, period=None):
     if _table_exists(conn, "bulk_receipts_clean"):
         freshness['local_receipt_date'] = _scalar(
             conn,
-            "SELECT MAX(received_date) AS max_date FROM bulk_receipts_clean WHERE COALESCE(is_archived, 0) = 0",
+            "SELECT MAX(received_date) AS max_date FROM bulk_receipts_clean WHERE NOT COALESCE(is_archived::boolean, FALSE)",
             default=None,
         )
     if _table_exists(conn, "fec_schedule_a_contributions"):
@@ -861,7 +861,7 @@ def _normalize_month_key(value: str | None) -> str | None:
 def _bulk_receipts_base_filter(conn, alias: str = "r") -> str:
     clauses = [f"COALESCE({alias}.amount, 0) > 0"]
     if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-        clauses.append(f"COALESCE({alias}.is_archived, 0) = 0")
+        clauses.append(f"NOT COALESCE({alias}.is_archived::boolean, FALSE)")
     if _column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
         clauses.append(
             f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"

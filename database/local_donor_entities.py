@@ -638,7 +638,7 @@ def rebuild_local_donor_entities(
     )
     conn.execute(
         """
-        CREATE INDEX temp.idx_tmp_local_donor_entity_candidates_name
+        CREATE INDEX IF NOT EXISTS idx_tmp_local_donor_entity_candidates_name
         ON tmp_local_donor_entity_candidates(canonical_name, donor_key)
         """
     )

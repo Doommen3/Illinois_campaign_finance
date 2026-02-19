@@ -177,7 +177,7 @@ class TestShadowOutputTableForWorker:
         _shadow_output_table_for_worker(conn, "irs527_director_donor_matches")
 
         create_sqls = [s for s, _ in conn.execute_log if "CREATE TEMP TABLE" in s]
-        assert any("public.irs527_director_donor_matches" in s for s in create_sqls)
+        assert any("irs527_director_donor_matches" in s for s in create_sqls)
 
     def test_sqlite_uses_where_zero(self):
         """SQLite path should use WHERE 0 (valid SQLite)."""

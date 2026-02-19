@@ -33,7 +33,7 @@ class _DualAccessRow(dict):
 
 
 _SQLITE_TABLE_EXISTS_RE = re.compile(
-    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*(?:=\s*'table'|IN\s*\(\s*'table'\s*,\s*'view'\s*\))\s+AND\s+name\s*=\s*(?:\?|'(?P<inline_name>[^']+)')\s*$",
+    r"^\s*SELECT\s+\S+\s+FROM\s+sqlite_master\s+WHERE\s+type\s*(?:=\s*'table'|IN\s*\(\s*'table'\s*,\s*'view'\s*\))\s+AND\s+name\s*=\s*(?:\?|'(?P<inline_name>[^']+)')\s*$",
     re.IGNORECASE,
 )
 _PRAGMA_TABLE_INFO_RE = re.compile(
@@ -112,6 +112,12 @@ def _qmark_to_percent_s(sql: str) -> str:
     return "".join(out)
 
 
+_ID_INTEGER_PK_RE = re.compile(
+    r"\bid\s+INTEGER\s+PRIMARY\s+KEY\b(?!\s+AUTOINCREMENT)",
+    re.IGNORECASE,
+)
+
+
 def _adapt_ddl_for_postgres(sql: str) -> str:
     """Translate SQLite DDL idioms to PostgreSQL equivalents.
 
@@ -120,7 +126,9 @@ def _adapt_ddl_for_postgres(sql: str) -> str:
     """
     translated = _AUTOINCREMENT_PK_RE.sub(r"\g<column> BIGSERIAL PRIMARY KEY", sql)
     translated = re.sub(r"\bAUTOINCREMENT\b", "", translated, flags=re.IGNORECASE)
-    translated = re.sub(r"\bBOOLEAN\s+DEFAULT\s+FALSE\b", "BOOLEAN DEFAULT FALSE", translated, flags=re.IGNORECASE)
+    # SQLite "id INTEGER PRIMARY KEY" is an alias for rowid (auto-assigned).
+    # PostgreSQL needs BIGSERIAL for auto-increment.
+    translated = _ID_INTEGER_PK_RE.sub("id BIGSERIAL PRIMARY KEY", translated)
     return translated
 
 
@@ -222,10 +230,19 @@ def _glob_to_like(match: re.Match[str]) -> str:
     return f"{col} LIKE '{pattern}'"
 
 
+_PARAM_IS_NULL_RE = re.compile(r"\?\s+IS\s+NULL", re.IGNORECASE)
+
+
 def _translate_sqlite_functions(sql: str) -> str:
     """Translate SQLite-only function usage to PostgreSQL equivalents."""
     translated = re.sub(r"\bINSTR\s*\(", "STRPOS(", sql, flags=re.IGNORECASE)
     translated = _GLOB_RE.sub(_glob_to_like, translated)
+    # ? IS NULL → CAST(? AS TEXT) IS NULL  (PostgreSQL needs typed params)
+    translated = _PARAM_IS_NULL_RE.sub("CAST(? AS TEXT) IS NULL", translated)
+    # SQLite temp.table_name → PostgreSQL pg_temp.table_name
+    translated = re.sub(
+        r"\btemp\.(?=\w)", "pg_temp.", translated, flags=re.IGNORECASE
+    )
 
     def _replace_printf_date(match: re.Match[str]) -> str:
         year = match.group("year").strip()
@@ -355,6 +372,13 @@ class PostgresCompatCursor:
     def rowcount(self) -> int:
         return self._cursor.rowcount
 
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
     def close(self) -> None:
         self._cursor.close()
 
@@ -422,6 +446,10 @@ class PostgresCompatConnection:
 
     def close(self) -> None:
         self._pg_conn.close()
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._pg_conn.info.transaction_status != 0
 
     def set_progress_handler(self, handler, n: int) -> None:  # noqa: ARG002
         # SQLite-only optimization hook. Intentionally a no-op on PostgreSQL.
