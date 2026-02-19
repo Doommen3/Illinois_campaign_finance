@@ -1001,7 +1001,6 @@ def test_analytics_dashboard_route_loads(analytics_client):
     assert response.status_code == 200
     assert b"Analytics Overview" in response.data
     assert b"Analytics section navigation" in response.data
-    assert b"Quick mode is active" in response.data
     assert b"Donor-flow source" in response.data
     assert b'name="date_from"' in response.data
     assert b'name="date_to"' in response.data

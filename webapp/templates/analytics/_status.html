@@ -12,8 +12,8 @@
     <strong>{{ date_to if date_to else 'Any' }}</strong>
 </p>
 {% endif %}
-{% if not full_mode_requested %}
-<p class="subtitle">Quick mode is active. Heavy sections (network, anomaly, concentration, geo) are skipped to keep page load fast.</p>
+{% if not full_mode_requested and not heavy_sections_loaded %}
+<p class="subtitle">Quick mode is active. Switch to Full mode for snapshot-cached analytics.</p>
 {% endif %}
 {% if full_mode_requested %}
 <div class="status-section">
