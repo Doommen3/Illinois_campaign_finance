@@ -3248,7 +3248,7 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
             'contributions' AS source,
             src.committee_name,
             src.month_key,
-            ROUND(COALESCE(SUM(src.amount), 0), 2) AS month_total,
+            ROUND(CAST(COALESCE(SUM(src.amount), 0) AS NUMERIC), 2) AS month_total,
             COUNT(*) AS contribution_count,
             CURRENT_TIMESTAMP AS updated_at
         FROM (
