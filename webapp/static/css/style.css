@@ -673,7 +673,7 @@ h2 {
 .network-svg-wrap svg {
     width: 100%;
     min-width: 760px;
-    height: 500px;
+    min-height: 500px;
     display: block;
     cursor: grab;
 }
