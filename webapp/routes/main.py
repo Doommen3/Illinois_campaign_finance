@@ -530,6 +530,20 @@ def _get_candidate_stats(conn, period=None):
             stats['local_candidate_rows'] = int(row["row_count"] or 0)
             stats['local_candidates'] = int(row["candidate_count"] or 0)
             stats['local_committees'] = int(row["committee_count"] or 0)
+    elif _table_exists(conn, "isbe_candidates") and _table_exists(conn, "isbe_committees"):
+        # Fallback: query ISBE tables directly when compat views are missing
+        row = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM isbe_candidate_committees) AS row_count,
+                (SELECT COUNT(*) FROM isbe_candidates) AS candidate_count,
+                (SELECT COUNT(*) FROM isbe_committees) AS committee_count
+            """
+        ).fetchone()
+        if row:
+            stats['local_candidate_rows'] = int(row["row_count"] or 0)
+            stats['local_candidates'] = int(row["candidate_count"] or 0)
+            stats['local_committees'] = int(row["committee_count"] or 0)
 
     if _table_exists(conn, "bulk_d2_totals_clean"):
         # D2 totals: filter by reporting_period_end via isbe_filed_docs
@@ -559,6 +573,27 @@ def _get_candidate_stats(conn, period=None):
             _scalar(
                 conn,
                 "SELECT COUNT(*) AS count FROM bulk_d2_totals_clean WHERE COALESCE(is_archived::boolean, FALSE)",
+                default=0,
+            )
+        )
+    elif _table_exists(conn, "isbe_d2_reports"):
+        # Fallback: query ISBE D2 reports directly
+        totals_row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(total_receipts), 0) AS total_receipts,
+                COALESCE(SUM(total_expenditures), 0) AS total_expenditures
+            FROM isbe_d2_reports
+            WHERE archived = FALSE
+            """
+        ).fetchone()
+        if totals_row:
+            stats['local_total_receipts'] = float(totals_row["total_receipts"] or 0.0)
+            stats['local_total_expenditures'] = float(totals_row["total_expenditures"] or 0.0)
+        stats['local_archived_filings'] = int(
+            _scalar(
+                conn,
+                "SELECT COUNT(*) AS count FROM isbe_d2_reports WHERE archived = TRUE",
                 default=0,
             )
         )
