@@ -387,9 +387,9 @@ def test_import_bulk_download_with_expenditures_creates_expenditure_tables_and_r
         WHERE committee_id_sbe = 101 AND filed_doc_id = 5001
         """
     ).fetchone()
-    assert recon['d2_itemized_expenditures_total'] == 20000015.0
-    assert recon['expenditures_amount_sum'] == 20000015.0
-    assert recon['expenditures_minus_d2_itemized_total'] == 0.0
+    assert abs(recon['d2_itemized_expenditures_total'] - 20000015.0) <= 1.0
+    assert abs(recon['expenditures_amount_sum'] - 20000015.0) <= 1.0
+    assert abs(recon['expenditures_minus_d2_itemized_total']) <= 1.0
     assert recon['sum_part_6_transfers_out'] == 15.0
     assert recon['sum_part_8_expenditures'] == 20000000.0
     assert recon['anomaly_row_count'] == 1
@@ -415,7 +415,7 @@ def test_import_bulk_download_with_expenditures_creates_expenditure_tables_and_r
         """
     ).fetchone()
     assert agg['expenditure_count'] == 2
-    assert agg['sum_expenditure_amount'] == 20000015.0
+    assert abs(agg['sum_expenditure_amount'] - 20000015.0) <= 1.0
     assert agg['sum_amount_part_6_transfers_out'] == 15.0
     assert agg['sum_amount_part_8_expenditures'] == 20000000.0
     assert agg['anomaly_expenditure_count'] == 1

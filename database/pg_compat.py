@@ -243,6 +243,9 @@ def _translate_sqlite_functions(sql: str) -> str:
     translated = re.sub(
         r"\btemp\.(?=\w)", "pg_temp.", translated, flags=re.IGNORECASE
     )
+    # SQLite LIKE is case-insensitive; PostgreSQL LIKE is case-sensitive.
+    # Translate to ILIKE to match SQLite semantics.
+    translated = re.sub(r"\bLIKE\b", "ILIKE", translated)
 
     def _replace_printf_date(match: re.Match[str]) -> str:
         year = match.group("year").strip()

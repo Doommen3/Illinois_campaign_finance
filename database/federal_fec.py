@@ -1720,14 +1720,14 @@ def rebuild_fec_donor_identities(
         return {"rows_scanned": 0, "rows_updated": 0, "cycle": cycle, "only_missing": bool(only_missing)}
 
     where_clauses: list[str] = ["sub_id > ?"]
-    params: list[Any] = [0]
+    params: list[Any] = [""]
     if cycle is not None:
         where_clauses.append("cycle = ?")
         params.append(int(cycle))
     if only_missing:
         where_clauses.append("(donor_entity_key IS NULL OR TRIM(donor_entity_key) = '')")
 
-    last_sub_id = 0
+    last_sub_id = ""
     rows_scanned = 0
     rows_updated = 0
 
@@ -1770,7 +1770,7 @@ def rebuild_fec_donor_identities(
             if existing_key == entity_key and existing_method == entity_method:
                 continue
 
-            updates.append((entity_key or None, entity_method or None, int(row["sub_id"])))
+            updates.append((entity_key or None, entity_method or None, str(row["sub_id"])))
 
         if updates:
             conn.executemany(
@@ -1783,7 +1783,7 @@ def rebuild_fec_donor_identities(
             )
             rows_updated += len(updates)
 
-        last_sub_id = int(rows[-1]["sub_id"])
+        last_sub_id = str(rows[-1]["sub_id"])
 
     if rows_updated:
         conn.commit()

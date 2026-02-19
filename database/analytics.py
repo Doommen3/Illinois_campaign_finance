@@ -264,7 +264,7 @@ def _amount_distribution_markers(conn: sqlite3.Connection, source: str) -> dict:
             SELECT
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.50) AS INTEGER) + 1 THEN amount END) AS p50,
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.90) AS INTEGER) + 1 THEN amount END) AS p90,
-                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
+                MAX(CASE WHEN rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.99) AS INTEGER) + 1 THEN amount END) AS p99,
                 MAX(amount) AS max_amount,
                 MAX(cnt) AS count_rows
@@ -285,7 +285,7 @@ def _amount_distribution_markers(conn: sqlite3.Connection, source: str) -> dict:
             SELECT
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.50) AS INTEGER) + 1 THEN amount END) AS p50,
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.90) AS INTEGER) + 1 THEN amount END) AS p90,
-                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
+                MAX(CASE WHEN rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
                 MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.99) AS INTEGER) + 1 THEN amount END) AS p99,
                 MAX(amount) AS max_amount,
                 MAX(cnt) AS count_rows
@@ -1579,7 +1579,7 @@ def get_anomaly_flags(
             )
             SELECT amount
             FROM ordered
-            WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+            WHERE rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1
             LIMIT 1
             """
         ).fetchone()
@@ -2815,7 +2815,7 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
         )
         SELECT amount
         FROM ordered
-        WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+        WHERE rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1
         LIMIT 1
         """
     ).fetchone()
@@ -3052,7 +3052,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         )
         SELECT amount
         FROM ordered
-        WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+        WHERE rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1
         LIMIT 1
         """
     ).fetchone()
@@ -3288,7 +3288,7 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
         )
         SELECT amount
         FROM ordered
-        WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+        WHERE rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1
         LIMIT 1
         """
     ).fetchone()
@@ -3441,10 +3441,11 @@ def get_dashboard_snapshot(
             if completed_dt is None:
                 raise ValueError("unable to parse completed_at timestamp")
             if completed_dt.tzinfo is None:
-                completed_dt = completed_dt.replace(tzinfo=timezone.utc)
+                # Naive timestamp from DB — treat as local time for age calculation
+                age_seconds = max(0.0, (datetime.now() - completed_dt).total_seconds())
             else:
                 completed_dt = completed_dt.astimezone(timezone.utc)
-            age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
+                age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
             is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
         except (ValueError, TypeError):
             age_seconds = None
@@ -6338,7 +6339,7 @@ def get_vendor_expenditure_network(
           AND payee_last_or_business_name IS NOT NULL
           AND TRIM(payee_last_or_business_name) != ''
         GROUP BY committee_id_sbe, payee_last_or_business_name
-        HAVING total_amount >= ?
+        HAVING SUM(amount) >= ?
         ORDER BY total_amount DESC
         LIMIT ?
         """,
