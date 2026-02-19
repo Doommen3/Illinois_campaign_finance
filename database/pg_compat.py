@@ -214,21 +214,29 @@ class PostgresCompatConnection:
         try:
             row = self._pg_conn.execute(
                 """
-                SELECT 1 AS one
-                FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
+                SELECT 1 AS one FROM (
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = %s
+                    UNION ALL
+                    SELECT matviewname FROM pg_matviews
+                    WHERE schemaname = 'public' AND matviewname = %s
+                ) combined LIMIT 1
                 """,
-                (table_name,),
+                (table_name, table_name),
             ).fetchone()
         except Exception:
             self._pg_conn.rollback()
             row = self._pg_conn.execute(
                 """
-                SELECT 1 AS one
-                FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
+                SELECT 1 AS one FROM (
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = %s
+                    UNION ALL
+                    SELECT matviewname FROM pg_matviews
+                    WHERE schemaname = 'public' AND matviewname = %s
+                ) combined LIMIT 1
                 """,
-                (table_name,),
+                (table_name, table_name),
             ).fetchone()
         return [{"one": 1}] if row else []
 
