@@ -550,6 +550,7 @@ def categorize_spending_text(text: str | None) -> str:
 
 
 BULK_RECEIPTS_MATERIALIZATION_VERSION = 2
+ISBE_RECEIPTS_MATERIALIZATION_VERSION = 3
 CONTRIBUTIONS_MATERIALIZATION_VERSION = 1
 
 _BULK_DONOR_RECEIPT_FILTER_SQL = (
@@ -560,6 +561,17 @@ _BULK_DONOR_RECEIPT_FILTER_SQL = (
     "FROM bulk_d2_totals_clean d2 "
     "WHERE d2.filed_doc_id = r.filed_doc_id "
     "  AND COALESCE(d2.is_archived, 0) = 0"
+    ")"
+)
+
+_ISBE_DONOR_RECEIPT_FILTER_SQL = (
+    "r.archived = FALSE AND "
+    "r.d2_part LIKE '1%' AND "
+    "EXISTS ("
+    "SELECT 1 "
+    "FROM isbe_d2_reports d2 "
+    "WHERE d2.filed_doc_id = r.filed_doc_id "
+    "  AND d2.archived = FALSE"
     ")"
 )
 
@@ -587,8 +599,41 @@ def _has_bulk_receipts_donor_data(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _has_isbe_receipts_donor_data(conn: sqlite3.Connection) -> bool:
+    """Check if native ISBE tables (condensed receipts, committees, d2 reports) exist and have data."""
+    required = ["isbe_condensed_receipts", "isbe_committees", "isbe_d2_reports"]
+    if not all(_table_exists(conn, table_name) for table_name in required):
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM isbe_condensed_receipts r
+        WHERE r.amount > 0
+          AND r.archived = FALSE
+          AND r.d2_part LIKE '1%'
+        LIMIT 1
+        """
+    ).fetchone()
+    return row is not None
+
+
 def _donor_flow_source(conn: sqlite3.Connection) -> str:
-    return "bulk_receipts" if _has_bulk_receipts_donor_data(conn) else "contributions"
+    """Return the analytics source tag — always 'bulk_receipts' or 'contributions'.
+
+    When ISBE tables exist, the source tag is still 'bulk_receipts'
+    (100+ downstream references). Use _use_isbe_direct_path() to decide
+    whether to query ISBE tables directly vs. compat views.
+    """
+    if _has_isbe_receipts_donor_data(conn):
+        return "bulk_receipts"
+    if _has_bulk_receipts_donor_data(conn):
+        return "bulk_receipts"
+    return "contributions"
+
+
+def _use_isbe_direct_path(conn: sqlite3.Connection) -> bool:
+    """Return True when the ISBE direct path should be used for refresh."""
+    return _has_isbe_receipts_donor_data(conn)
 
 
 def _build_bulk_donor_name(first_name: str | None, last_or_business_name: str | None) -> str:
@@ -2611,6 +2656,247 @@ def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
+    """Refresh materialized analytics from native ISBE tables (no compat view overhead)."""
+    donor_inserted = 0
+    donor_summary_inserted = 0
+    monthly_inserted = 0
+    large_inserted = 0
+
+    conn.execute("DELETE FROM analytics_donor_committee_agg WHERE source = 'bulk_receipts'")
+    conn.execute("DELETE FROM analytics_committee_monthly_totals WHERE source = 'bulk_receipts'")
+    conn.execute("DELETE FROM analytics_large_contributions WHERE source = 'bulk_receipts'")
+    conn.execute("DELETE FROM analytics_donor_summary WHERE source = 'bulk_receipts'")
+
+    # 1. Donor-committee aggregation from isbe_condensed_receipts
+    conn.execute(
+        f"""
+        INSERT INTO analytics_donor_committee_agg (
+            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            occupation, employer, committee_id, committee_name, total_amount, contribution_count, updated_at
+        )
+        SELECT
+            'bulk_receipts' AS source,
+            LOWER(TRIM(
+                COALESCE(r.first_name, '') || '|' || COALESCE(r.last_name, '') || '|' ||
+                COALESCE(r.address1, '') || '|' || COALESCE(r.address2, '') || '|' ||
+                COALESCE(r.city, '') || '|' || COALESCE(r.state, '') || '|' || COALESCE(r.zipcode, '')
+            )) AS donor_key,
+            MAX(TRIM(
+                COALESCE(r.first_name, '')
+                || CASE
+                    WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_name, '') <> ''
+                    THEN ' '
+                    ELSE ''
+                   END
+                || COALESCE(r.last_name, '')
+            )) AS donor_name,
+            MAX(TRIM(
+                COALESCE(r.address1, '')
+                || CASE WHEN COALESCE(r.address2, '') <> '' THEN ', ' || r.address2 ELSE '' END
+                || CASE WHEN COALESCE(r.city, '') <> '' THEN ', ' || r.city ELSE '' END
+                || CASE WHEN COALESCE(r.state, '') <> '' THEN ', ' || r.state ELSE '' END
+                || CASE WHEN COALESCE(r.zipcode, '') <> '' THEN ', ' || r.zipcode ELSE '' END
+            )) AS donor_address,
+            MAX(r.city) AS donor_city,
+            MAX(r.state) AS donor_state,
+            MAX(NULLIF(TRIM(r.occupation), '')) AS occupation,
+            MAX(NULLIF(TRIM(r.employer), '')) AS employer,
+            CAST(c.id AS TEXT) AS committee_id,
+            COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+            COALESCE(SUM(r.amount), 0) AS total_amount,
+            COUNT(*) AS contribution_count,
+            CURRENT_TIMESTAMP
+        FROM isbe_condensed_receipts r
+        LEFT JOIN isbe_committees c ON c.id = r.committee_id
+        WHERE r.amount > 0
+          AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+        GROUP BY
+            LOWER(TRIM(
+                COALESCE(r.first_name, '') || '|' || COALESCE(r.last_name, '') || '|' ||
+                COALESCE(r.address1, '') || '|' || COALESCE(r.address2, '') || '|' ||
+                COALESCE(r.city, '') || '|' || COALESCE(r.state, '') || '|' || COALESCE(r.zipcode, '')
+            )),
+            CAST(c.id AS TEXT),
+            COALESCE(c.name, 'Committee ' || r.committee_id)
+        """
+    )
+    donor_inserted = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM analytics_donor_committee_agg
+            WHERE source = 'bulk_receipts'
+            """
+        ).fetchone()["count"]
+    )
+
+    # 2. Donor summary rollup
+    conn.execute(
+        """
+        INSERT INTO analytics_donor_summary (
+            source, donor_key, local_donor_id, donor_name, donor_address,
+            donor_city, donor_state, occupation, employer, total_amount,
+            contribution_count, committee_count, updated_at
+        )
+        SELECT
+            'bulk_receipts' AS source,
+            a.donor_key,
+            NULL AS local_donor_id,
+            MAX(a.donor_name) AS donor_name,
+            MAX(a.donor_address) AS donor_address,
+            MAX(a.donor_city) AS donor_city,
+            MAX(a.donor_state) AS donor_state,
+            MAX(NULLIF(TRIM(a.occupation), '')) AS occupation,
+            MAX(NULLIF(TRIM(a.employer), '')) AS employer,
+            COALESCE(SUM(a.total_amount), 0) AS total_amount,
+            COALESCE(SUM(a.contribution_count), 0) AS contribution_count,
+            COUNT(DISTINCT a.committee_id) AS committee_count,
+            CURRENT_TIMESTAMP
+        FROM analytics_donor_committee_agg a
+        WHERE a.source = 'bulk_receipts'
+        GROUP BY a.donor_key
+        """
+    )
+    donor_summary_inserted = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+            """
+        ).fetchone()["count"]
+    )
+
+    # 3. Committee monthly totals
+    conn.execute(
+        f"""
+        INSERT INTO analytics_committee_monthly_totals (
+            source, committee_name, month_key, month_total, contribution_count, updated_at
+        )
+        SELECT
+            'bulk_receipts' AS source,
+            COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+            SUBSTR(CAST(r.received_date AS TEXT), 1, 7) AS month_key,
+            COALESCE(SUM(r.amount), 0) AS month_total,
+            COUNT(*) AS contribution_count,
+            CURRENT_TIMESTAMP
+        FROM isbe_condensed_receipts r
+        LEFT JOIN isbe_committees c ON c.id = r.committee_id
+        WHERE r.amount > 0
+          AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+          AND r.received_date IS NOT NULL
+        GROUP BY
+            COALESCE(c.name, 'Committee ' || r.committee_id),
+            SUBSTR(CAST(r.received_date AS TEXT), 1, 7)
+        """
+    )
+    monthly_inserted = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM analytics_committee_monthly_totals
+            WHERE source = 'bulk_receipts'
+            """
+        ).fetchone()["count"]
+    )
+
+    # 4. Large contributions (p95 threshold)
+    p95_row = conn.execute(
+        f"""
+        WITH ordered AS (
+            SELECT
+                r.amount AS amount,
+                ROW_NUMBER() OVER (ORDER BY r.amount) AS rn,
+                COUNT(*) OVER () AS cnt
+            FROM isbe_condensed_receipts r
+            WHERE r.amount > 0
+              AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+        )
+        SELECT amount
+        FROM ordered
+        WHERE rn = CAST(((cnt - 1) * 0.95) AS INTEGER) + 1
+        LIMIT 1
+        """
+    ).fetchone()
+    p95 = float(p95_row["amount"] or 0.0) if p95_row else 0.0
+    large_threshold = max(5000.0, p95 * 2.0)
+
+    conn.execute(
+        f"""
+        INSERT INTO analytics_large_contributions (
+            source, committee_name, donor_name, event_date, amount, large_threshold
+        )
+        SELECT
+            'bulk_receipts' AS source,
+            COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+            TRIM(
+                COALESCE(r.first_name, '')
+                || CASE
+                    WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_name, '') <> ''
+                    THEN ' '
+                    ELSE ''
+                   END
+                || COALESCE(r.last_name, '')
+            ) AS donor_name,
+            CAST(r.received_date AS TEXT) AS event_date,
+            r.amount AS amount,
+            ? AS large_threshold
+        FROM isbe_condensed_receipts r
+        LEFT JOIN isbe_committees c ON c.id = r.committee_id
+        WHERE r.amount >= ?
+          AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+        """,
+        (float(large_threshold), float(large_threshold)),
+    )
+    large_inserted = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM analytics_large_contributions
+            WHERE source = 'bulk_receipts'
+            """
+        ).fetchone()["count"]
+    )
+
+    conn.execute(
+        """
+        INSERT INTO analytics_materialized_meta (
+            source, donor_row_count, monthly_row_count, large_row_count,
+            large_threshold, materialization_version, materialization_notes, refreshed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source) DO UPDATE SET
+            donor_row_count = excluded.donor_row_count,
+            monthly_row_count = excluded.monthly_row_count,
+            large_row_count = excluded.large_row_count,
+            large_threshold = excluded.large_threshold,
+            materialization_version = excluded.materialization_version,
+            materialization_notes = excluded.materialization_notes,
+            refreshed_at = CURRENT_TIMESTAMP
+        """,
+        (
+            "bulk_receipts",
+            donor_inserted,
+            monthly_inserted,
+            large_inserted,
+            float(large_threshold),
+            ISBE_RECEIPTS_MATERIALIZATION_VERSION,
+            "isbe_direct_active_non_archived_d2_part1_with_active_d2_filing",
+        ),
+    )
+
+    return {
+        "source": "bulk_receipts",
+        "source_path": "isbe_direct",
+        "donor_rows": donor_inserted,
+        "donor_summary_rows": donor_summary_inserted,
+        "monthly_rows": monthly_inserted,
+        "large_rows": large_inserted,
+        "large_threshold": round(float(large_threshold), 2),
+        "materialization_version": ISBE_RECEIPTS_MATERIALIZATION_VERSION,
+    }
+
+
 def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
     donor_inserted = 0
     donor_summary_inserted = 0
@@ -3078,7 +3364,9 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
 def refresh_analytics_materialized(conn: sqlite3.Connection) -> dict:
     """Rebuild materialized analytics aggregate tables for the active donor-flow source."""
     source = _donor_flow_source(conn)
-    if source == "bulk_receipts":
+    if source == "bulk_receipts" and _use_isbe_direct_path(conn):
+        stats = _refresh_materialized_isbe(conn)
+    elif source == "bulk_receipts":
         stats = _refresh_materialized_bulk(conn)
     else:
         stats = _refresh_materialized_contributions(conn)

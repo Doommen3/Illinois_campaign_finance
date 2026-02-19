@@ -59,9 +59,21 @@ python run.py runserver --port 5000
    - Loads 12 ISBE bulk files into `isbe_*` tables with FK constraints
    - Creates materialized views: `isbe_condensed_receipts`, `isbe_condensed_expenditures` (dedup amended filings), `isbe_committee_money`, `isbe_candidate_money`
    - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download]`
+   - **ISBE 403 workaround**: The `--download` flag uses Python `urllib` which gets blocked by ISBE's server (403 Forbidden) due to the default User-Agent. On production, download files manually with `curl` first, then import without `--download`:
+     ```bash
+     for f in Candidates.txt Candidacies.txt Committees.txt Officers.txt PrevOfficers.txt \
+              D2Totals.txt Receipts.txt Expenditures.txt Investments.txt FiledDocs.txt \
+              CmteCandLink.txt CmteCandOfficerLink.txt; do
+       curl -A "Mozilla/5.0" -o "Bulk_download/$f" "https://elections.il.gov/campaigndisclosuredatafiles/$f"
+     done
+     $PYTHON run.py sunshine-import --bulk-dir Bulk_download
+     ```
    - After sunshine import, run `python scripts/swap_bulk_to_isbe.py` to (re)create `bulk_*` compatibility views used by legacy routes and analytics helpers.
    - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (still works, but `isbe_*` tables are preferred)
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
+   - CLI: `python run.py sync-fec-il-federal` (requires `FEC_API_KEY` env var or `--api-key`)
+   - Additional backfill commands: `backfill-fec-schedule-a`, `backfill-fec-schedule-b`, `backfill-fec-schedule-e`
+   - Donor matching: `python run.py refresh-fec-local-donor-matches`
 3. **IL SOS** - Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** - Political org registrations, reports, directors, expenditures
 5. **City of Chicago (Socrata)** - Contracts, payments, lobbyist contributions, and lobbying activity (Phase 1 API ingest)
@@ -145,13 +157,15 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
   - `idx_irs527_contributions_name_amount`
   - `idx_irs527_contributions_date_amount`
   - `idx_irs527_expenditures_date_amount`
-- Required `isbe_condensed_receipts` indexes for fast analytics refresh + donor-key search:
+- Required `isbe_condensed_receipts` indexes for fast analytics refresh + donor-key search (created by `isbe_sunshine_etl.py` matview DDL):
   - `idx_isbe_condensed_receipts_filed_doc_id`
   - `idx_isbe_condensed_receipts_committee_id`
   - `idx_isbe_condensed_receipts_received_date`
-  - `idx_isbe_condensed_receipts_active_part1`
+  - `idx_isbe_condensed_receipts_active_part1` — partial: `WHERE archived = FALSE AND d2_part LIKE '1%' AND amount > 0`
   - `idx_isbe_condensed_receipts_donor_name_trgm`
   - `idx_isbe_condensed_receipts_donor_key_trgm`
+- Required `isbe_d2_reports` partial index (created by `isbe_sunshine_etl.py` schema DDL):
+  - `idx_isbe_d2_reports_active_filed_doc` — `(filed_doc_id) WHERE archived = FALSE`
 - Snapshot build compatibility:
   - `get_nlp_spending_summary` falls back to `bulk_expenditures_clean` when legacy `contributions` is absent.
   - `get_dashboard_snapshot` handles PostgreSQL `datetime` objects for `completed_at` in addition to string timestamps.
@@ -209,6 +223,9 @@ For any significant code path (imports, migrations, cross-matching, analytics re
 
 - `database/analytics.py`:
   - `_refresh_materialized_contributions()` is SQL-first (set-based `INSERT ... SELECT`) for donor aggregates, monthly totals, and large-contribution rows; avoid reintroducing Python row-loop aggregation here.
+  - `_refresh_materialized_isbe()` — ISBE direct path (2026-02-19): queries `isbe_condensed_receipts` and `isbe_committees` directly, bypassing `bulk_*_clean` compat views. Auto-selected when `isbe_condensed_receipts`, `isbe_committees`, and `isbe_d2_reports` exist and have data. Uses native column names (`last_name`, `address1`, `zipcode`, `d2_part`, `archived = FALSE`). Source tag remains `'bulk_receipts'` for downstream compatibility. Materialization version 3 (vs 2 for compat-view path).
+  - ISBE direct path avoids: (a) compat view column renames/BOOLEAN→int conversions, (b) correlated EXISTS through compat views, (c) text→date casting overhead. Uses partial index `idx_isbe_condensed_receipts_active_part1` and `idx_isbe_d2_reports_active_filed_doc` for pre-filtered access.
+  - `_use_isbe_direct_path(conn)` — detection function for refresh routing. `_donor_flow_source(conn)` still returns `"bulk_receipts"` for source-tag compatibility.
 - `database/irs527_loader.py`:
   - Illinois-only first pass uses lightweight field extraction (`record_type` + EIN/state indexes) instead of full parser tuple builds.
   - Expenditure IL-state lookup uses the state slot in parsed tuples (index 7).
@@ -400,6 +417,26 @@ After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). 
 - `/analytics/geo-drilldown?geo_type=state&geo_value=IL&period=all`
 - `/federal-finance/races/H/01/outside-spending?cycle=2026`
 - `/527/dark-money`, `/527/<ein>`
+
+## Data Refresh Schedule
+
+### Weekly (routine production refresh)
+1. **ISBE (state):** Download bulk files with `curl` workaround + `sunshine-import` + `swap_bulk_to_isbe.py`. During election season (near filing deadlines), every few days.
+2. **FEC main sync:** `sync-fec-il-federal`. FEC data updates on a rolling basis.
+3. **Post-import:** `run-cross-matching --only all` → `refresh-analytics --with-snapshot` → `systemctl restart ilcf-web.service`.
+
+### Monthly
+- **FEC backfills:** `backfill-fec-schedule-a` (contribution gaps), `backfill-fec-schedule-b` (disbursements), `backfill-fec-schedule-e` (independent expenditures — weekly during election season).
+- **IRS 527:** `import-irs527`. The IRS FullDataFile updates infrequently.
+- **Chicago Socrata:** `import-chicago-phase1`.
+- **OpenBook:** `import-openbook-batch` as needed for case studies or general freshness.
+
+### As available
+- **IL SOS Lobbying:** `import-lobbying` when a new daily extract is published (weekly is reasonable).
+
+### Notes
+- `refresh-fec-local-donor-matches` runs automatically after `sync-fec-il-federal` (via `--refresh-local-matches` default). Only run standalone after a backfill or if you skipped that flag.
+- `run-cross-matching` and `refresh-analytics` are long-running — use `tmux`/`screen` on the server.
 
 ## Common Operations
 

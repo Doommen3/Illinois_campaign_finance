@@ -941,3 +941,202 @@ class TestCandidateFinanceWithCandidacies:
         html = resp.data.decode()
         # Should have cycle data from agg VIEW
         assert 'Smith' in html or 'Jones' in html
+
+
+def _seed_isbe_condensed_tables(conn):
+    """Create isbe_condensed_receipts + isbe_committees + isbe_d2_reports for direct-path tests."""
+    for tbl in ['isbe_condensed_receipts', 'isbe_d2_reports', 'isbe_committees']:
+        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+
+    conn.execute("""
+        CREATE TABLE isbe_committees (
+            id INTEGER PRIMARY KEY,
+            name TEXT, type TEXT, refer_name TEXT,
+            address1 TEXT, address2 TEXT, address3 TEXT,
+            city TEXT, state TEXT, zipcode TEXT,
+            active INTEGER DEFAULT 1,
+            status_date TEXT, creation_date TEXT,
+            creation_amount REAL,
+            party TEXT, purpose TEXT,
+            state_committee INTEGER, local_committee INTEGER
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_committees (id, name, type, city, state, zipcode, active)
+        VALUES
+            (100, 'Citizens for Smith', 'Candidate', 'Chicago', 'IL', '60601', 1),
+            (200, 'Friends of Jones', 'Candidate', 'Springfield', 'IL', '62701', 1)
+    """)
+
+    conn.execute("""
+        CREATE TABLE isbe_d2_reports (
+            id INTEGER PRIMARY KEY,
+            committee_id INTEGER,
+            filed_doc_id INTEGER,
+            beginning_funds_avail REAL,
+            total_receipts REAL,
+            total_expenditures REAL,
+            end_funds_available REAL,
+            individual_itemized REAL, individual_non_itemized REAL,
+            transfer_in REAL, loan_received REAL, other_receipts REAL,
+            inkind_itemized REAL, inkind_non_itemized REAL, total_inkind REAL,
+            expenditures_itemized REAL, expenditures_non_itemized REAL,
+            independent_expenditures_itemized REAL, independent_expenditures_non_itemized REAL,
+            debts_itemized REAL, debts_non_itemized REAL, total_debts REAL,
+            total_investments REAL,
+            archived INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, total_receipts, end_funds_available, archived)
+        VALUES
+            (9001, 100, 5001, 50000.0, 30000.0, 0),
+            (9002, 200, 5002, 25000.0, 15000.0, 0)
+    """)
+
+    conn.execute("""
+        CREATE TABLE isbe_condensed_receipts (
+            id INTEGER PRIMARY KEY,
+            committee_id INTEGER,
+            filed_doc_id INTEGER,
+            etrans_id TEXT,
+            last_name TEXT, first_name TEXT,
+            received_date TEXT,
+            amount REAL,
+            aggregate_amount REAL, loan_amount REAL,
+            occupation TEXT, employer TEXT,
+            address1 TEXT, address2 TEXT,
+            city TEXT, state TEXT, zipcode TEXT,
+            d2_part TEXT, description TEXT,
+            vendor_last_name TEXT, vendor_first_name TEXT,
+            vendor_address1 TEXT, vendor_address2 TEXT,
+            vendor_city TEXT, vendor_state TEXT, vendor_zipcode TEXT,
+            archived INTEGER DEFAULT 0,
+            country TEXT,
+            redaction_requested INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        INSERT INTO isbe_condensed_receipts (id, committee_id, filed_doc_id, last_name, first_name,
+            received_date, amount, d2_part, occupation, employer, city, state, zipcode, address1, archived)
+        VALUES
+            (10001, 100, 5001, 'Donor', 'Alice', '2025-01-15', 5000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
+            (10002, 100, 5001, 'Donor', 'Bob', '2025-02-10', 2500.0, '1A', 'Teacher', 'CPS', 'Evanston', 'IL', '60201', '200 Elm St', 0),
+            (10003, 200, 5002, 'Donor', 'Alice', '2025-01-20', 10000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
+            (10004, 100, 5001, 'BigCorp', NULL, '2025-05-01', 25000.0, '1A', NULL, NULL, 'Chicago', 'IL', '60606', '500 LaSalle', 0),
+            (10005, 100, 5001, 'Archived', 'Person', '2025-01-01', 999.0, '1A', NULL, NULL, 'Chicago', 'IL', '60601', '999 Old St', 1)
+    """)
+
+    conn.commit()
+
+
+@pytest.fixture
+def isbe_direct_app(tmp_path: Path):
+    """Create a test app with isbe_condensed_receipts for direct-path testing."""
+    db_path = str(tmp_path / "test_isbe_direct.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_isbe_condensed_tables(conn)
+    conn.close()
+    app = create_app({'TESTING': True, 'DATABASE_PATH': db_path})
+    yield app
+
+
+class TestISBEDirectPath:
+    """Test that ISBE direct path is selected and produces correct analytics output."""
+
+    def test_isbe_direct_path_is_selected(self, isbe_direct_app):
+        """When isbe_condensed_receipts exists with data, _use_isbe_direct_path returns True."""
+        from database.analytics import _use_isbe_direct_path
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        assert _use_isbe_direct_path(conn), "ISBE direct path should be selected"
+        conn.close()
+
+    def test_donor_flow_source_returns_bulk_receipts(self, isbe_direct_app):
+        """_donor_flow_source should still return 'bulk_receipts' for source tag compatibility."""
+        from database.analytics import _donor_flow_source
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        assert _donor_flow_source(conn) == "bulk_receipts"
+        conn.close()
+
+    def test_refresh_via_isbe_direct_populates_donor_agg(self, isbe_direct_app):
+        """ISBE direct path should populate analytics_donor_committee_agg."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        result = refresh_analytics_materialized(conn)
+        assert result.get("source_path") == "isbe_direct", f"Expected isbe_direct path, got {result}"
+        rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM analytics_donor_committee_agg WHERE source = 'bulk_receipts'"
+        ).fetchone()
+        assert int(rows['cnt']) > 0, "Should have donor-committee agg rows"
+        conn.close()
+
+    def test_refresh_via_isbe_direct_populates_donor_summary(self, isbe_direct_app):
+        """ISBE direct path should populate analytics_donor_summary."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM analytics_donor_summary WHERE source = 'bulk_receipts'"
+        ).fetchone()
+        assert int(rows['cnt']) > 0, "Should have donor summary rows"
+        conn.close()
+
+    def test_refresh_via_isbe_direct_populates_monthly_totals(self, isbe_direct_app):
+        """ISBE direct path should populate monthly totals."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM analytics_committee_monthly_totals WHERE source = 'bulk_receipts'"
+        ).fetchone()
+        assert int(rows['cnt']) > 0, "Should have monthly totals"
+        conn.close()
+
+    def test_refresh_via_isbe_direct_populates_large_contributions(self, isbe_direct_app):
+        """ISBE direct path should populate large contributions."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM analytics_large_contributions WHERE source = 'bulk_receipts'"
+        ).fetchone()
+        assert int(rows['cnt']) > 0, "Should have large contribution rows"
+        conn.close()
+
+    def test_donor_summary_alice_total_correct(self, isbe_direct_app):
+        """Alice's total across committees should be 15000 (5000 + 10000)."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        alice_rows = conn.execute(
+            "SELECT total_amount FROM analytics_donor_summary WHERE source = 'bulk_receipts' AND donor_name LIKE '%Alice%'"
+        ).fetchall()
+        assert len(alice_rows) > 0, "Alice should be in donor summary"
+        total = sum(float(r['total_amount']) for r in alice_rows)
+        assert total == pytest.approx(15000.0, abs=1.0), f"Alice total should be 15000, got {total}"
+        conn.close()
+
+    def test_archived_receipts_excluded(self, isbe_direct_app):
+        """Archived receipt (id=10005) should not appear in donor agg."""
+        from database.analytics import refresh_analytics_materialized
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        archived_rows = conn.execute(
+            "SELECT * FROM analytics_donor_committee_agg WHERE donor_name LIKE '%Archived%'"
+        ).fetchall()
+        assert len(archived_rows) == 0, "Archived receipt should be excluded"
+        conn.close()
+
+    def test_materialization_version_is_isbe(self, isbe_direct_app):
+        """ISBE direct path should store version 3 in meta table."""
+        from database.analytics import refresh_analytics_materialized, ISBE_RECEIPTS_MATERIALIZATION_VERSION
+        conn = get_db(isbe_direct_app.config['DATABASE_PATH'])
+        refresh_analytics_materialized(conn)
+        row = conn.execute(
+            "SELECT materialization_version, materialization_notes FROM analytics_materialized_meta WHERE source = 'bulk_receipts'"
+        ).fetchone()
+        assert row is not None, "Meta row should exist"
+        assert int(row['materialization_version']) == ISBE_RECEIPTS_MATERIALIZATION_VERSION
+        assert 'isbe_direct' in row['materialization_notes']
+        conn.close()

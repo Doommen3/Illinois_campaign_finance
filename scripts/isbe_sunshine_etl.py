@@ -362,6 +362,7 @@ CREATE TABLE isbe_d2_reports (
 CREATE INDEX idx_isbe_d2_reports_committee_id ON isbe_d2_reports(committee_id);
 CREATE INDEX idx_isbe_d2_reports_filed_doc_id ON isbe_d2_reports(filed_doc_id);
 CREATE INDEX idx_isbe_d2_reports_filed_doc_committee ON isbe_d2_reports(filed_doc_id, committee_id);
+CREATE INDEX idx_isbe_d2_reports_active_filed_doc ON isbe_d2_reports(filed_doc_id) WHERE archived = FALSE;
 
 CREATE TABLE isbe_candidate_committees (
     id              INTEGER PRIMARY KEY,
@@ -504,6 +505,11 @@ CREATE MATERIALIZED VIEW isbe_condensed_receipts AS (
   )
 );
 CREATE UNIQUE INDEX ON isbe_condensed_receipts (id);
+CREATE INDEX idx_isbe_condensed_receipts_filed_doc_id ON isbe_condensed_receipts (filed_doc_id);
+CREATE INDEX idx_isbe_condensed_receipts_committee_id ON isbe_condensed_receipts (committee_id);
+CREATE INDEX idx_isbe_condensed_receipts_received_date ON isbe_condensed_receipts (received_date);
+CREATE INDEX idx_isbe_condensed_receipts_active_part1 ON isbe_condensed_receipts (committee_id, received_date)
+    WHERE archived = FALSE AND d2_part LIKE '1%' AND amount > 0;
 
 -- Condensed expenditures: deduplicates amended filings
 CREATE MATERIALIZED VIEW isbe_condensed_expenditures AS (
