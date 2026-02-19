@@ -8,14 +8,17 @@ from flask import Blueprint, abort, current_app, render_template, request, url_f
 
 from database.analytics import (
     build_dashboard_full_snapshot,
+    get_anomaly_flags,
     get_candidate_competition_networks,
     get_analytics_data_sources,
     get_committee_similarity_network,
     get_donor_cogiving_network,
+    get_donor_concentration,
     get_dashboard_snapshot,
     get_geo_drilldown,
     get_irs527_ecosystem_graph,
     get_lobbying_influence_graph,
+    get_network_graph,
     get_nlp_spending_summary,
     get_reconciliation_outliers,
     get_state_race_analytics,
@@ -379,16 +382,39 @@ def dashboard():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    network = payload.get("network", _empty_network()) if snapshot_state["heavy_sections_loaded"] else _empty_network()
-    anomalies = payload.get("anomalies", []) if snapshot_state["heavy_sections_loaded"] else []
-    concentration = payload.get("concentration", []) if snapshot_state["heavy_sections_loaded"] else []
-    geo_summary = payload.get("geo_summary", _empty_geo_summary()) if snapshot_state["heavy_sections_loaded"] else _empty_geo_summary()
-
     if snapshot_state["heavy_sections_loaded"]:
+        network = payload.get("network", _empty_network())
+        anomalies = payload.get("anomalies", [])
+        concentration = payload.get("concentration", [])
+        geo_summary = payload.get("geo_summary", _empty_geo_summary())
         time_series = payload.get("time_series", [])
         nlp_summary = payload.get("nlp_summary", [])
         reconciliation = payload.get("reconciliation", [])
     else:
+        network = _safe_optional_graph(
+            "network",
+            lambda: get_network_graph(
+                conn,
+                min_edge_amount=filters["min_edge_amount"],
+                limit=filters["network_limit"],
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
+            _empty_network(),
+        )
+        anomalies = get_anomaly_flags(
+            conn,
+            limit=filters["anomaly_limit"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        concentration = get_donor_concentration(
+            conn,
+            limit=filters["concentration_limit"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
+        geo_summary = _empty_geo_summary()
         time_series = get_time_series(
             conn,
             months=filters["months"],
@@ -475,47 +501,54 @@ def networks():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    network = payload.get("network", _empty_network()) if snapshot_state["heavy_sections_loaded"] else _empty_network()
-
     empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
     if snapshot_state["heavy_sections_loaded"]:
-        vendor_network = _safe_optional_graph(
-            "vendor_network",
-            lambda: get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800),
-            empty_graph,
-        )
-        overlap_graph = _safe_optional_graph(
-            "overlap_graph",
-            lambda: get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600),
-            empty_graph,
-        )
-        lobbying_graph = _safe_optional_graph(
-            "lobbying_graph",
-            lambda: get_lobbying_influence_graph(
-                conn,
-                client_limit=80,
-                edge_limit=600,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-            empty_graph,
-        )
-        ecosystem_527 = _safe_optional_graph(
-            "ecosystem_527",
-            lambda: get_irs527_ecosystem_graph(
-                conn,
-                org_limit=80,
-                edge_limit=600,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-            empty_graph,
-        )
+        network = payload.get("network", _empty_network())
     else:
-        vendor_network = empty_graph
-        overlap_graph = empty_graph
-        lobbying_graph = empty_graph
-        ecosystem_527 = empty_graph
+        network = _safe_optional_graph(
+            "network",
+            lambda: get_network_graph(
+                conn,
+                min_edge_amount=filters["min_edge_amount"],
+                limit=filters["network_limit"],
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
+            _empty_network(),
+        )
+
+    vendor_network = _safe_optional_graph(
+        "vendor_network",
+        lambda: get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800),
+        empty_graph,
+    )
+    overlap_graph = _safe_optional_graph(
+        "overlap_graph",
+        lambda: get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600),
+        empty_graph,
+    )
+    lobbying_graph = _safe_optional_graph(
+        "lobbying_graph",
+        lambda: get_lobbying_influence_graph(
+            conn,
+            client_limit=80,
+            edge_limit=600,
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        ),
+        empty_graph,
+    )
+    ecosystem_527 = _safe_optional_graph(
+        "ecosystem_527",
+        lambda: get_irs527_ecosystem_graph(
+            conn,
+            org_limit=80,
+            edge_limit=600,
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        ),
+        empty_graph,
+    )
 
     return render_template(
         "analytics/networks.html",
@@ -536,10 +569,16 @@ def risk():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    anomalies = payload.get("anomalies", []) if snapshot_state["heavy_sections_loaded"] else []
     if snapshot_state["heavy_sections_loaded"]:
+        anomalies = payload.get("anomalies", [])
         reconciliation = payload.get("reconciliation", [])
     else:
+        anomalies = get_anomaly_flags(
+            conn,
+            limit=filters["anomaly_limit"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
         reconciliation = get_reconciliation_outliers(
             conn,
             limit=filters["recon_limit"],
@@ -562,10 +601,16 @@ def donors():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    concentration = payload.get("concentration", []) if snapshot_state["heavy_sections_loaded"] else []
     if snapshot_state["heavy_sections_loaded"]:
+        concentration = payload.get("concentration", [])
         nlp_summary = payload.get("nlp_summary", [])
     else:
+        concentration = get_donor_concentration(
+            conn,
+            limit=filters["concentration_limit"],
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+        )
         nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
 
     return render_template(
@@ -708,7 +753,6 @@ def relationships():
     relationships_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 300)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
-    quick_mode = filters["load_mode"] != "full"
     cache_key = (
         filters["time_period_key"],
         filters["date_from"],
@@ -736,92 +780,43 @@ def relationships():
                 payload = _relationships_cache.get("payload")
 
     if payload is None:
-        if quick_mode:
-            state_network = _empty_network()
-            state_network["summary"]["available"] = False
-            state_network["summary"]["candidate_rows"] = 0
-            federal_network = _empty_network()
-            federal_network["summary"]["available"] = False
-            federal_network["summary"]["candidate_rows"] = 0
-            combined_network = _empty_network()
-            combined_network["summary"]["available"] = False
-            combined_network["summary"]["candidate_rows"] = 0
-            combined_network["summary"]["bridge_match_count"] = 0
-            payload = {
-                "donor_cogiving": _empty_network(),
-                "committee_similarity": _empty_network(),
-                "candidate_competition": {
-                    "state": state_network,
-                    "federal": federal_network,
-                    "combined": combined_network,
-                    "summary": {
-                        "candidate_limit": candidate_limit,
-                        "edge_limit": edge_limit,
-                        "min_shared_donors": min_shared_donors,
-                        "min_shared_amount": min_shared_amount,
-                        "state_available": False,
-                        "federal_available": False,
-                        "bridge_match_count": 0,
-                        "quick_mode": True,
-                    },
-                },
-                "lobbying_influence": _empty_network(),
-                "ecosystem_527": _empty_network(),
-            }
-            payload["donor_cogiving"]["summary"].update(
-                {"donor_pool_size": 0, "source": "quick_mode", "quick_mode": True}
-            )
-            payload["committee_similarity"]["summary"].update(
-                {"committee_pool_size": 0, "source": "quick_mode", "quick_mode": True}
-            )
-            payload["lobbying_influence"]["summary"].update({"client_pool_size": 0, "quick_mode": True})
-            payload["ecosystem_527"]["summary"].update(
-                {
-                    "org_pool_size": 0,
-                    "quick_mode": True,
-                    "window_applied": bool(filters["date_from"] or filters["date_to"]),
-                    "date_from": filters["date_from"],
-                    "date_to": filters["date_to"],
-                }
-            )
-        else:
-            payload = {
-                "donor_cogiving": get_donor_cogiving_network(
-                    conn,
-                    donor_limit=donor_limit,
-                    edge_limit=edge_limit,
-                    min_shared_amount=min_shared_amount,
-                    min_shared_targets=min_shared_targets,
-                ),
-                "committee_similarity": get_committee_similarity_network(
-                    conn,
-                    committee_limit=committee_limit,
-                    edge_limit=edge_limit,
-                    min_shared_donors=min_shared_donors,
-                    min_shared_amount=min_shared_amount,
-                ),
-                "candidate_competition": get_candidate_competition_networks(
-                    conn,
-                    candidate_limit=candidate_limit,
-                    edge_limit=edge_limit,
-                    min_shared_donors=min_shared_donors,
-                    min_shared_amount=min_shared_amount,
-                ),
-                "lobbying_influence": get_lobbying_influence_graph(
-                    conn,
-                    client_limit=client_limit,
-                    edge_limit=edge_limit,
-                    date_from=filters["date_from"],
-                    date_to=filters["date_to"],
-                ),
-                "ecosystem_527": get_irs527_ecosystem_graph(
-                    conn,
-                    org_limit=org_limit,
-                    edge_limit=edge_limit,
-                    date_from=filters["date_from"],
-                    date_to=filters["date_to"],
-                ),
-            }
+        payload = {
+            "donor_cogiving": get_donor_cogiving_network(
+                conn,
+                donor_limit=donor_limit,
+                edge_limit=edge_limit,
+                min_shared_amount=min_shared_amount,
+                min_shared_targets=min_shared_targets,
+            ),
+            "committee_similarity": get_committee_similarity_network(
+                conn,
+                committee_limit=committee_limit,
+                edge_limit=edge_limit,
+                min_shared_donors=min_shared_donors,
+                min_shared_amount=min_shared_amount,
+            ),
+            "candidate_competition": get_candidate_competition_networks(
+                conn,
+                candidate_limit=candidate_limit,
+                edge_limit=edge_limit,
+                min_shared_donors=min_shared_donors,
+                min_shared_amount=min_shared_amount,
+            ),
+            "lobbying_influence": get_lobbying_influence_graph(
+                conn,
+                client_limit=client_limit,
+                edge_limit=edge_limit,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
+            "ecosystem_527": get_irs527_ecosystem_graph(
+                conn,
+                org_limit=org_limit,
+                edge_limit=edge_limit,
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            ),
+        }
         if cache_enabled:
             with _relationships_cache_lock:
                 _relationships_cache["payload"] = payload

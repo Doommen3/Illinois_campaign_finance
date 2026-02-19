@@ -43,6 +43,84 @@ def _adapt_schema_for_postgres(schema: str) -> str:
     return re.sub(r"\bAUTOINCREMENT\b", "", translated, flags=re.IGNORECASE)
 
 
+def _find_autoincrement_columns(schema_text: str) -> list[tuple[str, str]]:
+    """Find all (table_name, column_name) pairs with AUTOINCREMENT in schema SQL."""
+    results: list[tuple[str, str]] = []
+    current_table: str | None = None
+    for line in schema_text.split('\n'):
+        m_table = re.search(
+            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)',
+            line, re.IGNORECASE,
+        )
+        if m_table:
+            current_table = m_table.group(1)
+        if current_table and 'AUTOINCREMENT' in line.upper():
+            m_col = _AUTOINCREMENT_PK_RE.search(line)
+            if m_col:
+                results.append((current_table, m_col.group('column')))
+                current_table = None
+    return results
+
+
+def _ensure_pg_serial_columns(conn: "sqlite3.Connection") -> None:
+    """Ensure AUTOINCREMENT columns have sequence defaults on PostgreSQL.
+
+    Tables created before _adapt_schema_for_postgres was in place have plain
+    INTEGER PRIMARY KEY without a nextval() default, causing NULL id on INSERT.
+    This adds sequences where missing.
+    """
+    if not _is_postgres_connection(conn):
+        return
+
+    schema_path = Path(__file__).parent / 'schema.sql'
+    with open(schema_path, 'r') as f:
+        schema_text = f.read()
+
+    serial_cols = _find_autoincrement_columns(schema_text)
+    pg = conn._pg_conn
+
+    for table_name, col_name in serial_cols:
+        # Check if table exists (via compat layer sqlite_master intercept)
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+            (table_name,),
+        ).fetchone():
+            continue
+
+        # Check if column already has a nextval() default
+        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        has_sequence = False
+        for row in rows:
+            if row['name'] == col_name:
+                dflt = str(row.get('dflt_value') or '')
+                has_sequence = 'nextval' in dflt.lower()
+                break
+
+        if has_sequence:
+            continue
+
+        # Add sequence and set as column default
+        seq_name = f"{table_name}_{col_name}_seq"
+        try:
+            pg.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq_name}")
+            # Set sequence value: if table has rows, start after max; else start at 1
+            pg.execute(
+                f"SELECT setval('{seq_name}', "
+                f"GREATEST(COALESCE((SELECT MAX({col_name}) FROM {table_name}), 0), 1), "
+                f"COALESCE((SELECT MAX({col_name}) FROM {table_name}), 0) > 0)"
+            )
+            pg.execute(
+                f"ALTER TABLE {table_name} ALTER COLUMN {col_name} "
+                f"SET DEFAULT nextval('{seq_name}')"
+            )
+            pg.commit()
+        except Exception:
+            try:
+                pg.rollback()
+            except Exception:
+                pass
+
+
 def _resolve_sqlite_tuning_profile() -> str:
     """Resolve SQLite tuning profile from environment.
 
@@ -200,6 +278,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'fec_candidate_committees', 'party_full', 'party_full TEXT')
 
     conn.executescript(schema)
+
+    # Fix tables created before BIGSERIAL translation: add sequences where missing
+    _ensure_pg_serial_columns(conn)
 
     conn.commit()
 

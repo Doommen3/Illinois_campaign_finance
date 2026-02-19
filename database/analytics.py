@@ -249,7 +249,29 @@ def _percentile_rank(values: list[float], value: float) -> float | None:
 
 
 def _amount_distribution_markers(conn: sqlite3.Connection, source: str) -> dict:
-    if source == "bulk_receipts" and _table_exists(conn, "bulk_receipts_clean"):
+    if source == "bulk_receipts" and _use_isbe_direct_path(conn):
+        row = conn.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    r.amount AS amount,
+                    ROW_NUMBER() OVER (ORDER BY r.amount) AS rn,
+                    COUNT(*) OVER () AS cnt
+                FROM isbe_condensed_receipts r
+                WHERE r.amount > 0
+                  AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+            )
+            SELECT
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.50) AS INTEGER) + 1 THEN amount END) AS p50,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.90) AS INTEGER) + 1 THEN amount END) AS p90,
+                MAX(CASE WHEN rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1 THEN amount END) AS p95,
+                MAX(CASE WHEN rn = CAST(((cnt - 1) * 0.99) AS INTEGER) + 1 THEN amount END) AS p99,
+                MAX(amount) AS max_amount,
+                MAX(cnt) AS count_rows
+            FROM ordered
+            """
+        ).fetchone()
+    elif source == "bulk_receipts" and _table_exists(conn, "bulk_receipts_clean"):
         row = conn.execute(
             f"""
             WITH ordered AS (
@@ -799,15 +821,94 @@ def _get_donor_committee_rows(
             )
         return output, source
 
-    if source == "bulk_receipts":
+    if source == "bulk_receipts" and _use_isbe_direct_path(conn):
+        # ISBE direct path: query isbe_condensed_receipts with optional date window
         date_filters = ""
         date_params: list[object] = []
         if resolved_date_from:
-            date_filters += " AND DATE(r.received_date) >= DATE(?)"
+            date_filters += " AND r.received_date >= ?::date"
             date_params.append(resolved_date_from)
         if resolved_date_to:
-            date_filters += " AND DATE(r.received_date) <= DATE(?)"
+            date_filters += " AND r.received_date <= ?::date"
             date_params.append(resolved_date_to)
+        query = f"""
+            SELECT
+                r.first_name AS first_name,
+                r.last_name AS last_name,
+                r.address1 AS address1,
+                r.address2 AS address2,
+                r.city AS donor_city,
+                r.state AS donor_state,
+                r.zipcode AS zipcode,
+                CAST(c.id AS TEXT) AS committee_id,
+                COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count
+            FROM isbe_condensed_receipts r
+            LEFT JOIN isbe_committees c ON c.id = r.committee_id
+            WHERE r.amount > 0
+              AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+              {date_filters}
+            GROUP BY
+                r.first_name,
+                r.last_name,
+                r.address1,
+                r.address2,
+                r.city,
+                r.state,
+                r.zipcode,
+                CAST(c.id AS TEXT),
+                COALESCE(c.name, 'Committee ' || r.committee_id)
+            HAVING COALESCE(SUM(r.amount), 0) >= ?
+            ORDER BY total_amount DESC
+        """
+        params: list[object] = [*date_params, min_edge_amount]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+
+        rows = conn.execute(query, params).fetchall()
+        output: list[dict] = []
+        for row in rows:
+            donor_name = _build_bulk_donor_name(row["first_name"], row["last_name"])
+            donor_address = _build_bulk_address(
+                row["address1"],
+                row["address2"],
+                row["donor_city"],
+                row["donor_state"],
+                row["zipcode"],
+            )
+            donor_key = _stable_entity_key(donor_name, donor_address)
+            committee_name = row["committee_name"] or "Unknown Committee"
+            committee_id = row["committee_id"]
+            if committee_id is None:
+                committee_id = _stable_entity_key(committee_name)
+
+            output.append(
+                {
+                    "donor_key": donor_key,
+                    "donor_name": donor_name,
+                    "donor_address": donor_address,
+                    "donor_city": row["donor_city"],
+                    "donor_state": row["donor_state"],
+                    "committee_id": committee_id,
+                    "committee_name": committee_name,
+                    "total_amount": float(row["total_amount"] or 0.0),
+                    "contribution_count": int(row["contribution_count"] or 0),
+                }
+            )
+        return output, source
+
+    if source == "bulk_receipts":
+        # Compat-view path: query bulk_receipts_clean
+        date_filters = ""
+        date_params_bulk: list[object] = []
+        if resolved_date_from:
+            date_filters += " AND DATE(r.received_date) >= DATE(?)"
+            date_params_bulk.append(resolved_date_from)
+        if resolved_date_to:
+            date_filters += " AND DATE(r.received_date) <= DATE(?)"
+            date_params_bulk.append(resolved_date_to)
         query = f"""
             SELECT
                 r.first_name AS first_name,
@@ -839,13 +940,13 @@ def _get_donor_committee_rows(
             HAVING COALESCE(SUM(r.amount), 0) >= ?
             ORDER BY total_amount DESC
         """
-        params: list[object] = [*date_params, min_edge_amount]
+        params_bulk: list[object] = [*date_params_bulk, min_edge_amount]
         if limit is not None:
             query += " LIMIT ?"
-            params.append(int(limit))
+            params_bulk.append(int(limit))
 
-        rows = conn.execute(query, params).fetchall()
-        output: list[dict] = []
+        rows = conn.execute(query, params_bulk).fetchall()
+        output = []
         for row in rows:
             donor_name = _build_bulk_donor_name(row["first_name"], row["last_or_business_name"])
             donor_address = _build_bulk_address(
@@ -1565,7 +1666,104 @@ def get_anomaly_flags(
             committee_name = row["committee_name"] or "Unknown Committee"
             committee_month_totals[committee_name][month_key] = float(row["month_total"] or 0.0)
 
-    elif source == "bulk_receipts":
+    elif source == "bulk_receipts" and _use_isbe_direct_path(conn):
+        # ISBE direct path for anomaly flags
+        p95_row = conn.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    r.amount AS amount,
+                    ROW_NUMBER() OVER (ORDER BY r.amount) AS rn,
+                    COUNT(*) OVER () AS cnt
+                FROM isbe_condensed_receipts r
+                WHERE r.amount > 0
+                  AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+            )
+            SELECT amount
+            FROM ordered
+            WHERE rn = CAST(FLOOR((cnt - 1) * 0.95) AS INTEGER) + 1
+            LIMIT 1
+            """
+        ).fetchone()
+        p95 = float(p95_row["amount"] or 0.0) if p95_row else 0.0
+        large_threshold = max(5000.0, p95 * 2.0)
+
+        large_rows = conn.execute(
+            f"""
+            SELECT
+                COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+                r.received_date AS event_date,
+                r.amount AS amount,
+                TRIM(
+                    COALESCE(r.first_name, '')
+                    || CASE
+                        WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_name, '') <> ''
+                        THEN ' '
+                        ELSE ''
+                       END
+                    || COALESCE(r.last_name, '')
+                ) AS donor_name
+            FROM isbe_condensed_receipts r
+            LEFT JOIN isbe_committees c ON c.id = r.committee_id
+            WHERE r.amount >= ?
+              AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+            ORDER BY r.amount DESC
+            LIMIT ?
+            """,
+            (float(large_threshold), max(200, int(limit) * 5)),
+        ).fetchall()
+
+        for row in large_rows:
+            amount = float(row["amount"] or 0.0)
+            event_date = _normalize_date_iso(row["event_date"]) or _normalize_month_key(row["event_date"]) or None
+            percentile = _estimate_amount_percentile(amount, amount_markers)
+            flags.append(
+                {
+                    "flag_type": "large_single_contribution",
+                    "severity": round(amount / large_threshold, 2) if large_threshold > 0 else 0,
+                    "committee_name": row["committee_name"],
+                    "donor_name": row["donor_name"] or "Unknown Donor",
+                    "event_date": event_date,
+                    "value": round(amount, 2),
+                    "baseline": round(large_threshold, 2),
+                    "threshold": round(large_threshold, 2),
+                    "percentile": percentile,
+                    "details": "Receipt amount exceeds dynamic large-transaction threshold.",
+                    "explainability": {
+                        "rule": "large_single_contribution",
+                        "why_flagged": "Receipt amount is above the dynamic large contribution threshold.",
+                        "threshold": round(large_threshold, 2),
+                        "baseline": round(large_threshold, 2),
+                        "percentile": percentile,
+                        "distribution_markers": amount_markers,
+                    },
+                }
+            )
+
+        monthly_rows = conn.execute(
+            f"""
+            SELECT
+                COALESCE(c.name, 'Committee ' || r.committee_id) AS committee_name,
+                TO_CHAR(r.received_date, 'YYYY-MM') AS month_key,
+                COALESCE(SUM(r.amount), 0) AS month_total
+            FROM isbe_condensed_receipts r
+            LEFT JOIN isbe_committees c ON c.id = r.committee_id
+            WHERE r.amount > 0
+              AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+              AND r.received_date IS NOT NULL
+            GROUP BY committee_name, month_key
+            """
+        ).fetchall()
+
+        for row in monthly_rows:
+            month_key = _normalize_month_key(row["month_key"])
+            if not month_key or month_key == "0000-00":
+                continue
+            committee_name = row["committee_name"] or "Unknown Committee"
+            committee_month_totals[committee_name][month_key] = float(row["month_total"] or 0.0)
+
+    elif source == "bulk_receipts" and _table_exists(conn, "bulk_receipts_clean"):
+        # Compat-view path for anomaly flags
         p95_row = conn.execute(
             f"""
             WITH ordered AS (
@@ -1845,7 +2043,32 @@ def get_time_series(
             month_totals[month_key] += float(row["total_amount"] or 0.0)
             month_counts[month_key] += int(row["contribution_count"] or 0)
 
-    elif source == "bulk_receipts":
+    elif source == "bulk_receipts" and _use_isbe_direct_path(conn):
+        # ISBE direct path for time series
+        rows = conn.execute(
+            f"""
+            SELECT
+                TO_CHAR(r.received_date, 'YYYY-MM') AS month_key,
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count
+            FROM isbe_condensed_receipts r
+            WHERE r.amount > 0
+              AND {_ISBE_DONOR_RECEIPT_FILTER_SQL}
+              AND r.received_date IS NOT NULL
+            GROUP BY month_key
+            """
+        ).fetchall()
+        for row in rows:
+            month_key = _normalize_month_key(row["month_key"])
+            if not month_key:
+                continue
+            if not _date_value_overlaps_range(month_key, start=range_start, end=range_end):
+                continue
+            month_totals[month_key] += float(row["total_amount"] or 0.0)
+            month_counts[month_key] += int(row["contribution_count"] or 0)
+
+    elif source == "bulk_receipts" and _table_exists(conn, "bulk_receipts_clean"):
+        # Compat-view path for time series
         rows = conn.execute(
             f"""
             SELECT
@@ -3609,6 +3832,17 @@ def get_nlp_spending_summary(conn: sqlite3.Connection, limit: int = 20) -> list[
             FROM bulk_expenditures_clean e
             WHERE COALESCE(e.amount, 0) > 0
               AND NOT COALESCE(e.is_archived::boolean, FALSE)
+            """
+        ).fetchall()
+    elif _table_exists(conn, "isbe_condensed_expenditures"):
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(e.purpose, '') AS text_value,
+                COALESCE(e.amount, 0) AS amount
+            FROM isbe_condensed_expenditures e
+            WHERE e.amount > 0
+              AND e.archived = FALSE
             """
         ).fetchall()
 
