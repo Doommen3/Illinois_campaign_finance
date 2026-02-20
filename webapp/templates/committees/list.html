@@ -4,14 +4,20 @@
 
 {% block content %}
 <h1>Committees</h1>
-<p class="subtitle">{{ total }} total committees</p>
+<p class="subtitle">{{ total }} {% if query %}results for "{{ query }}"{% else %}total committees{% endif %}</p>
 <p class="help-text">State-level committees registered with the Illinois State Board of Elections (ISBE). Each committee is linked to candidates and files periodic disclosure reports (D-2 forms) listing receipts and expenditures.</p>
+
+<form action="{{ url_for('committees.list_committees') }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Search committees..." value="{{ query }}"
+           data-autocomplete-url="{{ url_for('committees.suggest_committees') }}">
+    <button type="submit">Search</button>
+</form>
 
 <table class="data-table">
     <thead>
         <tr>
             <th>
-                <a href="{{ url_for('committees.list_committees', sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.list_committees', sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc', q=query) }}">
                     Name{% if sort_by == 'name' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -20,7 +26,7 @@
             <th>Party</th>
             {% endif %}
             <th>
-                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc', q=query) }}">
                     Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -57,13 +63,13 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('committees.list_committees', page=page-1, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    <a href="{{ url_for('committees.list_committees', page=page-1, sort=sort_by, dir=sort_dir, q=query) }}">&laquo; Previous</a>
     {% endif %}
 
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
 
     {% if page < total_pages %}
-    <a href="{{ url_for('committees.list_committees', page=page+1, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    <a href="{{ url_for('committees.list_committees', page=page+1, sort=sort_by, dir=sort_dir, q=query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}

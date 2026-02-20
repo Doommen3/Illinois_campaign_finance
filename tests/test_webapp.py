@@ -3251,6 +3251,34 @@ class TestCommitteesIsbe:
         assert b'Republican' in response.data
         assert b'Political Action' in response.data
 
+    def test_committees_search_filters_results(self, client):
+        """Searching committees should filter to matching names only."""
+        response = client.get('/committees/?q=Smith')
+        assert response.status_code == 200
+        assert b'Citizens for Smith' in response.data
+        assert b'PAC United' not in response.data
+
+    def test_committees_search_no_results(self, client):
+        """Searching for a non-existent name returns no committees."""
+        response = client.get('/committees/?q=zzzznotfound')
+        assert response.status_code == 200
+        assert b'0 results' in response.data
+
+    def test_committees_suggest_returns_json(self, client):
+        """Suggest endpoint should return JSON autocomplete results."""
+        response = client.get('/committees/suggest?q=ci')
+        assert response.status_code == 200
+        data = response.get_json()
+        assert isinstance(data, list)
+        labels = [item['label'] for item in data]
+        assert 'Citizens for Smith' in labels
+
+    def test_committees_suggest_too_short(self, client):
+        """Suggest endpoint should return empty list for single-char queries."""
+        response = client.get('/committees/suggest?q=c')
+        assert response.status_code == 200
+        assert response.get_json() == []
+
     def test_committees_detail_fallback_to_sbe(self, isbe_app):
         """Committee detail route should fall back to SBE profile when legacy committee not found."""
         conn = get_db(isbe_app.config['DATABASE_PATH'])

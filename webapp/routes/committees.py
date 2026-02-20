@@ -1,8 +1,9 @@
 """Committee routes."""
-from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for
+from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for, jsonify
 
 from database.models import Committee, Report, Contribution
 from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.search_normalize import normalize_search_query
 
 committees_bp = Blueprint('committees', __name__)
 
@@ -362,6 +363,9 @@ def list_committees():
     per_page = 50
     offset = (page - 1) * per_page
 
+    raw_query = request.args.get('q', '').strip()
+    query = normalize_search_query(raw_query) or raw_query.strip()
+
     sort_by = request.args.get('sort', 'name')
     sort_dir = request.args.get('dir', 'asc')
 
@@ -376,6 +380,18 @@ def list_committees():
     has_money = has_isbe and _table_exists(conn, "isbe_committee_money")
 
     if has_isbe:
+        where_clause = ""
+        params: list = []
+        if query:
+            where_clause = "WHERE c.name LIKE ?"
+            params.append(f"%{query}%")
+
+        count_row = conn.execute(
+            f"SELECT COUNT(*) AS count FROM isbe_committees c {where_clause}",
+            tuple(params),
+        ).fetchone()
+        total = count_row["count"] if count_row else 0
+
         if has_money:
             rows = conn.execute(
                 f"""
@@ -383,10 +399,11 @@ def list_committees():
                        COALESCE(m.total, 0) AS total_contributions
                 FROM isbe_committees c
                 LEFT JOIN isbe_committee_money m ON m.committee_id = c.id
+                {where_clause}
                 ORDER BY {sort_field} {direction}, c.id ASC
                 LIMIT ? OFFSET ?
                 """,
-                (per_page, offset),
+                tuple(params + [per_page, offset]),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -394,16 +411,12 @@ def list_committees():
                 SELECT c.id, c.name, c.type, c.party, c.active,
                        0 AS total_contributions
                 FROM isbe_committees c
+                {where_clause}
                 ORDER BY {sort_field} {direction}, c.id ASC
                 LIMIT ? OFFSET ?
                 """,
-                (per_page, offset),
+                tuple(params + [per_page, offset]),
             ).fetchall()
-
-        total_row = conn.execute(
-            "SELECT COUNT(*) AS count FROM isbe_committees"
-        ).fetchone()
-        total = total_row["count"] if total_row else 0
     else:
         # Fallback to legacy committees table
         period = get_active_period()
@@ -430,6 +443,7 @@ def list_committees():
                                total=total,
                                sort_by=sort_by,
                                sort_dir=sort_dir,
+                               query=query,
                                use_isbe=False)
 
     committees = [
@@ -453,7 +467,29 @@ def list_committees():
                            total=total,
                            sort_by=sort_by,
                            sort_dir=sort_dir,
+                           query=query,
                            use_isbe=True)
+
+
+@committees_bp.route('/suggest')
+def suggest_committees():
+    """Return up to 10 committee name suggestions for autocomplete."""
+    conn = current_app.get_database()
+    raw = request.args.get('q', '').strip()
+    q = normalize_search_query(raw)
+    if len(q) < 2 or not _table_exists(conn, "isbe_committees"):
+        return jsonify([])
+    rows = conn.execute(
+        """
+        SELECT id AS value, name AS label
+        FROM isbe_committees
+        WHERE name LIKE ?
+        ORDER BY name
+        LIMIT 10
+        """,
+        (f"%{q}%",),
+    ).fetchall()
+    return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
 
 
 @committees_bp.route('/<int:committee_id>')
