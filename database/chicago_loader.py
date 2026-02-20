@@ -302,7 +302,7 @@ def _date_quality_summary(
             SUM(
                 CASE
                     WHEN {field_name} IS NULL OR TRIM({field_name}) = '' THEN 0
-                    WHEN {field_name} GLOB '????-??-??' = 0 OR {field_name} < ? THEN 1
+                    WHEN NOT ({field_name} GLOB '????-??-??') OR {field_name} < ? THEN 1
                     ELSE 0
                 END
             ) AS malformed_rows,

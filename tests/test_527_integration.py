@@ -347,6 +347,7 @@ class TestAddressNormalization:
 # 4. Director-to-Donor Address Matching Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 class TestDirectorAddressMatching:
 
     def test_match_by_address_exact(self, tmp_path: Path):
@@ -410,6 +411,7 @@ class TestDirectorAddressMatching:
 # 5. Organization Address Matching Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 class TestOrgAddressMatching:
 
     def test_match_org_address_to_committee(self, tmp_path: Path):

@@ -186,9 +186,9 @@ def _seed_isbe_tables(conn):
     conn.execute("""
         INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, total_receipts, total_expenditures, end_funds_available, archived)
         VALUES
-            (9001, 100, 5001, 50000.0, 20000.0, 30000.0, 0),
-            (9002, 200, 5002, 25000.0, 10000.0, 15000.0, 0),
-            (9003, 100, 5003, 30000.0, 15000.0, 45000.0, 0)
+            (9001, 100, 5001, 50000.0, 20000.0, 30000.0, FALSE),
+            (9002, 200, 5002, 25000.0, 10000.0, 15000.0, FALSE),
+            (9003, 100, 5003, 30000.0, 15000.0, 45000.0, FALSE)
     """)
 
     conn.execute("""
@@ -217,11 +217,11 @@ def _seed_isbe_tables(conn):
         INSERT INTO isbe_receipts (id, committee_id, filed_doc_id, last_name, first_name,
             received_date, amount, d2_part, occupation, employer, city, state, zipcode, address1, archived)
         VALUES
-            (10001, 100, 5001, 'Donor', 'Alice', '2025-01-15', 5000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
-            (10002, 100, 5001, 'Donor', 'Bob', '2025-02-10', 2500.0, '1A', 'Teacher', 'CPS', 'Evanston', 'IL', '60201', '200 Elm St', 0),
-            (10003, 200, 5002, 'Donor', 'Alice', '2025-01-20', 10000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
-            (10004, 100, 5003, 'BigCorp', NULL, '2025-05-01', 25000.0, '1A', NULL, NULL, 'Chicago', 'IL', '60606', '500 LaSalle', 0),
-            (10005, 100, 5001, 'Archived', 'Person', '2025-01-01', 999.0, '1A', NULL, NULL, 'Chicago', 'IL', '60601', '999 Old St', 1)
+            (10001, 100, 5001, 'Donor', 'Alice', '2025-01-15', 5000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', FALSE),
+            (10002, 100, 5001, 'Donor', 'Bob', '2025-02-10', 2500.0, '1A', 'Teacher', 'CPS', 'Evanston', 'IL', '60201', '200 Elm St', FALSE),
+            (10003, 200, 5002, 'Donor', 'Alice', '2025-01-20', 10000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', FALSE),
+            (10004, 100, 5003, 'BigCorp', NULL, '2025-05-01', 25000.0, '1A', NULL, NULL, 'Chicago', 'IL', '60606', '500 LaSalle', FALSE),
+            (10005, 100, 5001, 'Archived', 'Person', '2025-01-01', 999.0, '1A', NULL, NULL, 'Chicago', 'IL', '60601', '999 Old St', TRUE)
     """)
 
     conn.execute("""
@@ -249,8 +249,8 @@ def _seed_isbe_tables(conn):
         INSERT INTO isbe_expenditures (id, committee_id, filed_doc_id, last_name, first_name,
             expended_date, amount, purpose, d2_part, archived)
         VALUES
-            (20001, 100, 5001, 'Acme Consulting', NULL, '2025-01-20', 3000.0, 'Consulting', '2A', 0),
-            (20002, 200, 5002, 'Print Shop Inc', NULL, '2025-02-01', 1500.0, 'Printing', '2A', 0)
+            (20001, 100, 5001, 'Acme Consulting', NULL, '2025-01-20', 3000.0, 'Consulting', '2A', FALSE),
+            (20002, 200, 5002, 'Print Shop Inc', NULL, '2025-02-01', 1500.0, 'Printing', '2A', FALSE)
     """)
 
     conn.commit()
@@ -551,7 +551,7 @@ class TestCandidateFinanceAggView:
         # Add an archived D2 report
         conn.execute("""
             INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, total_receipts, total_expenditures, end_funds_available, archived)
-            VALUES (9999, 100, 5001, 999999.0, 999999.0, 999999.0, 1)
+            VALUES (9999, 100, 5001, 999999.0, 999999.0, 999999.0, TRUE)
         """)
         conn.commit()
         row = conn.execute(
@@ -990,8 +990,8 @@ def _seed_isbe_condensed_tables(conn):
     conn.execute("""
         INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, total_receipts, end_funds_available, archived)
         VALUES
-            (9001, 100, 5001, 50000.0, 30000.0, 0),
-            (9002, 200, 5002, 25000.0, 15000.0, 0)
+            (9001, 100, 5001, 50000.0, 30000.0, FALSE),
+            (9002, 200, 5002, 25000.0, 15000.0, FALSE)
     """)
 
     conn.execute("""
@@ -1020,11 +1020,11 @@ def _seed_isbe_condensed_tables(conn):
         INSERT INTO isbe_condensed_receipts (id, committee_id, filed_doc_id, last_name, first_name,
             received_date, amount, d2_part, occupation, employer, city, state, zipcode, address1, archived)
         VALUES
-            (10001, 100, 5001, 'Donor', 'Alice', '2025-01-15', 5000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
-            (10002, 100, 5001, 'Donor', 'Bob', '2025-02-10', 2500.0, '1A', 'Teacher', 'CPS', 'Evanston', 'IL', '60201', '200 Elm St', 0),
-            (10003, 200, 5002, 'Donor', 'Alice', '2025-01-20', 10000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', 0),
-            (10004, 100, 5001, 'BigCorp', NULL, '2025-05-01', 25000.0, '1A', NULL, NULL, 'Chicago', 'IL', '60606', '500 LaSalle', 0),
-            (10005, 100, 5001, 'Archived', 'Person', '2025-01-01', 999.0, '1A', NULL, NULL, 'Chicago', 'IL', '60601', '999 Old St', 1)
+            (10001, 100, 5001, 'Donor', 'Alice', '2025-01-15', 5000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', FALSE),
+            (10002, 100, 5001, 'Donor', 'Bob', '2025-02-10', 2500.0, '1A', 'Teacher', 'CPS', 'Evanston', 'IL', '60201', '200 Elm St', FALSE),
+            (10003, 200, 5002, 'Donor', 'Alice', '2025-01-20', 10000.0, '1A', 'Lawyer', 'BigLaw LLC', 'Chicago', 'IL', '60601', '100 Main St', FALSE),
+            (10004, 100, 5001, 'BigCorp', NULL, '2025-05-01', 25000.0, '1A', NULL, NULL, 'Chicago', 'IL', '60606', '500 LaSalle', FALSE),
+            (10005, 100, 5001, 'Archived', 'Person', '2025-01-01', 999.0, '1A', NULL, NULL, 'Chicago', 'IL', '60601', '999 Old St', TRUE)
     """)
 
     conn.commit()

@@ -543,7 +543,7 @@ class Report:
             SELECT r.*, c.name as committee_name
             FROM reports r
             JOIN committees c ON r.committee_id = c.id
-            WHERE r.scrape_status = 'pending' AND r.is_paper_filed = 0
+            WHERE r.scrape_status = 'pending' AND r.is_paper_filed = FALSE
             ORDER BY r.id
             LIMIT ?
             """,

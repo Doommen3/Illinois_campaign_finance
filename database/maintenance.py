@@ -309,7 +309,7 @@ def find_reports_for_detail_rescrape(
     query = """
         SELECT DISTINCT r.id
         FROM reports r
-        WHERE r.is_paper_filed = 0
+        WHERE r.is_paper_filed = FALSE
           AND r.detail_url IS NOT NULL
           AND r.detail_url != ''
     """
