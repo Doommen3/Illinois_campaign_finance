@@ -34,7 +34,7 @@ def _seed_isbe_tables(conn):
             name TEXT, type TEXT, refer_name TEXT,
             address1 TEXT, address2 TEXT, address3 TEXT,
             city TEXT, state TEXT, zipcode TEXT,
-            active INTEGER DEFAULT 1,
+            active BOOLEAN DEFAULT TRUE,
             status_date TEXT, creation_date TEXT,
             creation_amount REAL,
             disp_funds_return TEXT, disp_funds_political_committee TEXT,
@@ -47,9 +47,9 @@ def _seed_isbe_tables(conn):
     conn.execute("""
         INSERT INTO isbe_committees (id, name, type, refer_name, city, state, zipcode, active, party)
         VALUES
-            (100, 'Citizens for Smith', 'Candidate', 'SMITH', 'Chicago', 'IL', '60601', 1, 'Democratic'),
-            (200, 'Friends of Jones', 'Candidate', 'JONES', 'Springfield', 'IL', '62701', 1, 'Republican'),
-            (300, 'PAC United', 'Political Action', 'PACUNITED', 'Peoria', 'IL', '61602', 1, NULL)
+            (100, 'Citizens for Smith', 'Candidate', 'SMITH', 'Chicago', 'IL', '60601', TRUE, 'Democratic'),
+            (200, 'Friends of Jones', 'Candidate', 'JONES', 'Springfield', 'IL', '62701', TRUE, 'Republican'),
+            (300, 'PAC United', 'Political Action', 'PACUNITED', 'Peoria', 'IL', '61602', TRUE, NULL)
     """)
 
     conn.execute("""
@@ -117,16 +117,16 @@ def _seed_isbe_tables(conn):
             title TEXT, phone TEXT,
             resign_date TEXT,
             redaction_requested INTEGER DEFAULT 0,
-            current INTEGER DEFAULT 1
+            current BOOLEAN DEFAULT TRUE
         )
     """)
     conn.execute("""
         INSERT INTO isbe_officers (committee_id, last_name, first_name, title, current, city, state)
         VALUES
-            (100, 'Smith', 'John', 'Chairman', 1, 'Chicago', 'IL'),
-            (100, 'Doe', 'Jane', 'Treasurer', 1, 'Chicago', 'IL'),
-            (200, 'Jones', 'Sarah', 'Chairman', 1, 'Springfield', 'IL'),
-            (100, 'OldOfficer', 'Tom', 'Secretary', 0, 'Peoria', 'IL')
+            (100, 'Smith', 'John', 'Chairman', TRUE, 'Chicago', 'IL'),
+            (100, 'Doe', 'Jane', 'Treasurer', TRUE, 'Chicago', 'IL'),
+            (200, 'Jones', 'Sarah', 'Chairman', TRUE, 'Springfield', 'IL'),
+            (100, 'OldOfficer', 'Tom', 'Secretary', FALSE, 'Peoria', 'IL')
     """)
 
     # Officer-committee links
@@ -954,7 +954,7 @@ def _seed_isbe_condensed_tables(conn):
             name TEXT, type TEXT, refer_name TEXT,
             address1 TEXT, address2 TEXT, address3 TEXT,
             city TEXT, state TEXT, zipcode TEXT,
-            active INTEGER DEFAULT 1,
+            active BOOLEAN DEFAULT TRUE,
             status_date TEXT, creation_date TEXT,
             creation_amount REAL,
             party TEXT, purpose TEXT,
@@ -964,8 +964,8 @@ def _seed_isbe_condensed_tables(conn):
     conn.execute("""
         INSERT INTO isbe_committees (id, name, type, city, state, zipcode, active)
         VALUES
-            (100, 'Citizens for Smith', 'Candidate', 'Chicago', 'IL', '60601', 1),
-            (200, 'Friends of Jones', 'Candidate', 'Springfield', 'IL', '62701', 1)
+            (100, 'Citizens for Smith', 'Candidate', 'Chicago', 'IL', '60601', TRUE),
+            (200, 'Friends of Jones', 'Candidate', 'Springfield', 'IL', '62701', TRUE)
     """)
 
     conn.execute("""
