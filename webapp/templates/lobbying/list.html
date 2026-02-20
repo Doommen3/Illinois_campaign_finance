@@ -8,7 +8,8 @@
 <p class="help-text">Active lobbying entities registered with the Illinois Secretary of State and their client relationships. Cross-matched against campaign donors and expenditure payees to surface lobbying-campaign finance connections.</p>
 
 <form action="{{ url_for('lobbying.list_entities') }}" method="get" class="search-form">
-    <input type="text" name="q" placeholder="Search entities..." value="{{ query }}">
+    <input type="text" name="q" placeholder="Search entities..." value="{{ query }}"
+           data-autocomplete-url="{{ url_for('lobbying.suggest_entities') }}">
     <button type="submit">Search</button>
 </form>
 
@@ -56,4 +57,8 @@
     {% endif %}
 </nav>
 {% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/autocomplete.js') }}"></script>
 {% endblock %}

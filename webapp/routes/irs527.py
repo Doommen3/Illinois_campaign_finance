@@ -2,7 +2,8 @@
 import threading
 import time
 
-from flask import Blueprint, render_template, request, current_app, abort
+from flask import Blueprint, jsonify, render_template, request, current_app, abort
+from webapp.utils.search_normalize import normalize_search_query
 from webapp.utils.time_filter import get_active_period, period_cache_key, period_to_date_window
 
 irs527_bp = Blueprint('irs527', __name__)
@@ -182,7 +183,8 @@ def list_orgs():
     page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
     offset = (page - 1) * per_page
-    query = request.args.get('q', '').strip()
+    raw_query = request.args.get('q', '').strip()
+    query = normalize_search_query(raw_query) or raw_query.strip()
 
     where_clause_outer = ""
     where_clause_inner = ""
@@ -279,6 +281,27 @@ def list_orgs():
 
     return render_template('irs527/list.html', orgs=orgs, total=total,
                            page=page, total_pages=total_pages, query=query)
+
+
+@irs527_bp.route('/suggest')
+def suggest():
+    """Return up to 10 org name suggestions for autocomplete."""
+    conn = current_app.get_database()
+    raw = request.args.get('q', '').strip()
+    q = normalize_search_query(raw)
+    if len(q) < 2 or not _table_exists(conn, "irs527_organizations"):
+        return jsonify([])
+    rows = conn.execute(
+        """
+        SELECT DISTINCT org_name AS label, ein AS value
+        FROM irs527_organizations
+        WHERE org_name LIKE ?
+        ORDER BY org_name
+        LIMIT 10
+        """,
+        (f"%{q}%",),
+    ).fetchall()
+    return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
 
 
 @irs527_bp.route('/<path:ein>')

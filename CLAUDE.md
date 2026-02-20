@@ -22,6 +22,10 @@ python run.py init-db
 python run.py runserver --port 5000
 ```
 
+## Database Environment
+
+This project uses PostgreSQL in production. Always write SQL that is PostgreSQL-compatible (not SQLite). When writing tests, use PostgreSQL test fixtures, not SQLite in-memory databases. Never assume SQLite-specific syntax (e.g., use `ILIKE` instead of `LIKE` for case-insensitive matching, use proper `INTERVAL` syntax, avoid SQLite-only functions).
+
 ## Architecture
 
 - **Backend**: Python 3.12, Flask 3.0, PostgreSQL 16
@@ -197,7 +201,10 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 
 ## Testing
 
-- Run all tests: `pytest -q`
+- Always run the full test suite after making changes: `pytest -q`
+- Tests must pass before considering a task complete
+- Ensure test fixtures include ALL required fields (e.g., `form_id`)
+- Do not adjust tests to match buggy code — fix the code to match expected behavior
 - Run specific module: `pytest -q tests/test_cross_matching.py`
 - Run fast pre-deploy subset: `pytest -q tests/test_federal_fec.py tests/test_lobbying_routes.py tests/test_uiux_improvements.py tests/test_webapp.py::TestWebApp::test_federal_finance_page_loads_with_synced_rows`
 - After generating test data, always verify NOT NULL constraints and required fields match the actual schema.
@@ -267,6 +274,12 @@ Bounded synthetic benchmark deltas (local):
 - Use chunked batch inserts (`_chunked()` helper) for large data loads.
 - Use `psql` for ad-hoc queries, not `sqlite3`. Local DB: `psql ilcf`. Prod: `psql -h localhost ilcf`.
 
+## Memory & Performance
+
+- When processing large datasets (100K+ rows), always use SQL JOINs and server-side filtering — never load entire tables into Python memory.
+- For cross-matching operations, use batch processing with LIMIT/OFFSET or cursor-based pagination.
+- Watch for OOM risks on the production server.
+
 ## Token/Credit Efficiency Policy (Required)
 
 - Before starting any non-trivial process, evaluate whether the user can run it directly with lower credit/token cost than agent execution.
@@ -285,6 +298,11 @@ Bounded synthetic benchmark deltas (local):
 - After making changes that introduce useful project knowledge, update both `README.md` and `CLAUDE.md` in the same task.
 - "Useful project knowledge" includes new commands/flags, workflow updates, config/env changes, performance findings, operational caveats, and troubleshooting notes.
 - Do not mark implementation complete until documentation is updated, or explicitly state why no documentation change is needed.
+
+## Workflow Conventions
+
+### Scope & Session Management
+When the user says 'implement all of these', they mean ALL items in the plan — do not subset. If a session is running long, checkpoint progress and provide a resumption prompt rather than leaving work incomplete. Always confirm scope before starting large implementations.
 
 ## New Dataset Integration Workflow (Required)
 
@@ -315,6 +333,13 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 
 ## Deployment
 
+- Production server path is `/srv/illinois_campaign_finance/app` (NOT `/current`)
+- Service name is `ilcf-web` (NOT `il-campaign-finance`)
+- Always use `python3` (not `python`) on the server
+- Git requires `safe.directory` config on the server
+- When giving deployment commands, always give them for the REMOTE/PRODUCTION server unless explicitly asked for local
+- Always verify env vars are exported (not just set) in systemd unit files
+- Ensure systemd ExecStart is on a single line
 - When asked about deployment, always assume REMOTE/PRODUCTION server unless explicitly told otherwise.
 - Always verify actual server paths, service names, and directory structures before generating deployment commands — never assume defaults.
 - Use `python3` (not `python`) in all server scripts and systemd files.

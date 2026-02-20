@@ -7,6 +7,7 @@ import hashlib
 import re
 
 from flask import Blueprint, render_template, request, current_app, abort, jsonify
+from webapp.utils.search_normalize import normalize_search_query
 from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 lobbying_bp = Blueprint('lobbying', __name__)
@@ -665,7 +666,8 @@ def list_entities():
     page = request.args.get('page', 1, type=int)
     per_page = 50
     offset = (page - 1) * per_page
-    query = request.args.get('q', '').strip()
+    raw_query = request.args.get('q', '').strip()
+    query = normalize_search_query(raw_query) or raw_query.strip()
 
     where_clause = ""
     params = []
@@ -701,6 +703,48 @@ def list_entities():
     return render_template('lobbying/list.html',
                            entities=entities, total=total,
                            page=page, total_pages=total_pages, query=query)
+
+
+@lobbying_bp.route('/suggest')
+def suggest_entities():
+    """Return up to 10 entity name suggestions for autocomplete."""
+    conn = current_app.get_database()
+    raw = request.args.get('q', '').strip()
+    q = normalize_search_query(raw)
+    if len(q) < 2 or not _table_exists(conn, "lobbying_entities"):
+        return jsonify([])
+    rows = conn.execute(
+        """
+        SELECT entity_id AS value, entity_name AS label
+        FROM lobbying_entities
+        WHERE entity_name LIKE ?
+        ORDER BY entity_name
+        LIMIT 10
+        """,
+        (f"%{q}%",),
+    ).fetchall()
+    return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
+
+
+@lobbying_bp.route('/flows/suggest')
+def suggest_flow_clients():
+    """Return up to 10 client name suggestions for the money flows filter."""
+    conn = current_app.get_database()
+    raw = request.args.get('q', '').strip()
+    q = normalize_search_query(raw)
+    if len(q) < 2 or not _table_exists(conn, "lobbying_donor_matches"):
+        return jsonify([])
+    rows = conn.execute(
+        """
+        SELECT DISTINCT client_name AS label
+        FROM lobbying_donor_matches
+        WHERE client_name LIKE ? AND score >= 0.80
+        ORDER BY client_name
+        LIMIT 10
+        """,
+        (f"%{q}%",),
+    ).fetchall()
+    return jsonify([{"label": r["label"], "value": r["label"]} for r in rows])
 
 
 @lobbying_bp.route('/<int:entity_id>')
@@ -877,7 +921,8 @@ def client_detail(client_id):
 @lobbying_bp.route('/flows')
 def flows():
     """Sankey diagram page: lobbying client -> committee money flows via matched donors."""
-    client_filter = request.args.get('client', '').strip()
+    raw_client = request.args.get('client', '').strip()
+    client_filter = normalize_search_query(raw_client) or raw_client.strip()
     return render_template('lobbying/flows.html', client_filter=client_filter)
 
 
@@ -897,7 +942,8 @@ def flows_data():
 
     _ensure_lobbying_flow_indexes(conn)
 
-    client_filter = request.args.get('client', '').strip()
+    raw_client = request.args.get('client', '').strip()
+    client_filter = normalize_search_query(raw_client) or raw_client.strip()
     where = ["score >= 0.80"]
     params = []
     if client_filter:
