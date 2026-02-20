@@ -30,12 +30,19 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
     has_bulk_receipts = _table_exists(conn, "bulk_receipts_clean")
     has_bulk_expenditures = _table_exists(conn, "bulk_expenditures_clean")
+    has_isbe_receipts = _table_exists(conn, "isbe_condensed_receipts")
+    has_isbe_expenditures = _table_exists(conn, "isbe_condensed_expenditures")
     has_candidate_links = _table_exists(conn, "bulk_committee_candidate_links")
     has_candidates = _table_exists(conn, "bulk_candidates_clean")
     has_analytics_agg = _table_exists(conn, "analytics_donor_committee_agg")
     has_officers = _table_exists(conn, "isbe_officers")
     has_isbe_committees = _table_exists(conn, "isbe_committees")
     has_filed_docs = _table_exists(conn, "isbe_filed_docs")
+
+    # Decide which receipt/expenditure source to use:
+    # Prefer bulk_*_clean compat views; fall back to isbe_condensed_* tables.
+    use_isbe_receipts = not has_bulk_receipts and has_isbe_receipts
+    use_isbe_expenditures = not has_bulk_expenditures and has_isbe_expenditures
 
     committee_name = ""
     committee_meta = {}
@@ -91,14 +98,35 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         if row:
             committee_name = (row["committee_name"] or "").strip()
 
-    receipts_filter = "WHERE committee_id_sbe = ?"
-    receipts_params = [committee_id_sbe]
-    if has_bulk_receipts and _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-        receipts_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
-    rcpt_clause, rcpt_plist = period_qmark_date_clause("received_date", period)
-    if rcpt_clause:
-        receipts_filter += rcpt_clause
-        receipts_params.extend(rcpt_plist)
+    # --- Receipts query ---
+    # Determine table, committee column, and last-name column based on source.
+    if use_isbe_receipts:
+        rcpt_table = "isbe_condensed_receipts"
+        rcpt_cmte_col = "committee_id"
+        rcpt_last_col = "last_name"
+    elif has_bulk_receipts:
+        rcpt_table = "bulk_receipts_clean"
+        rcpt_cmte_col = "committee_id_sbe"
+        rcpt_last_col = "last_or_business_name"
+    else:
+        rcpt_table = None
+        rcpt_cmte_col = None
+        rcpt_last_col = None
+
+    receipts_filter = ""
+    receipts_params: list = []
+    if rcpt_table:
+        receipts_filter = f"WHERE {rcpt_cmte_col} = ?"
+        receipts_params = [committee_id_sbe]
+        # Archived-row exclusion
+        if use_isbe_receipts:
+            receipts_filter += " AND archived = FALSE"
+        elif _column_exists(conn, rcpt_table, "is_archived"):
+            receipts_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
+        rcpt_clause, rcpt_plist = period_qmark_date_clause("received_date", period)
+        if rcpt_clause:
+            receipts_filter += rcpt_clause
+            receipts_params.extend(rcpt_plist)
 
     receipts_summary = {
         "contribution_count": 0,
@@ -107,7 +135,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         "last_date": None,
     }
     top_donors: list[dict] = []
-    if has_bulk_receipts:
+    if rcpt_table:
         row = conn.execute(
             f"""
             SELECT
@@ -115,7 +143,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                 COALESCE(SUM(amount), 0.0) AS total_amount,
                 MIN(received_date) AS first_date,
                 MAX(received_date) AS last_date
-            FROM bulk_receipts_clean
+            FROM {rcpt_table}
             {receipts_filter}
             """,
             tuple(receipts_params),
@@ -135,14 +163,14 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                     COALESCE(NULLIF(TRIM(first_name), ''), '')
                     || CASE
                         WHEN COALESCE(NULLIF(TRIM(first_name), ''), '') != ''
-                         AND COALESCE(NULLIF(TRIM(last_or_business_name), ''), '') != '' THEN ' '
+                         AND COALESCE(NULLIF(TRIM({rcpt_last_col}), ''), '') != '' THEN ' '
                         ELSE ''
                       END
-                    || COALESCE(NULLIF(TRIM(last_or_business_name), ''), '')
+                    || COALESCE(NULLIF(TRIM({rcpt_last_col}), ''), '')
                 ) AS donor_name,
                 COALESCE(SUM(amount), 0.0) AS total_amount,
                 COUNT(*) AS contribution_count
-            FROM bulk_receipts_clean
+            FROM {rcpt_table}
             {receipts_filter}
             GROUP BY donor_name
             ORDER BY total_amount DESC, contribution_count DESC, donor_name ASC
@@ -159,14 +187,36 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             for row in top_donor_rows
         ]
 
-    expenditures_filter = "WHERE committee_id_sbe = ?"
-    expenditures_params = [committee_id_sbe]
-    if has_bulk_expenditures and _column_exists(conn, "bulk_expenditures_clean", "is_archived"):
-        expenditures_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
-    exp_clause, exp_plist = period_qmark_date_clause("expended_date", period)
-    if exp_clause:
-        expenditures_filter += exp_clause
-        expenditures_params.extend(exp_plist)
+    # --- Expenditures query ---
+    if use_isbe_expenditures:
+        exp_table = "isbe_condensed_expenditures"
+        exp_cmte_col = "committee_id"
+        exp_last_col = "last_name"
+        exp_first_col = "first_name"
+    elif has_bulk_expenditures:
+        exp_table = "bulk_expenditures_clean"
+        exp_cmte_col = "committee_id_sbe"
+        exp_last_col = "payee_last_or_business_name"
+        exp_first_col = "payee_first_name"
+    else:
+        exp_table = None
+        exp_cmte_col = None
+        exp_last_col = None
+        exp_first_col = None
+
+    expenditures_filter = ""
+    expenditures_params: list = []
+    if exp_table:
+        expenditures_filter = f"WHERE {exp_cmte_col} = ?"
+        expenditures_params = [committee_id_sbe]
+        if use_isbe_expenditures:
+            expenditures_filter += " AND archived = FALSE"
+        elif _column_exists(conn, exp_table, "is_archived"):
+            expenditures_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
+        exp_clause, exp_plist = period_qmark_date_clause("expended_date", period)
+        if exp_clause:
+            expenditures_filter += exp_clause
+            expenditures_params.extend(exp_plist)
 
     expenditures_summary = {
         "transaction_count": 0,
@@ -175,7 +225,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         "last_date": None,
     }
     top_payees: list[dict] = []
-    if has_bulk_expenditures:
+    if exp_table:
         row = conn.execute(
             f"""
             SELECT
@@ -183,7 +233,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                 COALESCE(SUM(amount), 0.0) AS total_amount,
                 MIN(expended_date) AS first_date,
                 MAX(expended_date) AS last_date
-            FROM bulk_expenditures_clean
+            FROM {exp_table}
             {expenditures_filter}
             """,
             tuple(expenditures_params),
@@ -200,17 +250,17 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             f"""
             SELECT
                 TRIM(
-                    COALESCE(NULLIF(TRIM(payee_first_name), ''), '')
+                    COALESCE(NULLIF(TRIM({exp_first_col}), ''), '')
                     || CASE
-                        WHEN COALESCE(NULLIF(TRIM(payee_first_name), ''), '') != ''
-                         AND COALESCE(NULLIF(TRIM(payee_last_or_business_name), ''), '') != '' THEN ' '
+                        WHEN COALESCE(NULLIF(TRIM({exp_first_col}), ''), '') != ''
+                         AND COALESCE(NULLIF(TRIM({exp_last_col}), ''), '') != '' THEN ' '
                         ELSE ''
                       END
-                    || COALESCE(NULLIF(TRIM(payee_last_or_business_name), ''), '')
+                    || COALESCE(NULLIF(TRIM({exp_last_col}), ''), '')
                 ) AS payee_name,
                 COALESCE(SUM(amount), 0.0) AS total_amount,
                 COUNT(*) AS transaction_count
-            FROM bulk_expenditures_clean
+            FROM {exp_table}
             {expenditures_filter}
             GROUP BY payee_name
             ORDER BY total_amount DESC, transaction_count DESC, payee_name ASC
@@ -228,6 +278,13 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         ]
 
     candidate_links: list[dict] = []
+    # Try bulk_committee_candidate_links first, then ISBE compat link table
+    has_isbe_compat_links = (
+        not has_candidate_links
+        and _table_exists(conn, "isbe_bulk_cmte_candidate_links_clean_compat")
+    )
+    has_isbe_candidates_tbl = _table_exists(conn, "isbe_candidates")
+
     if has_candidate_links:
         if has_candidates:
             candidate_rows = conn.execute(
@@ -251,6 +308,46 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                     candidate_id,
                     'Candidate ' || candidate_id AS candidate_name
                 FROM bulk_committee_candidate_links
+                WHERE committee_id_sbe = ?
+                  AND candidate_id IS NOT NULL
+                GROUP BY candidate_id
+                ORDER BY candidate_name ASC
+                """,
+                (committee_id_sbe,),
+            ).fetchall()
+        candidate_links = [
+            {
+                "candidate_id": row["candidate_id"],
+                "candidate_name": row["candidate_name"] or f"Candidate {row['candidate_id']}",
+            }
+            for row in candidate_rows
+        ]
+    elif has_isbe_compat_links:
+        if has_isbe_candidates_tbl:
+            candidate_rows = conn.execute(
+                """
+                SELECT
+                    l.candidate_id,
+                    COALESCE(
+                        MAX(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, ''))),
+                        'Candidate ' || l.candidate_id
+                    ) AS candidate_name
+                FROM isbe_bulk_cmte_candidate_links_clean_compat l
+                LEFT JOIN isbe_candidates c ON c.id = l.candidate_id
+                WHERE l.committee_id_sbe = ?
+                  AND l.candidate_id IS NOT NULL
+                GROUP BY l.candidate_id
+                ORDER BY candidate_name ASC
+                """,
+                (committee_id_sbe,),
+            ).fetchall()
+        else:
+            candidate_rows = conn.execute(
+                """
+                SELECT
+                    candidate_id,
+                    'Candidate ' || candidate_id AS candidate_name
+                FROM isbe_bulk_cmte_candidate_links_clean_compat
                 WHERE committee_id_sbe = ?
                   AND candidate_id IS NOT NULL
                 GROUP BY candidate_id
@@ -588,3 +685,178 @@ def committee_detail_by_sbe(committee_id_sbe):
             profile=profile,
         )
     return redirect(url_for('committees.committee_detail', committee_id=committee.id))
+
+
+@committees_bp.route('/filing/<int:filed_doc_id>')
+def filing_detail(filed_doc_id):
+    """Filing document detail page showing metadata, receipts, and expenditures."""
+    conn = current_app.get_database()
+
+    if not _table_exists(conn, "isbe_filed_docs"):
+        abort(404)
+
+    doc = conn.execute(
+        """
+        SELECT d.id, d.committee_id, d.filed_doc_type, d.doc_name,
+               d.amended, d.comment, d.pages, d.election_type, d.election_year,
+               d.reporting_period_begin, d.reporting_period_end,
+               d.received_at, d.received_datetime,
+               d.signer_last_name, d.signer_first_name,
+               d.submitter_last_name, d.submitter_first_name,
+               d.archived, d.clarification,
+               c.name AS committee_name
+        FROM isbe_filed_docs d
+        LEFT JOIN isbe_committees c ON c.id = d.committee_id
+        WHERE d.id = ?
+        LIMIT 1
+        """,
+        (filed_doc_id,),
+    ).fetchone()
+    if not doc:
+        abort(404)
+
+    filed_date = ""
+    rdt = doc["received_datetime"]
+    if rdt:
+        filed_date = rdt.strftime("%Y-%m-%d") if hasattr(rdt, "strftime") else str(rdt)[:10]
+
+    # Determine receipt/expenditure source tables
+    has_isbe_receipts = _table_exists(conn, "isbe_condensed_receipts")
+    has_bulk_receipts = _table_exists(conn, "bulk_receipts_clean")
+    has_isbe_expenditures = _table_exists(conn, "isbe_condensed_expenditures")
+    has_bulk_expenditures = _table_exists(conn, "bulk_expenditures_clean")
+
+    page = request.args.get('page', 1, type=int)
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    # --- Receipts for this filing ---
+    receipts = []
+    receipts_total = 0.0
+    receipts_count = 0
+    if has_isbe_receipts or has_bulk_receipts:
+        if has_isbe_receipts:
+            rcpt_tbl = "isbe_condensed_receipts"
+            rcpt_last = "last_name"
+        else:
+            rcpt_tbl = "bulk_receipts_clean"
+            rcpt_last = "last_or_business_name"
+
+        agg = conn.execute(
+            f"""
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0.0) AS total
+            FROM {rcpt_tbl}
+            WHERE filed_doc_id = ?
+            """,
+            (filed_doc_id,),
+        ).fetchone()
+        if agg:
+            receipts_count = int(agg["cnt"] or 0)
+            receipts_total = float(agg["total"] or 0.0)
+
+        receipt_rows = conn.execute(
+            f"""
+            SELECT
+                TRIM(
+                    COALESCE(NULLIF(TRIM(first_name), ''), '')
+                    || CASE
+                        WHEN COALESCE(NULLIF(TRIM(first_name), ''), '') != ''
+                         AND COALESCE(NULLIF(TRIM({rcpt_last}), ''), '') != '' THEN ' '
+                        ELSE ''
+                      END
+                    || COALESCE(NULLIF(TRIM({rcpt_last}), ''), '')
+                ) AS donor_name,
+                amount,
+                received_date,
+                description
+            FROM {rcpt_tbl}
+            WHERE filed_doc_id = ?
+            ORDER BY amount DESC
+            LIMIT ? OFFSET ?
+            """,
+            (filed_doc_id, per_page, offset),
+        ).fetchall()
+        receipts = [
+            {
+                "donor_name": (r["donor_name"] or "").strip() or "Unknown",
+                "amount": float(r["amount"] or 0),
+                "received_date": r["received_date"] or "",
+                "description": r["description"] or "",
+            }
+            for r in receipt_rows
+        ]
+
+    # --- Expenditures for this filing ---
+    expenditures = []
+    expenditures_total = 0.0
+    expenditures_count = 0
+    if has_isbe_expenditures or has_bulk_expenditures:
+        if has_isbe_expenditures:
+            exp_tbl = "isbe_condensed_expenditures"
+            exp_last = "last_name"
+            exp_first = "first_name"
+        else:
+            exp_tbl = "bulk_expenditures_clean"
+            exp_last = "payee_last_or_business_name"
+            exp_first = "payee_first_name"
+
+        agg = conn.execute(
+            f"""
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0.0) AS total
+            FROM {exp_tbl}
+            WHERE filed_doc_id = ?
+            """,
+            (filed_doc_id,),
+        ).fetchone()
+        if agg:
+            expenditures_count = int(agg["cnt"] or 0)
+            expenditures_total = float(agg["total"] or 0.0)
+
+        exp_rows = conn.execute(
+            f"""
+            SELECT
+                TRIM(
+                    COALESCE(NULLIF(TRIM({exp_first}), ''), '')
+                    || CASE
+                        WHEN COALESCE(NULLIF(TRIM({exp_first}), ''), '') != ''
+                         AND COALESCE(NULLIF(TRIM({exp_last}), ''), '') != '' THEN ' '
+                        ELSE ''
+                      END
+                    || COALESCE(NULLIF(TRIM({exp_last}), ''), '')
+                ) AS payee_name,
+                amount,
+                expended_date,
+                purpose
+            FROM {exp_tbl}
+            WHERE filed_doc_id = ?
+            ORDER BY amount DESC
+            LIMIT ? OFFSET ?
+            """,
+            (filed_doc_id, per_page, offset),
+        ).fetchall()
+        expenditures = [
+            {
+                "payee_name": (r["payee_name"] or "").strip() or "Unknown",
+                "amount": float(r["amount"] or 0),
+                "expended_date": r["expended_date"] or "",
+                "purpose": r["purpose"] or "",
+            }
+            for r in exp_rows
+        ]
+
+    total_items = max(receipts_count, expenditures_count)
+    total_pages = (total_items + per_page - 1) // per_page if total_items > 0 else 1
+
+    return render_template(
+        'committees/filing_detail.html',
+        doc=doc,
+        filed_date=filed_date,
+        receipts=receipts,
+        receipts_count=receipts_count,
+        receipts_total=receipts_total,
+        expenditures=expenditures,
+        expenditures_count=expenditures_count,
+        expenditures_total=expenditures_total,
+        page=page,
+        total_pages=total_pages,
+    )

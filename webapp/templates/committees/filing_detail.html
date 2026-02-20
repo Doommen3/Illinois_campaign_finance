@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}{{ doc.doc_name }} - Filing Detail{% endblock %}
+
+{% block content %}
+<h1>{{ doc.doc_name }}</h1>
+<p class="subtitle">
+    Filed Doc ID: {{ doc.id }}
+    {% if doc.committee_name %}
+    | Committee: <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=doc.committee_id) }}">{{ doc.committee_name }}</a>
+    {% endif %}
+</p>
+
+<div class="status-section">
+    <h2>Document Information</h2>
+    <table class="data-table">
+        <tbody>
+            {% if filed_date %}
+            <tr><td><strong>Filed Date</strong></td><td>{{ filed_date }}</td></tr>
+            {% endif %}
+            {% if doc.doc_name %}
+            <tr><td><strong>Document Type</strong></td><td>{{ doc.doc_name }}</td></tr>
+            {% endif %}
+            {% if doc.reporting_period_begin %}
+            <tr><td><strong>Reporting Period</strong></td><td>{{ doc.reporting_period_begin }} to {{ doc.reporting_period_end }}</td></tr>
+            {% endif %}
+            {% if doc.election_type %}
+            <tr><td><strong>Election</strong></td><td>{{ doc.election_type }}{% if doc.election_year %} {{ doc.election_year }}{% endif %}</td></tr>
+            {% endif %}
+            {% if doc.pages %}
+            <tr><td><strong>Pages</strong></td><td>{{ doc.pages }}</td></tr>
+            {% endif %}
+            {% if doc.amended %}
+            <tr><td><strong>Amended</strong></td><td>Yes</td></tr>
+            {% endif %}
+            {% if doc.comment %}
+            <tr><td><strong>Comment</strong></td><td>{{ doc.comment }}</td></tr>
+            {% endif %}
+            {% if doc.clarification %}
+            <tr><td><strong>Clarification</strong></td><td>{{ doc.clarification }}</td></tr>
+            {% endif %}
+            {% if doc.signer_first_name or doc.signer_last_name %}
+            <tr><td><strong>Signer</strong></td><td>{{ doc.signer_first_name }} {{ doc.signer_last_name }}</td></tr>
+            {% endif %}
+            {% if doc.submitter_first_name or doc.submitter_last_name %}
+            <tr><td><strong>Submitter</strong></td><td>{{ doc.submitter_first_name }} {{ doc.submitter_last_name }}</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+{% if receipts_count > 0 %}
+<div class="status-section">
+    <h2>Receipts ({{ receipts_count }} | {{ format_currency(receipts_total) }})</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Donor</th><th>Amount</th><th>Date</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+            {% for r in receipts %}
+            <tr>
+                <td>{{ r.donor_name }}</td>
+                <td>{{ format_currency(r.amount) }}</td>
+                <td>{{ r.received_date }}</td>
+                <td>{{ r.description }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if expenditures_count > 0 %}
+<div class="status-section">
+    <h2>Expenditures ({{ expenditures_count }} | {{ format_currency(expenditures_total) }})</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Payee</th><th>Amount</th><th>Date</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+            {% for e in expenditures %}
+            <tr>
+                <td>{{ e.payee_name }}</td>
+                <td>{{ format_currency(e.amount) }}</td>
+                <td>{{ e.expended_date }}</td>
+                <td>{{ e.purpose }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if receipts_count == 0 and expenditures_count == 0 %}
+<div class="status-section">
+    <p>No itemized receipts or expenditures found for this filing.</p>
+</div>
+{% endif %}
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('committees.filing_detail', filed_doc_id=doc.id, page=page-1) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('committees.filing_detail', filed_doc_id=doc.id, page=page+1) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}
