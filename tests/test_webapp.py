@@ -3166,5 +3166,141 @@ class TestWebApp:
         assert response.status_code == 200
 
 
+class TestCommitteesIsbe:
+    """Tests for the committees list page using ISBE data."""
+
+    @pytest.fixture
+    def isbe_app(self, tmp_path: Path):
+        db_path = str(tmp_path / "test_committees_isbe.db")
+        init_db(db_path)
+
+        conn = get_db(db_path)
+        # Seed ISBE committees
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS isbe_committees (
+                id INTEGER PRIMARY KEY,
+                name TEXT, type TEXT, refer_name TEXT,
+                address1 TEXT, address2 TEXT, address3 TEXT,
+                city TEXT, state TEXT, zipcode TEXT,
+                active INTEGER DEFAULT 1,
+                status_date TEXT, creation_date TEXT,
+                creation_amount REAL,
+                candidate_position TEXT, policy_position TEXT,
+                party TEXT, purpose TEXT,
+                disp_funds_return TEXT, disp_funds_political_committee TEXT,
+                disp_funds_charity TEXT, disp_funds_95 TEXT,
+                state_committee INTEGER, local_committee INTEGER
+            )
+        """)
+        conn.execute("""
+            INSERT INTO isbe_committees (id, name, type, city, state, zipcode, active, party)
+            VALUES
+                (100, 'Citizens for Smith', 'Candidate', 'Chicago', 'IL', '60601', 1, 'Democratic'),
+                (200, 'Friends of Jones', 'Candidate', 'Springfield', 'IL', '62701', 1, 'Republican'),
+                (300, 'PAC United', 'Political Action', 'Peoria', 'IL', '61602', 1, NULL)
+        """)
+        conn.commit()
+        conn.close()
+
+        app = create_app({
+            'TESTING': True,
+            'DATABASE_PATH': db_path,
+        })
+        return app
+
+    @pytest.fixture
+    def client(self, isbe_app):
+        return isbe_app.test_client()
+
+    def test_committees_list_returns_isbe_data(self, client):
+        """Committees page should return ISBE committee data when isbe_committees exists."""
+        response = client.get('/committees/')
+        assert response.status_code == 200
+        assert b'Citizens for Smith' in response.data
+        assert b'Friends of Jones' in response.data
+        assert b'PAC United' in response.data
+        assert b'3 total committees' in response.data
+        assert b'No committees found.' not in response.data
+
+    def test_committees_list_sort_by_name(self, client):
+        """Committees page sort by name ascending should work."""
+        response = client.get('/committees/?sort=name&dir=asc')
+        assert response.status_code == 200
+        html = response.data.decode()
+        idx_citizens = html.index('Citizens for Smith')
+        idx_friends = html.index('Friends of Jones')
+        idx_pac = html.index('PAC United')
+        assert idx_citizens < idx_friends < idx_pac
+
+    def test_committees_list_sort_desc(self, client):
+        """Committees page sort by name descending should work."""
+        response = client.get('/committees/?sort=name&dir=desc')
+        assert response.status_code == 200
+        html = response.data.decode()
+        idx_pac = html.index('PAC United')
+        idx_friends = html.index('Friends of Jones')
+        idx_citizens = html.index('Citizens for Smith')
+        assert idx_pac < idx_friends < idx_citizens
+
+    def test_committees_list_shows_type_and_party(self, client):
+        """Committees page should show type and party columns for ISBE data."""
+        response = client.get('/committees/')
+        assert response.status_code == 200
+        assert b'Candidate' in response.data
+        assert b'Democratic' in response.data
+        assert b'Republican' in response.data
+        assert b'Political Action' in response.data
+
+    def test_committees_detail_fallback_to_sbe(self, isbe_app):
+        """Committee detail route should fall back to SBE profile when legacy committee not found."""
+        conn = get_db(isbe_app.config['DATABASE_PATH'])
+        # Create bulk tables needed by _bulk_committee_profile
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bulk_committees_clean (
+                committee_id_sbe INTEGER, committee_name TEXT,
+                committee_type TEXT, committee_status_code TEXT,
+                city TEXT, state TEXT, postal_code TEXT,
+                party_affiliation TEXT, committee_purpose TEXT,
+                reference_name TEXT, address_line_1 TEXT,
+                address_line_2 TEXT, address_line_3 TEXT,
+                status_date TEXT, creation_date TEXT,
+                creation_funds_available REAL,
+                is_state_committee_obsolete INTEGER,
+                state_committee_id_obsolete INTEGER,
+                is_local_committee_obsolete INTEGER,
+                local_committee_id_obsolete INTEGER,
+                residual_funds_return_to_contributors TEXT,
+                residual_funds_to_political_committee TEXT,
+                residual_funds_to_charity TEXT,
+                residual_funds_per_ilcs_9_5 TEXT,
+                residual_funds_description TEXT,
+                candidate_support_or_oppose TEXT,
+                policy_support_or_oppose TEXT,
+                source_file TEXT, source_row_number INTEGER
+            )
+        """)
+        conn.execute("""
+            INSERT INTO bulk_committees_clean (committee_id_sbe, committee_name, committee_type, city, state, postal_code)
+            VALUES (100, 'Citizens for Smith', 'Candidate', 'Chicago', 'IL', '60601')
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bulk_receipts_clean (
+                committee_id_sbe INTEGER, amount REAL, received_date TEXT,
+                first_name TEXT, last_or_business_name TEXT, is_archived INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            INSERT INTO bulk_receipts_clean (committee_id_sbe, amount, received_date, first_name, last_or_business_name)
+            VALUES (100, 500.0, '2025-01-15', 'Jane', 'Donor')
+        """)
+        conn.commit()
+        conn.close()
+
+        client = isbe_app.test_client()
+        response = client.get('/committees/100')
+        assert response.status_code == 200
+        assert b'Citizens for Smith' in response.data
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

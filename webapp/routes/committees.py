@@ -355,10 +355,8 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
 
 @committees_bp.route('/')
 def list_committees():
-    """List all committees."""
+    """List all committees from ISBE data."""
     conn = current_app.get_database()
-    period = get_active_period()
-    date_from, date_to = period_to_date_window(period)
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -367,20 +365,85 @@ def list_committees():
     sort_by = request.args.get('sort', 'name')
     sort_dir = request.args.get('dir', 'asc')
 
-    committees = Committee.get_all(
-        conn,
-        limit=per_page,
-        offset=offset,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        transaction_date_from=date_from,
-        transaction_date_to=date_to,
-    )
-    total = Committee.count(
-        conn,
-        transaction_date_from=date_from,
-        transaction_date_to=date_to,
-    )
+    sort_map = {
+        "name": "c.name",
+        "total_contributions": "total_contributions",
+    }
+    sort_field = sort_map.get(sort_by, "c.name")
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+
+    has_isbe = _table_exists(conn, "isbe_committees")
+    has_money = has_isbe and _table_exists(conn, "isbe_committee_money")
+
+    if has_isbe:
+        if has_money:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.name, c.type, c.party, c.active,
+                       COALESCE(m.total, 0) AS total_contributions
+                FROM isbe_committees c
+                LEFT JOIN isbe_committee_money m ON m.committee_id = c.id
+                ORDER BY {sort_field} {direction}, c.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (per_page, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.name, c.type, c.party, c.active,
+                       0 AS total_contributions
+                FROM isbe_committees c
+                ORDER BY {sort_field} {direction}, c.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (per_page, offset),
+            ).fetchall()
+
+        total_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM isbe_committees"
+        ).fetchone()
+        total = total_row["count"] if total_row else 0
+    else:
+        # Fallback to legacy committees table
+        period = get_active_period()
+        date_from, date_to = period_to_date_window(period)
+        committees_legacy = Committee.get_all(
+            conn,
+            limit=per_page,
+            offset=offset,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            transaction_date_from=date_from,
+            transaction_date_to=date_to,
+        )
+        total = Committee.count(
+            conn,
+            transaction_date_from=date_from,
+            transaction_date_to=date_to,
+        )
+        total_pages = (total + per_page - 1) // per_page
+        return render_template('committees/list.html',
+                               committees=committees_legacy,
+                               page=page,
+                               total_pages=total_pages,
+                               total=total,
+                               sort_by=sort_by,
+                               sort_dir=sort_dir,
+                               use_isbe=False)
+
+    committees = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "type": row["type"] or "",
+            "party": row["party"] or "",
+            "active": row["active"],
+            "total_contributions": row["total_contributions"] or 0,
+        }
+        for row in rows
+    ]
+
     total_pages = (total + per_page - 1) // per_page
 
     return render_template('committees/list.html',
@@ -389,7 +452,8 @@ def list_committees():
                            total_pages=total_pages,
                            total=total,
                            sort_by=sort_by,
-                           sort_dir=sort_dir)
+                           sort_dir=sort_dir,
+                           use_isbe=True)
 
 
 @committees_bp.route('/<int:committee_id>')
@@ -401,6 +465,14 @@ def committee_detail(committee_id):
 
     committee = Committee.get_by_id(conn, committee_id)
     if not committee:
+        # Fallback: treat committee_id as an ISBE SBE committee ID
+        profile = _bulk_committee_profile(conn, committee_id)
+        if profile:
+            return render_template(
+                'committees/detail_sbe.html',
+                committee_id_sbe=committee_id,
+                profile=profile,
+            )
         abort(404)
 
     page = request.args.get('page', 1, type=int)

@@ -15,6 +15,10 @@
                     Name{% if sort_by == 'name' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
+            {% if use_isbe %}
+            <th>Type</th>
+            <th>Party</th>
+            {% endif %}
             <th>
                 <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc') }}">
                     Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
@@ -26,15 +30,25 @@
         {% for committee in committees %}
         <tr>
             <td>
+                {% if use_isbe %}
+                <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=committee.id) }}">
+                    {{ committee.name }}
+                </a>
+                {% else %}
                 <a href="{{ url_for('committees.committee_detail', committee_id=committee.id) }}">
                     {{ committee.name }}
                 </a>
+                {% endif %}
             </td>
+            {% if use_isbe %}
+            <td>{{ committee.type or '' }}</td>
+            <td>{{ committee.party or '' }}</td>
+            {% endif %}
             <td>{{ format_currency(committee.total_contributions or 0) }}</td>
         </tr>
         {% else %}
         <tr>
-            <td colspan="2">No committees found.</td>
+            <td colspan="{{ 4 if use_isbe else 2 }}">No committees found.</td>
         </tr>
         {% endfor %}
     </tbody>
