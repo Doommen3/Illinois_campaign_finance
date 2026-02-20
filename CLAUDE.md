@@ -210,6 +210,16 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 - After generating test data, always verify NOT NULL constraints and required fields match the actual schema.
 - Run tests after every implementation change before presenting work as complete.
 
+### CI / GitHub Actions
+
+- **Workflow**: `.github/workflows/ci.yml` — runs on every push/PR to `main`.
+- **Job**: `test-and-lint` — lint with `ruff` (critical rules E9/F63/F7/F82), then `pytest -q -m "not integration"`.
+- **PostgreSQL service**: CI spins up a PostgreSQL 16 container. Connection DSN is set via `TEST_DATABASE_URL` and `DATABASE_URL` env vars (`postgresql://test_user:test_pass@localhost/ilcf_test`).
+- **Test isolation**: `tests/conftest.py` creates a fresh schema per test inside `ilcf_test` and drops it on teardown.
+- **Integration marker**: Tests that require PostgreSQL extensions (e.g., `pg_trgm` for address matching) or live services must be marked `@pytest.mark.integration` — CI skips these via `-m "not integration"`.
+- **Boolean column types**: Test fixtures must use PostgreSQL-compatible `BOOLEAN` types (`TRUE`/`FALSE`), not SQLite-style `INTEGER` (`0`/`1`). PostgreSQL does not allow `boolean = integer` comparisons. Similarly, source code SQL must compare boolean columns with `= TRUE`/`= FALSE`, not `= 0`/`= 1`.
+- **SQLite-only syntax in tests**: Tests that use `sqlite3.connect()` directly (e.g., threading tests in `test_irs_527_parse_edge_cases.py`) must respect `check_same_thread=True` — close connections in their creator thread, not the main thread.
+
 ## Performance-First Delivery Policy (Required)
 
 For any significant code path (imports, migrations, cross-matching, analytics refreshes, route queries, or caching changes), treat performance as a first-class requirement.
