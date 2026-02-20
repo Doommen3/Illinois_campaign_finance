@@ -982,6 +982,7 @@ CREATE TABLE IF NOT EXISTS irs527_organizations (
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_name ON irs527_organizations(org_name);
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_state ON irs527_organizations(state);
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_form_id ON irs527_organizations(form_id);
+CREATE INDEX IF NOT EXISTS idx_irs527_orgs_ein ON irs527_organizations(ein);
 
 CREATE TABLE IF NOT EXISTS irs527_reports (
     form_id INTEGER NOT NULL,
@@ -1125,6 +1126,8 @@ CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_donor_score
     ON lobbying_donor_matches(donor_key, score DESC);
 CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_client_name
     ON lobbying_donor_matches(client_name);
+CREATE INDEX IF NOT EXISTS idx_lobbying_donor_matches_client_id
+    ON lobbying_donor_matches(client_id);
 
 CREATE TABLE IF NOT EXISTS lobbying_expenditure_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1139,6 +1142,8 @@ CREATE TABLE IF NOT EXISTS lobbying_expenditure_matches (
 
 CREATE INDEX IF NOT EXISTS idx_lobbying_expenditure_matches_score
     ON lobbying_expenditure_matches(score DESC);
+CREATE INDEX IF NOT EXISTS idx_lobbying_exp_matches_source
+    ON lobbying_expenditure_matches(source_type, source_id);
 
 CREATE TABLE IF NOT EXISTS irs527_committee_matches (
     ein TEXT NOT NULL,
@@ -1153,6 +1158,8 @@ CREATE TABLE IF NOT EXISTS irs527_committee_matches (
 
 CREATE INDEX IF NOT EXISTS idx_irs527_committee_matches_score
     ON irs527_committee_matches(score DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_committee_matches_ein
+    ON irs527_committee_matches(ein);
 
 CREATE TABLE IF NOT EXISTS irs527_expenditure_recipient_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1168,6 +1175,8 @@ CREATE TABLE IF NOT EXISTS irs527_expenditure_recipient_matches (
 
 CREATE INDEX IF NOT EXISTS idx_irs527_exp_recipient_matches_score
     ON irs527_expenditure_recipient_matches(score DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_exp_recipient_matches_ein
+    ON irs527_expenditure_recipient_matches(ein);
 
 CREATE TABLE IF NOT EXISTS irs527_director_donor_matches (
     match_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1182,6 +1191,8 @@ CREATE TABLE IF NOT EXISTS irs527_director_donor_matches (
 
 CREATE INDEX IF NOT EXISTS idx_irs527_director_donor_matches_score
     ON irs527_director_donor_matches(score DESC);
+CREATE INDEX IF NOT EXISTS idx_irs527_director_donor_matches_ein
+    ON irs527_director_donor_matches(ein);
 
 CREATE TABLE IF NOT EXISTS lobbying_527_matches (
     client_id INTEGER NOT NULL,

@@ -129,6 +129,9 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - `DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS`
    - `DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS`
    - `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS`
+   - `ANALYTICS_NETWORKS_CACHE_TTL_SECONDS`
+   - `ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS`
+   - `ANALYTICS_RISK_CACHE_TTL_SECONDS`
    - `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS`
    - `FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS`
    - `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS`
@@ -174,6 +177,19 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).
    - Legacy routes (`/reports`, `/donors`, `/committees`, and search report/filed-doc/donor-key sections) are expected to propagate the active global period window end-to-end.
    - Geo drilldown cache keys must include range + geo coordinates (`period/range`, `date_from/date_to` where applicable, `geo_type`, `geo_value`, optional `geo_state`) plus pagination/sort params.
+- Analytics page TTL caching (2026-02-19):
+   - `/analytics/networks`: TTL 300s, parallel graph computation with per-thread DB connections. Cold ~57s, warm ~25ms.
+   - `/analytics/` (overview): TTL 300s, caches all 7 aggregates + state race analytics. Cold ~21s, warm ~14ms.
+   - `/analytics/risk`: TTL 300s, caches anomalies + reconciliation. Cold ~9s, warm ~41ms.
+   - `/analytics/relationships`: TTL 300s (pre-existing). Cold ~61s, warm ~17ms.
+   - `/candidate-finance/`: TTL 180s, caches paginated results keyed on all filter params.
+   - All analytics caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags.
+   - Append `?refresh_cache=1` to force cache miss.
+   - `bulk_candidate_committee_finance_agg` is a VIEW (not table) that joins/aggregates 6.4M receipt rows on each access.
+- Analytics index additions (2026-02-19, in `database/schema.sql`):
+   - `idx_irs527_orgs_ein`, `idx_irs527_committee_matches_ein`, `idx_irs527_exp_recipient_matches_ein`, `idx_irs527_director_donor_matches_ein` — EIN lookups for 527 ecosystem graph.
+   - `idx_lobbying_donor_matches_client_id`, `idx_lobbying_exp_matches_source` — client/source lookups for lobbying influence graph.
+   - `idx_isbe_condensed_exp_committee_id` — committee expenditure filtering for vendor network.
 - Benchmarking guidance:
    - Always measure at least one **cold** pass and one **warm** pass.
    - For reliable warm numbers, run 2-3 warm passes and use median.

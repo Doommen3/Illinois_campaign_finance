@@ -2,6 +2,8 @@
 import csv
 from datetime import date
 from io import StringIO
+import threading
+import time
 
 from flask import Blueprint, Response, render_template, request, current_app
 
@@ -11,6 +13,9 @@ from database.models import (
     CandidateCommitteeItemizedReceipt,
 )
 from webapp.utils.time_filter import get_active_period, period_cycle, period_to_date_window
+
+_candidate_finance_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
+_candidate_finance_cache_lock = threading.Lock()
 
 candidate_finance_bp = Blueprint('candidate_finance', __name__)
 
@@ -82,10 +87,34 @@ def list_candidate_finance():
     table_available = CandidateCommitteeFinanceAgg.is_available(conn)
     period_values = {"years": [], "cycles": []}
 
+    # --- TTL cache for expensive view-backed queries ---
+    cache_ttl = 180  # 3 minutes
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    cache_key = (
+        page, sort_by, sort_dir, query, office, candidate_party, committee_party,
+        start_date, end_date, year, cycle, min_receipts, min_expenditures,
+    )
+    now = time.monotonic()
+
+    cached = None
+    if cache_enabled:
+        with _candidate_finance_cache_lock:
+            if (
+                _candidate_finance_cache.get("payload") is not None
+                and _candidate_finance_cache.get("key") == cache_key
+                and float(_candidate_finance_cache.get("expires_at", 0.0)) > now
+            ):
+                cached = _candidate_finance_cache["payload"]
+
     rows = []
     total = 0
     total_pages = 0
-    if table_available:
+    if cached is not None:
+        rows = cached["rows"]
+        total = cached["total"]
+        total_pages = cached["total_pages"]
+        period_values = cached["period_values"]
+    elif table_available:
         period_values = CandidateCommitteeFinanceAgg.list_period_values(conn)
         rows = CandidateCommitteeFinanceAgg.get_all(
             conn,
@@ -118,6 +147,16 @@ def list_candidate_finance():
             min_expenditures=min_expenditures,
         )
         total_pages = (total + per_page - 1) // per_page
+        if cache_enabled:
+            with _candidate_finance_cache_lock:
+                _candidate_finance_cache["payload"] = {
+                    "rows": rows,
+                    "total": total,
+                    "total_pages": total_pages,
+                    "period_values": period_values,
+                }
+                _candidate_finance_cache["key"] = cache_key
+                _candidate_finance_cache["expires_at"] = now + float(cache_ttl)
 
     if output_format == 'csv':
         if not table_available:

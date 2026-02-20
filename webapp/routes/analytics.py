@@ -1,6 +1,7 @@
 """Analytics dashboard routes."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import logging
 import threading
 import time
 
@@ -29,7 +30,7 @@ from database.analytics import (
     get_vendor_expenditure_network,
     save_dashboard_snapshot,
 )
-from database.connection import get_db
+from database.connection import get_db, close_db
 from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 analytics_bp = Blueprint("analytics", __name__)
@@ -44,6 +45,12 @@ _relationships_cache = {
     "key": None,
 }
 _relationships_cache_lock = threading.Lock()
+_networks_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
+_networks_cache_lock = threading.Lock()
+_overview_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
+_overview_cache_lock = threading.Lock()
+_risk_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
+_risk_cache_lock = threading.Lock()
 _geo_drilldown_cache: dict[str, dict] = {}
 _geo_drilldown_cache_lock = threading.Lock()
 
@@ -341,6 +348,30 @@ def _refresh_params(filters: dict) -> dict:
     return {key: filters[key] for key in keys}
 
 
+_networks_parallel_executor = ThreadPoolExecutor(max_workers=5)
+
+
+def _compute_graph_with_own_conn(graph_key: str, func, args, kwargs, fallback: dict, db_target: str) -> tuple[str, dict]:
+    """Run a graph function in a thread with its own DB connection."""
+    conn = None
+    try:
+        conn = get_db(db_target)
+        result = func(conn, *args, **kwargs)
+        if isinstance(result, dict) and result.get("nodes") is not None and result.get("edges") is not None:
+            return graph_key, result
+    except Exception:
+        logging.getLogger(__name__).exception("Parallel graph build failed: %s", graph_key)
+    finally:
+        if conn is not None:
+            close_db(conn)
+
+    summary = dict((fallback.get("summary") or {}))
+    summary.setdefault("node_count", 0)
+    summary.setdefault("edge_count", 0)
+    summary["error"] = f"{graph_key}_query_failed"
+    return graph_key, {"nodes": [], "edges": [], "centrality": [], "summary": summary}
+
+
 def _safe_optional_graph(graph_key: str, callback, fallback: dict) -> dict:
     """Return optional graph payload, logging and degrading safely on failure."""
     try:
@@ -383,70 +414,126 @@ def dashboard():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    if snapshot_state["heavy_sections_loaded"]:
-        network = payload.get("network", _empty_network())
-        anomalies = payload.get("anomalies", [])
-        concentration = payload.get("concentration", [])
-        geo_summary = payload.get("geo_summary", _empty_geo_summary())
-        time_series = payload.get("time_series", [])
-        nlp_summary = payload.get("nlp_summary", [])
-        reconciliation = payload.get("reconciliation", [])
+    # --- TTL cache for overview aggregates ---
+    overview_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 300)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    election_cycle = request.args.get("election_cycle", type=int)
+    cache_key = (
+        filters["time_period_key"],
+        filters["date_from"],
+        filters["date_to"],
+        filters["min_edge_amount"],
+        filters["network_limit"],
+        filters["anomaly_limit"],
+        filters["concentration_limit"],
+        filters["months"],
+        filters["nlp_limit"],
+        election_cycle,
+    )
+    now = time.monotonic()
+
+    cached_payload = None
+    if cache_enabled and not refresh_requested:
+        with _overview_cache_lock:
+            if (
+                _overview_cache.get("payload") is not None
+                and _overview_cache.get("key") == cache_key
+                and float(_overview_cache.get("expires_at", 0.0)) > now
+            ):
+                cached_payload = _overview_cache["payload"]
+
+    if cached_payload is not None:
+        network = cached_payload["network"]
+        anomalies = cached_payload["anomalies"]
+        concentration = cached_payload["concentration"]
+        geo_summary = cached_payload["geo_summary"]
+        time_series = cached_payload["time_series"]
+        nlp_summary = cached_payload["nlp_summary"]
+        reconciliation = cached_payload["reconciliation"]
+        state_race_analytics = cached_payload["state_race_analytics"]
+        state_race_table_available = cached_payload["state_race_table_available"]
+        snapshot_state["heavy_sections_loaded"] = True
     else:
-        network = _safe_optional_graph(
-            "network",
-            lambda: get_network_graph(
+        if snapshot_state["heavy_sections_loaded"]:
+            network = payload.get("network", _empty_network())
+            anomalies = payload.get("anomalies", [])
+            concentration = payload.get("concentration", [])
+            geo_summary = payload.get("geo_summary", _empty_geo_summary())
+            time_series = payload.get("time_series", [])
+            nlp_summary = payload.get("nlp_summary", [])
+            reconciliation = payload.get("reconciliation", [])
+        else:
+            network = _safe_optional_graph(
+                "network",
+                lambda: get_network_graph(
+                    conn,
+                    min_edge_amount=filters["min_edge_amount"],
+                    limit=filters["network_limit"],
+                    date_from=filters["date_from"],
+                    date_to=filters["date_to"],
+                ),
+                _empty_network(),
+            )
+            anomalies = get_anomaly_flags(
                 conn,
-                min_edge_amount=filters["min_edge_amount"],
-                limit=filters["network_limit"],
+                limit=filters["anomaly_limit"],
                 date_from=filters["date_from"],
                 date_to=filters["date_to"],
-            ),
-            _empty_network(),
+            )
+            concentration = get_donor_concentration(
+                conn,
+                limit=filters["concentration_limit"],
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            )
+            geo_summary = _empty_geo_summary()
+            time_series = get_time_series(
+                conn,
+                months=filters["months"],
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            )
+            nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
+            reconciliation = get_reconciliation_outliers(
+                conn,
+                limit=filters["recon_limit"],
+                min_abs_diff=filters["recon_min_abs_diff"],
+            )
+            snapshot_state["heavy_sections_loaded"] = True
+
+        state_race_table_available = all(
+            _table_exists(conn, table_name)
+            for table_name in (
+                "bulk_candidate_committee_finance_agg",
+                "bulk_receipts_clean",
+                "bulk_expenditures_clean",
+            )
         )
-        anomalies = get_anomaly_flags(
+        state_race_analytics = get_state_race_analytics(
             conn,
-            limit=filters["anomaly_limit"],
+            limit=12,
             date_from=filters["date_from"],
             date_to=filters["date_to"],
+            election_cycle=election_cycle,
         )
-        concentration = get_donor_concentration(
-            conn,
-            limit=filters["concentration_limit"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        )
-        geo_summary = _empty_geo_summary()
-        time_series = get_time_series(
-            conn,
-            months=filters["months"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        )
-        nlp_summary = get_nlp_spending_summary(conn, limit=filters["nlp_limit"])
-        reconciliation = get_reconciliation_outliers(
-            conn,
-            limit=filters["recon_limit"],
-            min_abs_diff=filters["recon_min_abs_diff"],
-        )
-        snapshot_state["heavy_sections_loaded"] = True
+        if cache_enabled:
+            with _overview_cache_lock:
+                _overview_cache["payload"] = {
+                    "network": network,
+                    "anomalies": anomalies,
+                    "concentration": concentration,
+                    "geo_summary": geo_summary,
+                    "time_series": time_series,
+                    "nlp_summary": nlp_summary,
+                    "reconciliation": reconciliation,
+                    "state_race_analytics": state_race_analytics,
+                    "state_race_table_available": state_race_table_available,
+                }
+                _overview_cache["key"] = cache_key
+                _overview_cache["expires_at"] = now + float(overview_cache_ttl)
 
     latest_time_point = time_series[-1] if time_series else None
-    election_cycle = request.args.get("election_cycle", type=int)
-    state_race_table_available = all(
-        _table_exists(conn, table_name)
-        for table_name in (
-            "bulk_candidate_committee_finance_agg",
-            "bulk_receipts_clean",
-            "bulk_expenditures_clean",
-        )
-    )
-    state_race_analytics = get_state_race_analytics(
-        conn,
-        limit=12,
-        date_from=filters["date_from"],
-        date_to=filters["date_to"],
-        election_cycle=election_cycle,
-    )
 
     return render_template(
         "analytics/overview.html",
@@ -504,54 +591,97 @@ def networks():
     payload = snapshot_state["payload"] or {}
 
     empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
-    if snapshot_state["heavy_sections_loaded"]:
-        network = payload.get("network", _empty_network())
+
+    # --- TTL cache for all 5 network graphs ---
+    networks_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", 300)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    cache_key = (
+        filters["time_period_key"],
+        filters["date_from"],
+        filters["date_to"],
+        filters["min_edge_amount"],
+        filters["network_limit"],
+    )
+    now = time.monotonic()
+
+    cached_payload = None
+    if cache_enabled and not refresh_requested:
+        with _networks_cache_lock:
+            if (
+                _networks_cache.get("payload") is not None
+                and _networks_cache.get("key") == cache_key
+                and float(_networks_cache.get("expires_at", 0.0)) > now
+            ):
+                cached_payload = _networks_cache["payload"]
+
+    if cached_payload is not None:
+        network = cached_payload["network"]
+        vendor_network = cached_payload["vendor_network"]
+        overlap_graph = cached_payload["overlap_graph"]
+        lobbying_graph = cached_payload["lobbying_graph"]
+        ecosystem_527 = cached_payload["ecosystem_527"]
+        snapshot_state["heavy_sections_loaded"] = True
     else:
-        network = _safe_optional_graph(
-            "network",
-            lambda: get_network_graph(
-                conn,
-                min_edge_amount=filters["min_edge_amount"],
-                limit=filters["network_limit"],
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-            _empty_network(),
-        )
+        # Use snapshot data for network if available, otherwise compute it as
+        # part of the parallel batch below.
+        network_from_snapshot = None
+        if snapshot_state["heavy_sections_loaded"]:
+            network_from_snapshot = payload.get("network", _empty_network())
+
+        # Run all 5 (or 4, if network came from snapshot) graph functions in
+        # parallel, each with its own DB connection.
+        db_target = current_app.config.get("DATABASE_TARGET", "")
+        graph_jobs: list[tuple[str, object, tuple, dict, dict]] = []
+        if network_from_snapshot is None:
+            graph_jobs.append((
+                "network", get_network_graph, (),
+                {"min_edge_amount": filters["min_edge_amount"], "limit": filters["network_limit"],
+                 "date_from": filters["date_from"], "date_to": filters["date_to"]},
+                _empty_network(),
+            ))
+        graph_jobs.extend([
+            ("vendor_network", get_vendor_expenditure_network, (),
+             {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
+            ("overlap_graph", get_state_federal_overlap_graph, (),
+             {"donor_limit": 100, "edge_limit": 600}, empty_graph),
+            ("lobbying_graph", get_lobbying_influence_graph, (),
+             {"client_limit": 80, "edge_limit": 600,
+              "date_from": filters["date_from"], "date_to": filters["date_to"]}, empty_graph),
+            ("ecosystem_527", get_irs527_ecosystem_graph, (),
+             {"org_limit": 80, "edge_limit": 600,
+              "date_from": filters["date_from"], "date_to": filters["date_to"]}, empty_graph),
+        ])
+
+        results: dict[str, dict] = {}
+        futures = {
+            _networks_parallel_executor.submit(
+                _compute_graph_with_own_conn, key, func, args, kwargs, fallback, db_target,
+            ): key
+            for key, func, args, kwargs, fallback in graph_jobs
+        }
+        for future in as_completed(futures):
+            key, result = future.result()
+            results[key] = result
+
+        network = network_from_snapshot or results.get("network", _empty_network())
+        vendor_network = results.get("vendor_network", empty_graph)
+        overlap_graph = results.get("overlap_graph", empty_graph)
+        lobbying_graph = results.get("lobbying_graph", empty_graph)
+        ecosystem_527 = results.get("ecosystem_527", empty_graph)
         snapshot_state["heavy_sections_loaded"] = True
 
-    vendor_network = _safe_optional_graph(
-        "vendor_network",
-        lambda: get_vendor_expenditure_network(conn, committee_limit=60, vendor_limit=100, edge_limit=800),
-        empty_graph,
-    )
-    overlap_graph = _safe_optional_graph(
-        "overlap_graph",
-        lambda: get_state_federal_overlap_graph(conn, donor_limit=100, edge_limit=600),
-        empty_graph,
-    )
-    lobbying_graph = _safe_optional_graph(
-        "lobbying_graph",
-        lambda: get_lobbying_influence_graph(
-            conn,
-            client_limit=80,
-            edge_limit=600,
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        ),
-        empty_graph,
-    )
-    ecosystem_527 = _safe_optional_graph(
-        "ecosystem_527",
-        lambda: get_irs527_ecosystem_graph(
-            conn,
-            org_limit=80,
-            edge_limit=600,
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        ),
-        empty_graph,
-    )
+        if cache_enabled:
+            with _networks_cache_lock:
+                _networks_cache["payload"] = {
+                    "network": network,
+                    "vendor_network": vendor_network,
+                    "overlap_graph": overlap_graph,
+                    "lobbying_graph": lobbying_graph,
+                    "ecosystem_527": ecosystem_527,
+                }
+                _networks_cache["key"] = cache_key
+                _networks_cache["expires_at"] = now + float(networks_cache_ttl)
 
     return render_template(
         "analytics/networks.html",
@@ -572,22 +702,59 @@ def risk():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    if snapshot_state["heavy_sections_loaded"]:
-        anomalies = payload.get("anomalies", [])
-        reconciliation = payload.get("reconciliation", [])
-    else:
-        anomalies = get_anomaly_flags(
-            conn,
-            limit=filters["anomaly_limit"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-        )
-        reconciliation = get_reconciliation_outliers(
-            conn,
-            limit=filters["recon_limit"],
-            min_abs_diff=filters["recon_min_abs_diff"],
-        )
+    # --- TTL cache for risk aggregates ---
+    risk_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", 300)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    cache_key = (
+        filters["time_period_key"],
+        filters["date_from"],
+        filters["date_to"],
+        filters["anomaly_limit"],
+        filters["recon_limit"],
+        round(filters["recon_min_abs_diff"], 2),
+    )
+    now = time.monotonic()
+
+    cached_payload = None
+    if cache_enabled and not refresh_requested:
+        with _risk_cache_lock:
+            if (
+                _risk_cache.get("payload") is not None
+                and _risk_cache.get("key") == cache_key
+                and float(_risk_cache.get("expires_at", 0.0)) > now
+            ):
+                cached_payload = _risk_cache["payload"]
+
+    if cached_payload is not None:
+        anomalies = cached_payload["anomalies"]
+        reconciliation = cached_payload["reconciliation"]
         snapshot_state["heavy_sections_loaded"] = True
+    else:
+        if snapshot_state["heavy_sections_loaded"]:
+            anomalies = payload.get("anomalies", [])
+            reconciliation = payload.get("reconciliation", [])
+        else:
+            anomalies = get_anomaly_flags(
+                conn,
+                limit=filters["anomaly_limit"],
+                date_from=filters["date_from"],
+                date_to=filters["date_to"],
+            )
+            reconciliation = get_reconciliation_outliers(
+                conn,
+                limit=filters["recon_limit"],
+                min_abs_diff=filters["recon_min_abs_diff"],
+            )
+            snapshot_state["heavy_sections_loaded"] = True
+        if cache_enabled:
+            with _risk_cache_lock:
+                _risk_cache["payload"] = {
+                    "anomalies": anomalies,
+                    "reconciliation": reconciliation,
+                }
+                _risk_cache["key"] = cache_key
+                _risk_cache["expires_at"] = now + float(risk_cache_ttl)
 
     return render_template(
         "analytics/risk.html",
