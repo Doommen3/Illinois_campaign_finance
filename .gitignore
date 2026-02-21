@@ -33,3 +33,23 @@ tmp/
 !data/geometry/il/
 !data/geometry/il/*.json
 !data/geometry/il/README.md
+
+# Claude Code / Codex agent worktrees and session artifacts
+.claude/worktrees/
+.codex/
+
+# IDE / editor config (machine-specific)
+.vscode/
+
+# Raw TIGER/Line shapefiles (build inputs, not deployment artifacts)
+Maps/
+
+# Generated visualization artifacts (rebuild via scripts/triple_pipeline_viz.py)
+artifacts/
+
+# One-off diagnostic scripts
+_diag_*.py
+
+# Agent session logs (may contain sensitive data)
+rollout-*.jsonl
+saved_convo/
