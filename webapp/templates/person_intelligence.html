@@ -105,6 +105,8 @@
                 {% for ca in c.candidacies %}
                 {{ ca.election_year }} {{ ca.election_type }} ({{ ca.race_type }}{% if ca.outcome %}, {{ ca.outcome }}{% endif %}){% if not loop.last %}; {% endif %}
                 {% endfor %}
+                {% elif not candidacies_available %}
+                <span class="data-unavailable">Election outcomes not loaded</span>
                 {% else %}-{% endif %}
             </td>
         </tr>

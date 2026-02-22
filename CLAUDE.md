@@ -65,9 +65,9 @@ This project uses PostgreSQL in production. Always write SQL that is PostgreSQL-
    - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download] [--skip-compat-swap]`
    - **ISBE 403 workaround**: The `--download` flag uses Python `urllib` which gets blocked by ISBE's server (403 Forbidden) due to the default User-Agent. On production, download files manually with `curl` first, then import without `--download`:
      ```bash
-     for f in Candidates.txt Candidacies.txt Committees.txt Officers.txt PrevOfficers.txt \
+     for f in Candidates.txt CanElections.txt Committees.txt Officers.txt PrevOfficers.txt \
               D2Totals.txt Receipts.txt Expenditures.txt Investments.txt FiledDocs.txt \
-              CmteCandLink.txt CmteCandOfficerLink.txt; do
+              CmteCandidateLinks.txt CmteOfficerLinks.txt; do
        curl -A "Mozilla/5.0" -o "Bulk_download/$f" "https://elections.il.gov/campaigndisclosuredatafiles/$f"
      done
      $PYTHON run.py sunshine-import --bulk-dir Bulk_download

@@ -116,6 +116,9 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% elif not candidacies_available %}
+        <h3>Election History</h3>
+        <p class="data-unavailable">Election outcomes not loaded</p>
         {% endif %}
     </div>
 
@@ -188,6 +191,9 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% elif not candidacies_available %}
+        <h3>Election History</h3>
+        <p class="data-unavailable">Election outcomes not loaded</p>
         {% endif %}
     </div>
 </div>

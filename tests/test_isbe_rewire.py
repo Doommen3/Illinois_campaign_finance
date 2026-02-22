@@ -705,6 +705,22 @@ class TestPersonIntelligenceISBE:
         # Smith has candidacy records (challenger 2022, incumbent 2026)
         assert 'challenger' in html.lower() or '2022' in html or 'General' in html
 
+    def test_person_intel_candidate_shows_won_lost(self, isbe_app, isbe_client):
+        """Person intelligence should render won/lost outcome text."""
+        response = isbe_client.get('/person-intelligence?q=Smith')
+        assert response.status_code == 200
+        html = response.data.decode()
+        # Smith has 2022 General Primary with outcome=lost
+        assert 'lost' in html, "Smith's 2022 lost outcome should appear"
+
+    def test_person_intel_candidate_won_outcome(self, isbe_app, isbe_client):
+        """Person intelligence should render won outcome for Jones."""
+        response = isbe_client.get('/person-intelligence?q=Jones')
+        assert response.status_code == 200
+        html = response.data.decode()
+        # Jones has 2024 candidacies with outcome=won
+        assert 'won' in html, "Jones's 2024 won outcome should appear"
+
     def test_person_intel_candidate_has_committees(self, isbe_app, isbe_client):
         """Person intelligence candidate results should include committee links."""
         response = isbe_client.get('/person-intelligence?q=Smith')
@@ -995,6 +1011,70 @@ class TestCandidateElectionHistory:
         # Candidate 1003 (Atcha) has no candidacy records, vs 1001
         resp = client.get('/compare?mode=candidate&left=1003&right=1001')
         assert resp.status_code == 200
+
+    def test_candidate_compare_shows_won_lost(self, isbe_app):
+        """Compare page should render won/lost outcome text."""
+        client = isbe_app.test_client()
+        resp = client.get('/compare?mode=candidate&left=1001&right=1002')
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'lost' in html, "Smith's lost outcome should appear in compare"
+        assert 'won' in html, "Jones's won outcome should appear in compare"
+
+    def test_person_intel_shows_outcome_text(self, isbe_app, isbe_client):
+        """Person intelligence should render won/lost in election history."""
+        response = isbe_client.get('/person-intelligence?q=Jones')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'won' in html, "Jones's won outcome should appear"
+        assert 'Election outcomes not loaded' not in html, \
+            "Should NOT show 'not loaded' when candidacies exist"
+
+
+class TestCandidacyNotLoaded:
+    """Tests for graceful UX when isbe_candidacies table is empty or missing."""
+
+    @pytest.fixture
+    def no_candidacy_app(self, tmp_path):
+        """App with full ISBE tables + compat views but empty isbe_candidacies."""
+        db_path = str(tmp_path / "test_no_candidacy.db")
+        init_db(db_path)
+        conn = get_db(db_path)
+
+        # Seed full ISBE tables (includes candidacies with data)
+        _seed_isbe_tables(conn)
+        _create_compat_views(conn)
+        _create_candidate_finance_agg_view(conn)
+
+        # Now empty the candidacies table to simulate missing CanElections.txt
+        conn.execute("DELETE FROM isbe_candidacies")
+        conn.commit()
+        conn.close()
+
+        app = create_app({'TESTING': True, 'DATABASE_PATH': db_path})
+        return app
+
+    @pytest.fixture
+    def no_candidacy_client(self, no_candidacy_app):
+        return no_candidacy_app.test_client()
+
+    def test_person_intel_shows_not_loaded_message(self, no_candidacy_app, no_candidacy_client):
+        """When isbe_candidacies is empty, show 'Election outcomes not loaded'."""
+        response = no_candidacy_client.get('/person-intelligence?q=Smith')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'Smith' in html, "Candidate should still appear"
+        assert 'Election outcomes not loaded' in html, \
+            "Should show 'not loaded' message when candidacies table is empty"
+
+    def test_compare_shows_not_loaded_message(self, no_candidacy_app, no_candidacy_client):
+        """Compare page should show 'Election outcomes not loaded' when candidacies empty."""
+        # Candidates 1001 (Smith) and 1002 (Jones) already exist from _seed_isbe_tables
+        response = no_candidacy_client.get('/compare?mode=candidate&left=1001&right=1002')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'Election outcomes not loaded' in html, \
+            "Compare should show 'not loaded' when candidacies empty"
 
 
 class TestCommitteeOfficers:

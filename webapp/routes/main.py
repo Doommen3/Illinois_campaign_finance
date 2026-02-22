@@ -2855,6 +2855,12 @@ def person_intelligence():
         parts = [p for p in s.split() if len(p) != 1]
         return " ".join(parts).strip().lower()
 
+    has_candidacies = _table_exists(conn, "isbe_candidacies")
+    candidacies_loaded = False
+    if has_candidacies:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM isbe_candidacies").fetchone()
+        candidacies_loaded = (row["cnt"] if row else 0) > 0
+
     results = {
         'query': query,
         'donors': [],
@@ -2864,6 +2870,7 @@ def person_intelligence():
         'lobbying_entities': [],
         'lobbying_clients': [],
         'fec_contributors': [],
+        'candidacies_available': candidacies_loaded,
     }
 
     if query and len(query) >= 2:
@@ -2956,7 +2963,6 @@ def person_intelligence():
             has_isbe_cc = _table_exists(conn, "isbe_candidate_committees")
             has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
             has_isbe_committees = _table_exists(conn, "isbe_committees")
-            has_candidacies = _table_exists(conn, "isbe_candidacies")
 
             if candidate_ids and has_bulk_links:
                 placeholders = ",".join(["?"] * len(candidate_ids))
@@ -3041,7 +3047,7 @@ def person_intelligence():
                         }
                     )
 
-            if candidate_ids and has_candidacies:
+            if candidate_ids and candidacies_loaded:
                 placeholders = ",".join(["?"] * len(candidate_ids))
                 candidacy_rows = conn.execute(
                     f"""
@@ -3302,6 +3308,12 @@ def compare():
                     "Load bulk receipts or legacy contributions first."
                 )
 
+    has_candidacies = _table_exists(conn, "isbe_candidacies")
+    candidacies_loaded = False
+    if has_candidacies:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM isbe_candidacies").fetchone()
+        candidacies_loaded = (row["cnt"] if row else 0) > 0
+
     overlap = _build_overlap(left_profile, right_profile)
     return render_template(
         "compare.html",
@@ -3313,4 +3325,5 @@ def compare():
         right_profile=right_profile,
         overlap=overlap,
         compare_error=compare_error,
+        candidacies_available=candidacies_loaded,
     )
