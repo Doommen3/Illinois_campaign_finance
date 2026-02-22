@@ -2907,29 +2907,60 @@ def person_intelligence():
             ]
 
         # State candidates (enriched with committee links and candidacies)
+        # Fallback order: bulk_candidates_clean -> isbe_bulk_candidates_clean_compat -> isbe_candidates
+        candidate_rows = []
         if _table_exists(conn, "bulk_candidates_clean"):
             candidate_rows = conn.execute(
                 """
                 SELECT candidate_id, candidate_full_name
                 FROM bulk_candidates_clean
-                WHERE candidate_full_name LIKE ?
+                WHERE LOWER(candidate_full_name) LIKE LOWER(?)
+                ORDER BY candidate_full_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+        elif _table_exists(conn, "isbe_bulk_candidates_clean_compat"):
+            candidate_rows = conn.execute(
+                """
+                SELECT candidate_id, candidate_full_name
+                FROM isbe_bulk_candidates_clean_compat
+                WHERE LOWER(candidate_full_name) LIKE LOWER(?)
+                ORDER BY candidate_full_name
+                LIMIT 25
+                """,
+                (like_pattern,),
+            ).fetchall()
+        elif _table_exists(conn, "isbe_candidates"):
+            candidate_rows = conn.execute(
+                """
+                SELECT id AS candidate_id,
+                       TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) AS candidate_full_name
+                FROM isbe_candidates
+                WHERE LOWER(TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))) LIKE LOWER(?)
                 ORDER BY candidate_full_name
                 LIMIT 25
                 """,
                 (like_pattern,),
             ).fetchall()
 
+        if candidate_rows:
             candidate_ids = [row["candidate_id"] for row in candidate_rows if row["candidate_id"] is not None]
             committee_lookup: dict[int, list[dict]] = defaultdict(list)
             candidacy_lookup: dict[int, list[dict]] = defaultdict(list)
 
-            has_links = _table_exists(conn, "bulk_committee_candidate_links")
-            has_committees = _table_exists(conn, "bulk_committees_clean")
+            # Committee-link enrichment fallback order:
+            # bulk_committee_candidate_links -> isbe_bulk_committee_candidate_links_compat -> isbe_candidate_committees + isbe_committees
+            has_bulk_links = _table_exists(conn, "bulk_committee_candidate_links")
+            has_compat_links = _table_exists(conn, "isbe_bulk_committee_candidate_links_compat")
+            has_isbe_cc = _table_exists(conn, "isbe_candidate_committees")
+            has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
+            has_isbe_committees = _table_exists(conn, "isbe_committees")
             has_candidacies = _table_exists(conn, "isbe_candidacies")
 
-            if candidate_ids and has_links:
+            if candidate_ids and has_bulk_links:
                 placeholders = ",".join(["?"] * len(candidate_ids))
-                if has_committees:
+                if has_bulk_committees:
                     committee_rows = conn.execute(
                         f"""
                         SELECT
@@ -2956,6 +2987,50 @@ def person_intelligence():
                         """,
                         tuple(candidate_ids),
                     ).fetchall()
+                for row in committee_rows:
+                    if row["candidate_id"] is None:
+                        continue
+                    committee_lookup[int(row["candidate_id"])].append(
+                        {
+                            "committee_id_sbe": row["committee_id_sbe"],
+                            "committee_name": row["committee_name"],
+                        }
+                    )
+            elif candidate_ids and has_compat_links:
+                placeholders = ",".join(["?"] * len(candidate_ids))
+                committee_rows = conn.execute(
+                    f"""
+                    SELECT candidate_id, committee_id_sbe, committee_name
+                    FROM isbe_bulk_committee_candidate_links_compat
+                    WHERE candidate_id IN ({placeholders})
+                    ORDER BY candidate_id, committee_name
+                    """,
+                    tuple(candidate_ids),
+                ).fetchall()
+                for row in committee_rows:
+                    if row["candidate_id"] is None:
+                        continue
+                    committee_lookup[int(row["candidate_id"])].append(
+                        {
+                            "committee_id_sbe": row["committee_id_sbe"],
+                            "committee_name": row["committee_name"] or f"Committee {row['committee_id_sbe']}",
+                        }
+                    )
+            elif candidate_ids and has_isbe_cc and has_isbe_committees:
+                placeholders = ",".join(["?"] * len(candidate_ids))
+                committee_rows = conn.execute(
+                    f"""
+                    SELECT
+                        cc.candidate_id,
+                        cc.committee_id AS committee_id_sbe,
+                        COALESCE(c.name, 'Committee ' || cc.committee_id) AS committee_name
+                    FROM isbe_candidate_committees cc
+                    LEFT JOIN isbe_committees c ON c.id = cc.committee_id
+                    WHERE cc.candidate_id IN ({placeholders})
+                    ORDER BY cc.candidate_id, committee_name
+                    """,
+                    tuple(candidate_ids),
+                ).fetchall()
                 for row in committee_rows:
                     if row["candidate_id"] is None:
                         continue
