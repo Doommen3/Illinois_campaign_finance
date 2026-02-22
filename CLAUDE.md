@@ -62,7 +62,7 @@ This project uses PostgreSQL in production. Always write SQL that is PostgreSQL-
    - **Primary ETL**: `scripts/isbe_sunshine_etl.py` (adapted from datamade/illinois-sunshine)
    - Loads 12 ISBE bulk files into `isbe_*` tables with FK constraints
    - Creates materialized views: `isbe_condensed_receipts`, `isbe_condensed_expenditures` (dedup amended filings), `isbe_committee_money`, `isbe_candidate_money`
-   - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download]`
+   - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download] [--skip-compat-swap]`
    - **ISBE 403 workaround**: The `--download` flag uses Python `urllib` which gets blocked by ISBE's server (403 Forbidden) due to the default User-Agent. On production, download files manually with `curl` first, then import without `--download`:
      ```bash
      for f in Candidates.txt Candidacies.txt Committees.txt Officers.txt PrevOfficers.txt \
@@ -72,7 +72,7 @@ This project uses PostgreSQL in production. Always write SQL that is PostgreSQL-
      done
      $PYTHON run.py sunshine-import --bulk-dir Bulk_download
      ```
-   - After sunshine import, run `python scripts/swap_bulk_to_isbe.py` to (re)create `bulk_*` compatibility views used by legacy routes and analytics helpers.
+   - After sunshine import, `swap_bulk_to_isbe.py` runs automatically to (re)create `bulk_*` compatibility views used by legacy routes and analytics helpers. Use `--skip-compat-swap` to disable; `/candidate-finance/` will then use ISBE fallback mode.
    - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (still works, but `isbe_*` tables are preferred)
 2. **FEC** (federal) - IL candidates, Schedule A/B/E contributions/disbursements
    - CLI: `python run.py sync-fec-il-federal` (requires `FEC_API_KEY` env var or `--api-key`)
@@ -472,7 +472,7 @@ After deploy, sweep key routes (see `codex.md` for full endpoint sweep script). 
 ## Data Refresh Schedule
 
 ### Weekly (routine production refresh)
-1. **ISBE (state):** Download bulk files with `curl` workaround + `sunshine-import` + `swap_bulk_to_isbe.py`. During election season (near filing deadlines), every few days.
+1. **ISBE (state):** Download bulk files with `curl` workaround + `sunshine-import` (auto-runs `swap_bulk_to_isbe.py`). During election season (near filing deadlines), every few days.
 2. **FEC main sync:** `sync-fec-il-federal`. FEC data updates on a rolling basis.
 3. **Post-import:** `run-cross-matching --only all` → `refresh-analytics --with-snapshot` → `systemctl restart ilcf-web.service`.
 
