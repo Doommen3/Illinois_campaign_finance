@@ -1646,6 +1646,162 @@ class TestWebApp:
         assert b'Committee A' in exported.data
         assert b'Committee B' not in exported.data
 
+    def test_d2_expenditures_recon_text_numeric_columns(self, app, client):
+        """D2 expenditures recon handles TEXT-typed numeric columns without type mismatch."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS bulk_d2_expenditures_recon")
+        conn.execute(
+            """
+            CREATE TABLE bulk_d2_expenditures_recon (
+                d2_totals_record_id INTEGER,
+                committee_id_sbe INTEGER,
+                committee_name TEXT,
+                filed_doc_id INTEGER,
+                d2_transfers_out_itemized TEXT,
+                d2_loans_made_itemized TEXT,
+                d2_expenditures_itemized TEXT,
+                d2_independent_expenditures_itemized TEXT,
+                d2_itemized_expenditures_total TEXT,
+                d2_total_expenditures TEXT,
+                ending_funds_available TEXT,
+                is_archived TEXT,
+                expenditure_row_count TEXT,
+                expenditures_amount_sum TEXT,
+                sum_part_6_transfers_out TEXT,
+                sum_part_7_loans_made TEXT,
+                sum_part_8_expenditures TEXT,
+                sum_part_9_independent_expenditures TEXT,
+                anomaly_row_count TEXT,
+                first_expenditure_date TEXT,
+                last_expenditure_date TEXT,
+                expenditures_minus_d2_itemized_total TEXT,
+                part_6_minus_d2_transfers_out_itemized TEXT,
+                part_7_minus_d2_loans_made_itemized TEXT,
+                part_8_minus_d2_expenditures_itemized TEXT,
+                part_9_minus_d2_independent_expenditures_itemized TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO bulk_d2_expenditures_recon (
+                d2_totals_record_id, committee_id_sbe, committee_name, filed_doc_id,
+                d2_transfers_out_itemized, d2_loans_made_itemized, d2_expenditures_itemized,
+                d2_independent_expenditures_itemized, d2_itemized_expenditures_total,
+                d2_total_expenditures, ending_funds_available, is_archived,
+                expenditure_row_count, expenditures_amount_sum,
+                sum_part_6_transfers_out, sum_part_7_loans_made, sum_part_8_expenditures,
+                sum_part_9_independent_expenditures, anomaly_row_count,
+                first_expenditure_date, last_expenditure_date,
+                expenditures_minus_d2_itemized_total,
+                part_6_minus_d2_transfers_out_itemized, part_7_minus_d2_loans_made_itemized,
+                part_8_minus_d2_expenditures_itemized, part_9_minus_d2_independent_expenditures_itemized
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, 101, "TextCol Committee", 5001, "100.0", "0.0", "900.0", "0.0",
+             "1000.0", "1200.0", "400.0", "0", "12", "980.0", "90.0", "0.0",
+             "890.0", "0.0", "2", "2025-01-01", "2025-01-31", "-20.0",
+             "-10.0", "0.0", "-10.0", "0.0"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Default sort (abs_diff) should not crash on TEXT columns
+        resp = client.get('/d2-expenditures-reconciliation/')
+        assert resp.status_code == 200
+        assert b'TextCol Committee' in resp.data
+
+        # Sort by numeric column should work
+        resp2 = client.get('/d2-expenditures-reconciliation/?sort=expenditures_amount_sum&dir=desc')
+        assert resp2.status_code == 200
+
+        # Anomaly filter should work
+        resp3 = client.get('/d2-expenditures-reconciliation/?anomalies_only=yes')
+        assert resp3.status_code == 200
+        assert b'TextCol Committee' in resp3.data
+
+        # CSV export should work
+        resp4 = client.get('/d2-expenditures-reconciliation/?format=csv')
+        assert resp4.status_code == 200
+        assert resp4.mimetype == 'text/csv'
+
+    def test_openbook_list_with_date_filter(self, app, client):
+        """OpenBook list route handles date filters without DATE() cast errors."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS openbook_vendor_match")
+        conn.execute("DROP TABLE IF EXISTS openbook_vendor_seed")
+        conn.execute("DROP TABLE IF EXISTS openbook_contracts_raw")
+        conn.execute("DROP TABLE IF EXISTS openbook_contributions_raw")
+        conn.execute(
+            """
+            CREATE TABLE openbook_vendor_seed (
+                seed_id INTEGER PRIMARY KEY,
+                seed_text TEXT,
+                seed_source TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE openbook_vendor_match (
+                match_id INTEGER PRIMARY KEY,
+                seed_id INTEGER,
+                openbook_vendor_key TEXT,
+                openbook_vendor_label TEXT,
+                match_method TEXT DEFAULT 'smart',
+                confidence REAL DEFAULT 0.9,
+                search_term_used TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE openbook_contracts_raw (
+                openbook_vendor_key TEXT,
+                fiscal_year TEXT,
+                agency_name TEXT,
+                contract_number TEXT,
+                award_amount REAL,
+                detail_url TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE openbook_contributions_raw (
+                openbook_vendor_key TEXT,
+                contribution_date TEXT,
+                contributor_name TEXT,
+                recipient_name TEXT,
+                amount REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO openbook_vendor_seed VALUES (1, 'ACME CORP', 'expenditures')"
+        )
+        conn.execute(
+            "INSERT INTO openbook_vendor_match VALUES (1, 1, 'ACME', 'Acme Corp', 'smart', 0.95, 'ACME')"
+        )
+        conn.execute(
+            "INSERT INTO openbook_contributions_raw VALUES ('ACME', '2025-06-15', 'Acme Corp', 'Some PAC', 500.0)"
+        )
+        # Insert a row with bad date data (the exact production bug trigger)
+        conn.execute(
+            "INSERT INTO openbook_contributions_raw VALUES ('ACME', 'DATE', 'Bad Row', 'Some PAC', 100.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Without date filter — should load fine
+        resp = client.get('/openbook/')
+        assert resp.status_code == 200
+        assert b'Acme' in resp.data
+
+        # With date filter — previously crashed with InvalidDatetimeFormat
+        resp2 = client.get('/openbook/?date_from=2025-01-01&date_to=2025-12-31')
+        assert resp2.status_code == 200
+
     def test_reports_sort_query_loads(self, client):
         """Test reports page supports sort params."""
         response = client.get('/reports/?sort=report_type&dir=asc')

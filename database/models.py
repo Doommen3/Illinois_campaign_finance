@@ -4598,16 +4598,22 @@ class D2ExpendituresRecon:
             params.extend([like_term, like_term, like_term])
 
         if min_abs_diff is not None:
-            clauses.append("ABS(COALESCE(expenditures_minus_d2_itemized_total, 0)) >= ?")
+            clauses.append(
+                "ABS(COALESCE(CAST(NULLIF(TRIM(CAST(expenditures_minus_d2_itemized_total AS TEXT)), '') AS REAL), 0)) >= ?"
+            )
             params.append(float(min_abs_diff))
 
         if min_expenditure_rows is not None:
-            clauses.append("COALESCE(expenditure_row_count, 0) >= ?")
+            clauses.append(
+                "COALESCE(CAST(NULLIF(TRIM(CAST(expenditure_row_count AS TEXT)), '') AS INTEGER), 0) >= ?"
+            )
             params.append(int(min_expenditure_rows))
 
         anomalies_term = (anomalies_only or "no").strip().lower()
         if anomalies_term in {"yes", "true", "1"}:
-            clauses.append("COALESCE(anomaly_row_count, 0) > 0")
+            clauses.append(
+                "COALESCE(CAST(NULLIF(TRIM(CAST(anomaly_row_count AS TEXT)), '') AS INTEGER), 0) > 0"
+            )
 
         if has_filed_docs_table:
             period_start_term = (period_start or "").strip()
@@ -4692,26 +4698,29 @@ class D2ExpendituresRecon:
         if not cls._table_exists(conn):
             return []
 
+        _safe_real = "COALESCE(CAST(NULLIF(TRIM(CAST({col} AS TEXT)), '') AS REAL), 0)"
+        _safe_int = "COALESCE(CAST(NULLIF(TRIM(CAST({col} AS TEXT)), '') AS INTEGER), 0)"
+        _abs_diff_expr = f"ABS({_safe_real.format(col='expenditures_minus_d2_itemized_total')})"
         sort_map = {
             "d2_totals_record_id": "d2_totals_record_id",
             "committee_id_sbe": "committee_id_sbe",
             "committee_name": "committee_name",
             "filed_doc_id": "filed_doc_id",
-            "d2_itemized_expenditures_total": "d2_itemized_expenditures_total",
-            "d2_total_expenditures": "d2_total_expenditures",
-            "expenditure_row_count": "expenditure_row_count",
-            "expenditures_amount_sum": "expenditures_amount_sum",
-            "sum_part_6_transfers_out": "sum_part_6_transfers_out",
-            "sum_part_7_loans_made": "sum_part_7_loans_made",
-            "sum_part_8_expenditures": "sum_part_8_expenditures",
-            "sum_part_9_independent_expenditures": "sum_part_9_independent_expenditures",
-            "anomaly_row_count": "anomaly_row_count",
+            "d2_itemized_expenditures_total": _safe_real.format(col="d2_itemized_expenditures_total"),
+            "d2_total_expenditures": _safe_real.format(col="d2_total_expenditures"),
+            "expenditure_row_count": _safe_int.format(col="expenditure_row_count"),
+            "expenditures_amount_sum": _safe_real.format(col="expenditures_amount_sum"),
+            "sum_part_6_transfers_out": _safe_real.format(col="sum_part_6_transfers_out"),
+            "sum_part_7_loans_made": _safe_real.format(col="sum_part_7_loans_made"),
+            "sum_part_8_expenditures": _safe_real.format(col="sum_part_8_expenditures"),
+            "sum_part_9_independent_expenditures": _safe_real.format(col="sum_part_9_independent_expenditures"),
+            "anomaly_row_count": _safe_int.format(col="anomaly_row_count"),
             "first_expenditure_date": "first_expenditure_date",
             "last_expenditure_date": "last_expenditure_date",
-            "expenditures_minus_d2_itemized_total": "expenditures_minus_d2_itemized_total",
-            "abs_diff": "ABS(COALESCE(expenditures_minus_d2_itemized_total, 0))",
+            "expenditures_minus_d2_itemized_total": _safe_real.format(col="expenditures_minus_d2_itemized_total"),
+            "abs_diff": _abs_diff_expr,
         }
-        order_by = sort_map.get(sort_by, "ABS(COALESCE(expenditures_minus_d2_itemized_total, 0))")
+        order_by = sort_map.get(sort_by, _abs_diff_expr)
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
 
         query = f"""
@@ -4760,6 +4769,24 @@ class D2ExpendituresRecon:
         query += f" ORDER BY {order_by} {direction}, committee_id_sbe ASC, filed_doc_id ASC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
+        def _sf(v, default=0.0):
+            """Safe float from potentially TEXT column."""
+            if v is None:
+                return default
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
+        def _si(v, default=0):
+            """Safe int from potentially TEXT column."""
+            if v is None:
+                return default
+            try:
+                return int(float(v))
+            except (ValueError, TypeError):
+                return default
+
         rows = conn.execute(query, params).fetchall()
         return [
             cls(
@@ -4767,28 +4794,28 @@ class D2ExpendituresRecon:
                 committee_id_sbe=row["committee_id_sbe"],
                 committee_name=row["committee_name"],
                 filed_doc_id=row["filed_doc_id"],
-                d2_transfers_out_itemized=row["d2_transfers_out_itemized"] or 0.0,
-                d2_loans_made_itemized=row["d2_loans_made_itemized"] or 0.0,
-                d2_expenditures_itemized=row["d2_expenditures_itemized"] or 0.0,
-                d2_independent_expenditures_itemized=row["d2_independent_expenditures_itemized"] or 0.0,
-                d2_itemized_expenditures_total=row["d2_itemized_expenditures_total"] or 0.0,
-                d2_total_expenditures=row["d2_total_expenditures"] or 0.0,
-                ending_funds_available=row["ending_funds_available"] or 0.0,
+                d2_transfers_out_itemized=_sf(row["d2_transfers_out_itemized"]),
+                d2_loans_made_itemized=_sf(row["d2_loans_made_itemized"]),
+                d2_expenditures_itemized=_sf(row["d2_expenditures_itemized"]),
+                d2_independent_expenditures_itemized=_sf(row["d2_independent_expenditures_itemized"]),
+                d2_itemized_expenditures_total=_sf(row["d2_itemized_expenditures_total"]),
+                d2_total_expenditures=_sf(row["d2_total_expenditures"]),
+                ending_funds_available=_sf(row["ending_funds_available"]),
                 is_archived=row["is_archived"],
-                expenditure_row_count=row["expenditure_row_count"] or 0,
-                expenditures_amount_sum=row["expenditures_amount_sum"] or 0.0,
-                sum_part_6_transfers_out=row["sum_part_6_transfers_out"] or 0.0,
-                sum_part_7_loans_made=row["sum_part_7_loans_made"] or 0.0,
-                sum_part_8_expenditures=row["sum_part_8_expenditures"] or 0.0,
-                sum_part_9_independent_expenditures=row["sum_part_9_independent_expenditures"] or 0.0,
-                anomaly_row_count=row["anomaly_row_count"] or 0,
+                expenditure_row_count=_si(row["expenditure_row_count"]),
+                expenditures_amount_sum=_sf(row["expenditures_amount_sum"]),
+                sum_part_6_transfers_out=_sf(row["sum_part_6_transfers_out"]),
+                sum_part_7_loans_made=_sf(row["sum_part_7_loans_made"]),
+                sum_part_8_expenditures=_sf(row["sum_part_8_expenditures"]),
+                sum_part_9_independent_expenditures=_sf(row["sum_part_9_independent_expenditures"]),
+                anomaly_row_count=_si(row["anomaly_row_count"]),
                 first_expenditure_date=row["first_expenditure_date"],
                 last_expenditure_date=row["last_expenditure_date"],
-                expenditures_minus_d2_itemized_total=row["expenditures_minus_d2_itemized_total"] or 0.0,
-                part_6_minus_d2_transfers_out_itemized=row["part_6_minus_d2_transfers_out_itemized"] or 0.0,
-                part_7_minus_d2_loans_made_itemized=row["part_7_minus_d2_loans_made_itemized"] or 0.0,
-                part_8_minus_d2_expenditures_itemized=row["part_8_minus_d2_expenditures_itemized"] or 0.0,
-                part_9_minus_d2_independent_expenditures_itemized=row["part_9_minus_d2_independent_expenditures_itemized"] or 0.0,
+                expenditures_minus_d2_itemized_total=_sf(row["expenditures_minus_d2_itemized_total"]),
+                part_6_minus_d2_transfers_out_itemized=_sf(row["part_6_minus_d2_transfers_out_itemized"]),
+                part_7_minus_d2_loans_made_itemized=_sf(row["part_7_minus_d2_loans_made_itemized"]),
+                part_8_minus_d2_expenditures_itemized=_sf(row["part_8_minus_d2_expenditures_itemized"]),
+                part_9_minus_d2_independent_expenditures_itemized=_sf(row["part_9_minus_d2_independent_expenditures_itemized"]),
             )
             for row in rows
         ]

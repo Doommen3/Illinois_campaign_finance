@@ -6756,7 +6756,8 @@ def get_state_federal_overlap_graph(
         placeholders = ",".join("?" * len(federal_donor_keys))
         federal_flows = conn.execute(
             f"""
-            SELECT contributor_id, committee_id, committee_name,
+            SELECT contributor_id, committee_id,
+                   MAX(committee_name) AS committee_name,
                    SUM(contribution_receipt_amount) AS total_amount,
                    COUNT(*) AS txn_count
             FROM fec_schedule_a_contributions

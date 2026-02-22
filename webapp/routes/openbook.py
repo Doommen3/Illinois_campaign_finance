@@ -65,10 +65,14 @@ def list_vendors():
     contribution_date_clauses = []
     contribution_date_params: list[object] = []
     if cash_date_from:
-        contribution_date_clauses.append("DATE(contribution_date) >= DATE(?)")
+        contribution_date_clauses.append(
+            "contribution_date IS NOT NULL AND contribution_date >= ?"
+        )
         contribution_date_params.append(cash_date_from)
     if cash_date_to:
-        contribution_date_clauses.append("DATE(contribution_date) <= DATE(?)")
+        contribution_date_clauses.append(
+            "contribution_date IS NOT NULL AND contribution_date <= ?"
+        )
         contribution_date_params.append(cash_date_to)
     contribution_date_where = (
         "WHERE " + " AND ".join(contribution_date_clauses)
@@ -216,10 +220,14 @@ def vendor_detail(vendor_key: str):
     warrant_date_clauses = []
     warrant_date_params: list[object] = [vendor_key]
     if cash_date_from:
-        warrant_date_clauses.append("DATE(issue_date) >= DATE(?)")
+        warrant_date_clauses.append(
+            "issue_date IS NOT NULL AND issue_date >= ?"
+        )
         warrant_date_params.append(cash_date_from)
     if cash_date_to:
-        warrant_date_clauses.append("DATE(issue_date) <= DATE(?)")
+        warrant_date_clauses.append(
+            "issue_date IS NOT NULL AND issue_date <= ?"
+        )
         warrant_date_params.append(cash_date_to)
     warrant_date_where = (
         " AND " + " AND ".join(warrant_date_clauses)
@@ -245,10 +253,14 @@ def vendor_detail(vendor_key: str):
     contribution_date_clauses = []
     contribution_date_params: list[object] = [vendor_key]
     if cash_date_from:
-        contribution_date_clauses.append("DATE(contribution_date) >= DATE(?)")
+        contribution_date_clauses.append(
+            "contribution_date IS NOT NULL AND contribution_date >= ?"
+        )
         contribution_date_params.append(cash_date_from)
     if cash_date_to:
-        contribution_date_clauses.append("DATE(contribution_date) <= DATE(?)")
+        contribution_date_clauses.append(
+            "contribution_date IS NOT NULL AND contribution_date <= ?"
+        )
         contribution_date_params.append(cash_date_to)
     contribution_date_where = (
         " AND " + " AND ".join(contribution_date_clauses)

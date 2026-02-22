@@ -367,3 +367,62 @@ class TestAdvancedGraphVisualizations:
         assert "centrality" in result
         assert "summary" in result
         conn.close()
+
+    def test_overlap_graph_group_by_with_federal_data(self, app):
+        """Overlap graph query must aggregate committee_name (GROUP BY fix)."""
+        from database.analytics import get_state_federal_overlap_graph
+        from database.connection import get_db
+        conn = get_db(app.config["DATABASE_PATH"])
+
+        # Seed fec_local_donor_matches
+        conn.execute("DROP TABLE IF EXISTS fec_local_donor_matches")
+        conn.execute(
+            """
+            CREATE TABLE fec_local_donor_matches (
+                federal_donor_entity_key TEXT,
+                local_donor_key TEXT,
+                primary_local_donor_key TEXT,
+                federal_donor_name TEXT,
+                local_donor_name TEXT,
+                federal_total_amount REAL,
+                local_total_amount REAL,
+                confidence_score REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fec_local_donor_matches VALUES
+            ('FED1', 'LOC1', 'LOC1', 'Fed Donor 1', 'Local Donor 1', 5000.0, 3000.0, 0.9)
+            """
+        )
+
+        # Seed fec_schedule_a_contributions with duplicate committee_id rows
+        conn.execute("DROP TABLE IF EXISTS fec_schedule_a_contributions")
+        conn.execute(
+            """
+            CREATE TABLE fec_schedule_a_contributions (
+                contributor_id TEXT,
+                committee_id TEXT,
+                committee_name TEXT,
+                contribution_receipt_amount REAL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO fec_schedule_a_contributions VALUES (?, ?, ?, ?)",
+            [
+                ("FED1", "C001", "Test FEC Committee", 1000.0),
+                ("FED1", "C001", "Test FEC Committee", 2000.0),
+            ],
+        )
+        conn.commit()
+
+        result = get_state_federal_overlap_graph(conn)
+        assert "nodes" in result
+        assert "edges" in result
+        # Verify federal committee edge was created
+        fed_edges = [e for e in result["edges"] if e.get("edge_type") == "donor_federal"]
+        assert len(fed_edges) >= 1
+        assert fed_edges[0]["weight"] == 3000.0
+        conn.close()
