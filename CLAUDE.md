@@ -380,9 +380,9 @@ Do not treat dataset ingestion as complete until all four workflow areas are add
 
 1. Run local tests: `pytest -q`
 2. Push to main: `git push origin main`
-3. SSH to server and pull (see SSH note below):
+3. SSH to server and pull (uses deploy key, no PAT needed):
    ```bash
-   cd /srv/illinois_campaign_finance/app && git pull --ff-only origin main
+   ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 "cd /srv/illinois_campaign_finance/app && git pull --ff-only origin main"
    ```
 4. Install deps:
    ```bash
@@ -414,14 +414,18 @@ ssh-add --apple-use-keychain ~/.ssh/hetzner_ed25519 2>/dev/null
 ```
 SSH, rsync, scp, and Claude Code autonomous SSH all work without passphrase prompts. If the agent ever loses the key (e.g., after OS update), re-run `ssh-add --apple-use-keychain ~/.ssh/hetzner_ed25519` and enter the passphrase once.
 
-The server does NOT have GitHub credentials configured. To pull on the server, either:
-1. Use a deploy key, or
-2. Temporarily embed a PAT in the remote URL (remove after pull):
-   ```bash
-   git remote set-url origin https://<PAT>@github.com/Doommen3/Illinois_campaign_finance.git
-   git pull --ff-only origin main
-   git remote set-url origin https://github.com/Doommen3/Illinois_campaign_finance.git
-   ```
+The server uses a **GitHub deploy key** for git pull access. No PAT is needed.
+- Deploy key (read-only): `/root/.ssh/github_deploy` (private), `/root/.ssh/github_deploy.pub`
+- SSH config (`/root/.ssh/config`):
+  ```
+  Host github.com
+    User git
+    IdentityFile /root/.ssh/github_deploy
+    IdentitiesOnly yes
+  ```
+- Remote URL: `git@github.com:Doommen3/Illinois_campaign_finance.git` (SSH, not HTTPS)
+- `git pull --ff-only origin main` works directly on the server with no credentials prompt.
+- **Do NOT** switch the remote URL to HTTPS or embed a PAT. If the deploy key stops working, check that `/root/.ssh/github_deploy` exists (permissions `0600`) and that the public key is still registered under **Settings > Deploy keys** in the GitHub repo.
 
 ### Server Command Pattern
 
@@ -436,8 +440,8 @@ $PYTHON run.py <command>
 ### GitHub
 
 - Username: Doommen3
-- Remote: HTTPS
-- Local auth: Classic PAT via macOS Keychain (`credential.helper = osxkeychain` in `.gitconfig`)
+- **Local** remote: HTTPS, auth via classic PAT in macOS Keychain (`credential.helper = osxkeychain` in `.gitconfig`)
+- **Server** remote: SSH (`git@github.com:...`), auth via deploy key (`/root/.ssh/github_deploy`)
 - `gh` CLI is installed and authenticated (fine-grained PAT) for API operations (`gh api`, `gh pr`, etc.)
 - Git push uses the classic PAT stored in osxkeychain (the fine-grained PAT in `gh` does not have git push scope)
 - If push ever returns 403, re-store the classic PAT: `printf 'protocol=https\nhost=github.com\nusername=Doommen3\npassword=<PAT>\n' | git credential-osxkeychain store`
