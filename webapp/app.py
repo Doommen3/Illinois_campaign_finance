@@ -459,6 +459,21 @@ def create_app(config=None):
 
         threading.Thread(target=_prewarm_dashboard_cache, daemon=True).start()
 
+        def _prewarm_analytics_caches() -> None:
+            try:
+                from webapp.routes.analytics import warm_analytics_caches
+
+                warm_analytics_caches(
+                    app.config['DATABASE_TARGET'],
+                    networks_ttl=max(15, int(app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", 1800))),
+                    relationships_ttl=max(15, int(app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 1800))),
+                    risk_ttl=max(15, int(app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", 1800))),
+                )
+            except Exception:
+                return
+
+        threading.Thread(target=_prewarm_analytics_caches, daemon=True).start()
+
     # Context processors
     @app.context_processor
     def inject_helpers():

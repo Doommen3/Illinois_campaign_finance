@@ -1024,3 +1024,94 @@ def relationships():
         lobbying_influence=payload["lobbying_influence"],
         ecosystem_527=payload["ecosystem_527"],
     )
+
+
+def warm_analytics_caches(
+    db_target: str,
+    networks_ttl: int = 1800,
+    relationships_ttl: int = 1800,
+    risk_ttl: int = 1800,
+) -> None:
+    """Pre-populate heavy analytics route caches in the current worker process.
+
+    Called from a background thread per gunicorn worker on startup. Each worker
+    calls this independently so all workers end up with warm caches.
+    """
+    logger = logging.getLogger(__name__)
+
+    # --- Risk cache ---
+    try:
+        conn = get_db(db_target)
+        anomalies = get_anomaly_flags(conn, limit=50)
+        reconciliation = get_reconciliation_outliers(conn, limit=50, min_abs_diff=100.0)
+        now = time.monotonic()
+        cache_key = ("all", None, None, 50, 50, 100.0)
+        with _risk_cache_lock:
+            _risk_cache["payload"] = {
+                "anomalies": anomalies,
+                "reconciliation": reconciliation,
+            }
+            _risk_cache["key"] = cache_key
+            _risk_cache["expires_at"] = now + float(risk_ttl)
+        logger.info("Analytics prewarm: risk cache populated")
+        close_db(conn)
+    except Exception:
+        logger.exception("Analytics prewarm: risk cache failed")
+
+    # --- Networks cache ---
+    try:
+        empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
+        graph_jobs = [
+            ("network", get_network_graph, (), {"min_edge_amount": 5000.0, "limit": 200}, _empty_network()),
+            ("vendor_network", get_vendor_expenditure_network, (), {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
+            ("overlap_graph", get_state_federal_overlap_graph, (), {"donor_limit": 100, "edge_limit": 600}, empty_graph),
+            ("lobbying_graph", get_lobbying_influence_graph, (), {"client_limit": 80, "edge_limit": 600}, empty_graph),
+            ("ecosystem_527", get_irs527_ecosystem_graph, (), {"org_limit": 80, "edge_limit": 600}, empty_graph),
+        ]
+        results: dict[str, dict] = {}
+        futures = {
+            _networks_parallel_executor.submit(
+                _compute_graph_with_own_conn, key, func, args, kwargs, fallback, db_target,
+            ): key
+            for key, func, args, kwargs, fallback in graph_jobs
+        }
+        for future in as_completed(futures):
+            key, result = future.result()
+            results[key] = result
+
+        now = time.monotonic()
+        cache_key = ("all", None, None, 5000.0, 200)
+        with _networks_cache_lock:
+            _networks_cache["payload"] = {
+                "network": results.get("network", _empty_network()),
+                "vendor_network": results.get("vendor_network", empty_graph),
+                "overlap_graph": results.get("overlap_graph", empty_graph),
+                "lobbying_graph": results.get("lobbying_graph", empty_graph),
+                "ecosystem_527": results.get("ecosystem_527", empty_graph),
+            }
+            _networks_cache["key"] = cache_key
+            _networks_cache["expires_at"] = now + float(networks_ttl)
+        logger.info("Analytics prewarm: networks cache populated")
+    except Exception:
+        logger.exception("Analytics prewarm: networks cache failed")
+
+    # --- Relationships cache ---
+    try:
+        conn = get_db(db_target)
+        payload = {
+            "donor_cogiving": get_donor_cogiving_network(conn, donor_limit=200, edge_limit=200, min_shared_amount=5000.0, min_shared_targets=2),
+            "committee_similarity": get_committee_similarity_network(conn, committee_limit=120, edge_limit=200, min_shared_donors=2, min_shared_amount=5000.0),
+            "candidate_competition": get_candidate_competition_networks(conn, candidate_limit=80, edge_limit=200, min_shared_donors=2, min_shared_amount=5000.0),
+            "lobbying_influence": get_lobbying_influence_graph(conn, client_limit=80, edge_limit=200),
+            "ecosystem_527": get_irs527_ecosystem_graph(conn, org_limit=100, edge_limit=200),
+        }
+        now = time.monotonic()
+        cache_key = ("all", None, None, 200, 120, 80, 80, 100, 200, 5000.0, 2, 2)
+        with _relationships_cache_lock:
+            _relationships_cache["payload"] = payload
+            _relationships_cache["key"] = cache_key
+            _relationships_cache["expires_at"] = now + float(relationships_ttl)
+        logger.info("Analytics prewarm: relationships cache populated")
+        close_db(conn)
+    except Exception:
+        logger.exception("Analytics prewarm: relationships cache failed")
