@@ -159,6 +159,12 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
   - In `type=all`, `filed_docs` runs only for doc-id-like queries.
   - In `type=all`, `donor_keys` runs only for donor-key-like queries.
   - Search responses are cached in-process by `period + query + type`.
+- Global search (`/search`) uses source-aware helpers for committees and donors:
+  - Committees: prefers `isbe_committees` (LIKE name match), falls back to legacy `committees` table.
+  - Donors: prefers `analytics_donor_summary` (LIKE name match), falls back to legacy `donors` table.
+  - Template links use `donor_detail_by_key` for materialized donors, `donor_detail` for legacy.
+- OpenBook date filtering (2026-02-22): `/openbook/` and `/openbook/<vendor_key>` date filters use string comparison (`contribution_date >= ?`) instead of `DATE()` casts. This avoids `InvalidDatetimeFormat` errors on rows with non-date values (e.g., header rows with literal `"DATE"`).
+- D2 Expenditures Reconciliation (2026-02-22): `D2ExpendituresRecon` sort/filter expressions use safe `CAST(NULLIF(TRIM(CAST(col AS TEXT)), '') AS REAL)` pattern for all numeric columns that may be TEXT-typed in the underlying `CREATE TABLE AS SELECT` view. Row parsing uses `_sf()`/`_si()` safe converters.
 - 527 contribution/expenditure route queries should prefer indexable predicates (`amount > 0`) and dual-format date range filters (`YYYY-MM-DD` + `YYYYMMDD`) over `DATE(column)` wrappers.
 - Required 527 indexes for perf-sensitive routes:
   - `idx_irs527_contributions_name_amount`
@@ -181,15 +187,17 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
    - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts do not expose transaction timestamps).
    - Legacy routes (`/reports`, `/donors`, `/committees`, and search report/filed-doc/donor-key sections) are expected to propagate the active global period window end-to-end.
    - Geo drilldown cache keys must include range + geo coordinates (`period/range`, `date_from/date_to` where applicable, `geo_type`, `geo_value`, optional `geo_state`) plus pagination/sort params.
-- Analytics page TTL caching (2026-02-19):
-   - `/analytics/networks`: TTL 300s, parallel graph computation with per-thread DB connections. Cold ~57s, warm ~25ms.
-   - `/analytics/` (overview): TTL 300s, caches all 7 aggregates + state race analytics. Cold ~21s, warm ~14ms.
-   - `/analytics/risk`: TTL 300s, caches anomalies + reconciliation. Cold ~9s, warm ~41ms.
-   - `/analytics/relationships`: TTL 300s (pre-existing). Cold ~61s, warm ~17ms.
+- Analytics page TTL caching (2026-02-22, updated from 2026-02-19):
+   - `/analytics/networks`: TTL 1800s (was 300s), parallel graph computation with per-thread DB connections. Cold ~104s, warm ~420ms.
+   - `/analytics/` (overview): TTL 1800s (was 300s), caches all 7 aggregates + state race analytics. Cold ~27s, warm ~14ms.
+   - `/analytics/risk`: TTL 1800s (was 300s), caches anomalies + reconciliation. Cold ~18s, warm ~400ms.
+   - `/analytics/relationships`: TTL 1800s (was 300s). Cold ~110s, warm ~400ms.
    - `/candidate-finance/`: TTL 180s, caches paginated results keyed on all filter params.
    - All analytics caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags.
    - Append `?refresh_cache=1` to force cache miss.
    - `bulk_candidate_committee_finance_agg` is a VIEW (not table) that joins/aggregates 6.4M receipt rows on each access.
+   - **Startup prewarm** (2026-02-22): `warm_analytics_caches()` runs in a background thread per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`). Pre-populates risk, networks, and relationships caches with default filter values (period=`2026cycle`, default limits). Cache keys must exactly match `_parse_filters()` defaults or prewarm results won't be hit. After prewarm completes (~2-3 min per worker), all 3 heavy routes serve in <500ms from any worker.
+   - **Per-worker cache architecture**: Gunicorn `--workers 3` means 3 separate Python processes, each with its own in-process dict cache. Without prewarm, only 33% of requests hit a warm worker. Prewarm eliminates this by warming all workers on startup. TTL of 1800s (30 min) ensures caches survive between typical user sessions. Data only changes on import, so long TTL is safe.
 - Analytics index additions (2026-02-19, in `database/schema.sql`):
    - `idx_irs527_orgs_ein`, `idx_irs527_committee_matches_ein`, `idx_irs527_exp_recipient_matches_ein`, `idx_irs527_director_donor_matches_ein` — EIN lookups for 527 ecosystem graph.
    - `idx_lobbying_donor_matches_client_id`, `idx_lobbying_exp_matches_source` — client/source lookups for lobbying influence graph.
