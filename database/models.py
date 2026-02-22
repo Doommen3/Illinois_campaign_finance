@@ -3192,25 +3192,104 @@ class CandidateCommitteeFinanceAgg:
 
     TABLE_NAME = "bulk_candidate_committee_finance_agg"
 
+    # Columns available in ISBE fallback (excludes period/cycle since they're always NULL)
+    _ISBE_FALLBACK_COLUMNS: ClassVar[set[str]] = {
+        "candidate_id", "candidate_full_name", "office_sought", "district_type",
+        "district", "candidate_party_affiliation", "committee_id_sbe",
+        "committee_name", "committee_type", "committee_party_affiliation",
+        "filing_count", "sum_total_receipts", "sum_total_expenditures",
+        "max_ending_funds_available", "archived_filing_count",
+    }
+
     @classmethod
-    def _table_exists(cls, conn: sqlite3.Connection) -> bool:
+    def _table_exists_raw(cls, conn: sqlite3.Connection, table_name: str) -> bool:
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
-            (cls.TABLE_NAME,),
+            (table_name,),
         ).fetchone()
         return row is not None
 
     @classmethod
+    def _table_exists(cls, conn: sqlite3.Connection) -> bool:
+        return cls._table_exists_raw(conn, cls.TABLE_NAME)
+
+    @classmethod
+    def _resolve_source(cls, conn: sqlite3.Connection) -> tuple[str | None, str | None]:
+        """Determine best available data source.
+
+        Returns (source_type, table_expr):
+        - ("bulk", "bulk_candidate_committee_finance_agg")
+        - ("isbe_fallback", "(SELECT ...) AS _cf")
+        - (None, None)
+        """
+        if cls._table_exists(conn):
+            return ("bulk", cls.TABLE_NAME)
+
+        needed = ["isbe_candidate_committees", "isbe_candidates", "isbe_committees"]
+        if all(cls._table_exists_raw(conn, t) for t in needed):
+            has_d2 = cls._table_exists_raw(conn, "isbe_d2_reports")
+            return ("isbe_fallback", cls._build_isbe_fallback_subquery(has_d2))
+
+        return (None, None)
+
+    @classmethod
+    def _build_isbe_fallback_subquery(cls, has_d2: bool) -> str:
+        d2_join = "LEFT JOIN isbe_d2_reports d2 ON d2.committee_id = cc.committee_id" if has_d2 else ""
+        fc = "COUNT(DISTINCT CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN d2.filed_doc_id END)" if has_d2 else "0"
+        tr = "COALESCE(SUM(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN COALESCE(d2.total_receipts, 0) ELSE 0 END), 0)" if has_d2 else "0"
+        te = "COALESCE(SUM(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN COALESCE(d2.total_expenditures, 0) ELSE 0 END), 0)" if has_d2 else "0"
+        ef = "COALESCE(MAX(CASE WHEN COALESCE(d2.archived, FALSE) = FALSE THEN d2.end_funds_available END), 0)" if has_d2 else "0"
+        ac = "COALESCE(SUM(CASE WHEN d2.archived = TRUE THEN 1 ELSE 0 END), 0)" if has_d2 else "0"
+        return f"""(
+            SELECT
+                cc.candidate_id,
+                TRIM(COALESCE(ca.first_name, '') || ' ' || COALESCE(ca.last_name, '')) AS candidate_full_name,
+                ca.office AS office_sought,
+                ca.district_type,
+                ca.district,
+                ca.party AS candidate_party_affiliation,
+                cc.committee_id AS committee_id_sbe,
+                c.name AS committee_name,
+                c.type AS committee_type,
+                c.party AS committee_party_affiliation,
+                NULL AS period_year,
+                NULL AS election_cycle,
+                {fc} AS filing_count,
+                {tr} AS sum_total_receipts,
+                {te} AS sum_total_expenditures,
+                {ef} AS max_ending_funds_available,
+                {ac} AS archived_filing_count,
+                NULL AS period_start_date,
+                NULL AS period_end_date
+            FROM isbe_candidate_committees cc
+            JOIN isbe_candidates ca ON ca.id = cc.candidate_id
+            JOIN isbe_committees c ON c.id = cc.committee_id
+            {d2_join}
+            GROUP BY cc.candidate_id, ca.first_name, ca.last_name, ca.office,
+                     ca.district_type, ca.district, ca.party,
+                     cc.committee_id, c.name, c.type, c.party
+        ) AS _cf"""
+
+    @classmethod
     def is_available(cls, conn: sqlite3.Connection) -> bool:
-        """Return True when the bulk aggregation table is present."""
-        return cls._table_exists(conn)
+        """Return True when any valid candidate finance source is present."""
+        source_type, _ = cls._resolve_source(conn)
+        return source_type is not None
+
+    @classmethod
+    def source_type(cls, conn: sqlite3.Connection) -> str | None:
+        """Return 'bulk' or 'isbe_fallback' or None."""
+        return cls._resolve_source(conn)[0]
 
     @classmethod
     def _column_names(cls, conn: sqlite3.Connection) -> set[str]:
-        if not cls._table_exists(conn):
-            return set()
-        rows = conn.execute(f"PRAGMA table_info({cls.TABLE_NAME})").fetchall()
-        return {row["name"] for row in rows if row and row["name"]}
+        source_type, _ = cls._resolve_source(conn)
+        if source_type == "isbe_fallback":
+            return cls._ISBE_FALLBACK_COLUMNS
+        if source_type == "bulk":
+            rows = conn.execute(f"PRAGMA table_info({cls.TABLE_NAME})").fetchall()
+            return {row["name"] for row in rows if row and row["name"]}
+        return set()
 
     @classmethod
     def _build_filter_sql(
@@ -3342,13 +3421,12 @@ class CandidateCommitteeFinanceAgg:
         min_expenditures: Optional[float] = None,
     ) -> int:
         """Count rows in the candidate-committee finance aggregate table."""
-        if not cls._table_exists(conn):
+        source_type, table_expr = cls._resolve_source(conn)
+        if source_type is None:
             return 0
 
         available_columns = cls._column_names(conn)
-        has_bulk_receipts_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'bulk_receipts_clean'"
-        ).fetchone() is not None
+        has_bulk_receipts_table = cls._table_exists_raw(conn, "bulk_receipts_clean")
         where_sql, params = cls._build_filter_sql(
             available_columns=available_columns,
             has_bulk_receipts_table=has_bulk_receipts_table,
@@ -3363,7 +3441,7 @@ class CandidateCommitteeFinanceAgg:
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
         )
-        query = f"SELECT COUNT(*) AS count FROM {cls.TABLE_NAME}{where_sql}"
+        query = f"SELECT COUNT(*) AS count FROM {table_expr}{where_sql}"
 
         row = conn.execute(query, params).fetchone()
         return row["count"] if row else 0
@@ -3388,13 +3466,12 @@ class CandidateCommitteeFinanceAgg:
         min_expenditures: Optional[float] = None,
     ) -> List["CandidateCommitteeFinanceAgg"]:
         """Fetch paginated candidate-committee aggregate rows with sorting."""
-        if not cls._table_exists(conn):
+        source_type, table_expr = cls._resolve_source(conn)
+        if source_type is None:
             return []
 
         available_columns = cls._column_names(conn)
-        has_bulk_receipts_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'bulk_receipts_clean'"
-        ).fetchone() is not None
+        has_bulk_receipts_table = cls._table_exists_raw(conn, "bulk_receipts_clean")
         sort_map = {
             "candidate_id": "candidate_id",
             "candidate_full_name": "candidate_full_name",
@@ -3438,7 +3515,7 @@ class CandidateCommitteeFinanceAgg:
                 archived_filing_count,
                 {"period_start_date" if "period_start_date" in available_columns else "NULL AS period_start_date"},
                 {"period_end_date" if "period_end_date" in available_columns else "NULL AS period_end_date"}
-            FROM {cls.TABLE_NAME}
+            FROM {table_expr}
         """
         where_sql, params = cls._build_filter_sql(
             available_columns=available_columns,
@@ -3490,7 +3567,8 @@ class CandidateCommitteeFinanceAgg:
     @classmethod
     def list_period_values(cls, conn: sqlite3.Connection) -> dict[str, List[int]]:
         """Return available period years and election cycles for filters."""
-        if not cls._table_exists(conn):
+        source_type, table_expr = cls._resolve_source(conn)
+        if source_type is None:
             return {"years": [], "cycles": []}
 
         columns = cls._column_names(conn)
@@ -3501,7 +3579,7 @@ class CandidateCommitteeFinanceAgg:
             year_rows = conn.execute(
                 f"""
                 SELECT DISTINCT period_year
-                FROM {cls.TABLE_NAME}
+                FROM {table_expr}
                 WHERE period_year IS NOT NULL
                 ORDER BY period_year DESC
                 """
@@ -3512,7 +3590,7 @@ class CandidateCommitteeFinanceAgg:
             cycle_rows = conn.execute(
                 f"""
                 SELECT DISTINCT election_cycle
-                FROM {cls.TABLE_NAME}
+                FROM {table_expr}
                 WHERE election_cycle IS NOT NULL
                 ORDER BY election_cycle DESC
                 """

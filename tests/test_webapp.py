@@ -508,10 +508,10 @@ class TestWebApp:
         assert b'class="search-form analytics-form"' in response.data
 
     def test_candidate_finance_page_loads_without_bulk_table(self, client):
-        """Test candidate finance page renders guidance when bulk table is missing."""
+        """Test candidate finance page renders guidance when no data source is available."""
         response = client.get('/candidate-finance/')
         assert response.status_code == 200
-        assert b'bulk candidate finance table is not available yet' in response.data.lower()
+        assert b'no candidate finance data is available yet' in response.data.lower()
 
     def test_candidate_finance_page_loads_with_bulk_table(self, app, client):
         """Test candidate finance page renders imported aggregate data and supports query params."""
@@ -542,6 +542,11 @@ class TestWebApp:
             )
             """
         )
+        # Create itemized drilldown prerequisite tables so itemized links render
+        conn.execute("CREATE TABLE IF NOT EXISTS bulk_receipts_clean (bulk_row_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS bulk_committee_candidate_links (link_record_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS bulk_candidates_clean (candidate_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS bulk_committees_clean (committee_id_sbe INTEGER)")
         conn.executemany(
             """
             INSERT INTO bulk_candidate_committee_finance_agg (

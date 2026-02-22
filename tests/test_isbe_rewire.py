@@ -1121,6 +1121,51 @@ class TestCandidateFinanceWithCandidacies:
         assert 'Smith' in html or 'Jones' in html
 
 
+class TestCandidateFinanceISBEFallback:
+    """Test /candidate-finance/ works when only ISBE tables exist (no bulk agg table)."""
+
+    def test_candidate_finance_isbe_only_renders_candidates(self, isbe_only_app, isbe_only_client):
+        """Page should render candidate rows via ISBE fallback when bulk table is missing."""
+        response = isbe_only_client.get('/candidate-finance/')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'Smith' in html or 'Jones' in html, "ISBE candidates should appear in fallback mode"
+        assert 'Candidate Committee Finance' in html
+
+    def test_candidate_finance_isbe_only_no_stale_guidance(self, isbe_only_app, isbe_only_client):
+        """Page should NOT show 'bulk candidate finance table is not available yet'."""
+        response = isbe_only_client.get('/candidate-finance/')
+        assert response.status_code == 200
+        html = response.data.decode().lower()
+        assert 'bulk candidate finance table is not available yet' not in html
+
+    def test_candidate_finance_isbe_only_no_broken_itemized_links(self, isbe_only_app, isbe_only_client):
+        """When itemized tables are unavailable, no itemized links should render."""
+        response = isbe_only_client.get('/candidate-finance/')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert '/itemized' not in html or 'not available' in html
+
+    def test_candidate_finance_isbe_only_search_works(self, isbe_only_app, isbe_only_client):
+        """Search filter should work in fallback mode."""
+        response = isbe_only_client.get('/candidate-finance/?q=Smith')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'Smith' in html
+
+    def test_candidate_finance_truly_empty_shows_guidance(self, tmp_path):
+        """With no ISBE or bulk tables at all, guidance message should appear."""
+        db_path = str(tmp_path / "test_empty_cf.db")
+        init_db(db_path)
+        app = create_app({'TESTING': True, 'DATABASE_PATH': db_path})
+        client = app.test_client()
+
+        response = client.get('/candidate-finance/')
+        assert response.status_code == 200
+        html = response.data.decode().lower()
+        assert 'no candidate finance data is available yet' in html
+
+
 def _seed_isbe_condensed_tables(conn):
     """Create isbe_condensed_receipts + isbe_committees + isbe_d2_reports for direct-path tests."""
     for tbl in ['isbe_condensed_receipts', 'isbe_d2_reports', 'isbe_committees']:

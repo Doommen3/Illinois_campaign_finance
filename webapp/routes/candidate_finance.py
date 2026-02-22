@@ -85,6 +85,8 @@ def list_candidate_finance():
     output_format = request.args.get('format', 'html').strip().lower()
 
     table_available = CandidateCommitteeFinanceAgg.is_available(conn)
+    finance_source_type = CandidateCommitteeFinanceAgg.source_type(conn)
+    itemized_available = CandidateCommitteeItemizedReceipt.is_available(conn)
     period_values = {"years": [], "cycles": []}
 
     # --- TTL cache for expensive view-backed queries ---
@@ -250,6 +252,8 @@ def list_candidate_finance():
         min_receipts=min_receipts_raw,
         min_expenditures=min_expenditures_raw,
         table_available=table_available,
+        finance_source_type=finance_source_type,
+        itemized_available=itemized_available,
     )
 
 

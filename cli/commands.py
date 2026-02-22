@@ -221,12 +221,17 @@ def import_bulk_download_command(directory, refresh_analytics):
               help='Comma-separated list of tables to load (default: all)')
 @click.option('--skip-views', is_flag=True,
               help='Skip materialized view creation')
-def sunshine_import_command(bulk_dir, download, tables, skip_views):
+@click.option('--skip-compat-swap', is_flag=True,
+              help='Skip running swap_bulk_to_isbe.py after ETL')
+def sunshine_import_command(bulk_dir, download, tables, skip_views, skip_compat_swap):
     """Import ISBE data using illinois-sunshine ETL (PostgreSQL-native).
 
     Loads all 12 ISBE bulk file types into isbe_* tables with proper FKs,
     then creates materialized views for deduplication (condensed_receipts,
     condensed_expenditures) and summary (committee_money, candidate_money).
+
+    After ETL, automatically runs swap_bulk_to_isbe.py to create bulk_*
+    compatibility views (use --skip-compat-swap to disable).
     """
     import subprocess
     cmd = [sys.executable, 'scripts/isbe_sunshine_etl.py',
@@ -241,7 +246,21 @@ def sunshine_import_command(bulk_dir, download, tables, skip_views):
         cmd.extend(['--db-url', config.DATABASE_URL])
     click.echo(f'Running: {" ".join(cmd)}')
     result = subprocess.run(cmd)
-    sys.exit(result.returncode)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    if not skip_compat_swap:
+        swap_cmd = [sys.executable, 'scripts/swap_bulk_to_isbe.py']
+        if config.DATABASE_URL:
+            swap_cmd.extend(['--db-url', config.DATABASE_URL])
+        click.echo(f'Running compat swap: {" ".join(swap_cmd)}')
+        swap_result = subprocess.run(swap_cmd)
+        if swap_result.returncode != 0:
+            click.echo('Warning: compat swap failed, /candidate-finance/ will use ISBE fallback mode.', err=True)
+    else:
+        click.echo('Skipped compat swap (--skip-compat-swap). Run `python scripts/swap_bulk_to_isbe.py` manually for full compatibility.')
+
+    sys.exit(0)
 
 @cli.command('clean-data')
 @click.option('--apply', is_flag=True, help='Apply changes (default is dry-run)')
