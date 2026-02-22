@@ -91,7 +91,7 @@
     <tbody>
         {% for c in candidates %}
         <tr>
-            <td>{{ c.candidate_full_name }}</td>
+            <td>{% if c.candidate_full_name %}<a href="{{ url_for('candidate_finance.list_candidate_finance', q=c.candidate_full_name) }}">{{ c.candidate_full_name }}</a>{% else %}Candidate {{ c.candidate_id }}{% endif %}</td>
             <td>{{ c.candidate_id }}</td>
             <td>
                 {% if c.committees %}

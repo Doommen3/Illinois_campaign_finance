@@ -712,6 +712,15 @@ class TestPersonIntelligenceISBE:
         html = response.data.decode()
         assert 'Citizens for Smith' in html
 
+    def test_person_intel_candidate_link_clickable(self, isbe_app, isbe_client):
+        """Candidate name should be a clickable link to candidate-finance."""
+        response = isbe_client.get('/person-intelligence?q=Smith')
+        assert response.status_code == 200
+        html = response.data.decode()
+        assert 'href="/candidate-finance/?q=John+Smith"' in html or \
+               'href="/candidate-finance/?q=John%20Smith"' in html, \
+               "Candidate name should link to candidate-finance search"
+
 
 @pytest.fixture
 def isbe_only_app(tmp_path: Path):
