@@ -1036,16 +1036,55 @@ def warm_analytics_caches(
 
     Called from a background thread per gunicorn worker on startup. Each worker
     calls this independently so all workers end up with warm caches.
+
+    Cache keys must match the defaults produced by _parse_filters() for a
+    request with no query parameters (period="2026cycle", default limits).
     """
+    from webapp.utils.time_filter import period_to_date_window as _ptdw
+
     logger = logging.getLogger(__name__)
+
+    # Compute the default date window matching _parse_filters() defaults
+    from datetime import date as _date
+    _today = _date.today().isoformat()
+    default_period_key = "2026cycle"
+    default_date_from = "2025-01-01"
+    default_date_to = _today
+
+    # Default filter values matching _parse_filters() with no query params
+    default_anomaly_limit = 25
+    default_recon_limit = 20
+    default_recon_min_abs_diff = 1000.0
+    default_min_edge_amount = 1000.0
+    default_network_limit = 200
+
+    # Default relationship params
+    default_donor_limit = 200
+    default_committee_limit = 120
+    default_candidate_limit = 80
+    default_client_limit = 80
+    default_org_limit = 100
+    default_edge_limit = 200
+    default_min_shared_amount = 5000.0
+    default_min_shared_targets = 2
+    default_min_shared_donors = 2
 
     # --- Risk cache ---
     try:
         conn = get_db(db_target)
-        anomalies = get_anomaly_flags(conn, limit=50)
-        reconciliation = get_reconciliation_outliers(conn, limit=50, min_abs_diff=100.0)
+        anomalies = get_anomaly_flags(
+            conn, limit=default_anomaly_limit,
+            date_from=default_date_from, date_to=default_date_to,
+        )
+        reconciliation = get_reconciliation_outliers(
+            conn, limit=default_recon_limit,
+            min_abs_diff=default_recon_min_abs_diff,
+        )
         now = time.monotonic()
-        cache_key = ("all", None, None, 50, 50, 100.0)
+        cache_key = (
+            default_period_key, default_date_from, default_date_to,
+            default_anomaly_limit, default_recon_limit, default_recon_min_abs_diff,
+        )
         with _risk_cache_lock:
             _risk_cache["payload"] = {
                 "anomalies": anomalies,
@@ -1062,11 +1101,20 @@ def warm_analytics_caches(
     try:
         empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
         graph_jobs = [
-            ("network", get_network_graph, (), {"min_edge_amount": 5000.0, "limit": 200}, _empty_network()),
-            ("vendor_network", get_vendor_expenditure_network, (), {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
-            ("overlap_graph", get_state_federal_overlap_graph, (), {"donor_limit": 100, "edge_limit": 600}, empty_graph),
-            ("lobbying_graph", get_lobbying_influence_graph, (), {"client_limit": 80, "edge_limit": 600}, empty_graph),
-            ("ecosystem_527", get_irs527_ecosystem_graph, (), {"org_limit": 80, "edge_limit": 600}, empty_graph),
+            ("network", get_network_graph, (),
+             {"min_edge_amount": default_min_edge_amount, "limit": default_network_limit,
+              "date_from": default_date_from, "date_to": default_date_to},
+             _empty_network()),
+            ("vendor_network", get_vendor_expenditure_network, (),
+             {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
+            ("overlap_graph", get_state_federal_overlap_graph, (),
+             {"donor_limit": 100, "edge_limit": 600}, empty_graph),
+            ("lobbying_graph", get_lobbying_influence_graph, (),
+             {"client_limit": 80, "edge_limit": 600,
+              "date_from": default_date_from, "date_to": default_date_to}, empty_graph),
+            ("ecosystem_527", get_irs527_ecosystem_graph, (),
+             {"org_limit": 80, "edge_limit": 600,
+              "date_from": default_date_from, "date_to": default_date_to}, empty_graph),
         ]
         results: dict[str, dict] = {}
         futures = {
@@ -1080,7 +1128,10 @@ def warm_analytics_caches(
             results[key] = result
 
         now = time.monotonic()
-        cache_key = ("all", None, None, 5000.0, 200)
+        cache_key = (
+            default_period_key, default_date_from, default_date_to,
+            default_min_edge_amount, default_network_limit,
+        )
         with _networks_cache_lock:
             _networks_cache["payload"] = {
                 "network": results.get("network", _empty_network()),
@@ -1098,17 +1149,32 @@ def warm_analytics_caches(
     # --- Relationships cache ---
     try:
         conn = get_db(db_target)
-        payload = {
-            "donor_cogiving": get_donor_cogiving_network(conn, donor_limit=200, edge_limit=200, min_shared_amount=5000.0, min_shared_targets=2),
-            "committee_similarity": get_committee_similarity_network(conn, committee_limit=120, edge_limit=200, min_shared_donors=2, min_shared_amount=5000.0),
-            "candidate_competition": get_candidate_competition_networks(conn, candidate_limit=80, edge_limit=200, min_shared_donors=2, min_shared_amount=5000.0),
-            "lobbying_influence": get_lobbying_influence_graph(conn, client_limit=80, edge_limit=200),
-            "ecosystem_527": get_irs527_ecosystem_graph(conn, org_limit=100, edge_limit=200),
+        rel_payload = {
+            "donor_cogiving": get_donor_cogiving_network(
+                conn, donor_limit=default_donor_limit, edge_limit=default_edge_limit,
+                min_shared_amount=default_min_shared_amount, min_shared_targets=default_min_shared_targets),
+            "committee_similarity": get_committee_similarity_network(
+                conn, committee_limit=default_committee_limit, edge_limit=default_edge_limit,
+                min_shared_donors=default_min_shared_donors, min_shared_amount=default_min_shared_amount),
+            "candidate_competition": get_candidate_competition_networks(
+                conn, candidate_limit=default_candidate_limit, edge_limit=default_edge_limit,
+                min_shared_donors=default_min_shared_donors, min_shared_amount=default_min_shared_amount),
+            "lobbying_influence": get_lobbying_influence_graph(
+                conn, client_limit=default_client_limit, edge_limit=default_edge_limit,
+                date_from=default_date_from, date_to=default_date_to),
+            "ecosystem_527": get_irs527_ecosystem_graph(
+                conn, org_limit=default_org_limit, edge_limit=default_edge_limit,
+                date_from=default_date_from, date_to=default_date_to),
         }
         now = time.monotonic()
-        cache_key = ("all", None, None, 200, 120, 80, 80, 100, 200, 5000.0, 2, 2)
+        cache_key = (
+            default_period_key, default_date_from, default_date_to,
+            default_donor_limit, default_committee_limit, default_candidate_limit,
+            default_client_limit, default_org_limit, default_edge_limit,
+            default_min_shared_amount, default_min_shared_targets, default_min_shared_donors,
+        )
         with _relationships_cache_lock:
-            _relationships_cache["payload"] = payload
+            _relationships_cache["payload"] = rel_payload
             _relationships_cache["key"] = cache_key
             _relationships_cache["expires_at"] = now + float(relationships_ttl)
         logger.info("Analytics prewarm: relationships cache populated")
