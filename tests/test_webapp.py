@@ -1831,6 +1831,218 @@ class TestWebApp:
         assert b"Donor Keys" in donor_keys.data
         assert b"bulk-search-key-1" in donor_keys.data
 
+    def test_search_source_aware_committees_from_isbe(self, app, client):
+        """Global search returns committees from isbe_committees when available."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS isbe_committees")
+        conn.execute(
+            """
+            CREATE TABLE isbe_committees (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                type TEXT,
+                party TEXT,
+                city TEXT,
+                state TEXT,
+                status_date TEXT,
+                state_committee BOOLEAN DEFAULT FALSE,
+                state_id TEXT,
+                local_id TEXT,
+                active BOOLEAN DEFAULT TRUE,
+                purpose TEXT,
+                zipcode TEXT,
+                creation_date TEXT,
+                creation_amount REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO isbe_committees (id, name, type, party, city, state) VALUES (?, ?, ?, ?, ?, ?)",
+            (10001, "Citizens for Pritzker", "Candidate", "Democratic", "Chicago", "IL"),
+        )
+        conn.execute(
+            "INSERT INTO isbe_committees (id, name, type, party, city, state) VALUES (?, ?, ?, ?, ?, ?)",
+            (10002, "Rauner Victory Fund", "Candidate", "Republican", "Springfield", "IL"),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/search?q=Pritzker&type=committees")
+        assert resp.status_code == 200
+        assert b"Citizens for Pritzker" in resp.data
+        assert b"Committees" in resp.data
+        assert b"isbe_committees" in resp.data
+
+        resp2 = client.get("/search?q=Rauner&type=committees")
+        assert resp2.status_code == 200
+        assert b"Rauner Victory Fund" in resp2.data
+
+    def test_search_source_aware_donors_from_summary(self, app, client):
+        """Global search returns donors from analytics_donor_summary when available."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bulk_receipts",
+                "pritzker|jb|123 main|chicago|il|60601",
+                None,
+                "JB Pritzker",
+                "123 Main St, Chicago, IL 60601",
+                "Chicago",
+                "IL",
+                "Governor",
+                "Pritzker Group",
+                50000.0,
+                12,
+                5,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bulk_receipts",
+                "durbin|dick|456 oak|springfield|il|62701",
+                None,
+                "Dick Durbin",
+                "456 Oak Ave, Springfield, IL 62701",
+                "Springfield",
+                "IL",
+                "Senator",
+                "US Senate",
+                25000.0,
+                8,
+                3,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/search?q=Pritzker&type=donors")
+        assert resp.status_code == 200
+        assert b"JB Pritzker" in resp.data
+        assert b"Donors" in resp.data
+        assert b"analytics_donor_summary" in resp.data
+
+        resp2 = client.get("/search?q=Durbin&type=donors")
+        assert resp2.status_code == 200
+        assert b"Dick Durbin" in resp2.data
+
+    def test_search_type_all_returns_committees_donors_candidates(self, app, client):
+        """type=all returns committees, donors, and candidates from active sources."""
+        conn = get_db(app.config['DATABASE_PATH'])
+
+        # Seed ISBE committee
+        conn.execute("DROP TABLE IF EXISTS isbe_committees")
+        conn.execute(
+            """
+            CREATE TABLE isbe_committees (
+                id INTEGER PRIMARY KEY, name TEXT, type TEXT, party TEXT,
+                city TEXT, state TEXT, status_date TEXT,
+                state_committee BOOLEAN DEFAULT FALSE, state_id TEXT,
+                local_id TEXT, active BOOLEAN DEFAULT TRUE, purpose TEXT,
+                zipcode TEXT, creation_date TEXT, creation_amount REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO isbe_committees (id, name, type, party, city, state) VALUES (?, ?, ?, ?, ?, ?)",
+            (20001, "Friends of Testname", "Candidate", "Democratic", "Chicago", "IL"),
+        )
+
+        # Seed donor in analytics_donor_summary
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bulk_receipts",
+                "testname|donor|1 st|chicago|il|60601",
+                None,
+                "Testname Donor",
+                "1 St, Chicago, IL 60601",
+                "Chicago",
+                "IL",
+                "Retired",
+                "Self",
+                10000.0,
+                5,
+                2,
+            ),
+        )
+
+        # Seed local candidate
+        conn.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidate_committee_finance_agg (
+                candidate_id INTEGER,
+                candidate_full_name TEXT,
+                office_sought TEXT,
+                committee_id_sbe INTEGER,
+                sum_total_receipts REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bulk_candidate_committee_finance_agg VALUES (?, ?, ?, ?, ?)",
+            (501, "Testname Candidate", "State Rep", 20001, 75000.0),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/search?q=Testname&type=all")
+        assert resp.status_code == 200
+        assert b"Committees" in resp.data
+        assert b"Friends of Testname" in resp.data
+        assert b"Donors" in resp.data
+        assert b"Testname Donor" in resp.data
+        assert b"Candidates" in resp.data
+        assert b"Testname Candidate" in resp.data
+
+    def test_search_committees_legacy_fallback(self, app, client):
+        """Committee search falls back to legacy committees table when ISBE is absent."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS isbe_committees")
+        conn.commit()
+        conn.close()
+
+        # The app fixture seeds a "Test Committee" in the legacy table
+        resp = client.get("/search?q=Test%20Committee&type=committees")
+        assert resp.status_code == 200
+        assert b"Test Committee" in resp.data
+        assert b"Committees" in resp.data
+
+    def test_search_donors_legacy_fallback(self, app, client):
+        """Donor search falls back to legacy donors table when analytics_donor_summary is empty."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.commit()
+        conn.close()
+
+        # The app fixture seeds "Jane Donor" in the legacy donors table
+        resp = client.get("/search?q=Jane%20Donor&type=donors")
+        assert resp.status_code == 200
+        assert b"Jane Donor" in resp.data
+        assert b"Donors" in resp.data
+
     def test_d2_reconciliation_handles_text_numeric_columns(self, app, client):
         conn = get_db(app.config['DATABASE_PATH'])
         conn.execute("DROP TABLE IF EXISTS bulk_d2_receipts_recon")

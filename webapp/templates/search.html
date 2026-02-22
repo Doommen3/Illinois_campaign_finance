@@ -55,6 +55,8 @@
             <thead>
                 <tr>
                     <th>Name</th>
+                    <th>Type</th>
+                    <th>Location</th>
                 </tr>
             </thead>
             <tbody>
@@ -66,13 +68,15 @@
                         </a>
                         <details class="provenance-panel">
                             <summary>Provenance</summary>
-                            <p><strong>Source table:</strong> committees</p>
-                            <p><strong>Source filing link:</strong> {{ committee.detail_url if committee.detail_url else 'not available' }}</p>
-                            <p><strong>Import batch:</strong> legacy committee scrape/import</p>
-                            <p><strong>Sync timestamp:</strong> {{ committee.updated_at if committee.updated_at else 'not available' }}</p>
-                            <p><strong>Normalization notes:</strong> {{ committee.source_identifier if committee.source_identifier else 'source identifier not present' }}</p>
+                            <p><strong>Source table:</strong> {{ committee.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ committee.provenance.source_filing_link if committee.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ committee.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ committee.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ committee.provenance.normalization_notes }}</p>
                         </details>
                     </td>
+                    <td>{{ committee.committee_type if committee.committee_type else '-' }}{% if committee.party %} <small>({{ committee.party }})</small>{% endif %}</td>
+                    <td>{{ committee.city if committee.city else '-' }}{% if committee.state %}, {{ committee.state }}{% endif %}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -95,16 +99,24 @@
                 {% for donor in donors %}
                 <tr>
                     <td>
+                        {% if donor.donor_key is defined and donor.donor_key %}
+                        <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source) }}">
+                            {{ donor.name }}
+                        </a>
+                        {% elif donor.id is defined and donor.id %}
                         <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
                             {{ donor.name }}
                         </a>
+                        {% else %}
+                        {{ donor.name }}
+                        {% endif %}
                         <details class="provenance-panel">
                             <summary>Provenance</summary>
-                            <p><strong>Source table:</strong> donors</p>
-                            <p><strong>Source filing link:</strong> not available</p>
-                            <p><strong>Import batch:</strong> legacy contribution scrape/manual entry</p>
-                            <p><strong>Sync timestamp:</strong> {{ donor.created_at if donor.created_at else 'not available' }}</p>
-                            <p><strong>Normalization notes:</strong> normalized_name={{ donor.normalized_name if donor.normalized_name else 'none' }}</p>
+                            <p><strong>Source table:</strong> {{ donor.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ donor.provenance.source_filing_link if donor.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ donor.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ donor.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ donor.provenance.normalization_notes }}</p>
                         </details>
                     </td>
                     <td>{{ donor.address|truncate(40) if donor.address else '-' }}</td>

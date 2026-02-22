@@ -1077,6 +1077,175 @@ def _search_federal_candidates(conn, query: str, limit: int = 20) -> list[dict]:
     return output
 
 
+def _search_committees_source_aware(
+    conn,
+    query: str,
+    limit: int = 50,
+    transaction_date_from: str | None = None,
+    transaction_date_to: str | None = None,
+) -> list[dict]:
+    """Search committees from active data sources (ISBE, then legacy fallback)."""
+    output: list[dict] = []
+
+    # Primary: isbe_committees
+    if _table_exists(conn, "isbe_committees"):
+        rows = conn.execute(
+            """
+            SELECT id, name, type, party, city, state, status_date
+            FROM isbe_committees
+            WHERE name LIKE ?
+            ORDER BY name
+            LIMIT ?
+            """,
+            (f"%{query}%", limit),
+        ).fetchall()
+        for row in rows:
+            output.append({
+                "id": row["id"],
+                "name": row["name"] or "",
+                "source_table": "isbe_committees",
+                "committee_type": row["type"] or "",
+                "party": row["party"] or "",
+                "city": row["city"] or "",
+                "state": row["state"] or "",
+                "provenance": {
+                    "source_table": "isbe_committees",
+                    "source_filing_link": None,
+                    "import_batch": "ISBE sunshine import",
+                    "sync_timestamp": row["status_date"] or "not available",
+                    "normalization_notes": "Committee names from ISBE bulk data.",
+                },
+            })
+
+    # Fallback: legacy committees table
+    if len(output) < limit and _table_exists(conn, "committees"):
+        found_names = {c["name"].upper() for c in output}
+        remaining = limit - len(output)
+        try:
+            legacy = Committee.search(
+                conn,
+                query,
+                limit=remaining + len(found_names),
+                transaction_date_from=transaction_date_from,
+                transaction_date_to=transaction_date_to,
+            )
+        except Exception:
+            legacy = []
+        for c in legacy:
+            if (c.name or "").upper() in found_names:
+                continue
+            if len(output) >= limit:
+                break
+            output.append({
+                "id": c.id,
+                "name": c.name or "",
+                "source_table": "committees",
+                "committee_type": "",
+                "party": "",
+                "city": "",
+                "state": "",
+                "provenance": {
+                    "source_table": "committees",
+                    "source_filing_link": c.detail_url,
+                    "import_batch": "legacy committee scrape/import",
+                    "sync_timestamp": c.updated_at or "not available",
+                    "normalization_notes": c.source_identifier or "source identifier not present",
+                },
+            })
+
+    return output
+
+
+def _search_donors_source_aware(
+    conn,
+    query: str,
+    limit: int = 50,
+    transaction_date_from: str | None = None,
+    transaction_date_to: str | None = None,
+) -> list[dict]:
+    """Search donors from active data sources (analytics_donor_summary, then legacy fallback)."""
+    output: list[dict] = []
+
+    # Primary: analytics_donor_summary (materialized donor directory)
+    if _table_exists(conn, "analytics_donor_summary"):
+        rows = conn.execute(
+            """
+            SELECT
+                source,
+                donor_key,
+                donor_name,
+                donor_address,
+                donor_city,
+                donor_state,
+                total_amount,
+                contribution_count,
+                committee_count,
+                updated_at
+            FROM analytics_donor_summary
+            WHERE donor_name LIKE ?
+            ORDER BY total_amount DESC, donor_name ASC
+            LIMIT ?
+            """,
+            (f"%{query}%", limit),
+        ).fetchall()
+        for row in rows:
+            output.append({
+                "source_table": "analytics_donor_summary",
+                "donor_key": row["donor_key"],
+                "source": row["source"],
+                "name": row["donor_name"] or "",
+                "address": row["donor_address"] or "",
+                "total_amount": float(row["total_amount"] or 0),
+                "contribution_count": int(row["contribution_count"] or 0),
+                "committee_count": int(row["committee_count"] or 0),
+                "provenance": {
+                    "source_table": "analytics_donor_summary",
+                    "source_filing_link": None,
+                    "import_batch": f"materialized from {row['source']}",
+                    "sync_timestamp": row["updated_at"] or "not available",
+                    "normalization_notes": f"Aggregated donor key: {row['donor_key']}",
+                },
+            })
+
+    # Fallback: legacy donors table
+    if len(output) < limit and _table_exists(conn, "donors"):
+        found_names = {d["name"].upper() for d in output}
+        remaining = limit - len(output)
+        try:
+            legacy = Donor.search(
+                conn,
+                query,
+                limit=remaining + len(found_names),
+                transaction_date_from=transaction_date_from,
+                transaction_date_to=transaction_date_to,
+            )
+        except Exception:
+            legacy = []
+        for d in legacy:
+            if (d.name or "").upper() in found_names:
+                continue
+            if len(output) >= limit:
+                break
+            output.append({
+                "source_table": "donors",
+                "id": d.id,
+                "name": d.name or "",
+                "address": d.address or "",
+                "total_amount": float(getattr(d, "total_amount", 0) or 0),
+                "contribution_count": int(getattr(d, "contribution_count", 0) or 0),
+                "normalized_name": d.normalized_name or "",
+                "provenance": {
+                    "source_table": "donors",
+                    "source_filing_link": None,
+                    "import_batch": "legacy contribution scrape/manual entry",
+                    "sync_timestamp": d.created_at or "not available",
+                    "normalization_notes": f"normalized_name={d.normalized_name or 'none'}",
+                },
+            })
+
+    return output
+
+
 def _search_reports(
     conn,
     query: str,
@@ -2738,7 +2907,7 @@ def search():
         if search_type in ('all', 'committees'):
             results['committees'] = _run_section(
                 'committees',
-                lambda: Committee.search(
+                lambda: _search_committees_source_aware(
                     conn,
                     query,
                     limit=committee_limit,
@@ -2750,7 +2919,7 @@ def search():
         if search_type in ('all', 'donors'):
             results['donors'] = _run_section(
                 'donors',
-                lambda: Donor.search(
+                lambda: _search_donors_source_aware(
                     conn,
                     query,
                     limit=donor_limit,
