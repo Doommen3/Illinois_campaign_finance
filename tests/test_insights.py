@@ -281,6 +281,31 @@ class TestHomepageInsights:
         assert resp.status_code == 200
         assert b'MADIGAN' in resp.data
 
+    def test_director_candidates_dedupe_visible_name_pairs(self, app, client):
+        conn = get_db(app.config["DATABASE_PATH"])
+        conn.execute(
+            """
+            INSERT INTO irs527_director_candidate_matches (
+                ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("987654321", "Another Org", "MADIGAN, MICHAEL J", "C101", "MICHAEL J MADIGAN", "state", 0.94),
+        )
+        conn.execute(
+            """
+            INSERT INTO irs527_director_candidate_matches (
+                ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("999999999", "Third Org", "MADIGAN, MICHAEL J", "C102", "MICHAEL J MADIGAN", "state", 0.93),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = client.get('/')
+        assert resp.status_code == 200
+        assert resp.data.count(b'MICHAEL J MADIGAN') == 1
+
     def test_empty_db_graceful(self, empty_client):
         resp = empty_client.get('/')
         assert resp.status_code == 200

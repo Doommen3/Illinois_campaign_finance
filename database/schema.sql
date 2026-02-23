@@ -1288,6 +1288,8 @@ CREATE INDEX IF NOT EXISTS idx_irs527_director_candidate_score
     ON irs527_director_candidate_matches(score DESC);
 CREATE INDEX IF NOT EXISTS idx_irs527_director_candidate_ein
     ON irs527_director_candidate_matches(ein);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_irs527_director_candidate_unique
+    ON irs527_director_candidate_matches(ein, director_name, candidate_source, candidate_id);
 
 -- 527 Director -> Donor address matches
 CREATE TABLE IF NOT EXISTS irs527_director_address_matches (

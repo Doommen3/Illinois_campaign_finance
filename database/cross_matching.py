@@ -1333,9 +1333,13 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
 
     directors = conn.execute(
         """
-        SELECT rowid_local, ein, org_name, person_name
+        SELECT
+            ein,
+            MIN(org_name) AS org_name,
+            person_name
         FROM irs527_directors
         WHERE person_name IS NOT NULL
+        GROUP BY ein, person_name
         """
     ).fetchall()
 
@@ -1379,10 +1383,27 @@ def match_527_directors_to_candidates(conn: sqlite3.Connection, threshold: float
         threshold,
         job_label="527-director-candidates",
     )
-    batch = [
-        (ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score)
-        for (ein, org_name, director_name), (candidate_source, candidate_id, candidate_name), score in pair_matches
-    ]
+    deduped_matches: dict[tuple[str, str, str, str], tuple[str | None, str | None, str | None, str | None, str | None, str, float]] = {}
+    for (ein, org_name, director_name), (candidate_source, candidate_id, candidate_name), score in pair_matches:
+        dedupe_key = (
+            (ein or "").strip(),
+            (director_name or "").strip(),
+            (candidate_source or "").strip(),
+            (candidate_id or "").strip(),
+        )
+        existing = deduped_matches.get(dedupe_key)
+        if existing is None or score > existing[-1]:
+            deduped_matches[dedupe_key] = (
+                ein,
+                org_name,
+                director_name,
+                candidate_id,
+                candidate_name,
+                candidate_source,
+                score,
+            )
+
+    batch = list(deduped_matches.values())
     matches = len(batch)
 
     if batch:

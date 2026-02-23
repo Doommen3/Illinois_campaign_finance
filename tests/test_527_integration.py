@@ -295,6 +295,77 @@ class TestDirectorCandidateMatching:
         assert stats.get("skipped") == "missing_tables" or stats["matches"] == 0
         conn.close()
 
+    def test_match_directors_dedupes_repeated_source_rows(self, tmp_path: Path):
+        from database.cross_matching import match_527_directors_to_candidates
+        conn = _setup_db(tmp_path)
+
+        # Same EIN/name appears on multiple filings; should not multiply identical matches.
+        _insert_527_director(conn, "123456789", "Test Org", "Robert Steffen")
+        _insert_527_director(conn, "123456789", "Test Org", "Robert Steffen")
+        _insert_527_director(conn, "123456789", "Test Org", "Robert Steffen")
+        _insert_state_candidate(conn, 1001, "Robert Steffen")
+
+        stats = match_527_directors_to_candidates(conn, threshold=0.80)
+        assert stats["matches"] == 1
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM irs527_director_candidate_matches
+            WHERE ein = '123456789' AND director_name = 'Robert Steffen'
+            """
+        ).fetchall()
+        assert len(rows) == 1
+        conn.close()
+
+    def test_init_db_rebuilds_unique_index_after_deduping_existing_rows(self, tmp_path: Path):
+        db_path = str(tmp_path / "test_527_migration.db")
+        init_db(db_path)
+        conn = get_db(db_path)
+
+        conn.execute("DROP INDEX IF EXISTS idx_irs527_director_candidate_unique")
+        conn.execute(
+            """
+            INSERT INTO irs527_director_candidate_matches (
+                ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("123456789", "Test Org", "Robert Steffen", "1001", "Robert Steffen", "state", 1.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO irs527_director_candidate_matches (
+                ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("123456789", "Test Org", "Robert Steffen", "1001", "Robert Steffen", "state", 1.0),
+        )
+        conn.commit()
+        from database.connection import ensure_schema
+
+        # Re-run schema migration path; this should dedupe then recreate the unique index.
+        ensure_schema(conn)
+        count_row = conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM irs527_director_candidate_matches
+            WHERE ein = '123456789' AND director_name = 'Robert Steffen' AND candidate_source = 'state' AND candidate_id = '1001'
+            """
+        ).fetchone()
+        assert int(count_row["c"]) == 1
+        with pytest.raises(Exception):
+            conn.execute(
+                """
+                INSERT INTO irs527_director_candidate_matches (
+                    ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("123456789", "Test Org", "Robert Steffen", "1001", "Robert Steffen", "state", 1.0),
+            )
+            conn.commit()
+        conn.rollback()
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 3. Address Normalization Tests

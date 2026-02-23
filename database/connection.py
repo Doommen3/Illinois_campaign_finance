@@ -218,6 +218,36 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
 
 
+def _dedupe_irs527_director_candidate_matches(conn: sqlite3.Connection) -> None:
+    """Remove duplicate director-candidate match rows before unique index creation."""
+    table_name = "irs527_director_candidate_matches"
+    if not _table_exists(conn, table_name):
+        return
+    required_columns = ("match_id", "ein", "director_name", "candidate_source", "candidate_id")
+    if not all(_column_exists(conn, table_name, col) for col in required_columns):
+        return
+
+    conn.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                match_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(ein, ''), COALESCE(director_name, ''), COALESCE(candidate_source, ''), COALESCE(candidate_id, '')
+                    ORDER BY match_id ASC
+                ) AS rn
+            FROM irs527_director_candidate_matches
+        )
+        DELETE FROM irs527_director_candidate_matches
+        WHERE match_id IN (
+            SELECT match_id
+            FROM ranked
+            WHERE rn > 1
+        )
+        """
+    )
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure schema and backward-compatible migrations are applied."""
     schema_path = Path(__file__).parent / 'schema.sql'
@@ -276,6 +306,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'fec_candidate_committees', 'last_file_date', 'last_file_date TEXT')
     _ensure_column(conn, 'fec_candidate_committees', 'first_file_date', 'first_file_date TEXT')
     _ensure_column(conn, 'fec_candidate_committees', 'party_full', 'party_full TEXT')
+    # Normalize historical duplicate rows before unique index creation.
+    _dedupe_irs527_director_candidate_matches(conn)
 
     conn.executescript(schema)
 

@@ -360,9 +360,25 @@ def _build_dashboard_insights(conn, period=None) -> dict:
     if _table_exists(conn, "irs527_director_candidate_matches"):
         insights["director_candidates"] = conn.execute(
             """
+            WITH ranked AS (
+                SELECT
+                    ein,
+                    org_name,
+                    director_name,
+                    candidate_id,
+                    candidate_name,
+                    candidate_source,
+                    score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY LOWER(TRIM(COALESCE(director_name, ''))), LOWER(TRIM(COALESCE(candidate_name, '')))
+                        ORDER BY score DESC, COALESCE(candidate_id, '') ASC, COALESCE(ein, '') ASC, match_id ASC
+                    ) AS rn
+                FROM irs527_director_candidate_matches
+                WHERE score >= 0.80
+            )
             SELECT ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score
-            FROM irs527_director_candidate_matches
-            WHERE score >= 0.80
+            FROM ranked
+            WHERE rn = 1
             ORDER BY score DESC
             LIMIT 10
             """
