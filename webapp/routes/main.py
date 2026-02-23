@@ -2667,6 +2667,12 @@ def investigate_workspace():
     )
 
 
+@main_bp.route('/about')
+def about():
+    """Project overview and third-party attribution."""
+    return render_template('about.html')
+
+
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""

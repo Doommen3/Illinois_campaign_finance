@@ -34,6 +34,7 @@
                 <p class="nav-group-title">Explore</p>
                 <ul class="nav-links">
                     <li><a href="{{ url_for('main.investigate_workspace', period=time_period.key) }}">Start Here</a></li>
+                    <li><a href="{{ url_for('main.about', period=time_period.key) }}">About</a></li>
                     <li><a href="{{ url_for('main.index', period=time_period.key) }}">Overview</a></li>
                     <li><a href="{{ url_for('main.search', period=time_period.key) }}">Search</a></li>
                     <li><a href="{{ url_for('main.candidates', period=time_period.key) }}">Candidates</a></li>
@@ -143,6 +144,12 @@
                 {% else %}
                 Please contact the site maintainer for questions, corrections, or data issues.
                 {% endif %}
+            </p>
+            <p class="footer-attribution">
+                Built on ETL groundwork from
+                <a href="https://github.com/datamade/illinois-sunshine" target="_blank" rel="noopener noreferrer">Illinois Sunshine</a>
+                by DataMade for Reform for Illinois (formerly Illinois Campaign for Political Reform), used under the
+                <a href="https://github.com/datamade/illinois-sunshine/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>.
             </p>
             <p class="footer-disclaimer">
                 Disclaimer: This site is provided for informational purposes only. I am not liable for errors, omissions,

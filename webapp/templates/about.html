@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}About - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>About FollowTheMoneyIL.com</h1>
+<p class="subtitle">
+    FollowTheMoneyIL.com is a civic-tech and data journalism platform for exploring campaign finance,
+    lobbying, and related public records in Illinois.
+</p>
+
+<div class="status-section">
+    <h2>What This Site Does</h2>
+    <p>
+        The project combines ETL pipelines, normalized database models, and web application tooling so people can
+        search and investigate money-and-influence records with less manual cleanup.
+    </p>
+    <p>
+        Core records come from official filings and public datasets, including the Illinois State Board of Elections
+        (ISBE) and the U.S. Federal Election Commission (FEC).
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Illinois Sunshine Attribution</h2>
+    <p>
+        This project uses ETL groundwork from
+        <a href="https://github.com/datamade/illinois-sunshine" target="_blank" rel="noopener noreferrer">Illinois Sunshine</a>,
+        built by DataMade for Reform for Illinois (formerly Illinois Campaign for Political Reform).
+    </p>
+    <p>
+        The original Illinois Sunshine project is available under the
+        <a href="https://github.com/datamade/illinois-sunshine/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>.
+        FollowTheMoneyIL.com extends that base with additional data sources, analytics, and product features.
+    </p>
+    <p>
+        More on the original project:
+        <a href="https://illinoissunshine.org/about/" target="_blank" rel="noopener noreferrer">illinoissunshine.org/about/</a>.
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Corrections and Questions</h2>
+    <p>
+        If you spot a data issue, attribution issue, or broken link, please use the contact information in the footer.
+    </p>
+</div>
+{% endblock %}
