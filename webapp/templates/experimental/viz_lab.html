@@ -33,6 +33,17 @@
 </form>
 
 <section class="status-section">
+    <h2>Map Visualizations</h2>
+    <div class="viz-lab-grid">
+        <a class="viz-lab-card" href="{{ url_for('viz_lab.viz_lab_state_maps', period=period_key, date_from=date_from if date_from else None, date_to=date_to if date_to else None) }}">
+            <h3>Illinois State Maps</h3>
+            <p class="help-text">Interactive district boundaries for Congressional, State House, and State Senate layers.</p>
+            <span class="viz-lab-card-meta">Hover and click district details</span>
+        </a>
+    </div>
+</section>
+
+<section class="status-section">
     <h2>Prototype Index</h2>
     <div class="viz-lab-index-grid">
         {% for prototype in prototypes %}
@@ -195,39 +206,6 @@
     </div>
 </section>
 {% endfor %}
-
-<section class="status-section" id="district-map-shell">
-    <h2>Illinois District Map Shell <span class="period-badge">Pending Assets</span></h2>
-    <p class="help-text">UI shell is in place for Phase D. Click mock districts below to validate panel behavior while waiting on real geometry assets.</p>
-    <div class="viz-lab-map-shell">
-        <div class="viz-lab-map-mock">
-            <button type="button" class="viz-map-mock-district" data-district="IL-H-01">IL-H-01</button>
-            <button type="button" class="viz-map-mock-district" data-district="IL-H-07">IL-H-07</button>
-            <button type="button" class="viz-map-mock-district" data-district="IL-H-13">IL-H-13</button>
-            <button type="button" class="viz-map-mock-district" data-district="IL-S-26">IL-S-26</button>
-            <button type="button" class="viz-map-mock-district" data-district="IL-R-042">IL-R-042</button>
-        </div>
-        <div class="viz-lab-map-detail" id="viz-map-detail">
-            <p class="help-text"><strong>Selected district:</strong> none</p>
-            <p class="help-text">Mock totals appear here until GeoJSON/TopoJSON is available.</p>
-        </div>
-    </div>
-    <h3>Required Geometry Files</h3>
-    <ul class="viz-lab-list">
-        {% for asset in district_asset_status.assets %}
-        <li>
-            <code>{{ asset.filename }}</code> -
-            {% if asset.exists %}found{% else %}missing{% endif %}
-            (<code>{{ asset.path }}</code>)
-        </li>
-        {% endfor %}
-    </ul>
-    {% if district_asset_status.all_present %}
-    <p class="help-text">All district assets are present. Next step is wiring real boundary joins and hover/click stats.</p>
-    {% else %}
-    <p class="help-text">District geometry assets are still required before the real clickable map can be enabled.</p>
-    {% endif %}
-</section>
 
 <script id="viz-lab-prototypes" type="application/json">{{ prototypes|tojson }}</script>
 <script id="viz-lab-state" type="application/json">{{ {'active_prototype': active_prototype, 'period_key': period_key, 'date_from': date_from, 'date_to': date_to}|tojson }}</script>

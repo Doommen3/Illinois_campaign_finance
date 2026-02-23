@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Illinois State Maps | Visualization Lab{% endblock %}
+
+{% block content %}
+<section class="viz-lab">
+    <header class="viz-lab-header">
+        <div>
+            <h1>Illinois State Maps</h1>
+            <p class="subtitle">District boundaries for Congressional, State House, and State Senate layers.</p>
+        </div>
+        <div class="viz-lab-actions">
+            <a class="btn" href="{{ url_for('experimental.viz_lab', period=time_period.key) }}">Back to Lab</a>
+        </div>
+    </header>
+
+    <div class="viz-alert" id="il-map-alert"></div>
+
+    <div class="viz-controls">
+        <label>
+            Layer
+            <select id="il-map-layer">
+                <option value="congressional">Congressional (CD119)</option>
+                <option value="state-house">State House (SLDL)</option>
+                <option value="state-senate">State Senate (SLDU)</option>
+            </select>
+        </label>
+        <label>
+            Status
+            <span class="viz-control-value" id="il-map-status">Loading geometry status...</span>
+        </label>
+    </div>
+
+    <div class="viz-map-stage">
+        <div class="viz-graph-panel">
+            <div class="viz-graph-summary" id="il-map-summary">Select a layer to inspect district boundaries.</div>
+            <svg id="il-district-map" class="viz-map-canvas" aria-label="Illinois district map"></svg>
+        </div>
+        <div class="viz-detail-panel">
+            <div class="viz-detail-card">
+                <h3>Hover Details</h3>
+                <div id="il-map-hover" class="viz-detail-body">Hover a district to inspect feature properties.</div>
+            </div>
+            <div class="viz-detail-card">
+                <h3>Selected District</h3>
+                <div id="il-map-selected" class="viz-detail-body">Click a district to pin details.</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+<script src="{{ url_for('static', filename='js/viz_lab_state_maps.js', v='20260223-1') }}"></script>
+{% endblock %}

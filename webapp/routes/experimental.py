@@ -1198,21 +1198,6 @@ PROTOTYPE_BUILDERS = {
 }
 
 
-def _district_asset_status() -> dict:
-    static_root = Path(current_app.root_path) / "static" / "geo"
-    expected = [
-        "il_cd.topo.json",
-        "il_sldl.topo.json",
-        "il_sldu.topo.json",
-        "il_state.topo.json",
-    ]
-    assets = []
-    for filename in expected:
-        target = static_root / filename
-        assets.append({"filename": filename, "path": str(target), "exists": target.exists()})
-    return {"assets": assets, "all_present": all(asset["exists"] for asset in assets)}
-
-
 @experimental_bp.before_request
 def _guard_feature_flag():
     if not _feature_enabled():
@@ -1241,7 +1226,6 @@ def viz_lab(prototype_key: str | None = None):
         period_key=period.get("key"),
         date_from=date_from or "",
         date_to=date_to or "",
-        district_asset_status=_district_asset_status(),
     )
 
 

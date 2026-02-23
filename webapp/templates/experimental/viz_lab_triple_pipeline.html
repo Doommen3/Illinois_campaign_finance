@@ -42,7 +42,8 @@
         </label>
         <label>
             Search
-            <input type="text" id="triple-search" placeholder="Entity name">
+            <input type="text" id="triple-search" list="triple-search-options" placeholder="Entity name or ID">
+            <datalist id="triple-search-options"></datalist>
         </label>
     </div>
 
@@ -69,5 +70,5 @@
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-<script src="{{ url_for('static', filename='js/viz_lab_triple_pipeline.js', v='20260216-1') }}"></script>
+<script src="{{ url_for('static', filename='js/viz_lab_triple_pipeline.js', v='20260223-1') }}"></script>
 {% endblock %}

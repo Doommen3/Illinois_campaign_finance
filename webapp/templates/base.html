@@ -53,9 +53,8 @@
                     <li><a href="{{ url_for('analytics.dashboard', period=time_period.key) }}">State Analytics</a></li>
                     <li><a href="{{ url_for('federal_finance.federal_overview', period=time_period.key) }}">Federal Finance</a></li>
                     {% if experimental_viz_lab_enabled %}
-                    <li><a href="{{ url_for('experimental.viz_lab', period=time_period.key) }}">Viz Lab</a></li>
+                    <li><a href="{{ url_for('experimental.viz_lab', period=time_period.key) }}">Visualization Lab</a></li>
                     {% endif %}
-                    <li><a href="{{ url_for('viz_lab.viz_lab_index', period=time_period.key) }}">Visualization Lab</a></li>
                 </ul>
             </div>
 

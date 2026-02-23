@@ -1718,6 +1718,7 @@ h2 {
     .viz-lab-map-shell {
         grid-template-columns: 1fr;
     }
+}
 
 /* Visualization Lab */
 .viz-lab {
@@ -1812,6 +1813,12 @@ h2 {
     gap: 1rem;
 }
 
+.viz-map-stage {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 1rem;
+}
+
 .viz-graph-panel {
     background: #ffffff;
     border: 1px solid #e2e8f0;
@@ -1828,6 +1835,13 @@ h2 {
 .viz-graph {
     width: 100%;
     min-height: 520px;
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.viz-map-canvas {
+    width: 100%;
+    min-height: 560px;
     border-radius: 10px;
     background: #f8fafc;
 }
@@ -1876,7 +1890,15 @@ h2 {
         grid-template-columns: 1fr;
     }
 
+    .viz-map-stage {
+        grid-template-columns: 1fr;
+    }
+
     .viz-graph {
+        min-height: 420px;
+    }
+
+    .viz-map-canvas {
         min-height: 420px;
     }
 }

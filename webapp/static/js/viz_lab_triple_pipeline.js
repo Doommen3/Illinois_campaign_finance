@@ -8,11 +8,16 @@
     const minWeightSlider = document.getElementById("triple-min-weight");
     const minWeightValue = document.getElementById("triple-min-weight-value");
     const searchInput = document.getElementById("triple-search");
+    const searchOptions = document.getElementById("triple-search-options");
     const summaryEl = document.getElementById("triple-graph-summary");
     const alertEl = document.getElementById("triple-pipeline-alert");
     const nodeDetailEl = document.getElementById("triple-node-detail");
     const edgeDetailEl = document.getElementById("triple-edge-detail");
     const resetBtn = document.getElementById("triple-pipeline-reset");
+
+    if (!graphEl || !timelineEl || !edgeTypeSelect || !searchInput) {
+        return;
+    }
 
     const state = {
         raw: null,
@@ -21,6 +26,10 @@
         selectedNode: null,
         selectedEdge: null,
         mode: "global",
+        entitySuggestionByValue: new Map(),
+        entityIdsByCanonical: new Map(),
+        searchValueByEntityId: new Map(),
+        rawNodeByEntityId: new Map(),
     };
 
     const tooltip = document.createElement("div");
@@ -41,12 +50,24 @@
         return num.toLocaleString();
     };
 
+    const normalizeLookupKey = (value) => String(value || "").trim().toLowerCase();
+
+    const stripEntitySuffix = (value) => String(value || "").replace(/\s*\[[^\]]+\]\s*$/, "").trim();
+
     const channelLabel = (node) => {
         const channels = [];
         if (node.channel_lobby) channels.push("Lobby");
         if (node.channel_527) channels.push("527");
         if (node.channel_campaign) channels.push("Campaign");
         return channels.length ? channels.join(" / ") : "Unknown";
+    };
+
+    const renderNodeDetail = (node) => {
+        if (!node) {
+            nodeDetailEl.textContent = "Click a node to load its ego network and timeline.";
+            return;
+        }
+        nodeDetailEl.innerHTML = `<strong>${node.canonical_name || node.id}</strong><br>Type: ${node.entity_type || "-"}<br>Channels: ${channelLabel(node)}<br>Evidence counts: Lobby ${node.evidence_count_lobby || 0}, 527 ${node.evidence_count_527 || 0}, Campaign ${node.evidence_count_campaign || 0}`;
     };
 
     const updateAlert = () => {
@@ -94,6 +115,45 @@
         return false;
     };
 
+    const resolveEntityIdFromInput = (rawInput) => {
+        const text = String(rawInput || "").trim();
+        if (!text) return "";
+        const normalized = normalizeLookupKey(text);
+
+        if (state.entitySuggestionByValue.has(normalized)) {
+            return state.entitySuggestionByValue.get(normalized) || "";
+        }
+        const bracketMatch = text.match(/\[([^\]]+)\]\s*$/);
+        if (bracketMatch && bracketMatch[1]) {
+            return bracketMatch[1].trim();
+        }
+        if (state.rawNodeByEntityId.has(text)) {
+            return text;
+        }
+
+        const canonical = normalizeLookupKey(stripEntitySuffix(text));
+        const candidateIds = state.entityIdsByCanonical.get(canonical) || [];
+        if (candidateIds.length === 1) {
+            return candidateIds[0];
+        }
+        return "";
+    };
+
+    const setSearchValueForEntity = (entityId) => {
+        if (!entityId) return;
+        const suggestionValue = state.searchValueByEntityId.get(entityId);
+        if (suggestionValue) {
+            searchInput.value = suggestionValue;
+            return;
+        }
+        const node = state.rawNodeByEntityId.get(entityId);
+        if (node?.canonical_name) {
+            searchInput.value = node.canonical_name;
+            return;
+        }
+        searchInput.value = entityId;
+    };
+
     const applyFilters = () => {
         if (!state.active) return;
         const selectedTypes = new Set(Array.from(edgeTypeSelect.selectedOptions).map((o) => o.value));
@@ -102,7 +162,9 @@
         );
         const topN = Number(topNSlider.value || 0);
         const minWeight = Number(minWeightSlider.value || 0);
-        const searchTerm = (searchInput.value || "").trim().toLowerCase();
+        const searchRaw = (searchInput.value || "").trim();
+        const searchTerm = normalizeLookupKey(stripEntitySuffix(searchRaw));
+        const exactEntityId = normalizeLookupKey(resolveEntityIdFromInput(searchRaw));
 
         const nodes = state.active.nodes
             .filter((node) => nodeMatchesChannel(node, selectedChannels))
@@ -118,9 +180,13 @@
         });
 
         const highlightIds = new Set();
-        if (searchTerm) {
+        if (searchTerm || exactEntityId) {
             nodes.forEach((node) => {
-                if ((node.canonical_name || "").toLowerCase().includes(searchTerm)) {
+                const canonicalName = normalizeLookupKey(node.canonical_name || "");
+                const entityId = normalizeLookupKey(node.entity_id || node.id || "");
+                const matchesText = searchTerm && (canonicalName.includes(searchTerm) || entityId.includes(searchTerm));
+                const matchesEntity = exactEntityId && entityId === exactEntityId;
+                if (matchesText || matchesEntity) {
                     highlightIds.add(node.id);
                 }
             });
@@ -195,9 +261,11 @@
 
         node.on("click", (_, d) => {
             state.selectedNode = d;
-            nodeDetailEl.innerHTML = `<strong>${d.canonical_name || d.id}</strong><br>Type: ${d.entity_type || "-"}<br>Channels: ${channelLabel(d)}<br>Evidence counts: Lobby ${d.evidence_count_lobby || 0}, 527 ${d.evidence_count_527 || 0}, Campaign ${d.evidence_count_campaign || 0}`;
-            loadEgoGraph(d.entity_id || d.id);
-            loadTimeline(d.entity_id || d.id);
+            const entityId = d.entity_id || d.id;
+            setSearchValueForEntity(entityId);
+            renderNodeDetail(d);
+            loadEgoGraph(entityId);
+            loadTimeline(entityId);
         });
 
         link.on("mouseover", (event, d) => {
@@ -231,25 +299,118 @@
     };
 
     const loadEgoGraph = async (entityId) => {
-        if (!entityId) return;
+        if (!entityId) return false;
         try {
             const data = await fetchJson(`/experimental/viz-lab/data/triple-pipeline/ego?entity_id=${encodeURIComponent(entityId)}`);
             state.active = data;
             state.mode = "ego";
             applyFilters();
+            return true;
         } catch (err) {
             console.warn(err);
+            return false;
         }
     };
 
     const loadTimeline = async (entityId) => {
-        if (!entityId) return;
+        if (!entityId) return false;
         try {
             const payload = await fetchJson(`/experimental/viz-lab/data/triple-pipeline/timeline?entity_id=${encodeURIComponent(entityId)}`);
             renderTimeline(payload.series || []);
+            return true;
         } catch (err) {
             console.warn(err);
+            return false;
         }
+    };
+
+    const focusEntity = async (entityId, {syncSearch = true} = {}) => {
+        if (!entityId) return;
+        if (syncSearch) {
+            setSearchValueForEntity(entityId);
+        }
+        const node = state.rawNodeByEntityId.get(entityId);
+        if (node) {
+            renderNodeDetail(node);
+        }
+        const egoLoaded = await loadEgoGraph(entityId);
+        await loadTimeline(entityId);
+        if (!egoLoaded) {
+            state.active = state.raw;
+            state.mode = "global";
+            applyFilters();
+        }
+    };
+
+    const buildFallbackSuggestions = (graph) => {
+        const entries = (graph?.nodes || [])
+            .map((node) => ({
+                entity_id: String(node.entity_id || node.id || "").trim(),
+                canonical_name: String(node.canonical_name || node.entity_id || node.id || "").trim(),
+                node_size_score: Number(node.node_size_score || 0),
+                rank: null,
+            }))
+            .filter((entry) => entry.entity_id)
+            .sort((a, b) => (b.node_size_score || 0) - (a.node_size_score || 0));
+        const top = entries[0];
+        return {
+            entities: entries,
+            default_entity_id: top?.entity_id || "",
+        };
+    };
+
+    const initEntitySuggestions = (graph, suggestionPayload) => {
+        const payload = suggestionPayload && Array.isArray(suggestionPayload.entities) && suggestionPayload.entities.length
+            ? suggestionPayload
+            : buildFallbackSuggestions(graph);
+        const entities = payload.entities || [];
+
+        state.entitySuggestionByValue.clear();
+        state.entityIdsByCanonical.clear();
+        state.searchValueByEntityId.clear();
+
+        if (searchOptions) {
+            searchOptions.innerHTML = "";
+        }
+
+        entities.forEach((entry) => {
+            const entityId = String(entry.entity_id || "").trim();
+            const canonicalName = String(entry.canonical_name || entityId).trim();
+            if (!entityId) return;
+
+            const canonicalKey = normalizeLookupKey(canonicalName);
+            const displayValue = `${canonicalName} [${entityId}]`;
+
+            if (searchOptions) {
+                const option = document.createElement("option");
+                option.value = displayValue;
+                option.label = entityId;
+                option.textContent = entityId;
+                searchOptions.appendChild(option);
+            }
+
+            state.entitySuggestionByValue.set(normalizeLookupKey(displayValue), entityId);
+            if (!state.entityIdsByCanonical.has(canonicalKey)) {
+                state.entityIdsByCanonical.set(canonicalKey, []);
+            }
+            state.entityIdsByCanonical.get(canonicalKey).push(entityId);
+            state.searchValueByEntityId.set(entityId, displayValue);
+        });
+
+        const defaultEntityId = String(payload.default_entity_id || "").trim();
+        if (defaultEntityId) {
+            setSearchValueForEntity(defaultEntityId);
+        }
+        return defaultEntityId;
+    };
+
+    const commitSearchSelection = async () => {
+        const entityId = resolveEntityIdFromInput(searchInput.value);
+        if (!entityId) {
+            applyFilters();
+            return;
+        }
+        await focusEntity(entityId);
     };
 
     const renderTimeline = (series) => {
@@ -309,18 +470,40 @@
             applyFilters();
         });
         searchInput.addEventListener("input", applyFilters);
+        searchInput.addEventListener("change", () => {
+            void commitSearchSelection();
+        });
+        searchInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void commitSearchSelection();
+        });
         resetBtn.addEventListener("click", resetView);
     };
 
     const init = async () => {
         try {
-            const graph = await fetchJson("/experimental/viz-lab/data/triple-pipeline/graph");
+            const [graph, suggestionPayload] = await Promise.all([
+                fetchJson("/experimental/viz-lab/data/triple-pipeline/graph"),
+                fetchJson("/experimental/viz-lab/data/triple-pipeline/entities").catch(() => null),
+            ]);
             state.raw = graph;
             state.active = graph;
+            state.rawNodeByEntityId.clear();
+            graph.nodes.forEach((node) => {
+                const entityId = String(node.entity_id || node.id || "").trim();
+                if (entityId) {
+                    state.rawNodeByEntityId.set(entityId, node);
+                }
+            });
             initControls(graph);
             attachEvents();
             updateAlert();
+            const defaultEntityId = initEntitySuggestions(graph, suggestionPayload);
             applyFilters();
+            if (defaultEntityId) {
+                await focusEntity(defaultEntityId, {syncSearch: false});
+            }
         } catch (err) {
             alertEl.textContent = "Unable to load triple pipeline artifacts. Run the build script to generate graph.json.";
             alertEl.style.display = "block";
