@@ -331,6 +331,75 @@ def _extract_top_state_race_href(response_data: bytes, race_label: str) -> str:
     return match.group(1)
 
 
+def _extract_first_top_state_race_label(response_data: bytes) -> str:
+    html = response_data.decode("utf-8")
+    match = re.search(
+        r"<h2>Top State Races</h2>.*?<tbody>\s*<tr>\s*<td>\s*<a[^>]*>\s*([^<]+)\s*</a>",
+        html,
+        flags=re.DOTALL,
+    )
+    assert match is not None, "Missing Top State Races first-row label"
+    return " ".join(match.group(1).split())
+
+
+def _seed_top_state_races_zero_outside_high_totals(db_path: str, *, race_count: int = 13) -> None:
+    conn = get_db(db_path)
+    try:
+        for idx in range(1, race_count + 1):
+            committee_id = 3000 + idx
+            candidate_id = 7000 + idx
+            receipts_total = 50000.0 - float(idx * 100)
+
+            conn.execute(
+                """
+                INSERT INTO bulk_candidate_committee_finance_agg (
+                    candidate_id, candidate_full_name, office_sought, district_type, district, election_cycle,
+                    candidate_party_affiliation, committee_id_sbe, committee_name, committee_type,
+                    committee_party_affiliation, filing_count, sum_total_receipts,
+                    sum_total_expenditures, max_ending_funds_available, archived_filing_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    f"Candidate Zero {idx}",
+                    f"Office {idx}",
+                    "District",
+                    str(idx),
+                    2026,
+                    "Independent",
+                    committee_id,
+                    f"Committee Zero {idx}",
+                    "Political Action",
+                    "Independent",
+                    1,
+                    receipts_total,
+                    0.0,
+                    receipts_total,
+                    0,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO bulk_receipts_clean (
+                    committee_id_sbe, contributed_by, d2_part_code, filed_doc_id, is_archived, amount, received_date, received_datetime_raw
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    committee_id,
+                    f"Scenario Donor {idx}",
+                    "1A",
+                    61000 + idx,
+                    0,
+                    receipts_total,
+                    "2026-02-01",
+                    "2026-02-01 12:00:00",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def analytics_conn(tmp_path: Path):
     db_path = str(tmp_path / "analytics.db")
@@ -1061,6 +1130,30 @@ def test_top_state_races_rows_include_clickable_hrefs(analytics_client):
     assert params.get("period") == ["2026cycle"]
     assert "date_from" not in params
     assert "date_to" not in params
+
+
+def test_top_state_races_can_sort_by_outside_spending(analytics_client):
+    db_path = analytics_client.application.config["DATABASE_PATH"]
+    _seed_top_state_races_zero_outside_high_totals(db_path, race_count=13)
+
+    response = analytics_client.get(
+        "/analytics/?period=2026cycle&state_race_sort=outside_spending_total&state_race_dir=desc"
+    )
+    assert response.status_code == 200
+    assert b'name="state_race_sort"' in response.data
+    assert b'name="state_race_dir"' in response.data
+    assert _extract_first_top_state_race_label(response.data) == "Governor - Statewide At-Large"
+    assert b"Outside spending exists in lower-ranked races; sort by Outside Spending to view." not in response.data
+
+
+def test_top_state_races_shows_helper_when_nonzero_outside_is_below_default_top_rows(analytics_client):
+    db_path = analytics_client.application.config["DATABASE_PATH"]
+    _seed_top_state_races_zero_outside_high_totals(db_path, race_count=13)
+
+    response = analytics_client.get("/analytics/?period=2026cycle")
+    assert response.status_code == 200
+    assert _extract_first_top_state_race_label(response.data) != "Governor - Statewide At-Large"
+    assert b"Outside spending exists in lower-ranked races; sort by Outside Spending to view." in response.data
 
 
 def test_state_race_detail_route_returns_200_for_valid_race(analytics_client):

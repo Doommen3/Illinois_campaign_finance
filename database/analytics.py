@@ -2817,6 +2817,44 @@ def _build_state_race_analytics_rows(
     return output
 
 
+_STATE_RACE_SORT_FIELDS = {
+    "total_amount",
+    "outside_spending_total",
+    "outside_pressure_ratio",
+}
+
+
+def _state_race_sort_key(row: dict, sort_field: str) -> tuple:
+    race_label = (row.get("race_label") or "").strip()
+    total_amount = float(row.get("total_amount") or 0.0)
+    outside_spending_total = float(row.get("outside_spending_total") or 0.0)
+    outside_pressure_ratio = float(row.get("outside_pressure_ratio") or 0.0)
+    contribution_count = int(row.get("contribution_count") or 0)
+
+    if sort_field == "outside_spending_total":
+        return (
+            outside_spending_total,
+            outside_pressure_ratio,
+            total_amount,
+            contribution_count,
+            race_label,
+        )
+    if sort_field == "outside_pressure_ratio":
+        return (
+            outside_pressure_ratio,
+            outside_spending_total,
+            total_amount,
+            contribution_count,
+            race_label,
+        )
+    return (
+        total_amount,
+        contribution_count,
+        outside_spending_total,
+        race_label,
+    )
+
+
 def get_state_race_analytics(
     conn: sqlite3.Connection,
     *,
@@ -2824,6 +2862,8 @@ def get_state_race_analytics(
     date_from: str | None = None,
     date_to: str | None = None,
     election_cycle: int | None = None,
+    sort_by: str = "total_amount",
+    sort_dir: str = "desc",
 ) -> list[dict]:
     """Return state race-level analytics using bulk ISBE tables when available."""
     rows = _build_state_race_analytics_rows(
@@ -2832,6 +2872,15 @@ def get_state_race_analytics(
         date_to=date_to,
         election_cycle=election_cycle,
         include_supporting_rows=False,
+    )
+
+    sort_field = (sort_by or "total_amount").strip().lower()
+    if sort_field not in _STATE_RACE_SORT_FIELDS:
+        sort_field = "total_amount"
+    sort_direction = "asc" if (sort_dir or "").strip().lower() == "asc" else "desc"
+    rows.sort(
+        key=lambda row: _state_race_sort_key(row, sort_field),
+        reverse=sort_direction == "desc",
     )
     return rows[: max(1, int(limit))]
 

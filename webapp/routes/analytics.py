@@ -413,6 +413,11 @@ def dashboard():
     filters = _parse_filters()
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
+    valid_state_race_sorts = {"total_amount", "outside_spending_total", "outside_pressure_ratio"}
+    state_race_sort = (request.args.get("state_race_sort", "total_amount", type=str) or "total_amount").strip().lower()
+    if state_race_sort not in valid_state_race_sorts:
+        state_race_sort = "total_amount"
+    state_race_dir = "asc" if (request.args.get("state_race_dir", "desc", type=str) or "").strip().lower() == "asc" else "desc"
 
     # --- TTL cache for overview aggregates ---
     overview_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 300)))
@@ -430,6 +435,8 @@ def dashboard():
         filters["months"],
         filters["nlp_limit"],
         election_cycle,
+        state_race_sort,
+        state_race_dir,
     )
     now = time.monotonic()
 
@@ -453,6 +460,7 @@ def dashboard():
         reconciliation = cached_payload["reconciliation"]
         state_race_analytics = cached_payload["state_race_analytics"]
         state_race_table_available = cached_payload["state_race_table_available"]
+        state_race_nonzero_below_visible = cached_payload.get("state_race_nonzero_below_visible", False)
         snapshot_state["heavy_sections_loaded"] = True
     else:
         if snapshot_state["heavy_sections_loaded"]:
@@ -510,13 +518,25 @@ def dashboard():
                 "bulk_expenditures_clean",
             )
         )
-        state_race_analytics = get_state_race_analytics(
+        state_race_all_rows = get_state_race_analytics(
             conn,
-            limit=12,
+            limit=5000,
             date_from=filters["date_from"],
             date_to=filters["date_to"],
             election_cycle=election_cycle,
+            sort_by=state_race_sort,
+            sort_dir=state_race_dir,
         )
+        state_race_analytics = state_race_all_rows[:12]
+        visible_rows = state_race_analytics
+        hidden_rows = state_race_all_rows[12:]
+        visible_has_nonzero_outside = any(
+            float(row.get("outside_spending_total") or 0.0) > 0.0 for row in visible_rows
+        )
+        hidden_has_nonzero_outside = any(
+            float(row.get("outside_spending_total") or 0.0) > 0.0 for row in hidden_rows
+        )
+        state_race_nonzero_below_visible = bool(visible_rows) and (not visible_has_nonzero_outside) and hidden_has_nonzero_outside
         if cache_enabled:
             with _overview_cache_lock:
                 _overview_cache["payload"] = {
@@ -529,6 +549,7 @@ def dashboard():
                     "reconciliation": reconciliation,
                     "state_race_analytics": state_race_analytics,
                     "state_race_table_available": state_race_table_available,
+                    "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
                 }
                 _overview_cache["key"] = cache_key
                 _overview_cache["expires_at"] = now + float(overview_cache_ttl)
@@ -548,6 +569,9 @@ def dashboard():
         latest_time_point=latest_time_point,
         state_race_table_available=state_race_table_available,
         state_race_analytics=state_race_analytics,
+        state_race_sort=state_race_sort,
+        state_race_dir=state_race_dir,
+        state_race_nonzero_below_visible=state_race_nonzero_below_visible,
         election_cycle=election_cycle,
     )
 

@@ -41,6 +41,21 @@
         Recon Min Abs Diff
         <input type="number" name="recon_min_abs_diff" min="0" step="100" value="{{ recon_min_abs_diff }}">
     </label>
+    <label>
+        Top Races Sort
+        <select name="state_race_sort">
+            <option value="total_amount" {% if state_race_sort == 'total_amount' %}selected{% endif %}>Total Amount</option>
+            <option value="outside_spending_total" {% if state_race_sort == 'outside_spending_total' %}selected{% endif %}>Outside Spending (E)</option>
+            <option value="outside_pressure_ratio" {% if state_race_sort == 'outside_pressure_ratio' %}selected{% endif %}>Outside Pressure Ratio</option>
+        </select>
+    </label>
+    <label>
+        Top Races Direction
+        <select name="state_race_dir">
+            <option value="desc" {% if state_race_dir != 'asc' %}selected{% endif %}>Descending</option>
+            <option value="asc" {% if state_race_dir == 'asc' %}selected{% endif %}>Ascending</option>
+        </select>
+    </label>
     <button type="submit">Apply</button>
 </form>
 
@@ -83,6 +98,9 @@
 
 <div class="status-section">
     <h2>Top State Races</h2>
+    {% if state_race_nonzero_below_visible %}
+    <p class="help-text">Outside spending exists in lower-ranked races; sort by Outside Spending to view.</p>
+    {% endif %}
     {% if not state_race_table_available %}
     <p>State race bulk tables are not available yet.</p>
     {% else %}
