@@ -79,6 +79,32 @@ def test_527_list_search(client):
     assert b'Test 527 Org' in response.data
 
 
+def test_527_list_dedupes_same_ein_rows_by_form_id_seq(client):
+    conn = get_db(client.application.config["DATABASE_PATH"])
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (
+            ein, form_id, form_id_seq, org_name, city, state, zip, material_change_date, insert_datetime
+        ) VALUES ('555555555', 8871, 100, 'Dup Org Old', 'Chicago', 'IL', '60601', '2025-01-01', '2025-01-02')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (
+            ein, form_id, form_id_seq, org_name, city, state, zip, material_change_date, insert_datetime
+        ) VALUES ('555555555', 8871, 101, 'Dup Org New', 'Springfield', 'IL', '62701', '2025-02-01', '2025-02-02')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get('/527/?q=Dup Org&period=all')
+    assert response.status_code == 200
+    assert b'Dup Org New' in response.data
+    assert b'Dup Org Old' not in response.data
+    assert response.data.count(b'/527/555555555') == 1
+
+
 def test_527_detail(client):
     response = client.get('/527/123456789?period=all')
     assert response.status_code == 200
@@ -87,6 +113,32 @@ def test_527_detail(client):
     assert b'Recipient Inc' in response.data
     assert b'Acme Donor' in response.data
     assert b'Contributions To This Organization' in response.data
+
+
+def test_527_detail_uses_highest_form_id_seq_row(client):
+    conn = get_db(client.application.config["DATABASE_PATH"])
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (
+            ein, form_id, form_id_seq, org_name, address_1, city, state, zip, material_change_date, insert_datetime
+        ) VALUES ('666666666', 8871, 200, 'Old Detail Org', '100 Old St', 'Chicago', 'IL', '60601', '2025-01-01', '2025-01-02')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (
+            ein, form_id, form_id_seq, org_name, address_1, city, state, zip, material_change_date, insert_datetime
+        ) VALUES ('666666666', 8871, 201, 'Newest Detail Org', '200 New Ave', 'Peoria', 'IL', '61602', '2025-02-01', '2025-02-02')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get('/527/666666666?period=all')
+    assert response.status_code == 200
+    assert b'Newest Detail Org' in response.data
+    assert b'Old Detail Org' not in response.data
+    assert b'Peoria' in response.data
 
 
 def test_527_detail_not_found(client):

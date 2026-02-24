@@ -186,12 +186,10 @@ def list_orgs():
     raw_query = request.args.get('q', '').strip()
     query = normalize_search_query(raw_query) or raw_query.strip()
 
-    where_clause_outer = ""
-    where_clause_inner = ""
+    where_clause = ""
     params = []
     if query:
-        where_clause_outer = "WHERE o.org_name LIKE ?"
-        where_clause_inner = "WHERE org_name LIKE ?"
+        where_clause = "WHERE org_name LIKE ?"
         params.append(f"%{query}%")
 
     expenditure_join_sql = ""
@@ -230,17 +228,51 @@ def list_orgs():
         ) ic ON ic.ein = o.ein
         """
 
+    latest_orgs_cte = f"""
+    WITH ranked_orgs AS (
+        SELECT
+            ein,
+            org_name,
+            city,
+            state,
+            formation_date,
+            form_id,
+            form_id_seq,
+            material_change_date,
+            insert_datetime,
+            ROW_NUMBER() OVER (
+                PARTITION BY ein
+                ORDER BY
+                    COALESCE(form_id_seq, 0) DESC,
+                    COALESCE(material_change_date, '') DESC,
+                    COALESCE(insert_datetime, '') DESC,
+                    COALESCE(form_id, 0) DESC
+            ) AS rn
+        FROM irs527_organizations
+        {where_clause}
+    ),
+    latest_orgs AS (
+        SELECT ein, org_name, city, state, formation_date
+        FROM ranked_orgs
+        WHERE rn = 1
+    )
+    """
+
     total = _scalar(
         conn,
-        f"SELECT COUNT(DISTINCT o.ein) FROM irs527_organizations o {where_clause_outer}",
+        f"""
+        {latest_orgs_cte}
+        SELECT COUNT(*) FROM latest_orgs
+        """,
         params,
         default=0,
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
 
-    # Get one row per EIN with latest form_id
+    # Get one latest row per EIN (form_id_seq is the record sequence key).
     orgs = conn.execute(
         f"""
+        {latest_orgs_cte}
         SELECT
             o.ein,
             o.org_name,
@@ -251,13 +283,7 @@ def list_orgs():
             COALESCE(r.total_expenditures, ex.total_expenditures, 0) AS total_expenditures,
             COALESCE(ic.total_contributions, rc.received_contributions, 0) AS received_contributions,
             CASE WHEN cm.ein IS NOT NULL THEN 1 ELSE 0 END AS has_committee_match
-        FROM (
-            SELECT ein, MAX(form_id) AS max_form_id
-            FROM irs527_organizations
-            {where_clause_inner}
-            GROUP BY ein
-        ) latest
-        JOIN irs527_organizations o ON o.ein = latest.ein AND o.form_id = latest.max_form_id
+        FROM latest_orgs o
         LEFT JOIN (
             SELECT ein, SUM(total_contributions) AS total_contributions,
                    SUM(total_expenditures) AS total_expenditures
@@ -319,7 +345,11 @@ def org_detail(ein):
                email, purpose, formation_date, custodian_name, contact_name
         FROM irs527_organizations
         WHERE ein = ?
-        ORDER BY form_id DESC
+        ORDER BY
+            COALESCE(form_id_seq, 0) DESC,
+            COALESCE(material_change_date, '') DESC,
+            COALESCE(insert_datetime, '') DESC,
+            COALESCE(form_id, 0) DESC
         LIMIT 1
         """,
         (ein,),
