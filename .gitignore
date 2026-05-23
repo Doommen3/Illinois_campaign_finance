@@ -28,11 +28,34 @@ tmp/
 *.parquet
 *.feather
 
-# Keep curated geometry assets in version control
+# Geometry — topojson files are build artifacts (regenerable via
+# scripts/build_geometry.py from Census TIGER/Line shapefiles). README is
+# reference material and CAN ship.
 !data/geometry/
 !data/geometry/il/
-!data/geometry/il/*.json
 !data/geometry/il/README.md
+# Explicit re-ignore for topojson (un-ignoring the directory above would
+# otherwise let them through).
+data/geometry/il/*.topo.json
+data/geometry/il/*.json
+
+# Refresh chain logs — kept locally for reference, not version-controlled.
+refresh_local_*.log
+refresh_*.log
+
+# Local analysis artifacts — donor prospecting, DuPage / sub-county work,
+# outreach pipelines. Per project convention these are point-of-view
+# analytical work and don't ship in the public repo. The data products
+# they produce (in data/) are already covered above.
+database/donor_prospecting.py
+scripts/dupage_*.py
+scripts/dupage_*.R
+scripts/build_dupage_*.py
+scripts/build_township_*.py
+scripts/township_*.R
+scripts/find_org_donor_contacts.py
+scripts/build_org_donor_outreach_plan.py
+scripts/targeted_candidates_org_donors.py
 
 # Claude Code / Codex agent worktrees and session artifacts
 .claude/worktrees/
