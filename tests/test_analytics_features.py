@@ -1370,3 +1370,504 @@ def test_analytics_api_endpoints(analytics_client):
     assert "nodes" in ecosystem_527_data
     assert "edges" in ecosystem_527_data
     assert "summary" in ecosystem_527_data
+
+
+# ---------------------------------------------------------------------------
+# Custom Sankey: suggest + focus-sankey
+# ---------------------------------------------------------------------------
+
+
+def test_network_suggest_short_query_returns_empty(analytics_client):
+    """Suggest endpoint returns [] for queries shorter than 2 chars."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=a")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_network_suggest_empty_query_returns_empty(analytics_client):
+    resp = analytics_client.get("/api/analytics/network/suggest?q=")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+
+
+def test_network_suggest_returns_expected_shape(analytics_client):
+    """Suggest should return list of objects with label, value, node_type."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=donor&limit=5")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    # Our test fixture has donors named "Donor One", "Donor Two", etc.
+    # in bulk_receipts_clean contributed_by. Suggest may find via donors table
+    # or analytics_donor_summary depending on what the fixture creates.
+    # At minimum, the response should be a valid list.
+    for item in data:
+        assert "label" in item
+        assert "value" in item
+        assert "node_type" in item
+
+
+def test_network_suggest_matches_donor_names(analytics_client):
+    """Suggest should match donor names from the test dataset."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=alice&entity_type=donor")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    # Our fixture has "Alice Donor" in the donors table
+    labels = [item["label"] for item in data]
+    assert any("Alice" in lbl for lbl in labels)
+
+
+def test_network_suggest_is_case_insensitive(analytics_client):
+    """Suggest should match donor names regardless of query case."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=ALICE&entity_type=donor")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    labels = [item["label"] for item in data]
+    assert any("Alice" in lbl for lbl in labels)
+
+
+def test_network_suggest_matches_committees(analytics_client):
+    """Suggest with entity_type=committee should return committee matches."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=committee&entity_type=committee")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    for item in data:
+        assert item["node_type"] == "committee"
+        assert "committee:" in item["value"]
+
+
+def test_network_suggest_matches_candidates(analytics_client):
+    """Suggest with entity_type=candidate should return candidate matches."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=candidate&entity_type=candidate")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    for item in data:
+        assert item["node_type"] == "candidate"
+        assert "candidate:" in item["value"]
+
+
+def test_network_suggest_matches_vendors(analytics_client):
+    """Suggest with entity_type=vendor should return vendor matches."""
+    resp = analytics_client.get("/api/analytics/network/suggest?q=vendor&entity_type=vendor")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    for item in data:
+        assert item["node_type"] == "vendor"
+        assert "vendor:" in item["value"]
+
+
+def test_focus_sankey_missing_params_returns_400(analytics_client):
+    """Focus-sankey with no focus params should return 400."""
+    resp = analytics_client.get("/api/analytics/network/focus-sankey")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
+
+
+def test_focus_sankey_donor_focus(analytics_client):
+    """Focus-sankey with a donor label should return donor-centric graph."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_label=Donor+One&focus_type=donor"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "focus" in data
+    assert "nodes" in data
+    assert "edges" in data
+    assert "summary" in data
+    assert data["focus"]["node_type"] == "donor"
+    # Should have donor_committee edges
+    if data["edges"]:
+        edge_types = {e["edge_type"] for e in data["edges"]}
+        assert "donor_committee" in edge_types
+
+
+def test_focus_sankey_donor_focus_case_insensitive_label_only(analytics_client):
+    """Donor focus should work when only a differently cased label is provided."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_label=donor+one&focus_type=donor"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_donor_data"] is True
+    assert data["summary"]["edge_count"] > 0
+    assert data["focus"]["node_id"].startswith("donor:")
+
+
+def test_focus_sankey_donor_focus_selected_key_with_bulk_name_columns(analytics_client):
+    """Donor focus should honor selected donor keys from autocomplete (first|last|address key)."""
+    db_path = analytics_client.application.config["DATABASE_PATH"]
+    conn = get_db(db_path)
+    conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
+    conn.execute(
+        """
+        CREATE TABLE bulk_receipts_clean (
+            committee_id_sbe INTEGER,
+            last_or_business_name TEXT,
+            first_name TEXT,
+            address_line_1 TEXT,
+            address_line_2 TEXT,
+            city TEXT,
+            state TEXT,
+            postal_code TEXT,
+            d2_part_code TEXT,
+            filed_doc_id INTEGER,
+            is_archived INTEGER,
+            amount REAL,
+            received_date TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO bulk_receipts_clean (
+            committee_id_sbe, last_or_business_name, first_name, address_line_1, address_line_2,
+            city, state, postal_code, d2_part_code, filed_doc_id, is_archived, amount, received_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (1001, "Rosengarden", "Michael", "1770 Spruce St", "", "Highland Park", "IL", "60035", "1A", 90001, 0, 5000.0, "2026-01-10"),
+            (1002, "Rosengarden", "Michael", "1770 Spruce St", "", "Highland Park", "IL", "60035", "1A", 90002, 0, 2500.0, "2026-01-20"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey"
+        "?focus_node_id=donor:michael|rosengarden|1770+spruce+st||highland+park|il|60035"
+        "&focus_label=Michael+Rosengarden&focus_type=auto"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_donor_data"] is True
+    assert data["summary"]["edge_count"] > 0
+    assert data["focus"]["node_id"].startswith("donor:")
+
+
+def test_focus_sankey_committee_focus(analytics_client):
+    """Focus-sankey with a committee ID should return committee-centric graph."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_node_id=committee:1001&focus_type=committee"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "focus" in data
+    assert data["focus"]["node_type"] == "committee"
+    assert data["summary"]["has_committee_data"] is True
+
+
+def test_focus_sankey_candidate_focus(analytics_client):
+    """Focus-sankey with a candidate should return candidate-centric graph."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_node_id=candidate:901&focus_type=candidate"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "focus" in data
+    assert data["focus"]["node_type"] == "candidate"
+    if data["edges"]:
+        edge_types = {e["edge_type"] for e in data["edges"]}
+        assert "committee_candidate" in edge_types
+
+
+def test_focus_sankey_candidate_focus_label_only(analytics_client):
+    """Candidate focus should resolve candidate rows when node id is empty."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_label=candidate+alpha&focus_type=candidate"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_candidate_data"] is True
+    assert data["summary"]["node_count"] > 0
+    assert data["focus"]["node_type"] == "candidate"
+    assert data["focus"]["node_id"].startswith("candidate:")
+
+
+def test_focus_sankey_vendor_focus(analytics_client):
+    """Focus-sankey with a vendor label should return vendor-centric graph."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_label=Vendor+One&focus_type=vendor"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "focus" in data
+    assert data["focus"]["node_type"] == "vendor"
+    if data["edges"]:
+        edge_types = {e["edge_type"] for e in data["edges"]}
+        assert "committee_vendor" in edge_types
+
+
+def test_focus_sankey_auto_detect_with_label_only(analytics_client):
+    """Focus-sankey with focus_type=auto and only a label should auto-detect and not 400."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_label=Donor+One&focus_type=auto"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "focus" in data
+    assert "nodes" in data
+    assert "edges" in data
+
+
+def test_focus_sankey_auto_detect_empty_node_id(analytics_client):
+    """Auto-detect should work even when focus_node_id is explicitly empty."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_node_id=&focus_label=Vendor+One&focus_type=auto"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["focus"]["node_type"] in ("donor", "committee", "candidate", "vendor")
+
+
+def test_focus_sankey_auto_detect_candidate_label(analytics_client):
+    """Auto-detect should resolve candidate labels when focus_node_id is empty."""
+    resp = analytics_client.get(
+        "/api/analytics/network/focus-sankey?focus_node_id=&focus_label=candidate+alpha&focus_type=auto"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["focus"]["node_type"] == "candidate"
+    assert data["summary"]["has_candidate_data"] is True
+    assert data["summary"]["node_count"] > 0
+
+
+def test_analytics_networks_page_has_custom_sankey_tab(analytics_client):
+    """Networks page in full mode should include the Custom Sankey tab."""
+    overview = analytics_client.get("/analytics/?load_mode=full&sync_full=1")
+    assert overview.status_code == 200
+
+    resp = analytics_client.get("/analytics/networks?load_mode=full")
+    assert resp.status_code == 200
+    assert b"Custom Sankey" in resp.data
+    assert b'id="custom-sankey-svg"' in resp.data
+    assert b'id="custom-sankey-search"' in resp.data
+    assert b'data-autocomplete-url="/api/analytics/network/suggest"' in resp.data
+    assert b"js/autocomplete.js" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Federal Custom Sankey tests
+# ---------------------------------------------------------------------------
+
+def _seed_federal_sankey_data(conn):
+    """Seed FEC tables needed for federal custom sankey tests."""
+    # fec_il_candidate_seed (FK parent for fec_candidate_match)
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO fec_il_candidate_seed (
+            candidate_key, candidate_name, normalized_candidate_name
+        ) VALUES (?, ?, ?)
+        """,
+        [
+            ("ck1", "Federal Candidate A", "federal candidate a"),
+            ("ck2", "Federal Candidate B", "federal candidate b"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, fec_candidate_id, match_status, match_score
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            ("ck1", "Federal Candidate A", "F1001", "matched", 0.95),
+            ("ck2", "Federal Candidate B", "F1002", "matched", 0.90),
+        ],
+    )
+    # fec_candidate_committees
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO fec_candidate_committees (
+            candidate_id, committee_id, cycle, committee_name
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [
+            ("F1001", "C1", 2026, "Federal Committee 1"),
+            ("F1002", "C2", 2026, "Federal Committee 2"),
+        ],
+    )
+    # fec_schedule_a_contributions (donors)
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contribution_receipt_amount, donor_key, donor_entity_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("fsa1", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1",
+             "Fed Donor Alpha", 5000.0, "fda", "fda"),
+            ("fsa2", 2026, "F1002", "Federal Candidate B", "C2", "Federal Committee 2",
+             "Fed Donor Alpha", 3000.0, "fda", "fda"),
+            ("fsa3", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1",
+             "Fed Donor Beta", 2000.0, "fdb", "fdb"),
+        ],
+    )
+    # fec_schedule_b_disbursements (vendors)
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, disbursement_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("fsb1", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1",
+             "Vendor Acme Corp", 4000.0),
+            ("fsb2", 2026, "F1002", "Federal Candidate B", "C2", "Federal Committee 2",
+             "Vendor Acme Corp", 1500.0),
+            ("fsb3", 2026, "F1001", "Federal Candidate A", "C1", "Federal Committee 1",
+             "Vendor Beta LLC", 2500.0),
+        ],
+    )
+    conn.commit()
+
+
+@pytest.fixture
+def federal_sankey_app(tmp_path: Path):
+    db_path = str(tmp_path / "fed_sankey.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_federal_sankey_data(conn)
+    conn.close()
+    return create_app({"TESTING": True, "DATABASE_PATH": db_path})
+
+
+@pytest.fixture
+def federal_sankey_client(federal_sankey_app):
+    return federal_sankey_app.test_client()
+
+
+def test_federal_suggest_short_query_returns_empty(federal_sankey_client):
+    """Federal suggest with a single character should return empty list."""
+    resp = federal_sankey_client.get("/api/federal/network/suggest?q=a")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data == []
+
+
+def test_federal_suggest_returns_expected_shape(federal_sankey_client):
+    """Federal suggest should return items with label, value, and node_type."""
+    resp = federal_sankey_client.get("/api/federal/network/suggest?q=Fed+Donor")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) > 0
+    for item in data:
+        assert "label" in item
+        assert "value" in item
+        assert "node_type" in item
+        assert item["value"].startswith("fed_donor:")
+        assert item["node_type"] == "fed_donor"
+
+
+def test_federal_suggest_candidate_type(federal_sankey_client):
+    """Federal suggest with entity_type=candidate should return fed_candidate items."""
+    resp = federal_sankey_client.get("/api/federal/network/suggest?q=Federal+Candidate&entity_type=candidate")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) > 0
+    for item in data:
+        assert item["node_type"] == "fed_candidate"
+        assert item["value"].startswith("fed_candidate:")
+
+
+def test_federal_suggest_committee_type(federal_sankey_client):
+    """Federal suggest with entity_type=committee should return fed_committee items."""
+    resp = federal_sankey_client.get("/api/federal/network/suggest?q=Federal+Committee&entity_type=committee")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) > 0
+    for item in data:
+        assert item["node_type"] == "fed_committee"
+        assert item["value"].startswith("fed_committee:")
+
+
+def test_federal_suggest_vendor_type(federal_sankey_client):
+    """Federal suggest with entity_type=vendor should return fed_vendor items."""
+    resp = federal_sankey_client.get("/api/federal/network/suggest?q=Vendor&entity_type=vendor")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) > 0
+    for item in data:
+        assert item["node_type"] == "fed_vendor"
+        assert item["value"].startswith("fed_vendor:")
+
+
+def test_federal_focus_sankey_missing_params_returns_400(federal_sankey_client):
+    """Focus-sankey with no focus params should return 400."""
+    resp = federal_sankey_client.get("/api/federal/network/focus-sankey")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
+
+
+def test_federal_focus_sankey_donor_focus(federal_sankey_client):
+    """Focus-sankey with a donor label should return donor-centric graph."""
+    resp = federal_sankey_client.get(
+        "/api/federal/network/focus-sankey?focus_label=Fed+Donor+Alpha&focus_type=donor"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_donor_data"] is True
+    assert data["summary"]["node_count"] > 0
+    assert data["summary"]["edge_count"] > 0
+    node_types = {n["node_type"] for n in data["nodes"]}
+    assert "fed_donor" in node_types
+    edge_types = {e["edge_type"] for e in data["edges"]}
+    assert "donor_candidate" in edge_types
+
+
+def test_federal_focus_sankey_candidate_focus(federal_sankey_client):
+    """Focus-sankey with a candidate should return candidate-centric graph."""
+    resp = federal_sankey_client.get(
+        "/api/federal/network/focus-sankey?focus_node_id=fed_candidate:F1001&focus_type=candidate"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_candidate_data"] is True
+    assert data["summary"]["node_count"] > 0
+    node_types = {n["node_type"] for n in data["nodes"]}
+    assert "fed_candidate" in node_types
+
+
+def test_federal_focus_sankey_committee_focus(federal_sankey_client):
+    """Focus-sankey with a committee should return committee-centric graph."""
+    resp = federal_sankey_client.get(
+        "/api/federal/network/focus-sankey?focus_node_id=fed_committee:C1&focus_type=committee"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_committee_data"] is True
+    assert data["summary"]["node_count"] > 0
+
+
+def test_federal_focus_sankey_vendor_focus(federal_sankey_client):
+    """Focus-sankey with a vendor label should return vendor-centric graph."""
+    resp = federal_sankey_client.get(
+        "/api/federal/network/focus-sankey?focus_label=Vendor+Acme+Corp&focus_type=vendor"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["summary"]["has_vendor_data"] is True
+    assert data["summary"]["node_count"] > 0
+    assert data["summary"]["edge_count"] > 0
+    node_types = {n["node_type"] for n in data["nodes"]}
+    assert "fed_vendor" in node_types
+    edge_types = {e["edge_type"] for e in data["edges"]}
+    assert "committee_vendor" in edge_types
+
+
+def test_federal_focus_sankey_auto_detect(federal_sankey_client):
+    """Focus-sankey with focus_type=auto should auto-detect the entity type."""
+    resp = federal_sankey_client.get(
+        "/api/federal/network/focus-sankey?focus_label=Fed+Donor+Alpha&focus_type=auto"
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "nodes" in data
+    assert "edges" in data
+    assert data["summary"]["node_count"] > 0

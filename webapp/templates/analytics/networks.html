@@ -65,7 +65,8 @@
     #tab-combined:checked ~ .tab-panels .panel-combined,
     #tab-overlap:checked ~ .tab-panels .panel-overlap,
     #tab-lobbying:checked ~ .tab-panels .panel-lobbying,
-    #tab-darkmoney:checked ~ .tab-panels .panel-darkmoney { display: block; }
+    #tab-darkmoney:checked ~ .tab-panels .panel-darkmoney,
+    #tab-custom-sankey:checked ~ .tab-panels .panel-custom-sankey { display: block; }
     #tab-force:checked ~ .tab-labels .label-force,
     #tab-sankey:checked ~ .tab-labels .label-sankey,
     #tab-heatmap:checked ~ .tab-labels .label-heatmap,
@@ -73,7 +74,8 @@
     #tab-combined:checked ~ .tab-labels .label-combined,
     #tab-overlap:checked ~ .tab-labels .label-overlap,
     #tab-lobbying:checked ~ .tab-labels .label-lobbying,
-    #tab-darkmoney:checked ~ .tab-labels .label-darkmoney { color: #1e293b; border-bottom-color: #2563eb; }
+    #tab-darkmoney:checked ~ .tab-labels .label-darkmoney,
+    #tab-custom-sankey:checked ~ .tab-labels .label-custom-sankey { color: #1e293b; border-bottom-color: #2563eb; }
     .network-svg-wrap svg { width: 100%; max-height: 560px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
     </style>
 
@@ -85,6 +87,7 @@
     <input type="radio" name="network-tabs" id="tab-overlap" class="tab-radio">
     <input type="radio" name="network-tabs" id="tab-lobbying" class="tab-radio">
     <input type="radio" name="network-tabs" id="tab-darkmoney" class="tab-radio">
+    <input type="radio" name="network-tabs" id="tab-custom-sankey" class="tab-radio">
 
     <div class="tab-labels">
         <label for="tab-force" class="label-force">Force Graph</label>
@@ -95,6 +98,7 @@
         <label for="tab-overlap" class="label-overlap">State-Federal</label>
         <label for="tab-lobbying" class="label-lobbying">Lobbying Bridge</label>
         <label for="tab-darkmoney" class="label-darkmoney">527 Dark Money</label>
+        <label for="tab-custom-sankey" class="label-custom-sankey">Custom Sankey</label>
     </div>
     <div class="network-controls">
         <label for="graph-density-mode">Graph Density</label>
@@ -239,6 +243,54 @@
             <div id="darkmoney-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="darkmoney-summary" class="subtitle"></p>
         </div>
+
+        <div class="tab-panel panel-custom-sankey">
+            <p class="help-text">Search for any donor, committee, candidate, or vendor and see a focused Sankey diagram of money flow around that entity.</p>
+            <form id="custom-sankey-form" class="network-controls" onsubmit="return false;">
+                <label for="custom-sankey-search">Entity Search
+                    <input type="text" id="custom-sankey-search" name="focus_label" placeholder="e.g. AMERICAN ISRAEL PUBLIC AFFAIRS COMMITTEE PAC"
+                        data-autocomplete-url="/api/analytics/network/suggest"
+                        data-autocomplete-value-field="focus_node_id"
+                        data-autocomplete-min-chars="2"
+                        data-autocomplete-limit="10"
+                        style="min-width:320px;">
+                </label>
+                <input type="hidden" name="focus_node_id" id="custom-sankey-node-id" value="">
+                <label for="custom-sankey-type">Type
+                    <select id="custom-sankey-type" name="focus_type">
+                        <option value="auto" selected>Auto-detect</option>
+                        <option value="donor">Donor</option>
+                        <option value="committee">Committee</option>
+                        <option value="candidate">Candidate</option>
+                        <option value="vendor">Vendor</option>
+                    </select>
+                </label>
+                <label for="custom-sankey-min-amount">Min Amount
+                    <input type="number" id="custom-sankey-min-amount" name="min_edge_amount" min="0" step="100" value="0" style="width:90px;">
+                </label>
+                <label for="custom-sankey-topn">Top N
+                    <select id="custom-sankey-topn" name="top_n">
+                        <option value="10">10</option>
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                    </select>
+                </label>
+                <label for="custom-sankey-group-small" style="display:flex; align-items:center; gap:0.35rem;">
+                    <input type="checkbox" id="custom-sankey-group-small" name="group_small" checked>
+                    Group small flows as Other
+                </label>
+                <label for="custom-sankey-split-types" style="display:flex; align-items:center; gap:0.35rem;">
+                    <input type="checkbox" id="custom-sankey-split-types" name="split_outgoing" checked>
+                    Split outgoing by type
+                </label>
+                <button type="button" id="custom-sankey-render-btn">Render</button>
+            </form>
+            <div id="custom-sankey-disambiguation" class="help-text" style="display:none; margin:0.25rem 0 0.75rem;"></div>
+            <div class="network-svg-wrap">
+                <svg id="custom-sankey-svg" viewBox="0 0 980 560" role="img" aria-label="Custom Sankey flow diagram"></svg>
+            </div>
+            <p id="custom-sankey-summary" class="subtitle"></p>
+        </div>
     </div>
 
     <script id="analytics-network-data" type="application/json">{{ network|tojson }}</script>
@@ -246,6 +298,7 @@
     <script id="overlap-graph-data" type="application/json">{{ overlap_graph|tojson }}</script>
     <script id="lobbying-graph-data" type="application/json">{{ lobbying_graph|tojson }}</script>
     <script id="ecosystem-527-data" type="application/json">{{ ecosystem_527|tojson }}</script>
+    <script src="{{ url_for('static', filename='js/autocomplete.js', v='20260224-1') }}"></script>
     <script src="{{ url_for('static', filename='js/analytics_networks.js') }}"></script>
     {% else %}
     {% if full_mode_requested %}

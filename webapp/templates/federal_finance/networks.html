@@ -133,12 +133,62 @@
     </table>
 </div>
 
+<div class="status-section" style="margin-top: 1.5rem;">
+    <h3>Custom Sankey</h3>
+    <p class="help-text">Search for any federal donor, candidate, committee, or vendor (Schedule B payee) and see a focused Sankey diagram of money flow around that entity.</p>
+    <form id="fed-custom-sankey-form" class="search-form graph-controls" onsubmit="return false;">
+        <label for="fed-custom-sankey-search">Entity Search
+            <input type="text" id="fed-custom-sankey-search" name="focus_label" placeholder="e.g. ACTBLUE or EMILY'S LIST"
+                data-autocomplete-url="/api/federal/network/suggest"
+                data-autocomplete-value-field="focus_node_id"
+                data-autocomplete-min-chars="2"
+                data-autocomplete-limit="10"
+                style="min-width:320px;">
+        </label>
+        <input type="hidden" name="focus_node_id" id="fed-custom-sankey-node-id" value="">
+        <label for="fed-custom-sankey-type">Type
+            <select id="fed-custom-sankey-type" name="focus_type">
+                <option value="auto" selected>Auto-detect</option>
+                <option value="donor">Donor</option>
+                <option value="candidate">Candidate</option>
+                <option value="committee">Committee</option>
+                <option value="vendor">Vendor</option>
+            </select>
+        </label>
+        <label for="fed-custom-sankey-min-amount">Min Amount
+            <input type="number" id="fed-custom-sankey-min-amount" name="min_edge_amount" min="0" step="100" value="0" style="width:90px;">
+        </label>
+        <label for="fed-custom-sankey-topn">Top N
+            <select id="fed-custom-sankey-topn" name="top_n">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+            </select>
+        </label>
+        <label for="fed-custom-sankey-group-small" style="display:flex; align-items:center; gap:0.35rem;">
+            <input type="checkbox" id="fed-custom-sankey-group-small" name="group_small" checked>
+            Group small flows as Other
+        </label>
+        <label for="fed-custom-sankey-split-types" style="display:flex; align-items:center; gap:0.35rem;">
+            <input type="checkbox" id="fed-custom-sankey-split-types" name="split_outgoing" checked>
+            Split outgoing by type
+        </label>
+        <button type="button" id="fed-custom-sankey-render-btn">Render</button>
+    </form>
+    <div id="fed-custom-sankey-disambiguation" class="help-text" style="display:none; margin:0.25rem 0 0.75rem;"></div>
+    <div class="network-svg-wrap">
+        <svg id="fed-custom-sankey-svg" viewBox="0 0 980 560" role="img" aria-label="Federal Custom Sankey flow diagram"></svg>
+    </div>
+    <p id="fed-custom-sankey-summary" class="subtitle"></p>
+</div>
+
 <p class="help-text" style="margin-top: 1rem;">
     Looking for multi-layer money flow (A/B/E) or cross-role organizations?
     See <a href="{{ url_for('federal_finance.federal_money_flow', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Money Flow</a>.
     For local/federal donor overlap, see <a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Matching</a>.
 </p>
 
+<script src="{{ url_for('static', filename='js/autocomplete.js', v='20260224-1') }}"></script>
 <script>
 (() => {
     const SVG_NS = "http://www.w3.org/2000/svg";
@@ -157,6 +207,12 @@
 
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const cleanText = (value, fallback = "") => String(value || "").trim() || fallback;
+    const escapeHtml = (value) => String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     const formatCurrency = (value) => `$${Number(value || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2})}`;
     const shortLabel = (value, maxLen = 28) => {
         const text = cleanText(value, "Unknown");
@@ -1758,6 +1814,518 @@
         overlapUpSetMetric?.addEventListener("change", renderOverlapOutputs);
         overlapUpSetLimit?.addEventListener("change", renderOverlapOutputs);
         renderOverlapOutputs();
+    }
+
+    /* ═════════════════════════════════════════════════════════════════
+       FEDERAL CUSTOM SANKEY
+       ═════════════════════════════════════════════════════════════════ */
+    const fedSankeySvg = document.getElementById("fed-custom-sankey-svg");
+    const fedSankeySummary = document.getElementById("fed-custom-sankey-summary");
+    const fedSankeyRenderBtn = document.getElementById("fed-custom-sankey-render-btn");
+    const fedSankeySearch = document.getElementById("fed-custom-sankey-search");
+    const fedSankeyNodeId = document.getElementById("fed-custom-sankey-node-id");
+    const fedSankeyTopN = document.getElementById("fed-custom-sankey-topn");
+    const fedSankeyGroupSmall = document.getElementById("fed-custom-sankey-group-small");
+    const fedSankeySplitTypes = document.getElementById("fed-custom-sankey-split-types");
+    const fedSankeyTypeSelect = document.getElementById("fed-custom-sankey-type");
+    const fedSankeyMinAmount = document.getElementById("fed-custom-sankey-min-amount");
+    const fedSankeyDisambiguation = document.getElementById("fed-custom-sankey-disambiguation");
+
+    const fedFocusTypeLabel = {
+        fed_donor: "Donor",
+        fed_committee: "Committee",
+        fed_candidate: "Candidate",
+        fed_vendor: "Vendor",
+        other: "Other",
+    };
+    const fedOutgoingTypeOrder = { fed_committee: 0, fed_candidate: 1, fed_vendor: 2, fed_donor: 3, other: 99 };
+    const fedOutgoingTypeColor = {
+        fed_committee: "#059669",
+        fed_candidate: "#dc2626",
+        fed_vendor: "#d97706",
+        fed_donor: "#2563eb",
+        other: "#64748b",
+    };
+    const inferFedFocusTypeFromNodeId = (nodeId) => {
+        const prefix = String(nodeId || "").split(":", 1)[0];
+        if (prefix === "fed_donor") return "donor";
+        if (prefix === "fed_candidate") return "candidate";
+        if (prefix === "fed_committee") return "committee";
+        if (prefix === "fed_vendor") return "vendor";
+        return "auto";
+    };
+    const ensureFedTooltip = () => {
+        if (!fedSankeySvg || !fedSankeySvg.parentElement) return null;
+        const wrap = fedSankeySvg.parentElement;
+        wrap.style.position = "relative";
+        let tip = wrap.querySelector(".fed-custom-sankey-tooltip");
+        if (tip) return tip;
+        tip = document.createElement("div");
+        tip.className = "fed-custom-sankey-tooltip";
+        tip.style.position = "absolute";
+        tip.style.display = "none";
+        tip.style.pointerEvents = "none";
+        tip.style.zIndex = "40";
+        tip.style.background = "rgba(15, 23, 42, 0.96)";
+        tip.style.color = "#f8fafc";
+        tip.style.padding = "0.45rem 0.55rem";
+        tip.style.borderRadius = "6px";
+        tip.style.fontSize = "0.75rem";
+        tip.style.lineHeight = "1.25";
+        tip.style.maxWidth = "300px";
+        tip.style.boxShadow = "0 4px 12px rgba(2, 6, 23, 0.35)";
+        wrap.appendChild(tip);
+        return tip;
+    };
+    const showFedTooltip = (tip, evt, html) => {
+        if (!tip || !fedSankeySvg) return;
+        const wrapRect = fedSankeySvg.parentElement.getBoundingClientRect();
+        tip.innerHTML = html;
+        tip.style.display = "block";
+        tip.style.left = `${evt.clientX - wrapRect.left + 12}px`;
+        tip.style.top = `${evt.clientY - wrapRect.top + 12}px`;
+    };
+    const hideFedTooltip = (tip) => { if (tip) tip.style.display = "none"; };
+    const clearFedDisambiguation = () => {
+        if (!fedSankeyDisambiguation) return;
+        fedSankeyDisambiguation.style.display = "none";
+        fedSankeyDisambiguation.innerHTML = "";
+    };
+    const showFedDisambiguation = (label, candidates, onPick) => {
+        if (!fedSankeyDisambiguation) return;
+        fedSankeyDisambiguation.style.display = "";
+        fedSankeyDisambiguation.innerHTML = "";
+        const heading = document.createElement("div");
+        heading.textContent = `Multiple matches found for "${label}". Pick one:`;
+        fedSankeyDisambiguation.appendChild(heading);
+        const list = document.createElement("div");
+        list.style.display = "flex";
+        list.style.flexWrap = "wrap";
+        list.style.gap = "0.4rem";
+        list.style.marginTop = "0.35rem";
+        for (const item of candidates) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = `${item.label} (${item.node_type || "entity"})`;
+            btn.style.fontSize = "0.75rem";
+            btn.style.padding = "0.2rem 0.45rem";
+            btn.style.border = "1px solid #94a3b8";
+            btn.style.borderRadius = "5px";
+            btn.style.background = "#ffffff";
+            btn.addEventListener("click", () => onPick(item));
+            list.appendChild(btn);
+        }
+        fedSankeyDisambiguation.appendChild(list);
+    };
+
+    const buildFedFocusCentricGraph = (raw, opts = {}) => {
+        const topN = Math.max(1, Number(opts.topN || 25));
+        const groupSmall = Boolean(opts.groupSmall);
+        const splitOutgoingByType = Boolean(opts.splitOutgoingByType);
+        const nodeMap = new Map((raw?.nodes || []).map((n) => [n.id, n]));
+        const edges = (raw?.edges || []).map((e) => ({ ...e, weight: Number(e.weight || 0) })).filter((e) => e.weight > 0);
+
+        let focusId = raw?.focus?.node_id || "";
+        if ((!focusId || !nodeMap.has(focusId)) && raw?.focus?.label) {
+            const lookup = String(raw.focus.label).trim().toLowerCase();
+            const byLabel = (raw.nodes || []).find((n) => String(n.label || "").trim().toLowerCase() === lookup);
+            if (byLabel) focusId = byLabel.id;
+        }
+        const focusNode = nodeMap.get(focusId) || {
+            id: focusId || "focus",
+            label: raw?.focus?.label || "Focus Entity",
+            node_type: raw?.focus?.node_type || "entity",
+        };
+        const incoming = new Map();
+        const outgoing = new Map();
+        for (const edge of edges) {
+            if (edge.target === focusNode.id) incoming.set(edge.source, (incoming.get(edge.source) || 0) + edge.weight);
+            if (edge.source === focusNode.id) outgoing.set(edge.target, (outgoing.get(edge.target) || 0) + edge.weight);
+        }
+        const toRows = (amountMap) => Array.from(amountMap.entries()).map(([id, amount]) => {
+            const node = nodeMap.get(id) || { id, label: id, node_type: "other" };
+            return {
+                id: node.id,
+                label: node.label || node.id,
+                node_type: node.node_type || "other",
+                amount: Number(amount || 0),
+            };
+        });
+        const incomingRows = toRows(incoming).sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label));
+        const outgoingRows = toRows(outgoing).sort((a, b) => {
+            if (!splitOutgoingByType) return b.amount - a.amount || a.label.localeCompare(b.label);
+            const orderDelta = (fedOutgoingTypeOrder[a.node_type] || 99) - (fedOutgoingTypeOrder[b.node_type] || 99);
+            if (orderDelta !== 0) return orderDelta;
+            return b.amount - a.amount || a.label.localeCompare(b.label);
+        });
+        const cutSide = (rows, side) => {
+            const keep = rows.slice(0, topN);
+            const dropped = rows.slice(topN);
+            const droppedAmount = dropped.reduce((sum, row) => sum + row.amount, 0);
+            if (groupSmall && dropped.length && droppedAmount > 0) {
+                keep.push({ id: `${side}:other`, label: `Other (${dropped.length})`, node_type: "other", amount: droppedAmount, is_other: true });
+            }
+            return { rows: keep, dropped_count: dropped.length };
+        };
+        const cutIncoming = cutSide(incomingRows, "incoming");
+        const cutOutgoing = cutSide(outgoingRows, "outgoing");
+        const links = [
+            ...cutIncoming.rows.map((row) => ({ source: row.id, target: focusNode.id, weight: row.amount, direction: "incoming", is_other: Boolean(row.is_other) })),
+            ...cutOutgoing.rows.map((row) => ({ source: focusNode.id, target: row.id, weight: row.amount, direction: "outgoing", is_other: Boolean(row.is_other) })),
+        ];
+        const nodeFlow = new Map();
+        const ensureFlow = (id, label = id, nodeType = "other") => {
+            if (!nodeFlow.has(id)) nodeFlow.set(id, { id, label, node_type: nodeType, total_incoming: 0, total_outgoing: 0 });
+            return nodeFlow.get(id);
+        };
+        ensureFlow(focusNode.id, focusNode.label, focusNode.node_type);
+        for (const row of cutIncoming.rows) ensureFlow(row.id, row.label, row.node_type);
+        for (const row of cutOutgoing.rows) ensureFlow(row.id, row.label, row.node_type);
+        for (const link of links) {
+            const src = ensureFlow(link.source);
+            const dst = ensureFlow(link.target);
+            src.total_outgoing += link.weight;
+            dst.total_incoming += link.weight;
+        }
+        return {
+            focus: { id: focusNode.id, name: focusNode.label || focusNode.id, type: focusNode.node_type || "entity" },
+            incoming_nodes: cutIncoming.rows.map((row) => ({ ...row, ...nodeFlow.get(row.id) })),
+            outgoing_nodes: cutOutgoing.rows.map((row) => ({ ...row, ...nodeFlow.get(row.id) })),
+            links,
+            node_flow: nodeFlow,
+            metrics: {
+                incoming_total: incomingRows.reduce((sum, row) => sum + row.amount, 0),
+                outgoing_total: outgoingRows.reduce((sum, row) => sum + row.amount, 0),
+                incoming_shown: cutIncoming.rows.reduce((sum, row) => sum + row.amount, 0),
+                outgoing_shown: cutOutgoing.rows.reduce((sum, row) => sum + row.amount, 0),
+                top_n: topN,
+                grouped_small: groupSmall,
+            },
+        };
+    };
+
+    const renderFedCustomSankey = (rawData) => {
+        if (!fedSankeySvg) return;
+        clearSvg(fedSankeySvg);
+        const { width, height } = viewBoxSize(fedSankeySvg);
+        const topN = Number(fedSankeyTopN?.value || 25);
+        const groupSmall = Boolean(fedSankeyGroupSmall?.checked);
+        const splitByType = Boolean(fedSankeySplitTypes?.checked);
+        const graph = buildFedFocusCentricGraph(rawData, { topN, groupSmall, splitOutgoingByType: splitByType });
+        const tooltip = ensureFedTooltip();
+        hideFedTooltip(tooltip);
+
+        if (!graph || (!graph.incoming_nodes.length && !graph.outgoing_nodes.length)) {
+            drawEmpty(fedSankeySvg, rawData && rawData.error ? rawData.error : "No connected nodes found for this entity.");
+            if (fedSankeySummary) fedSankeySummary.textContent = "";
+            return;
+        }
+
+        const incomingNodes = graph.incoming_nodes;
+        const outgoingNodes = graph.outgoing_nodes;
+        const links = graph.links || [];
+        const metrics = graph.metrics || {};
+        const topPad = 76;
+        const bottomPad = 26;
+        const availH = Math.max(80, height - topPad - bottomPad);
+        const leftX = 112;
+        const focusX = Math.round(width / 2 - 12);
+        const rightX = width - 130;
+        const sideNodeW = 16;
+        const focusNodeW = 24;
+
+        fedSankeySvg.appendChild(createSvgEl("rect", {
+            x: 14,
+            y: 14,
+            width: width - 28,
+            height: height - 28,
+            rx: 12,
+            fill: "#f8fafc",
+            stroke: "#cbd5e1",
+            "stroke-width": 1,
+        }));
+        if (incomingNodes.length) {
+            drawText(fedSankeySvg, leftX + sideNodeW / 2, 30, "Incoming", { size: "12px", weight: "700", color: "#1e3a8a" });
+        } else {
+            drawText(fedSankeySvg, leftX + sideNodeW / 2, 30, "No Incoming", { size: "10px", weight: "600", color: "#64748b" });
+        }
+        drawText(fedSankeySvg, focusX + focusNodeW / 2, 30, "Focus Entity", { size: "12px", weight: "700", color: "#0f172a" });
+        if (outgoingNodes.length) {
+            drawText(fedSankeySvg, rightX + sideNodeW / 2, 30, "Outgoing", { size: "12px", weight: "700", color: "#7c2d12" });
+        } else {
+            drawText(fedSankeySvg, rightX + sideNodeW / 2, 30, "No Outgoing", { size: "10px", weight: "600", color: "#64748b" });
+        }
+        const legendItems = [
+            { label: "Focus", color: "#334155" },
+            { label: "Incoming source", color: "#1d4ed8" },
+            { label: "Outgoing destination", color: "#ea580c" },
+        ];
+        let legendX = width - 270;
+        for (const item of legendItems) {
+            fedSankeySvg.appendChild(createSvgEl("rect", { x: legendX, y: 22, width: 10, height: 10, rx: 2, fill: item.color }));
+            drawText(fedSankeySvg, legendX + 16, 31, item.label, { anchor: "start", size: "9px", color: "#334155" });
+            legendX += 86;
+        }
+
+        const incomingLayout = incomingNodes.length
+            ? (() => {
+                const totalWeight = incomingNodes.reduce((sum, row) => sum + Number(row.amount || 0), 0) || 1;
+                const rawHeights = incomingNodes.map((row) => Math.max(8, (Number(row.amount || 0) / totalWeight) * (availH - 5 * (incomingNodes.length - 1))));
+                const scale = Math.max(10, availH - 5 * (incomingNodes.length - 1)) / (rawHeights.reduce((sum, h) => sum + h, 0) || 1);
+                const map = new Map();
+                let y = topPad;
+                incomingNodes.forEach((row, idx) => {
+                    const h = rawHeights[idx] * scale;
+                    map.set(row.id, { y, h });
+                    y += h + 5;
+                });
+                return map;
+            })()
+            : new Map();
+        const outgoingLayout = outgoingNodes.length
+            ? (() => {
+                const totalWeight = outgoingNodes.reduce((sum, row) => sum + Number(row.amount || 0), 0) || 1;
+                const rawHeights = outgoingNodes.map((row) => Math.max(8, (Number(row.amount || 0) / totalWeight) * (availH - 5 * (outgoingNodes.length - 1))));
+                const scale = Math.max(10, availH - 5 * (outgoingNodes.length - 1)) / (rawHeights.reduce((sum, h) => sum + h, 0) || 1);
+                const map = new Map();
+                let y = topPad;
+                outgoingNodes.forEach((row, idx) => {
+                    const h = rawHeights[idx] * scale;
+                    map.set(row.id, { y, h });
+                    y += h + 5;
+                });
+                return map;
+            })()
+            : new Map();
+        const focusFlow = Math.max(metrics.incoming_shown || 0, metrics.outgoing_shown || 0, 1);
+        const maxSide = Math.max(...incomingNodes.map((row) => row.amount || 0), ...outgoingNodes.map((row) => row.amount || 0), focusFlow);
+        const focusH = clamp((focusFlow / maxSide) * (availH * 0.75), 54, availH - 8);
+        const focusY = topPad + (availH - focusH) / 2;
+
+        const incomingOffset = new Map();
+        const outgoingOffset = new Map();
+        let focusIncomingOffset = 0;
+        let focusOutgoingOffset = 0;
+        const incomingTotalShown = Math.max(metrics.incoming_shown || 0, 1);
+        const outgoingTotalShown = Math.max(metrics.outgoing_shown || 0, 1);
+        const lookupNode = (id) => graph.node_flow.get(id) || { id, label: id, node_type: "other", total_incoming: 0, total_outgoing: 0 };
+
+        const linkRows = links.slice().sort((a, b) => (b.weight || 0) - (a.weight || 0));
+        for (const link of linkRows) {
+            if (link.direction === "incoming") {
+                const srcBox = incomingLayout.get(link.source);
+                if (!srcBox) continue;
+                const srcTotal = Math.max(lookupNode(link.source).total_outgoing || link.weight, link.weight, 1);
+                const srcSpan = Math.max(1.5, srcBox.h * (link.weight / srcTotal));
+                const focusSpan = Math.max(1.5, focusH * (link.weight / incomingTotalShown));
+                const span = Math.min(srcSpan, focusSpan);
+                const srcOff = incomingOffset.get(link.source) || 0;
+                const y1 = srcBox.y + srcOff + span / 2;
+                incomingOffset.set(link.source, srcOff + span);
+                const y2 = focusY + focusIncomingOffset + span / 2;
+                focusIncomingOffset += span;
+                const path = createSvgEl("path", {
+                    d: `M ${leftX + sideNodeW} ${y1} C ${leftX + 96} ${y1}, ${focusX - 86} ${y2}, ${focusX} ${y2}`,
+                    fill: "none",
+                    stroke: "#3b82f6",
+                    "stroke-width": span,
+                    "stroke-opacity": "0.3",
+                });
+                const src = lookupNode(link.source);
+                const dst = lookupNode(link.target);
+                path.addEventListener("mousemove", (evt) => showFedTooltip(tooltip, evt, `<div><strong>${escapeHtml(src.label)}</strong> → <strong>${escapeHtml(dst.label)}</strong></div><div>Amount: ${escapeHtml(formatCurrency(link.weight))}</div>`));
+                path.addEventListener("mouseleave", () => hideFedTooltip(tooltip));
+                fedSankeySvg.appendChild(path);
+            } else if (link.direction === "outgoing") {
+                const dstBox = outgoingLayout.get(link.target);
+                if (!dstBox) continue;
+                const dstTotal = Math.max(lookupNode(link.target).total_incoming || link.weight, link.weight, 1);
+                const dstSpan = Math.max(1.5, dstBox.h * (link.weight / dstTotal));
+                const focusSpan = Math.max(1.5, focusH * (link.weight / outgoingTotalShown));
+                const span = Math.min(dstSpan, focusSpan);
+                const dstOff = outgoingOffset.get(link.target) || 0;
+                const y2 = dstBox.y + dstOff + span / 2;
+                outgoingOffset.set(link.target, dstOff + span);
+                const y1 = focusY + focusOutgoingOffset + span / 2;
+                focusOutgoingOffset += span;
+                const dstNode = lookupNode(link.target);
+                const stroke = splitByType ? (fedOutgoingTypeColor[dstNode.node_type] || "#ea580c") : "#ea580c";
+                const path = createSvgEl("path", {
+                    d: `M ${focusX + focusNodeW} ${y1} C ${focusX + 88} ${y1}, ${rightX - 88} ${y2}, ${rightX} ${y2}`,
+                    fill: "none",
+                    stroke,
+                    "stroke-width": span,
+                    "stroke-opacity": "0.3",
+                });
+                const src = lookupNode(link.source);
+                path.addEventListener("mousemove", (evt) => showFedTooltip(tooltip, evt, `<div><strong>${escapeHtml(src.label)}</strong> → <strong>${escapeHtml(dstNode.label)}</strong></div><div>Amount: ${escapeHtml(formatCurrency(link.weight))}</div>`));
+                path.addEventListener("mouseleave", () => hideFedTooltip(tooltip));
+                fedSankeySvg.appendChild(path);
+            }
+        }
+
+        const drawNode = (row, x, box, fill, stroke, isFocus = false) => {
+            const rect = createSvgEl("rect", {
+                x,
+                y: box.y,
+                width: isFocus ? focusNodeW : sideNodeW,
+                height: box.h,
+                rx: 4,
+                fill,
+                stroke,
+                "stroke-width": 1,
+            });
+            fedSankeySvg.appendChild(rect);
+            const nodeStats = lookupNode(row.id);
+            const nodeType = fedFocusTypeLabel[row.node_type] || row.node_type || "Entity";
+            rect.style.cursor = row.is_other || isFocus ? "default" : "pointer";
+            rect.addEventListener("mousemove", (evt) => {
+                showFedTooltip(
+                    tooltip,
+                    evt,
+                    `<div><strong>${escapeHtml(row.label)}</strong></div>
+                     <div>Type: ${escapeHtml(nodeType)}</div>
+                     <div>Total incoming: ${escapeHtml(formatCurrency(nodeStats.total_incoming || 0))}</div>
+                     <div>Total outgoing: ${escapeHtml(formatCurrency(nodeStats.total_outgoing || 0))}</div>`
+                );
+            });
+            rect.addEventListener("mouseleave", () => hideFedTooltip(tooltip));
+            if (!row.is_other && !isFocus && fedSankeySearch && fedSankeyNodeId) {
+                rect.addEventListener("click", () => {
+                    fedSankeySearch.value = row.label;
+                    fedSankeyNodeId.value = row.id;
+                    if (fedSankeyTypeSelect) fedSankeyTypeSelect.value = inferFedFocusTypeFromNodeId(row.id);
+                    clearFedDisambiguation();
+                    fetchAndRenderFedCustomSankey();
+                });
+            }
+        };
+
+        for (const row of incomingNodes) {
+            const box = incomingLayout.get(row.id);
+            if (!box) continue;
+            drawNode(row, leftX, box, "#1d4ed8", "#1e40af");
+            drawText(fedSankeySvg, leftX - 7, box.y + box.h / 2 + 3, shortLabel(row.label, 26), { anchor: "end", size: "9px", color: "#1e293b" });
+        }
+        const focusRow = { id: graph.focus.id, label: graph.focus.name, node_type: graph.focus.type, ...lookupNode(graph.focus.id) };
+        drawNode(focusRow, focusX, { y: focusY, h: focusH }, "#334155", "#0f172a", true);
+        drawText(fedSankeySvg, focusX + focusNodeW / 2, focusY + focusH + 14, shortLabel(graph.focus.name, 42), { size: "10px", weight: "600", color: "#0f172a" });
+        for (const row of outgoingNodes) {
+            const box = outgoingLayout.get(row.id);
+            if (!box) continue;
+            const fill = splitByType ? (fedOutgoingTypeColor[row.node_type] || "#ea580c") : "#ea580c";
+            drawNode(row, rightX, box, fill, "#9a3412");
+            drawText(fedSankeySvg, rightX + sideNodeW + 7, box.y + box.h / 2 + 3, shortLabel(row.label, 28), { anchor: "start", size: "9px", color: "#1e293b" });
+        }
+
+        if (fedSankeySummary) {
+            const minAmount = Number(fedSankeyMinAmount?.value || 0);
+            const shownNodes = 1 + incomingNodes.length + outgoingNodes.length;
+            fedSankeySummary.textContent =
+                `Focus: ${graph.focus.name} (${fedFocusTypeLabel[graph.focus.type] || graph.focus.type}) | ` +
+                `Source: FEC ${cycle ? `cycle ${cycle}` : "all cycles"} | ` +
+                `Incoming ${formatCurrency(metrics.incoming_total || 0)} | ` +
+                `Outgoing ${formatCurrency(metrics.outgoing_total || 0)} | ` +
+                `Showing ${shownNodes} nodes / ${links.length} links (top ${metrics.top_n}, min ${formatCurrency(minAmount)}${metrics.grouped_small ? ", grouped small flows" : ""})`;
+        }
+    };
+
+    const resolveFedDisambiguation = async (label) => {
+        if (!fedSankeyNodeId || !fedSankeySearch) return false;
+        const q = String(label || "").trim();
+        if (!q) return false;
+        try {
+            const resp = await fetch(`/api/federal/network/suggest?q=${encodeURIComponent(q)}&limit=10`);
+            const rows = await resp.json();
+            if (!Array.isArray(rows) || rows.length === 0) return false;
+            const normalized = q.toLowerCase();
+            const exact = rows.filter((row) => String(row.label || "").trim().toLowerCase() === normalized);
+            const shortlist = exact.length ? exact : rows;
+            if (shortlist.length === 1) {
+                const pick = shortlist[0];
+                fedSankeySearch.value = pick.label || q;
+                fedSankeyNodeId.value = pick.value || "";
+                if (fedSankeyTypeSelect && fedSankeyTypeSelect.value === "auto") {
+                    fedSankeyTypeSelect.value = inferFedFocusTypeFromNodeId(pick.value || "");
+                }
+                clearFedDisambiguation();
+                return false;
+            }
+            showFedDisambiguation(q, shortlist.slice(0, 8), (pick) => {
+                fedSankeySearch.value = pick.label || q;
+                fedSankeyNodeId.value = pick.value || "";
+                if (fedSankeyTypeSelect) fedSankeyTypeSelect.value = inferFedFocusTypeFromNodeId(pick.value || "");
+                clearFedDisambiguation();
+                fetchAndRenderFedCustomSankey();
+            });
+            drawEmpty(fedSankeySvg, "Multiple matches found. Choose one entity above.");
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    const fetchAndRenderFedCustomSankey = async () => {
+        if (!fedSankeySvg) return;
+        const rawLabel = fedSankeySearch ? fedSankeySearch.value.trim() : "";
+        if (!fedSankeyNodeId?.value && !rawLabel) {
+            drawEmpty(fedSankeySvg, "Type a federal entity name above and select from suggestions, then click Render.");
+            return;
+        }
+        if (!fedSankeyNodeId?.value && rawLabel) {
+            const waiting = await resolveFedDisambiguation(rawLabel);
+            if (waiting) return;
+        }
+        const nodeId = fedSankeyNodeId ? fedSankeyNodeId.value : "";
+        const label = fedSankeySearch ? fedSankeySearch.value.trim() : rawLabel;
+        if (!nodeId && !label) {
+            drawEmpty(fedSankeySvg, "Type a federal entity name above and select from suggestions, then click Render.");
+            return;
+        }
+
+        drawEmpty(fedSankeySvg, "Loading…");
+        clearFedDisambiguation();
+        const selectedType = fedSankeyTypeSelect?.value || "auto";
+        const explicitType = selectedType === "auto" && nodeId ? inferFedFocusTypeFromNodeId(nodeId) : selectedType;
+        const params = new URLSearchParams({
+            focus_node_id: nodeId,
+            focus_label: label,
+            focus_type: explicitType || selectedType,
+            min_edge_amount: fedSankeyMinAmount?.value || "0",
+        });
+        if (cycle) params.set("cycle", String(cycle));
+        try {
+            const response = await fetch("/api/federal/network/focus-sankey?" + params.toString());
+            const data = await response.json();
+            renderFedCustomSankey(data);
+        } catch {
+            drawEmpty(fedSankeySvg, "Error loading data. Please try again.");
+            if (fedSankeySummary) fedSankeySummary.textContent = "";
+        }
+    };
+
+    if (fedSankeyRenderBtn) fedSankeyRenderBtn.addEventListener("click", fetchAndRenderFedCustomSankey);
+    if (fedSankeySearch) {
+        fedSankeySearch.addEventListener("input", () => {
+            if (fedSankeyNodeId) fedSankeyNodeId.value = "";
+            clearFedDisambiguation();
+        });
+        fedSankeySearch.addEventListener("autocomplete-select", (evt) => {
+            const pick = evt?.detail || {};
+            if (fedSankeyTypeSelect && fedSankeyTypeSelect.value === "auto" && pick.value) {
+                fedSankeyTypeSelect.value = inferFedFocusTypeFromNodeId(pick.value);
+            }
+            setTimeout(fetchAndRenderFedCustomSankey, 30);
+        });
+    }
+    for (const ctrl of [fedSankeyTopN, fedSankeyGroupSmall, fedSankeySplitTypes, fedSankeyMinAmount]) {
+        if (!ctrl) continue;
+        ctrl.addEventListener("change", () => {
+            if (fedSankeyNodeId?.value || fedSankeySearch?.value?.trim()) fetchAndRenderFedCustomSankey();
+        });
+    }
+    if (fedSankeySvg && !(fedSankeyNodeId?.value || fedSankeySearch?.value?.trim())) {
+        drawEmpty(fedSankeySvg, "Type a federal entity name above and select from suggestions, then click Render.");
     }
 })();
 </script>

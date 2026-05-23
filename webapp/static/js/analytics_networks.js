@@ -1247,6 +1247,512 @@
         });
     };
 
+    /* ═════════════════════════════════════════════════════════════════
+       9. CUSTOM SANKEY (API-driven focused subgraph)
+       ═════════════════════════════════════════════════════════════════ */
+    const customSankeySvg = document.getElementById("custom-sankey-svg");
+    const customSankeySummary = document.getElementById("custom-sankey-summary");
+    const customSankeyRenderBtn = document.getElementById("custom-sankey-render-btn");
+    const customSankeySearch = document.getElementById("custom-sankey-search");
+    const customSankeyNodeId = document.getElementById("custom-sankey-node-id");
+    const customSankeyTopN = document.getElementById("custom-sankey-topn");
+    const customSankeyGroupSmall = document.getElementById("custom-sankey-group-small");
+    const customSankeySplitTypes = document.getElementById("custom-sankey-split-types");
+    const customSankeyTypeSelect = document.getElementById("custom-sankey-type");
+    const customSankeyMinAmount = document.getElementById("custom-sankey-min-amount");
+    const customSankeyDisambiguation = document.getElementById("custom-sankey-disambiguation");
+
+    const focusTypeLabel = {
+        donor: "Donor",
+        committee: "Committee",
+        candidate: "Candidate",
+        vendor: "Vendor",
+        other: "Other",
+    };
+    const outgoingTypeOrder = { committee: 0, candidate: 1, vendor: 2, donor: 3, other: 99 };
+    const outgoingTypeColor = {
+        committee: "#059669",
+        candidate: "#dc2626",
+        vendor: "#d97706",
+        donor: "#2563eb",
+        other: "#64748b",
+    };
+    const inferFocusTypeFromNodeId = (nodeId) => {
+        const prefix = String(nodeId || "").split(":", 1)[0];
+        if (prefix === "donor" || prefix === "committee" || prefix === "candidate" || prefix === "vendor") return prefix;
+        return "auto";
+    };
+    const escapeHtml = (value) => String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    const ensureSankeyTooltip = () => {
+        if (!customSankeySvg || !customSankeySvg.parentElement) return null;
+        const wrap = customSankeySvg.parentElement;
+        wrap.style.position = "relative";
+        let tip = wrap.querySelector(".custom-sankey-tooltip");
+        if (tip) return tip;
+        tip = document.createElement("div");
+        tip.className = "custom-sankey-tooltip";
+        tip.style.position = "absolute";
+        tip.style.display = "none";
+        tip.style.pointerEvents = "none";
+        tip.style.zIndex = "40";
+        tip.style.background = "rgba(15, 23, 42, 0.96)";
+        tip.style.color = "#f8fafc";
+        tip.style.padding = "0.45rem 0.55rem";
+        tip.style.borderRadius = "6px";
+        tip.style.fontSize = "0.75rem";
+        tip.style.lineHeight = "1.25";
+        tip.style.maxWidth = "300px";
+        tip.style.boxShadow = "0 4px 12px rgba(2, 6, 23, 0.35)";
+        wrap.appendChild(tip);
+        return tip;
+    };
+    const showSankeyTooltip = (tip, evt, html) => {
+        if (!tip || !customSankeySvg) return;
+        const wrapRect = customSankeySvg.parentElement.getBoundingClientRect();
+        tip.innerHTML = html;
+        tip.style.display = "block";
+        tip.style.left = `${evt.clientX - wrapRect.left + 12}px`;
+        tip.style.top = `${evt.clientY - wrapRect.top + 12}px`;
+    };
+    const hideSankeyTooltip = (tip) => { if (tip) tip.style.display = "none"; };
+    const clearCustomDisambiguation = () => {
+        if (!customSankeyDisambiguation) return;
+        customSankeyDisambiguation.style.display = "none";
+        customSankeyDisambiguation.innerHTML = "";
+    };
+    const showCustomDisambiguation = (label, candidates, onPick) => {
+        if (!customSankeyDisambiguation) return;
+        customSankeyDisambiguation.style.display = "";
+        customSankeyDisambiguation.innerHTML = "";
+        const heading = document.createElement("div");
+        heading.textContent = `Multiple matches found for "${label}". Pick one:`;
+        customSankeyDisambiguation.appendChild(heading);
+        const list = document.createElement("div");
+        list.style.display = "flex";
+        list.style.flexWrap = "wrap";
+        list.style.gap = "0.4rem";
+        list.style.marginTop = "0.35rem";
+        for (const item of candidates) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = `${item.label} (${focusTypeLabel[item.node_type] || item.node_type || "entity"})`;
+            btn.style.fontSize = "0.75rem";
+            btn.style.padding = "0.2rem 0.45rem";
+            btn.style.border = "1px solid #94a3b8";
+            btn.style.borderRadius = "5px";
+            btn.style.background = "#ffffff";
+            btn.addEventListener("click", () => onPick(item));
+            list.appendChild(btn);
+        }
+        customSankeyDisambiguation.appendChild(list);
+    };
+
+    // Transform API graph into focus-centric shape: incoming -> focus -> outgoing.
+    const buildFocusCentricGraph = (raw, opts = {}) => {
+        const topN = Math.max(1, Number(opts.topN || 25));
+        const groupSmall = Boolean(opts.groupSmall);
+        const splitOutgoingByType = Boolean(opts.splitOutgoingByType);
+        const nodeMap = new Map((raw?.nodes || []).map((n) => [n.id, n]));
+        const edges = (raw?.edges || []).map((e) => ({ ...e, weight: Number(e.weight || 0) })).filter((e) => e.weight > 0);
+
+        let focusId = raw?.focus?.node_id || "";
+        if ((!focusId || !nodeMap.has(focusId)) && raw?.focus?.label) {
+            const lookup = String(raw.focus.label).trim().toLowerCase();
+            const byLabel = (raw.nodes || []).find((n) => String(n.label || "").trim().toLowerCase() === lookup);
+            if (byLabel) focusId = byLabel.id;
+        }
+        const focusNode = nodeMap.get(focusId) || {
+            id: focusId || "focus",
+            label: raw?.focus?.label || "Focus Entity",
+            node_type: raw?.focus?.node_type || "entity",
+        };
+
+        const incoming = new Map();
+        const outgoing = new Map();
+        for (const edge of edges) {
+            if (edge.target === focusNode.id) incoming.set(edge.source, (incoming.get(edge.source) || 0) + edge.weight);
+            if (edge.source === focusNode.id) outgoing.set(edge.target, (outgoing.get(edge.target) || 0) + edge.weight);
+        }
+
+        const toRows = (amountMap) => Array.from(amountMap.entries()).map(([id, amount]) => {
+            const node = nodeMap.get(id) || { id, label: id, node_type: "other" };
+            return {
+                id: node.id,
+                label: node.label || node.id,
+                node_type: node.node_type || "other",
+                amount: Number(amount || 0),
+            };
+        });
+        const incomingRows = toRows(incoming).sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label));
+        const outgoingRows = toRows(outgoing).sort((a, b) => {
+            if (!splitOutgoingByType) return b.amount - a.amount || a.label.localeCompare(b.label);
+            const orderDelta = (outgoingTypeOrder[a.node_type] || 99) - (outgoingTypeOrder[b.node_type] || 99);
+            if (orderDelta !== 0) return orderDelta;
+            return b.amount - a.amount || a.label.localeCompare(b.label);
+        });
+        const cutSide = (rows, side) => {
+            const keep = rows.slice(0, topN);
+            const dropped = rows.slice(topN);
+            const droppedAmount = dropped.reduce((sum, row) => sum + row.amount, 0);
+            if (groupSmall && dropped.length && droppedAmount > 0) {
+                keep.push({
+                    id: `${side}:other`,
+                    label: `Other (${dropped.length})`,
+                    node_type: "other",
+                    amount: droppedAmount,
+                    is_other: true,
+                });
+            }
+            return { rows: keep, dropped_count: dropped.length };
+        };
+        const cutIncoming = cutSide(incomingRows, "incoming");
+        const cutOutgoing = cutSide(outgoingRows, "outgoing");
+
+        const links = [
+            ...cutIncoming.rows.map((row) => ({ source: row.id, target: focusNode.id, weight: row.amount, direction: "incoming", is_other: Boolean(row.is_other) })),
+            ...cutOutgoing.rows.map((row) => ({ source: focusNode.id, target: row.id, weight: row.amount, direction: "outgoing", is_other: Boolean(row.is_other) })),
+        ];
+
+        const nodeFlow = new Map();
+        const ensureFlow = (id, label = id, nodeType = "other") => {
+            if (!nodeFlow.has(id)) nodeFlow.set(id, { id, label, node_type: nodeType, total_incoming: 0, total_outgoing: 0 });
+            return nodeFlow.get(id);
+        };
+        ensureFlow(focusNode.id, focusNode.label, focusNode.node_type);
+        for (const row of cutIncoming.rows) ensureFlow(row.id, row.label, row.node_type);
+        for (const row of cutOutgoing.rows) ensureFlow(row.id, row.label, row.node_type);
+        for (const link of links) {
+            const src = ensureFlow(link.source);
+            const dst = ensureFlow(link.target);
+            src.total_outgoing += link.weight;
+            dst.total_incoming += link.weight;
+        }
+
+        return {
+            focus: { id: focusNode.id, name: focusNode.label || focusNode.id, type: focusNode.node_type || "entity" },
+            incoming_nodes: cutIncoming.rows.map((row) => ({ ...row, ...nodeFlow.get(row.id) })),
+            outgoing_nodes: cutOutgoing.rows.map((row) => ({ ...row, ...nodeFlow.get(row.id) })),
+            links,
+            node_flow: nodeFlow,
+            metrics: {
+                incoming_total: incomingRows.reduce((sum, row) => sum + row.amount, 0),
+                outgoing_total: outgoingRows.reduce((sum, row) => sum + row.amount, 0),
+                incoming_shown: cutIncoming.rows.reduce((sum, row) => sum + row.amount, 0),
+                outgoing_shown: cutOutgoing.rows.reduce((sum, row) => sum + row.amount, 0),
+                incoming_dropped_count: cutIncoming.dropped_count,
+                outgoing_dropped_count: cutOutgoing.dropped_count,
+                top_n: topN,
+                grouped_small: groupSmall,
+            },
+        };
+    };
+
+    const renderFocusCentricSankey = (rawData) => {
+        if (!customSankeySvg) return;
+        clearSvg(customSankeySvg);
+        const { width, height } = viewBoxSize(customSankeySvg);
+        const topN = Number(customSankeyTopN?.value || 25);
+        const groupSmall = Boolean(customSankeyGroupSmall?.checked);
+        const splitByType = Boolean(customSankeySplitTypes?.checked);
+        const graph = buildFocusCentricGraph(rawData, { topN, groupSmall, splitOutgoingByType: splitByType });
+        const tooltip = ensureSankeyTooltip();
+        hideSankeyTooltip(tooltip);
+
+        if (!graph || (!graph.incoming_nodes.length && !graph.outgoing_nodes.length)) {
+            drawEmpty(customSankeySvg, rawData && rawData.error ? rawData.error : "No connected nodes found for this entity.");
+            if (customSankeySummary) customSankeySummary.textContent = "";
+            return;
+        }
+
+        const incomingNodes = graph.incoming_nodes;
+        const outgoingNodes = graph.outgoing_nodes;
+        const links = graph.links || [];
+        const metrics = graph.metrics || {};
+        const topPad = 76;
+        const bottomPad = 26;
+        const availH = Math.max(80, height - topPad - bottomPad);
+        const leftX = 112;
+        const focusX = Math.round(width / 2 - 12);
+        const rightX = width - 130;
+        const sideNodeW = 16;
+        const focusNodeW = 24;
+
+        customSankeySvg.appendChild(createSvgEl("rect", {
+            x: 14,
+            y: 14,
+            width: width - 28,
+            height: height - 28,
+            rx: 12,
+            fill: "#f8fafc",
+            stroke: "#cbd5e1",
+            "stroke-width": 1,
+        }));
+        if (incomingNodes.length) {
+            drawText(customSankeySvg, leftX + sideNodeW / 2, 30, "Incoming", { size: "12px", weight: "700", color: "#1e3a8a" });
+        } else {
+            drawText(customSankeySvg, leftX + sideNodeW / 2, 30, "No Incoming", { size: "10px", weight: "600", color: "#64748b" });
+        }
+        drawText(customSankeySvg, focusX + focusNodeW / 2, 30, "Focus Entity", { size: "12px", weight: "700", color: "#0f172a" });
+        if (outgoingNodes.length) {
+            drawText(customSankeySvg, rightX + sideNodeW / 2, 30, "Outgoing", { size: "12px", weight: "700", color: "#7c2d12" });
+        } else {
+            drawText(customSankeySvg, rightX + sideNodeW / 2, 30, "No Outgoing", { size: "10px", weight: "600", color: "#64748b" });
+        }
+
+        const legendItems = [
+            { label: "Focus", color: "#334155" },
+            { label: "Incoming source", color: "#1d4ed8" },
+            { label: "Outgoing destination", color: "#ea580c" },
+        ];
+        let legendX = width - 270;
+        for (const item of legendItems) {
+            customSankeySvg.appendChild(createSvgEl("rect", { x: legendX, y: 22, width: 10, height: 10, rx: 2, fill: item.color }));
+            drawText(customSankeySvg, legendX + 16, 31, item.label, { anchor: "start", size: "9px", color: "#334155" });
+            legendX += 86;
+        }
+
+        const incomingLayout = incomingNodes.length
+            ? buildColumn(incomingNodes, incomingNodes.map((row) => row.amount || 0), 5, 8, availH, topPad)
+            : new Map();
+        const outgoingLayout = outgoingNodes.length
+            ? buildColumn(outgoingNodes, outgoingNodes.map((row) => row.amount || 0), 5, 8, availH, topPad)
+            : new Map();
+        const focusFlow = Math.max(metrics.incoming_shown || 0, metrics.outgoing_shown || 0, 1);
+        const maxSide = Math.max(
+            ...incomingNodes.map((row) => row.amount || 0),
+            ...outgoingNodes.map((row) => row.amount || 0),
+            focusFlow,
+        );
+        const focusH = clamp((focusFlow / maxSide) * (availH * 0.75), 54, availH - 8);
+        const focusY = topPad + (availH - focusH) / 2;
+
+        const incomingOffset = new Map();
+        const outgoingOffset = new Map();
+        let focusIncomingOffset = 0;
+        let focusOutgoingOffset = 0;
+        const incomingTotalShown = Math.max(metrics.incoming_shown || 0, 1);
+        const outgoingTotalShown = Math.max(metrics.outgoing_shown || 0, 1);
+        const lookupNode = (id) => graph.node_flow.get(id) || { id, label: id, node_type: "other", total_incoming: 0, total_outgoing: 0 };
+
+        const linkRows = links.slice().sort((a, b) => (b.weight || 0) - (a.weight || 0));
+        for (const link of linkRows) {
+            if (link.direction === "incoming") {
+                const srcBox = incomingLayout.get(link.source);
+                if (!srcBox) continue;
+                const srcTotal = Math.max(lookupNode(link.source).total_outgoing || link.weight, link.weight, 1);
+                const srcSpan = Math.max(1.5, srcBox.h * (link.weight / srcTotal));
+                const focusSpan = Math.max(1.5, focusH * (link.weight / incomingTotalShown));
+                const span = Math.min(srcSpan, focusSpan);
+                const srcOff = incomingOffset.get(link.source) || 0;
+                const y1 = srcBox.y + srcOff + span / 2;
+                incomingOffset.set(link.source, srcOff + span);
+                const y2 = focusY + focusIncomingOffset + span / 2;
+                focusIncomingOffset += span;
+                const path = createSvgEl("path", {
+                    d: `M ${leftX + sideNodeW} ${y1} C ${leftX + 96} ${y1}, ${focusX - 86} ${y2}, ${focusX} ${y2}`,
+                    fill: "none",
+                    stroke: "#3b82f6",
+                    "stroke-width": span,
+                    "stroke-opacity": "0.3",
+                });
+                const src = lookupNode(link.source);
+                const dst = lookupNode(link.target);
+                path.addEventListener("mousemove", (evt) => showSankeyTooltip(tooltip, evt, `<div><strong>${escapeHtml(src.label)}</strong> → <strong>${escapeHtml(dst.label)}</strong></div><div>Amount: ${escapeHtml(formatMetric(link.weight, "usd"))}</div>`));
+                path.addEventListener("mouseleave", () => hideSankeyTooltip(tooltip));
+                customSankeySvg.appendChild(path);
+            } else if (link.direction === "outgoing") {
+                const dstBox = outgoingLayout.get(link.target);
+                if (!dstBox) continue;
+                const dstTotal = Math.max(lookupNode(link.target).total_incoming || link.weight, link.weight, 1);
+                const dstSpan = Math.max(1.5, dstBox.h * (link.weight / dstTotal));
+                const focusSpan = Math.max(1.5, focusH * (link.weight / outgoingTotalShown));
+                const span = Math.min(dstSpan, focusSpan);
+                const dstOff = outgoingOffset.get(link.target) || 0;
+                const y2 = dstBox.y + dstOff + span / 2;
+                outgoingOffset.set(link.target, dstOff + span);
+                const y1 = focusY + focusOutgoingOffset + span / 2;
+                focusOutgoingOffset += span;
+                const dstNode = lookupNode(link.target);
+                const stroke = splitByType ? (outgoingTypeColor[dstNode.node_type] || "#ea580c") : "#ea580c";
+                const path = createSvgEl("path", {
+                    d: `M ${focusX + focusNodeW} ${y1} C ${focusX + 88} ${y1}, ${rightX - 88} ${y2}, ${rightX} ${y2}`,
+                    fill: "none",
+                    stroke,
+                    "stroke-width": span,
+                    "stroke-opacity": "0.3",
+                });
+                const src = lookupNode(link.source);
+                path.addEventListener("mousemove", (evt) => showSankeyTooltip(tooltip, evt, `<div><strong>${escapeHtml(src.label)}</strong> → <strong>${escapeHtml(dstNode.label)}</strong></div><div>Amount: ${escapeHtml(formatMetric(link.weight, "usd"))}</div>`));
+                path.addEventListener("mouseleave", () => hideSankeyTooltip(tooltip));
+                customSankeySvg.appendChild(path);
+            }
+        }
+
+        const drawNodeWithTooltip = (row, x, box, fill, stroke, isFocus = false) => {
+            const rect = createSvgEl("rect", {
+                x,
+                y: box.y,
+                width: isFocus ? focusNodeW : sideNodeW,
+                height: box.h,
+                rx: 4,
+                fill,
+                stroke,
+                "stroke-width": 1,
+            });
+            customSankeySvg.appendChild(rect);
+            const nodeStats = lookupNode(row.id);
+            const nodeType = focusTypeLabel[row.node_type] || row.node_type || "Entity";
+            rect.style.cursor = row.is_other || isFocus ? "default" : "pointer";
+            rect.addEventListener("mousemove", (evt) => {
+                showSankeyTooltip(
+                    tooltip,
+                    evt,
+                    `<div><strong>${escapeHtml(row.label)}</strong></div>
+                     <div>Type: ${escapeHtml(nodeType)}</div>
+                     <div>Total incoming: ${escapeHtml(formatMetric(nodeStats.total_incoming || 0, "usd"))}</div>
+                     <div>Total outgoing: ${escapeHtml(formatMetric(nodeStats.total_outgoing || 0, "usd"))}</div>`
+                );
+            });
+            rect.addEventListener("mouseleave", () => hideSankeyTooltip(tooltip));
+            if (!row.is_other && !isFocus && customSankeySearch && customSankeyNodeId) {
+                rect.addEventListener("click", () => {
+                    customSankeySearch.value = row.label;
+                    customSankeyNodeId.value = row.id;
+                    if (customSankeyTypeSelect) customSankeyTypeSelect.value = inferFocusTypeFromNodeId(row.id);
+                    clearCustomDisambiguation();
+                    fetchAndRenderCustomSankey();
+                });
+            }
+        };
+
+        for (const row of incomingNodes) {
+            const box = incomingLayout.get(row.id);
+            if (!box) continue;
+            drawNodeWithTooltip(row, leftX, box, "#1d4ed8", "#1e40af");
+            drawText(customSankeySvg, leftX - 7, box.y + box.h / 2 + 3, shortLabel(row.label, 26), { anchor: "end", size: "9px", color: "#1e293b" });
+        }
+        const focusRow = { id: graph.focus.id, label: graph.focus.name, node_type: graph.focus.type, ...lookupNode(graph.focus.id) };
+        drawNodeWithTooltip(focusRow, focusX, { y: focusY, h: focusH }, "#334155", "#0f172a", true);
+        drawText(customSankeySvg, focusX + focusNodeW / 2, focusY + focusH + 14, shortLabel(graph.focus.name, 42), { size: "10px", weight: "600", color: "#0f172a" });
+        for (const row of outgoingNodes) {
+            const box = outgoingLayout.get(row.id);
+            if (!box) continue;
+            const fill = splitByType ? (outgoingTypeColor[row.node_type] || "#ea580c") : "#ea580c";
+            drawNodeWithTooltip(row, rightX, box, fill, "#9a3412");
+            drawText(customSankeySvg, rightX + sideNodeW + 7, box.y + box.h / 2 + 3, shortLabel(row.label, 28), { anchor: "start", size: "9px", color: "#1e293b" });
+        }
+
+        if (customSankeySummary) {
+            const minAmount = Number(customSankeyMinAmount?.value || 0);
+            const shownNodes = 1 + incomingNodes.length + outgoingNodes.length;
+            customSankeySummary.textContent =
+                `Focus: ${graph.focus.name} (${focusTypeLabel[graph.focus.type] || graph.focus.type}) | ` +
+                `Source: Illinois campaign finance filings | ` +
+                `Incoming ${formatMetric(metrics.incoming_total || 0, "usd")} | ` +
+                `Outgoing ${formatMetric(metrics.outgoing_total || 0, "usd")} | ` +
+                `Showing ${shownNodes} nodes / ${links.length} links (top ${metrics.top_n}, min ${formatMetric(minAmount, "usd")}${metrics.grouped_small ? ", grouped small flows" : ""})`;
+        }
+    };
+
+    const resolveCustomSankeyDisambiguation = async (label) => {
+        if (!customSankeyNodeId || !customSankeySearch) return false;
+        const q = String(label || "").trim();
+        if (!q) return false;
+        try {
+            const resp = await fetch(`/api/analytics/network/suggest?q=${encodeURIComponent(q)}&limit=10`);
+            const rows = await resp.json();
+            if (!Array.isArray(rows) || rows.length === 0) return false;
+            const normalized = q.toLowerCase();
+            const exact = rows.filter((row) => String(row.label || "").trim().toLowerCase() === normalized);
+            const shortlist = exact.length ? exact : rows;
+            if (shortlist.length === 1) {
+                const pick = shortlist[0];
+                customSankeySearch.value = pick.label || q;
+                customSankeyNodeId.value = pick.value || "";
+                if (customSankeyTypeSelect && customSankeyTypeSelect.value === "auto") {
+                    customSankeyTypeSelect.value = inferFocusTypeFromNodeId(pick.value || "");
+                }
+                clearCustomDisambiguation();
+                return false;
+            }
+            showCustomDisambiguation(q, shortlist.slice(0, 8), (pick) => {
+                customSankeySearch.value = pick.label || q;
+                customSankeyNodeId.value = pick.value || "";
+                if (customSankeyTypeSelect) customSankeyTypeSelect.value = inferFocusTypeFromNodeId(pick.value || "");
+                clearCustomDisambiguation();
+                fetchAndRenderCustomSankey();
+            });
+            drawEmpty(customSankeySvg, "Multiple matches found. Choose one entity above.");
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    const fetchAndRenderCustomSankey = async () => {
+        if (!customSankeySvg) return;
+        const rawLabel = customSankeySearch ? customSankeySearch.value.trim() : "";
+        if (!customSankeyNodeId?.value && !rawLabel) {
+            drawEmpty(customSankeySvg, "Type an entity name above and select from suggestions, then click Render.");
+            return;
+        }
+        if (!customSankeyNodeId?.value && rawLabel) {
+            const waiting = await resolveCustomSankeyDisambiguation(rawLabel);
+            if (waiting) return;
+        }
+        const nodeId = customSankeyNodeId ? customSankeyNodeId.value : "";
+        const label = customSankeySearch ? customSankeySearch.value.trim() : rawLabel;
+        if (!nodeId && !label) {
+            drawEmpty(customSankeySvg, "Type an entity name above and select from suggestions, then click Render.");
+            return;
+        }
+
+        drawEmpty(customSankeySvg, "Loading…");
+        clearCustomDisambiguation();
+        const selectedType = customSankeyTypeSelect?.value || "auto";
+        const explicitType = selectedType === "auto" && nodeId ? inferFocusTypeFromNodeId(nodeId) : selectedType;
+        const params = new URLSearchParams({
+            focus_node_id: nodeId,
+            focus_label: label,
+            focus_type: explicitType || selectedType,
+            min_edge_amount: customSankeyMinAmount?.value || "0",
+        });
+        try {
+            const response = await fetch("/api/analytics/network/focus-sankey?" + params.toString());
+            const data = await response.json();
+            renderFocusCentricSankey(data);
+        } catch {
+            drawEmpty(customSankeySvg, "Error loading data. Please try again.");
+            if (customSankeySummary) customSankeySummary.textContent = "";
+        }
+    };
+
+    if (customSankeyRenderBtn) customSankeyRenderBtn.addEventListener("click", fetchAndRenderCustomSankey);
+    if (customSankeySearch) {
+        customSankeySearch.addEventListener("input", () => {
+            if (customSankeyNodeId) customSankeyNodeId.value = "";
+            clearCustomDisambiguation();
+        });
+        customSankeySearch.addEventListener("autocomplete-select", (evt) => {
+            const pick = evt?.detail || {};
+            if (customSankeyTypeSelect && customSankeyTypeSelect.value === "auto" && pick.value) {
+                customSankeyTypeSelect.value = inferFocusTypeFromNodeId(pick.value);
+            }
+            setTimeout(fetchAndRenderCustomSankey, 30);
+        });
+    }
+    for (const ctrl of [customSankeyTopN, customSankeyGroupSmall, customSankeySplitTypes, customSankeyMinAmount]) {
+        if (!ctrl) continue;
+        ctrl.addEventListener("change", () => {
+            if (customSankeyNodeId?.value || customSankeySearch?.value?.trim()) fetchAndRenderCustomSankey();
+        });
+    }
+
     /* ── Tab-driven lazy rendering ── */
     const tabRadios = document.querySelectorAll('input[name="network-tabs"]');
     const rendered = new Set();
@@ -1261,6 +1767,12 @@
         else if (id === "tab-overlap") renderOverlap();
         else if (id === "tab-lobbying") renderLobbying();
         else if (id === "tab-darkmoney") renderDarkMoney();
+        else if (id === "tab-custom-sankey") {
+            // Show placeholder if no search yet, otherwise re-render
+            if (customSankeySvg && !(customSankeyNodeId?.value || customSankeySearch?.value?.trim())) {
+                drawEmpty(customSankeySvg, "Type an entity name above and select from suggestions, then click Render.");
+            }
+        }
     };
 
     const renderActiveTab = (force = false) => {

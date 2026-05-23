@@ -134,16 +134,34 @@
 
     function selectItem(item) {
       input.value = item.label;
+      // If a hidden value field is configured, populate it with item.value
+      var valueFieldName = input.getAttribute('data-autocomplete-value-field');
+      if (valueFieldName) {
+        var form = input.closest('form');
+        if (form) {
+          var hidden = form.querySelector('input[name="' + valueFieldName + '"]');
+          if (hidden) {
+            hidden.value = item.value || item.label;
+          }
+        }
+        // Dispatch a custom event so JS listeners can react to selection
+        input.dispatchEvent(new CustomEvent('autocomplete-select', {
+          bubbles: true,
+          detail: item,
+        }));
+      }
       hide();
-      // Submit the form
-      var form = input.closest('form');
-      if (form) {
-        // For the flows page, trigger submit event instead of direct submit
-        // so JS listeners (like the Sankey updater) can intercept it
-        var evt = new Event('submit', { bubbles: true, cancelable: true });
-        form.dispatchEvent(evt);
-        if (!evt.defaultPrevented) {
-          form.submit();
+      // Submit the form (unless a value field is set — let JS handle it)
+      if (!valueFieldName) {
+        var form = input.closest('form');
+        if (form) {
+          // For the flows page, trigger submit event instead of direct submit
+          // so JS listeners (like the Sankey updater) can intercept it
+          var evt = new Event('submit', { bubbles: true, cancelable: true });
+          form.dispatchEvent(evt);
+          if (!evt.defaultPrevented) {
+            form.submit();
+          }
         }
       }
     }
