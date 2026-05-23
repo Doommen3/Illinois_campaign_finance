@@ -65,6 +65,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _mask_db_url(value: str) -> str:
+    """Mask the password in a Postgres URL for safe logging.
+
+    postgresql://user:secret@host:5432/db → postgresql://user:***@host:5432/db
+    Leaves non-URL strings (e.g. SQLite paths) and passwordless URLs untouched.
+    Uses urllib.parse so passwords containing `@` (when percent-encoded as `%40`,
+    per RFC 3986) are handled correctly.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        parts = urlsplit(value)
+        if not parts.password:
+            return value
+        netloc = parts.netloc.replace(f":{parts.password}@", ":***@", 1)
+        return urlunsplit(parts._replace(netloc=netloc))
+    except Exception:
+        return value
+
+
+def _mask_cmd_for_log(cmd: list[str]) -> str:
+    """Format a subprocess command list for display, masking any --db-url value."""
+    masked = []
+    next_is_url = False
+    for arg in cmd:
+        if next_is_url:
+            masked.append(_mask_db_url(arg))
+            next_is_url = False
+        else:
+            masked.append(arg)
+            if arg == "--db-url":
+                next_is_url = True
+    return " ".join(masked)
+
+
 def _db_target() -> str:
     """Resolve active DB target, preferring DATABASE_URL for Postgres runtimes."""
     env_database_url = (os.environ.get("DATABASE_URL") or "").strip()
@@ -157,7 +191,7 @@ def init_db_command():
     try:
         db_target = _db_target()
         init_db(db_target)
-        click.echo(f'Database initialized at: {db_target}')
+        click.echo(f'Database initialized at: {_mask_db_url(db_target)}')
     except Exception as e:
         click.echo(f'Error initializing database: {e}', err=True)
         sys.exit(1)
@@ -244,7 +278,7 @@ def sunshine_import_command(bulk_dir, download, tables, skip_views, skip_compat_
         cmd.append('--skip-views')
     if config.DATABASE_URL:
         cmd.extend(['--db-url', config.DATABASE_URL])
-    click.echo(f'Running: {" ".join(cmd)}')
+    click.echo(f'Running: {_mask_cmd_for_log(cmd)}')
     result = subprocess.run(cmd)
     if result.returncode != 0:
         sys.exit(result.returncode)
@@ -253,7 +287,7 @@ def sunshine_import_command(bulk_dir, download, tables, skip_views, skip_compat_
         swap_cmd = [sys.executable, 'scripts/swap_bulk_to_isbe.py']
         if config.DATABASE_URL:
             swap_cmd.extend(['--db-url', config.DATABASE_URL])
-        click.echo(f'Running compat swap: {" ".join(swap_cmd)}')
+        click.echo(f'Running compat swap: {_mask_cmd_for_log(swap_cmd)}')
         swap_result = subprocess.run(swap_cmd)
         if swap_result.returncode != 0:
             click.echo('Warning: compat swap failed, /candidate-finance/ will use ISBE fallback mode.', err=True)
