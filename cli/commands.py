@@ -85,7 +85,8 @@ def _mask_db_url(value: str) -> str:
 
 
 def _mask_cmd_for_log(cmd: list[str]) -> str:
-    """Format a subprocess command list for display, masking any --db-url value."""
+    """Format a subprocess command list for display, masking any --db-url value
+    and any DATABASE_URL=... env-style argument."""
     masked = []
     next_is_url = False
     for arg in cmd:
@@ -1845,6 +1846,18 @@ def runserver_command(host, port, debug):
 
     click.echo(f'Starting server at http://{host}:{port}')
     app.run(host=host, port=port, debug=debug or config.FLASK_DEBUG)
+
+
+# Register any local-only commands that ship outside the public repo.
+# See cli/local_donor_prospects.py for the convention: a module exposes a
+# `register(cli_group)` function that calls `cli_group.add_command(...)`. The
+# import is best-effort — when the local module is absent (e.g. on prod), the
+# CLI silently omits those commands.
+try:
+    from cli.local_donor_prospects import register as _register_local_donor_prospects
+    _register_local_donor_prospects(cli)
+except ImportError:
+    pass
 
 
 if __name__ == '__main__':

@@ -56,6 +56,7 @@ scripts/township_*.R
 scripts/find_org_donor_contacts.py
 scripts/build_org_donor_outreach_plan.py
 scripts/targeted_candidates_org_donors.py
+cli/local_*.py
 
 # Claude Code / Codex agent worktrees and session artifacts
 .claude/worktrees/
