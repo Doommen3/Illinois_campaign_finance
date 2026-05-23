@@ -403,17 +403,19 @@ Use this checklist in every data-expansion PR to ensure the new data is fully in
 
 ## Current Data Scale
 
+Snapshot as of 2026-05-23 local refresh:
+
 | Dataset | Records |
 |---|---|
-| State candidates | 32,212 |
-| State committees | 33,760 |
-| Itemized receipts | 6.4M+ |
+| State candidates | 32,305 |
+| State committees | 33,878 |
+| Itemized receipts | 6.48M |
 | Federal candidates (IL) | 134 |
-| Federal contributions | 20,261 |
-| IL lobbying entities | 625 |
-| IL lobbying clients | 3,748 |
-| IL lobbying entity-client pairs | 14,000+ |
-| IL lobbying lobbyists | 4,000+ |
+| Federal Schedule A contributions | 46,259 |
+| IL lobbying entities | 1,822 |
+| IL lobbying clients | 3,312 |
+| IL lobbying entity-client pairs | 15,116 |
+| IL lobbying lobbyists | 4,068 |
 | IRS 527 organizations | 17.5M lines (IL-filtered subset) |
 | Database size | 5.5 GB+ |
 

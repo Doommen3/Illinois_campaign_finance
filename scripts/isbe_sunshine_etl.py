@@ -600,11 +600,113 @@ def find_file(bulk_dir: Path, stem: str) -> Path | None:
     return None
 
 
-def download_file(filename: str, dest: Path):
-    """Download a single ISBE bulk file."""
+def download_file(filename: str, dest: Path, max_retries: int = 5):
+    """Download a single ISBE bulk file with retry, timeout, and atomic write.
+
+    ISBE's server (a) returns 403 for the default urllib User-Agent and (b) often
+    omits Content-Length, so a partial transfer can complete cleanly with no
+    obvious error. We mitigate by sending a browser UA, retrying on failure,
+    and writing to a .partial file that's renamed only on success. The
+    authoritative truth for "did the file land complete?" is the row-count
+    sanity check in verify_row_counts() below.
+    """
     url = f"{ISBE_BASE_URL}/{filename}"
-    print(f"  Downloading {url} → {dest}")
-    urllib.request.urlretrieve(url, dest)
+    tmp = dest.with_suffix(dest.suffix + ".partial")
+    last_err: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"  Downloading {url} → {dest} (attempt {attempt}/{max_retries})")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            written = 0
+            expected: int | None = None
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                cl = resp.headers.get("Content-Length")
+                expected = int(cl) if cl and cl.isdigit() else None
+                with open(tmp, "wb") as out:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        written += len(chunk)
+            if expected is not None and written != expected:
+                raise IOError(f"short download: {written} of {expected} bytes")
+            tmp.replace(dest)
+            return
+        except Exception as e:
+            last_err = e
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            backoff = 2 ** attempt
+            print(f"    download failed: {e}; retrying in {backoff}s")
+            time.sleep(backoff)
+    raise RuntimeError(
+        f"Failed to download {filename} after {max_retries} attempts: {last_err}"
+    )
+
+
+def _count_data_rows(path: Path) -> int:
+    """Count non-header rows in a tab-delimited file (cheap streaming line count)."""
+    total = 0
+    with open(path, "rb") as f:
+        for _ in f:
+            total += 1
+    return max(total - 1, 0)
+
+
+def verify_row_counts(bulk_dir: Path, filenames: list[str], drop_threshold: float = 0.05) -> None:
+    """Compare current file row counts to the last successful run and abort on
+    significant drops.
+
+    Reads/writes ``Bulk_download/.row_counts`` (tsv: filename<TAB>row_count).
+    If any file dropped by more than ``drop_threshold`` (default 5%) versus the
+    previous run, prints the diff and sys.exits non-zero. On first run (no prior
+    counts), establishes a baseline and continues.
+
+    This catches ISBE's silent-truncation failure mode (see 2026-05-13 incident)
+    where curl/urllib exit successfully on a partial transfer because the server
+    omits Content-Length.
+    """
+    counts_path = bulk_dir / ".row_counts"
+    previous: dict[str, int] = {}
+    if counts_path.exists():
+        for line in counts_path.read_text().splitlines():
+            if "\t" not in line:
+                continue
+            name, n = line.split("\t", 1)
+            try:
+                previous[name] = int(n)
+            except ValueError:
+                pass
+
+    current: dict[str, int] = {}
+    drops: list[tuple[str, int, int, float]] = []
+    for filename in filenames:
+        fpath = bulk_dir / filename
+        if not fpath.exists():
+            continue
+        n = _count_data_rows(fpath)
+        current[filename] = n
+        prev = previous.get(filename)
+        if prev is not None and prev > 0:
+            ratio = n / prev
+            if ratio < (1.0 - drop_threshold):
+                drops.append((filename, n, prev, (1.0 - ratio) * 100))
+
+    if drops:
+        print("\nERROR: row-count sanity check failed — file(s) dropped >5% vs previous run:")
+        for name, cur, prev_c, drop_pct in drops:
+            print(f"  {name}: {cur:,} rows (was {prev_c:,}, dropped {drop_pct:.1f}%)")
+        print("\nLikely a silent truncated download. Aborting before load to prevent")
+        print("FK-cascade data loss. Re-download the affected files and retry.")
+        sys.exit(2)
+
+    lines = [f"{name}\t{n}" for name, n in sorted(current.items())]
+    counts_path.write_text("\n".join(lines) + "\n")
+    print(f"  Row counts saved to {counts_path}")
 
 
 def parse_bool(val: str) -> bool | None:
@@ -1121,7 +1223,12 @@ def create_schema(conn):
 
 
 def load_file(conn, filename: str, filepath: Path, batch_size: int = 100000):
-    """Load one ISBE file into its target table using COPY for speed."""
+    """Load one ISBE file into its target table using COPY for speed.
+
+    Returns (inserted_count, rejected_count) so callers can detect catastrophic
+    FK-cascade failures (see 2026-05-13 incident: FK rejects were masked under
+    a '0 errors' summary line).
+    """
     table = ISBE_FILES[filename]
     transform = TRANSFORMS[filename]
     columns = TABLE_COLUMNS[table]
@@ -1132,6 +1239,8 @@ def load_file(conn, filename: str, filepath: Path, batch_size: int = 100000):
     col_list = ", ".join(columns)
     row_count = 0
     error_count = 0
+    inserted_count = 0
+    rejected_count = 0
 
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -1153,24 +1262,34 @@ def load_file(conn, filename: str, filepath: Path, batch_size: int = 100000):
                 continue
 
             if len(batch) >= batch_size:
-                _copy_batch(conn, table, columns, batch)
+                ins, rej = _copy_batch(conn, table, columns, batch)
+                inserted_count += ins
+                rejected_count += rej
                 batch = []
                 if row_count % 500000 == 0:
                     elapsed = time.time() - t0
                     print(f"    ... {row_count:,} rows ({elapsed:.0f}s)")
 
         if batch:
-            _copy_batch(conn, table, columns, batch)
+            ins, rej = _copy_batch(conn, table, columns, batch)
+            inserted_count += ins
+            rejected_count += rej
 
     elapsed = time.time() - t0
-    rate = row_count / elapsed if elapsed > 0 else 0
-    print(f"    {row_count:,} rows loaded in {elapsed:.1f}s ({rate:,.0f} rows/s)"
-          f" | {error_count} errors")
-    return row_count
+    rate = inserted_count / elapsed if elapsed > 0 else 0
+    print(f"    {inserted_count:,} inserted, {rejected_count:,} FK-rejected, "
+          f"{error_count} row errors in {elapsed:.1f}s ({rate:,.0f} rows/s)")
+    return inserted_count, rejected_count
 
 
 def _copy_batch(conn, table: str, columns: list, batch: list):
-    """Use COPY FROM for fast bulk insert via psycopg3."""
+    """Use COPY FROM for fast bulk insert via psycopg3.
+
+    Returns (inserted_count, rejected_count). The fast path inserts the whole
+    batch atomically; on any error (typically FK violation), we fall back to
+    per-row INSERT to recover partial success and separately count the rows
+    that did NOT land.
+    """
     col_list = ", ".join(columns)
     # Build CSV buffer
     buf = io.StringIO()
@@ -1185,12 +1304,14 @@ def _copy_batch(conn, table: str, columns: list, batch: list):
                 while data := buf.read(8192):
                     copy.write(data.encode("utf-8"))
             conn.commit()
+            return len(batch), 0
         except Exception as e:
             conn.rollback()
             # Fallback to executemany for this batch
             placeholders = ", ".join(["%s"] * len(columns))
             insert_sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
             ok = 0
+            rejected = 0
             for row in batch:
                 try:
                     cur.execute(insert_sql, row)
@@ -1198,8 +1319,11 @@ def _copy_batch(conn, table: str, columns: list, batch: list):
                     ok += 1
                 except Exception:
                     conn.rollback()
-            if ok < len(batch):
-                print(f"    Batch fallback: {ok}/{len(batch)} rows inserted ({e})")
+                    rejected += 1
+            if rejected > 0:
+                print(f"    Batch fallback: {ok}/{len(batch)} rows inserted, "
+                      f"{rejected} rejected ({e})")
+            return ok, rejected
 
 
 def _pg_val(v):
@@ -1743,6 +1867,10 @@ def main():
                 print(f"Warning: {filename} not found in {bulk_dir}. "
                       f"Use --download to fetch from ISBE.")
 
+    # Row-count sanity check: catches silent ISBE truncation (2026-05-13 incident)
+    # before we burn an hour loading half-files and corrupting the DB.
+    verify_row_counts(bulk_dir, files_to_load)
+
     # Connect
     conn = psycopg.connect(args.db_url)
     conn.autocommit = False
@@ -1757,13 +1885,41 @@ def main():
 
         # Load each file
         total_rows = 0
+        total_rejected = 0
+        catastrophic: list[tuple[str, int, int, float]] = []
+        noisy: list[tuple[str, int, int, float]] = []
         for filename in files_to_load:
             fpath = find_file(bulk_dir, filename)
             if fpath is None:
                 print(f"  Skipping {filename} (not found)")
                 continue
-            rows = load_file(conn, filename, fpath)
-            total_rows += rows
+            inserted, rejected = load_file(conn, filename, fpath)
+            total_rows += inserted
+            total_rejected += rejected
+            if rejected > 0:
+                attempted = inserted + rejected
+                rate = rejected / attempted if attempted else 0.0
+                bucket = catastrophic if rate >= 0.01 else noisy
+                bucket.append((filename, rejected, attempted, rate * 100))
+
+        # Integrity gate: refuse to build matviews ONLY on catastrophic FK loss
+        # (>1% of a file rejected) — the 2026-05-13 truncation signature was
+        # 5.4M of 5.4M rejected (99.99%). A handful of rejects from stale ISBE
+        # cross-references (deleted candidates still in link tables, doc_id=0
+        # sentinels in D2Totals) is normal between filings and shouldn't halt.
+        if noisy:
+            print("\nNote: small FK reject counts (likely stale ISBE cross-references):")
+            for fname, rej, attempted, pct in noisy:
+                print(f"  {fname}: {rej:,} of {attempted:,} rows rejected ({pct:.3f}%)")
+        if catastrophic:
+            print("\nERROR: catastrophic FK rejections (>1% of rows) — "
+                  "refusing to build materialized views:")
+            for fname, rej, attempted, pct in catastrophic:
+                print(f"  {fname}: {rej:,} of {attempted:,} rows rejected ({pct:.1f}%)")
+            print("\nThis usually means an upstream file (FiledDocs.txt is the common one)")
+            print("was truncated. Inspect Bulk_download/.row_counts, re-download the")
+            print("offending file, and retry.")
+            sys.exit(3)
 
         # Post-load steps
         if "PrevOfficers.txt" in files_to_load:
