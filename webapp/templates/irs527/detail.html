@@ -9,7 +9,6 @@
 <section class="status-section">
     <h2>Organization Details</h2>
     <p><strong>Address:</strong> {{ org.address_1 or '' }} {{ org.address_2 or '' }}, {{ org.city or '' }}, {{ org.state or '' }} {{ org.zip or '' }}</p>
-    {% if org.email %}<p><strong>Email:</strong> {{ org.email }}</p>{% endif %}
     {% if org.purpose %}<p><strong>Purpose:</strong> {{ org.purpose }}</p>{% endif %}
     {% if org.formation_date %}<p><strong>Formation Date:</strong> {{ org.formation_date }}</p>{% endif %}
     {% if org.custodian_name %}<p><strong>Custodian:</strong> {{ org.custodian_name }}</p>{% endif %}

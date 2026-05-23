@@ -29,7 +29,7 @@
         | TTL: <strong>{{ snapshot_ttl_seconds }}s</strong>
     </p>
     {% if snapshot_meta and snapshot_meta.error_message %}
-    <p class="subtitle">Snapshot error: {{ snapshot_meta.error_message }}</p>
+    <p class="subtitle">Snapshot error: internal details hidden in public view (check server logs).</p>
     {% endif %}
     {% if snapshot_loading %}
     <p class="subtitle">Full snapshot is building in the background. Reload this page in a few seconds.</p>

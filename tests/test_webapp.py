@@ -105,6 +105,21 @@ class TestWebApp:
         assert response.status_code == 200
         assert b'Dashboard' in response.data
 
+    def test_about_page_loads_with_illinois_sunshine_attribution(self, client):
+        """About page should load and include Illinois Sunshine attribution links."""
+        response = client.get('/about')
+        assert response.status_code == 200
+        assert b'Illinois Sunshine Attribution' in response.data
+        assert b'datamade/illinois-sunshine' in response.data
+        assert b'illinoissunshine.org/about/' in response.data
+
+    def test_index_footer_shows_illinois_sunshine_credit(self, client):
+        """Footer should include Illinois Sunshine ETL attribution text."""
+        response = client.get('/')
+        assert response.status_code == 200
+        assert b'Built on ETL groundwork from' in response.data
+        assert b'Illinois Sunshine' in response.data
+
     def test_index_reads_persisted_matched_donor_pairs(self, app, client):
         """Dashboard should show persisted federal/local donor pair count."""
         conn = get_db(app.config['DATABASE_PATH'])
@@ -3489,6 +3504,37 @@ class TestWebApp:
 
         ok = secured_client.get('/api/stats', headers={'X-API-Key': 'test-api-key'})
         assert ok.status_code == 200
+
+    def test_api_query_key_disabled_when_configured(self, app):
+        """Query-string API keys should be rejected when disabled."""
+        secured_app = create_app({
+            'TESTING': True,
+            'DATABASE_PATH': app.config['DATABASE_PATH'],
+            'API_KEYS': ['query-test-key'],
+            'API_REQUIRE_KEY': True,
+            'API_ALLOW_QUERY_KEY': False,
+        })
+        secured_client = secured_app.test_client()
+
+        query_attempt = secured_client.get('/api/stats?api_key=query-test-key')
+        assert query_attempt.status_code == 401
+
+        header_attempt = secured_client.get('/api/stats', headers={'X-API-Key': 'query-test-key'})
+        assert header_attempt.status_code == 200
+
+    def test_api_query_key_can_be_enabled_explicitly(self, app):
+        """Query-string API keys remain available when explicitly enabled."""
+        secured_app = create_app({
+            'TESTING': True,
+            'DATABASE_PATH': app.config['DATABASE_PATH'],
+            'API_KEYS': ['query-enabled-key'],
+            'API_REQUIRE_KEY': True,
+            'API_ALLOW_QUERY_KEY': True,
+        })
+        secured_client = secured_app.test_client()
+
+        query_attempt = secured_client.get('/api/stats?api_key=query-enabled-key')
+        assert query_attempt.status_code == 200
 
     def test_api_rate_limit_enforced(self, app):
         """API limiter should return 429 after the configured request budget."""

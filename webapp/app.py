@@ -263,6 +263,7 @@ def create_app(config=None):
             "API_KEYS": list(app_config.API_KEYS),
             "API_REQUIRE_KEY": _as_bool(app_config.API_REQUIRE_KEY),
             "API_RATE_LIMIT_PER_MINUTE": int(app_config.API_RATE_LIMIT_PER_MINUTE),
+            "API_ALLOW_QUERY_KEY": _as_bool(app_config.API_ALLOW_QUERY_KEY),
             "SEARCH_MIN_QUERY_LENGTH": int(app_config.SEARCH_MIN_QUERY_LENGTH),
             "SEARCH_MAX_QUERY_LENGTH": int(app_config.SEARCH_MAX_QUERY_LENGTH),
             "SEARCH_QUERY_TIMEOUT_MS": int(app_config.SEARCH_QUERY_TIMEOUT_MS),
@@ -329,7 +330,10 @@ def create_app(config=None):
 
         configured_keys = app.config.get("API_KEYS") or []
         require_key = _as_bool(app.config.get("API_REQUIRE_KEY"))
-        api_key = (request.headers.get("X-API-Key") or request.args.get("api_key") or "").strip()
+        allow_query_key = _as_bool(app.config.get("API_ALLOW_QUERY_KEY"))
+        api_key = (request.headers.get("X-API-Key") or "").strip()
+        if not api_key and allow_query_key:
+            api_key = (request.args.get("api_key") or "").strip()
 
         if require_key:
             if not api_key:

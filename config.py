@@ -52,6 +52,7 @@ EXPERIMENTAL_VIZ_CACHE_TTL_SECONDS = int(os.environ.get('EXPERIMENTAL_VIZ_CACHE_
 API_KEYS = _env_list('API_KEYS')
 API_REQUIRE_KEY = _env_bool('API_REQUIRE_KEY', default=bool(API_KEYS))
 API_RATE_LIMIT_PER_MINUTE = int(os.environ.get('API_RATE_LIMIT_PER_MINUTE', 120))
+API_ALLOW_QUERY_KEY = _env_bool('API_ALLOW_QUERY_KEY', default=APP_ENV not in {'production', 'prod', 'staging'})
 
 # Search guardrails
 SEARCH_MIN_QUERY_LENGTH = int(os.environ.get('SEARCH_MIN_QUERY_LENGTH', 2))
