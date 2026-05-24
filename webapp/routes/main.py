@@ -11,27 +11,14 @@ import time
 from flask import Blueprint, Response, render_template, request, current_app
 
 from database.models import Committee, Report, Donor, Contribution
+from webapp.cache_backend import RouteCache
 
 main_bp = Blueprint('main', __name__)
 
-_dashboard_insights_cache = {
-    "value": None,
-    "expires_at": 0.0,
-    "key": None,
-}
-_dashboard_insights_cache_lock = threading.Lock()
-_candidate_stats_cache = {
-    "value": None,
-    "expires_at": 0.0,
-    "key": None,
-}
-_candidate_stats_cache_lock = threading.Lock()
-_top_donors_cache = {
-    "value": None,
-    "expires_at": 0.0,
-    "key": None,
-}
-_top_donors_cache_lock = threading.Lock()
+# Shared (Redis or in-process) route caches. See webapp/cache_backend.py.
+_dashboard_insights_cache = RouteCache("dashboard_insights")
+_candidate_stats_cache = RouteCache("candidate_stats")
+_top_donors_cache = RouteCache("top_donors")
 _search_results_cache: OrderedDict[str, dict] = OrderedDict()
 _search_results_cache_lock = threading.Lock()
 
@@ -413,20 +400,12 @@ def _get_dashboard_insights(conn, period=None) -> dict:
         return _call_build_dashboard_insights(conn, period=period)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180)))
-    now = time.monotonic()
-    with _dashboard_insights_cache_lock:
-        if (
-            _dashboard_insights_cache.get("value") is not None
-            and _dashboard_insights_cache.get("key") == cache_key
-            and float(_dashboard_insights_cache.get("expires_at", 0.0)) > now
-        ):
-            return _dashboard_insights_cache["value"]
+    cached = _dashboard_insights_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     insights = _call_build_dashboard_insights(conn, period=period)
-    with _dashboard_insights_cache_lock:
-        _dashboard_insights_cache["value"] = insights
-        _dashboard_insights_cache["expires_at"] = now + float(ttl_seconds)
-        _dashboard_insights_cache["key"] = cache_key
+    _dashboard_insights_cache.set(cache_key, insights, ttl_seconds)
     return insights
 
 
@@ -438,10 +417,7 @@ def warm_dashboard_insights_cache(database_path: str, ttl_seconds: int = 180) ->
     conn = get_db(database_path)
     try:
         insights = _call_build_dashboard_insights(conn)
-        with _dashboard_insights_cache_lock:
-            _dashboard_insights_cache["value"] = insights
-            _dashboard_insights_cache["expires_at"] = time.monotonic() + float(ttl_seconds)
-            _dashboard_insights_cache["key"] = "2026cycle"
+        _dashboard_insights_cache.set("2026cycle", insights, ttl_seconds)
     finally:
         conn.close()
 
@@ -477,19 +453,9 @@ def warm_dashboard_home_cache(
             ).fetchall()
         else:
             donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
-        now = time.monotonic()
-        with _dashboard_insights_cache_lock:
-            _dashboard_insights_cache["value"] = insights
-            _dashboard_insights_cache["expires_at"] = now + float(max(15, insights_ttl_seconds))
-            _dashboard_insights_cache["key"] = "2026cycle"
-        with _candidate_stats_cache_lock:
-            _candidate_stats_cache["value"] = stats
-            _candidate_stats_cache["expires_at"] = now + float(max(15, candidate_stats_ttl_seconds))
-            _candidate_stats_cache["key"] = "2026cycle"
-        with _top_donors_cache_lock:
-            _top_donors_cache["value"] = donors
-            _top_donors_cache["expires_at"] = now + float(max(15, top_donors_ttl_seconds))
-            _top_donors_cache["key"] = "2026cycle"
+        _dashboard_insights_cache.set("2026cycle", insights, max(15, insights_ttl_seconds))
+        _candidate_stats_cache.set("2026cycle", stats, max(15, candidate_stats_ttl_seconds))
+        _top_donors_cache.set("2026cycle", donors, max(15, top_donors_ttl_seconds))
     finally:
         conn.close()
 
@@ -808,20 +774,12 @@ def _get_candidate_stats_cached(conn, period=None):
         return _get_candidate_stats(conn, period=period)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180)))
-    now = time.monotonic()
-    with _candidate_stats_cache_lock:
-        if (
-            _candidate_stats_cache.get("value") is not None
-            and _candidate_stats_cache.get("key") == cache_key
-            and float(_candidate_stats_cache.get("expires_at", 0.0)) > now
-        ):
-            return _candidate_stats_cache["value"]
+    cached = _candidate_stats_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     value = _get_candidate_stats(conn, period=period)
-    with _candidate_stats_cache_lock:
-        _candidate_stats_cache["value"] = value
-        _candidate_stats_cache["expires_at"] = now + float(ttl_seconds)
-        _candidate_stats_cache["key"] = cache_key
+    _candidate_stats_cache.set(cache_key, value, ttl_seconds)
     return value
 
 
@@ -877,20 +835,12 @@ def _get_top_donors_cached(conn, period=None):
         return _query_top_donors()
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180)))
-    now = time.monotonic()
-    with _top_donors_cache_lock:
-        if (
-            _top_donors_cache.get("value") is not None
-            and _top_donors_cache.get("key") == cache_key
-            and float(_top_donors_cache.get("expires_at", 0.0)) > now
-        ):
-            return _top_donors_cache["value"]
+    cached = _top_donors_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     value = _query_top_donors()
-    with _top_donors_cache_lock:
-        _top_donors_cache["value"] = value
-        _top_donors_cache["expires_at"] = now + float(ttl_seconds)
-        _top_donors_cache["key"] = cache_key
+    _top_donors_cache.set(cache_key, value, ttl_seconds)
     return value
 
 

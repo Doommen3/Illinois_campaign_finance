@@ -3,13 +3,13 @@ import threading
 import time
 
 from flask import Blueprint, jsonify, render_template, request, current_app, abort
+from webapp.cache_backend import RouteCache
 from webapp.utils.search_normalize import normalize_search_query
 from webapp.utils.time_filter import get_active_period, period_cache_key, period_to_date_window
 
 irs527_bp = Blueprint('irs527', __name__)
 
-_dark_money_stats_cache = {"value": None, "expires_at": 0.0, "key": None}
-_dark_money_stats_cache_lock = threading.Lock()
+_dark_money_stats_cache = RouteCache("irs527_dark_money_stats")
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -96,13 +96,9 @@ def _get_dark_money_contribution_stats(
     cache_key = f"{period_key}:{date_from or ''}:{date_to or ''}"
 
     if cache_enabled:
-        with _dark_money_stats_cache_lock:
-            if (
-                _dark_money_stats_cache.get("value") is not None
-                and _dark_money_stats_cache.get("key") == cache_key
-                and float(_dark_money_stats_cache.get("expires_at", 0.0)) > now
-            ):
-                return _dark_money_stats_cache["value"]
+        cached = _dark_money_stats_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     contribution_stats = {"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []}
 
@@ -162,10 +158,7 @@ def _get_dark_money_contribution_stats(
             ).fetchall()
 
     if cache_enabled:
-        with _dark_money_stats_cache_lock:
-            _dark_money_stats_cache["value"] = contribution_stats
-            _dark_money_stats_cache["expires_at"] = now + float(ttl_seconds)
-            _dark_money_stats_cache["key"] = cache_key
+        _dark_money_stats_cache.set(cache_key, contribution_stats, ttl_seconds)
 
     return contribution_stats
 
