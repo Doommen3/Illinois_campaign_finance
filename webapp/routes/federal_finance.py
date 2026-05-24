@@ -1335,10 +1335,14 @@ def federal_committee_receipts(committee_id: str):
         date_from=date_from,
         date_to=date_to,
     )
-    if not detail:
-        return Response("federal committee receipts unavailable\n", mimetype='text/plain', status=404)
 
-    receipt_total = int(detail.get('total_receipts') or 0)
+    # Render the empty-state template (HTTP 200) when the committee has no
+    # synced Schedule A receipts for the requested cycle/window. Previously
+    # we 404'd, which was harsh — committees can validly exist in
+    # fec_candidate_committees without per-row receipts (sweep seed
+    # C00305920 was the canonical example). The template handles
+    # `detail is None` gracefully.
+    receipt_total = int(detail.get('total_receipts') or 0) if detail else 0
     receipt_pages = (receipt_total + receipt_per_page - 1) // receipt_per_page if receipt_total else 0
 
     return render_template(

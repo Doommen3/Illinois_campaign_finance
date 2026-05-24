@@ -151,3 +151,19 @@ def test_federal_subnav_does_not_propagate_excluded_params(tmp_path: Path):
     assert "follow_max_hops=" not in subnav_html
     assert "follow_min_edge_amount=" not in subnav_html
     assert "network_min_edge_amount=" not in subnav_html
+
+
+def test_federal_committee_receipts_empty_committee_renders_200(tmp_path: Path):
+    """Committee with no synced Schedule A receipts now renders the empty-state
+    template (HTTP 200) instead of returning a bare 404 plain-text. Triaged
+    from the 2026-05-24 sweep where C00305920 was flagged as a 404 because
+    it exists in fec_candidate_committees but had no per-row receipts."""
+    client = _make_client(str(tmp_path / "committee_empty.db"))
+
+    resp = client.get("/federal-finance/committees/C00305920/receipts?cycle=2026")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert b"Federal Committee Receipts" in resp.data
+    assert b"federal-subnav" in resp.data
+    # Template's empty-state branch fires when detail is None.
+    assert "No committee receipt data found." in body
