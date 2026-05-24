@@ -1055,6 +1055,7 @@ def warm_analytics_caches(
     networks_ttl: int = 1800,
     relationships_ttl: int = 1800,
     risk_ttl: int = 1800,
+    overview_ttl: int = 1800,
 ) -> None:
     """Pre-populate heavy analytics route caches in the current worker process.
 
@@ -1081,6 +1082,12 @@ def warm_analytics_caches(
     default_recon_min_abs_diff = 1000.0
     default_min_edge_amount = 1000.0
     default_network_limit = 200
+    default_concentration_limit = 25
+    default_months = 24
+    default_nlp_limit = 20
+    default_state_race_sort = "total_amount"
+    default_state_race_dir = "desc"
+    default_election_cycle = None  # request.args.get("election_cycle", type=int) → None by default
 
     # Default relationship params
     default_donor_limit = 200
@@ -1205,3 +1212,107 @@ def warm_analytics_caches(
         close_db(conn)
     except Exception:
         logger.exception("Analytics prewarm: relationships cache failed")
+
+    # --- Overview cache (dashboard route, /analytics/) ---
+    # Without this, the default landing-page hit pays the full live-compute
+    # cost (~30-40s cold) on every worker even when the lower-level networks /
+    # risk / relationships caches are already populated. The dashboard route
+    # consults _overview_cache *first*; lower-level caches aren't checked on
+    # the live-compute fallback path. So this is the cache that actually
+    # short-circuits the public landing-page request.
+    try:
+        conn = get_db(db_target)
+        network = get_network_graph(
+            conn,
+            min_edge_amount=default_min_edge_amount,
+            limit=default_network_limit,
+            date_from=default_date_from,
+            date_to=default_date_to,
+        )
+        anomalies = get_anomaly_flags(
+            conn, limit=default_anomaly_limit,
+            date_from=default_date_from, date_to=default_date_to,
+        )
+        concentration = get_donor_concentration(
+            conn, limit=default_concentration_limit,
+            date_from=default_date_from, date_to=default_date_to,
+        )
+        geo_summary = _empty_geo_summary()
+        time_series = get_time_series(
+            conn, months=default_months,
+            date_from=default_date_from, date_to=default_date_to,
+        )
+        nlp_summary = get_nlp_spending_summary(conn, limit=default_nlp_limit)
+        reconciliation = get_reconciliation_outliers(
+            conn, limit=default_recon_limit,
+            min_abs_diff=default_recon_min_abs_diff,
+        )
+
+        state_race_table_available = all(
+            _table_exists(conn, table_name)
+            for table_name in (
+                "bulk_candidate_committee_finance_agg",
+                "bulk_receipts_clean",
+                "bulk_expenditures_clean",
+            )
+        )
+        state_race_all_rows = get_state_race_analytics(
+            conn,
+            limit=5000,
+            date_from=default_date_from,
+            date_to=default_date_to,
+            election_cycle=default_election_cycle,
+            sort_by=default_state_race_sort,
+            sort_dir=default_state_race_dir,
+        )
+        state_race_analytics = state_race_all_rows[:12]
+        visible_has_nonzero_outside = any(
+            float(row.get("outside_spending_total") or 0.0) > 0.0
+            for row in state_race_analytics
+        )
+        hidden_has_nonzero_outside = any(
+            float(row.get("outside_spending_total") or 0.0) > 0.0
+            for row in state_race_all_rows[12:]
+        )
+        state_race_nonzero_below_visible = (
+            bool(state_race_analytics)
+            and (not visible_has_nonzero_outside)
+            and hidden_has_nonzero_outside
+        )
+
+        now = time.monotonic()
+        # MUST match the cache_key tuple constructed at lines ~427-440 of this
+        # module (dashboard() route). If you change one, change both.
+        cache_key = (
+            default_period_key,
+            default_date_from,
+            default_date_to,
+            default_min_edge_amount,
+            default_network_limit,
+            default_anomaly_limit,
+            default_concentration_limit,
+            default_months,
+            default_nlp_limit,
+            default_election_cycle,
+            default_state_race_sort,
+            default_state_race_dir,
+        )
+        with _overview_cache_lock:
+            _overview_cache["payload"] = {
+                "network": network,
+                "anomalies": anomalies,
+                "concentration": concentration,
+                "geo_summary": geo_summary,
+                "time_series": time_series,
+                "nlp_summary": nlp_summary,
+                "reconciliation": reconciliation,
+                "state_race_analytics": state_race_analytics,
+                "state_race_table_available": state_race_table_available,
+                "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
+            }
+            _overview_cache["key"] = cache_key
+            _overview_cache["expires_at"] = now + float(overview_ttl)
+        logger.info("Analytics prewarm: overview cache populated")
+        close_db(conn)
+    except Exception:
+        logger.exception("Analytics prewarm: overview cache failed")

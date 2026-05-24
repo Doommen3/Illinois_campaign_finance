@@ -472,6 +472,7 @@ def create_app(config=None):
                     networks_ttl=max(15, int(app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", 1800))),
                     relationships_ttl=max(15, int(app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 1800))),
                     risk_ttl=max(15, int(app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", 1800))),
+                    overview_ttl=max(15, int(app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 1800))),
                 )
             except Exception:
                 return
