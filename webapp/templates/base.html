@@ -37,6 +37,7 @@
                     <li><a href="{{ url_for('main.about', period=time_period.key) }}">About</a></li>
                     <li><a href="{{ url_for('main.index', period=time_period.key) }}">Overview</a></li>
                     <li><a href="{{ url_for('main.search', period=time_period.key) }}">Search</a></li>
+                    <li><a href="{{ url_for('main.compare', period=time_period.key) }}">Compare</a></li>
                     <li><a href="{{ url_for('main.candidates', period=time_period.key) }}">Candidates</a></li>
                     <li><a href="{{ url_for('committees.list_committees', period=time_period.key) }}">Committees</a></li>
                     <li><a href="{{ url_for('donors.list_donors', period=time_period.key) }}">Donors</a></li>
@@ -154,6 +155,9 @@
                 Disclaimer: This site is provided for informational purposes only. I am not liable for errors, omissions,
                 or decisions made based on this data. Data is sourced from the U.S. Federal Election Commission (FEC) and
                 the Illinois State Board of Elections (ISBE). All data should be independently cross-checked against official filings.
+            </p>
+            <p class="footer-links">
+                <a href="{{ url_for('main.legacy', period=time_period.key) }}">Legacy archive</a>
             </p>
         </div>
     </footer>
