@@ -300,6 +300,9 @@ def federal_overview():
     """Overview page with high-level federal race, donor, and geography summaries."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     overview = {
@@ -325,7 +328,9 @@ def federal_overview():
             'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
-            'version': 2,
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
+            'version': 3,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -345,6 +350,8 @@ def federal_overview():
                 office_code=analysis_office or None,
                 district_code=analysis_district or None,
                 limit=12,
+                date_from=date_from,
+                date_to=date_to,
             )
             overview['race_count'] = len(race_analytics)
 
@@ -356,6 +363,8 @@ def federal_overview():
                 limit_states=10,
                 limit_cities=12,
                 limit_races=10,
+                date_from=date_from,
+                date_to=date_to,
             )
 
             network_snapshot = get_federal_network_graph(
@@ -365,6 +374,8 @@ def federal_overview():
                 district_code=analysis_district or None,
                 min_edge_amount=100.0,
                 limit=500,
+                date_from=date_from,
+                date_to=date_to,
             )
             overview['network_total_amount'] = network_snapshot['summary'].get('total_amount', 0.0)
             overview['network_donor_count'] = network_snapshot['summary'].get('donor_count', 0)
@@ -404,7 +415,7 @@ def federal_overview():
 
     return render_template(
         'federal_finance/overview.html',
-        **_base_context('overview', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('overview', table_available, cycle, analysis_office, analysis_district, window=window),
         overview=overview,
         race_analytics=race_analytics,
         geographic=geographic,
@@ -416,9 +427,16 @@ def federal_overview():
 
 @federal_finance_bp.route('/candidates')
 def federal_candidates():
-    """Candidate table and drill-down entry points."""
+    """Candidate table and drill-down entry points.
+
+    Note: candidate totals are cycle-aggregated (joined to
+    `fec_candidate_cycle_totals`), so the global date window does not narrow
+    the row counts here. The chip still renders to make the active period
+    visible, but rows reflect the whole cycle.
+    """
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
     table_available = federal_data_available(conn)
 
     page = max(request.args.get('page', 1, type=int), 1)
@@ -465,7 +483,7 @@ def federal_candidates():
 
     return render_template(
         'federal_finance/candidates.html',
-        **_base_context('candidates', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('candidates', table_available, cycle, analysis_office, analysis_district, window=window),
         rows=rows,
         total=total,
         page=page,
@@ -484,6 +502,9 @@ def federal_networks():
     """Visual network analysis page (federal and local/federal overlap)."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
@@ -510,7 +531,9 @@ def federal_networks():
             'analysis_district': analysis_district or '',
             'network_min_edge_amount': round(network_min_edge_amount, 2),
             'network_limit': network_limit,
-            'version': 3,
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
+            'version': 4,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -530,6 +553,8 @@ def federal_networks():
                 district_code=analysis_district or None,
                 min_edge_amount=network_min_edge_amount,
                 limit=network_limit,
+                date_from=date_from,
+                date_to=date_to,
             )
             payload = {'federal_network': federal_network}
             if _federal_cache_enabled():
@@ -545,7 +570,7 @@ def federal_networks():
 
     return render_template(
         'federal_finance/networks.html',
-        **_base_context('networks', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('networks', table_available, cycle, analysis_office, analysis_district, window=window),
         network_min_edge_amount=network_min_edge_amount,
         network_limit=network_limit,
         federal_network=federal_network,
@@ -558,6 +583,9 @@ def federal_donor_intelligence():
     """Donor segmentation, clustering, influence, and multi-hop tracing."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     segmentation_method = request.args.get('segmentation_method', 'kmeans', type=str).strip().lower()
@@ -595,7 +623,9 @@ def federal_donor_intelligence():
             'segmentation_dbscan_min_samples': segmentation_dbscan_min_samples,
             'cluster_limit': cluster_limit,
             'network_min_edge_amount': round(min_edge_amount, 2),
-            'version': 2,
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
+            'version': 3,
         }
         if cache_allowed and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -618,6 +648,8 @@ def federal_donor_intelligence():
                 kmeans_k=segmentation_k,
                 dbscan_eps=segmentation_dbscan_eps,
                 dbscan_min_samples=segmentation_dbscan_min_samples,
+                date_from=date_from,
+                date_to=date_to,
             )
             donor_clusters = get_federal_donor_network_clusters(
                 conn,
@@ -626,6 +658,8 @@ def federal_donor_intelligence():
                 district_code=analysis_district or None,
                 min_edge_amount=min_edge_amount,
                 limit=cluster_limit,
+                date_from=date_from,
+                date_to=date_to,
             )
             if cache_allowed:
                 payload = {
@@ -645,7 +679,7 @@ def federal_donor_intelligence():
 
     return render_template(
         'federal_finance/donor_intelligence.html',
-        **_base_context('donor_intelligence', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('donor_intelligence', table_available, cycle, analysis_office, analysis_district, window=window),
         segmentation_method=segmentation_method,
         segmentation_donor_limit=segmentation_donor_limit,
         segmentation_k=segmentation_k,
@@ -664,6 +698,9 @@ def federal_money_flow():
     """Multi-layer money flow network (A/B/E) and cross-role organizations."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     network_min_edge_amount = max(request.args.get('network_min_edge_amount', 250.0, type=float), 0.0)
@@ -693,17 +730,21 @@ def federal_money_flow():
             district_code=analysis_district or None,
             min_edge_amount=network_min_edge_amount,
             limit=network_limit,
+            date_from=date_from,
+            date_to=date_to,
         )
         cross_role_orgs = get_federal_cross_role_organizations(
             conn, cycle=cycle_filter,
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             limit=60, min_total_amount=network_min_edge_amount,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     return render_template(
         'federal_finance/money_flow.html',
-        **_base_context('money_flow', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('money_flow', table_available, cycle, analysis_office, analysis_district, window=window),
         network_min_edge_amount=network_min_edge_amount,
         network_limit=network_limit,
         multilayer_network=multilayer_network,
@@ -716,6 +757,9 @@ def federal_influence():
     """Influence scores for donors and candidates."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     min_edge_amount = max(request.args.get('network_min_edge_amount', 100.0, type=float), 0.0)
@@ -730,11 +774,13 @@ def federal_influence():
             district_code=analysis_district or None,
             min_edge_amount=min_edge_amount,
             limit=cluster_limit,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     return render_template(
         'federal_finance/influence.html',
-        **_base_context('influence', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('influence', table_available, cycle, analysis_office, analysis_district, window=window),
         network_min_edge_amount=min_edge_amount,
         cluster_limit=cluster_limit,
         influence=influence,
@@ -770,6 +816,8 @@ def federal_follow_the_money():
             district_code=analysis_district or None,
             max_hops=follow_max_hops,
             min_edge_amount=follow_min_edge_amount,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     top_donors = []
@@ -794,6 +842,9 @@ def federal_geography():
     """Geographic concentration analysis for federal contributions."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     geographic = {'states': [], 'cities': [], 'race_concentration': []}
@@ -804,11 +855,13 @@ def federal_geography():
             office_code=analysis_office or None,
             district_code=analysis_district or None,
             limit_states=20, limit_cities=25, limit_races=15,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     return render_template(
         'federal_finance/geography.html',
-        **_base_context('geography', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('geography', table_available, cycle, analysis_office, analysis_district, window=window),
         geographic=geographic,
     )
 
@@ -818,6 +871,9 @@ def federal_geo_drilldown():
     """Render donor->candidate detail rows behind geographic aggregates."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     geo_type = (request.args.get('geo_type', 'state', type=str) or 'state').strip().lower()
@@ -859,7 +915,7 @@ def federal_geo_drilldown():
         cache_enabled = bool(current_app.config.get('ROUTE_PERF_CACHE_ENABLED', not current_app.config.get('TESTING', False)))
         cache_ttl = max(15, int(current_app.config.get('FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 180)))
         cache_params = {
-            'version': 1,
+            'version': 2,
             'range': range_key,
             'period': period.get('key'),
             'cycle': cycle_filter,
@@ -872,6 +928,8 @@ def federal_geo_drilldown():
             'per_page': per_page,
             'sort': sort_by,
             'dir': sort_dir,
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
         }
         cache_key = json.dumps(cache_params, sort_keys=True, separators=(',', ':'))
 
@@ -891,6 +949,8 @@ def federal_geo_drilldown():
                 per_page=per_page,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
+                date_from=date_from,
+                date_to=date_to,
             )
             if cache_enabled:
                 _store_cached_federal_geo_drilldown(cache_key, drilldown, cache_ttl)
@@ -914,7 +974,7 @@ def federal_geo_drilldown():
 
     return render_template(
         'federal_finance/geo_drilldown.html',
-        **_base_context('geography', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('geography', table_available, cycle, analysis_office, analysis_district, window=window),
         drilldown=drilldown,
         source_page=source_page,
         range_key=range_key,
@@ -927,6 +987,9 @@ def federal_matching():
     """Federal/local donor matching diagnostics and confidence review."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     local_match_limit = min(max(request.args.get('local_match_limit', 100000, type=int), 1000), 500000)
@@ -962,7 +1025,9 @@ def federal_matching():
             'match_limit': match_limit,
             'overlap_edge_limit': overlap_edge_limit,
             'network_min_edge_amount': round(min_edge_amount, 2),
-            'version': 1,
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
+            'version': 2,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -983,6 +1048,8 @@ def federal_matching():
                 federal_donor_limit=5000,
                 local_donor_limit=local_match_limit,
                 match_limit=match_limit,
+                date_from=date_from,
+                date_to=date_to,
             )
             overlap_network = get_federal_local_overlap_network(
                 conn,
@@ -993,6 +1060,8 @@ def federal_matching():
                 edge_limit=overlap_edge_limit,
                 federal_donor_limit=5000,
                 local_donor_limit=local_match_limit,
+                date_from=date_from,
+                date_to=date_to,
             )
             overlap_summary = overlap_network.get('summary', overlap_summary)
             if _federal_cache_enabled():
@@ -1012,7 +1081,7 @@ def federal_matching():
 
     return render_template(
         'federal_finance/matching.html',
-        **_base_context('matching', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('matching', table_available, cycle, analysis_office, analysis_district, window=window),
         local_match_limit=local_match_limit,
         match_limit=match_limit,
         overlap_edge_limit=overlap_edge_limit,
@@ -1028,6 +1097,9 @@ def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key
     """Show a combined profile view for one matched federal/local donor pair."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     local_source = request.args.get('local_source', 'bulk_receipts', type=str).strip() or 'bulk_receipts'
@@ -1066,6 +1138,8 @@ def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key
             cycle=cycle_filter,
             contribution_limit=federal_per_page,
             contribution_offset=federal_offset,
+            date_from=date_from,
+            date_to=date_to,
         )
 
         local_rows = []
@@ -1132,7 +1206,7 @@ def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key
 
     return render_template(
         'federal_finance/match_profile.html',
-        **_base_context('matching', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('matching', table_available, cycle, analysis_office, analysis_district, window=window),
         federal_donor_entity_key=federal_donor_entity_key,
         local_donor_key=local_donor_key,
         local_donor_keys=local_donor_keys,
@@ -1157,6 +1231,9 @@ def federal_donor_detail(donor_entity_key: str):
     conn = current_app.get_database()
 
     cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
     contribution_per_page = 100
     contribution_offset = (contribution_page - 1) * contribution_per_page
@@ -1167,6 +1244,8 @@ def federal_donor_detail(donor_entity_key: str):
         cycle=cycle_filter,
         contribution_limit=contribution_per_page,
         contribution_offset=contribution_offset,
+        date_from=date_from,
+        date_to=date_to,
     )
     contribution_total = detail['total_contributions'] if detail else 0
     contribution_pages = (contribution_total + contribution_per_page - 1) // contribution_per_page if detail else 0
@@ -1179,6 +1258,12 @@ def federal_donor_detail(donor_entity_key: str):
         contribution_page=contribution_page,
         contribution_total=contribution_total,
         contribution_pages=contribution_pages,
+        date_from=window['date_from'],
+        date_to=window['date_to'],
+        time_period_key=window['time_period_key'],
+        explicit_date_from=window['explicit_date_from'],
+        explicit_date_to=window['explicit_date_to'],
+        active_filter_overrides=window['active_filter_overrides'],
     )
 
 
@@ -1187,6 +1272,9 @@ def federal_committee_receipts(committee_id: str):
     """Show one federal committee's Schedule A receipt rows."""
     conn = current_app.get_database()
     cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     receipt_page = max(request.args.get('receipt_page', 1, type=int), 1)
     receipt_per_page = 100
     receipt_offset = (receipt_page - 1) * receipt_per_page
@@ -1205,6 +1293,8 @@ def federal_committee_receipts(committee_id: str):
         receipt_offset=receipt_offset,
         receipt_sort=receipt_sort,
         receipt_dir=receipt_dir,
+        date_from=date_from,
+        date_to=date_to,
     )
     if not detail:
         return Response("federal committee receipts unavailable\n", mimetype='text/plain', status=404)
@@ -1225,6 +1315,12 @@ def federal_committee_receipts(committee_id: str):
         receipt_pages=receipt_pages,
         receipt_sort=receipt_sort,
         receipt_dir=receipt_dir,
+        date_from=window['date_from'],
+        date_to=window['date_to'],
+        time_period_key=window['time_period_key'],
+        explicit_date_from=window['explicit_date_from'],
+        explicit_date_to=window['explicit_date_to'],
+        active_filter_overrides=window['active_filter_overrides'],
     )
 
 
@@ -1233,6 +1329,9 @@ def federal_race_outside_spending(office_code: str, district_code: str):
     """Race-level Schedule E independent expenditure drilldown."""
     conn = current_app.get_database()
     cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     race_cycle = cycle_filter if cycle_filter is not None else cycle
     output_format = request.args.get('format', 'html', type=str).strip().lower()
 
@@ -1263,6 +1362,8 @@ def federal_race_outside_spending(office_code: str, district_code: str):
         dir=sort_dir,
         support_oppose=support_oppose,
         search=query,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     race = detail.get('race', {})
@@ -1339,6 +1440,12 @@ def federal_race_outside_spending(office_code: str, district_code: str):
         dir=sort_dir,
         support_oppose=support_oppose,
         q=query,
+        date_from=window['date_from'],
+        date_to=window['date_to'],
+        time_period_key=window['time_period_key'],
+        explicit_date_from=window['explicit_date_from'],
+        explicit_date_to=window['explicit_date_to'],
+        active_filter_overrides=window['active_filter_overrides'],
     )
 
 
@@ -1348,6 +1455,9 @@ def federal_candidate_detail(candidate_id: str):
     conn = current_app.get_database()
 
     cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     output_format = request.args.get('format', 'html', type=str).strip().lower()
     export_table = request.args.get('table', '', type=str).strip().lower()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
@@ -1387,6 +1497,8 @@ def federal_candidate_detail(candidate_id: str):
         schedule_b_dir=schedule_b_dir,
         schedule_e_sort=schedule_e_sort,
         schedule_e_dir=schedule_e_dir,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     contribution_total = detail['total_contributions'] if detail else 0
@@ -1416,6 +1528,8 @@ def federal_candidate_detail(candidate_id: str):
                 schedule_b_dir=schedule_b_dir,
                 schedule_e_sort=schedule_e_sort,
                 schedule_e_dir=schedule_e_dir,
+                date_from=date_from,
+                date_to=date_to,
             )["schedule_b_disbursements"]
             csv_rows = [
                 [
@@ -1489,6 +1603,8 @@ def federal_candidate_detail(candidate_id: str):
                 schedule_b_dir=schedule_b_dir,
                 schedule_e_sort=schedule_e_sort,
                 schedule_e_dir=schedule_e_dir,
+                date_from=date_from,
+                date_to=date_to,
             )["schedule_e_independent_expenditures"]
             csv_rows = [
                 [
@@ -1570,4 +1686,10 @@ def federal_candidate_detail(candidate_id: str):
         schedule_e_pages=schedule_e_pages,
         schedule_e_sort=schedule_e_sort,
         schedule_e_dir=schedule_e_dir,
+        date_from=window['date_from'],
+        date_to=window['date_to'],
+        time_period_key=window['time_period_key'],
+        explicit_date_from=window['explicit_date_from'],
+        explicit_date_to=window['explicit_date_to'],
+        active_filter_overrides=window['active_filter_overrides'],
     )
