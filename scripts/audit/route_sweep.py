@@ -17,6 +17,7 @@ otherwise the route is skipped with a note.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -67,6 +68,8 @@ class RouteResult:
     empty_markers: list[str] = field(default_factory=list)
     error_markers: list[str] = field(default_factory=list)
     note: str = ""
+    body_hash: str = ""
+    body_truncated: bool = False
 
     def category(self) -> str:
         if self.note == "skipped":
@@ -316,8 +319,20 @@ def expand_route(rule: str, seeds: dict[str, list[str]]) -> list[str]:
     return []
 
 
-def make_request(url: str) -> tuple[int | None, float, bytes, str]:
-    """GET the URL. Returns (status_code, elapsed_seconds, body_bytes, note)."""
+BODY_CAP_BYTES = 8 * 1024 * 1024  # 8MB cap (memory safety on huge responses)
+BODY_HASH_CAP_BYTES = 16 * 1024 * 1024  # 16MB cap for hash streaming
+ERROR_BODY_CAP_BYTES = 50_000
+
+
+def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool]:
+    """GET the URL.
+
+    Returns (status_code, elapsed_seconds, body_bytes, note, body_hash,
+    body_truncated). `body_bytes` is capped at 8MB for marker scanning;
+    `body_hash` is a SHA-256 of up to 16MB streamed in chunks so the
+    no-op detector can compare full content even when 200KB+ pages
+    would otherwise look identical post-truncation.
+    """
     ctx = ssl.create_default_context()
     req = urlrequest.Request(url, method="GET", headers={
         "User-Agent": "ilcf-route-sweep/1.0",
@@ -326,19 +341,35 @@ def make_request(url: str) -> tuple[int | None, float, bytes, str]:
     start = time.monotonic()
     try:
         with urlrequest.urlopen(req, timeout=30, context=ctx) as resp:
-            body = resp.read(200_000)  # cap at 200KB
+            hasher = hashlib.sha256()
+            collected = bytearray()
+            total = 0
+            truncated = False
+            while total < BODY_HASH_CAP_BYTES:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                if len(collected) < BODY_CAP_BYTES:
+                    space = BODY_CAP_BYTES - len(collected)
+                    collected.extend(chunk[:space])
+                total += len(chunk)
+            else:
+                truncated = resp.read(1) != b""
             elapsed = time.monotonic() - start
-            return resp.status, elapsed, body, ""
+            return (resp.status, elapsed, bytes(collected), "",
+                    hasher.hexdigest(), truncated)
     except urlerror.HTTPError as e:
         elapsed = time.monotonic() - start
         try:
-            body = e.read(50_000)
+            body = e.read(ERROR_BODY_CAP_BYTES)
         except Exception:
             body = b""
-        return e.code, elapsed, body, ""
+        return (e.code, elapsed, body, "",
+                hashlib.sha256(body).hexdigest() if body else "", False)
     except (urlerror.URLError, TimeoutError, OSError) as e:
         elapsed = time.monotonic() - start
-        return None, elapsed, b"", f"net-error: {e}"
+        return None, elapsed, b"", f"net-error: {e}", "", False
 
 
 def scan_markers(body: bytes) -> tuple[list[str], list[str]]:
@@ -392,13 +423,14 @@ def sweep(host: str, routes: list[tuple[str, str]], seeds: dict[str, list[str]],
         }
         for fut in as_completed(future_map):
             rule, endpoint, full, period = future_map[fut]
-            status, elapsed, body, note = fut.result()
+            status, elapsed, body, note, body_hash, body_truncated = fut.result()
             empty, errors = scan_markers(body) if body else ([], [])
             results.append(RouteResult(
                 rule=rule, endpoint=endpoint, url=full, status=status,
                 elapsed_ms=round(elapsed * 1000.0, 1),
                 payload_bytes=len(body), period=period,
                 empty_markers=empty, error_markers=errors, note=note,
+                body_hash=body_hash, body_truncated=body_truncated,
             ))
 
     results.extend(skipped)
@@ -470,11 +502,14 @@ def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -
             )
         lines.append("")
 
-    # Detect "claims to filter but doesn't" — routes where 2026cycle and all return same byte size
+    # Detect "claims to filter but doesn't" — routes whose full-body SHA-256
+    # hash is identical across ?period=2026cycle and ?period=all. Compares
+    # hashes rather than payload bytes so big pages (>200KB) don't false-
+    # positive when both responses get truncated to the same size.
     if len(periods) >= 2:
         lines.append("## Period-filter no-op detector")
         lines.append("")
-        lines.append("Routes where the payload size is identical across `?period=2026cycle` and `?period=all`")
+        lines.append("Routes whose SHA-256 body hash is identical across `?period=2026cycle` and `?period=all`")
         lines.append("(suggests the route does not actually filter by period):")
         lines.append("")
         by_url_no_period: dict[str, dict[str, RouteResult]] = {}
@@ -487,15 +522,15 @@ def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -
         for base, p_map in by_url_no_period.items():
             if "2026cycle" in p_map and "all" in p_map:
                 a, b = p_map["2026cycle"], p_map["all"]
-                if a.payload_bytes == b.payload_bytes and a.payload_bytes > 0:
-                    no_op.append((base, a.payload_bytes))
+                if a.body_hash and b.body_hash and a.body_hash == b.body_hash and a.payload_bytes > 0:
+                    no_op.append((base, a.payload_bytes, a.body_truncated or b.body_truncated))
         if not no_op:
             lines.append("_None detected._")
         else:
-            lines.append("| URL | Bytes |")
-            lines.append("|---|---:|")
-            for base, size in sorted(no_op):
-                lines.append(f"| `{base.replace(host, '')}` | {size} |")
+            lines.append("| URL | Bytes | Truncated |")
+            lines.append("|---|---:|:---:|")
+            for base, size, was_truncated in sorted(no_op):
+                lines.append(f"| `{base.replace(host, '')}` | {size} | {'⚠' if was_truncated else '—'} |")
         lines.append("")
 
     return "\n".join(lines) + "\n"
