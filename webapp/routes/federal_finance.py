@@ -10,7 +10,13 @@ import time
 from flask import Blueprint, Response, current_app, render_template, request, url_for
 
 from database.models import Donor
-from webapp.utils.time_filter import get_active_period, period_cycle
+from webapp.utils.time_filter import (
+    build_filter_overrides,
+    get_active_period,
+    period_cycle,
+    period_cycles,
+    period_window_with_override,
+)
 from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
@@ -60,14 +66,63 @@ def _parse_shared_filters() -> tuple[int | None, int, str, str]:
     return cycle_filter, cycle_for_ui, analysis_office, analysis_district
 
 
-def _base_context(active_page: str, table_available: bool, cycle: int, analysis_office: str, analysis_district: str) -> dict:
+def _parse_federal_window() -> dict:
+    """Resolve the global period into a federal-side date window + chip context.
+
+    Companion to `_parse_shared_filters()` (which handles cycle + analysis).
+    Routes that want to honor the global date filter call this and forward
+    `date_from` / `date_to` to FEC query functions. Templates receive
+    `active_filter_overrides` and render the active-filter chip.
+
+    `period_cycles` is included for callsites that need to broaden / narrow
+    the cycle filter when the window spans multiple cycles (e.g. "Past 2
+    Years" overlaps both 2024 and 2026 cycles).
+    """
+    period = get_active_period()
+    explicit_date_from = (request.args.get('date_from', '', type=str) or '').strip()
+    explicit_date_to = (request.args.get('date_to', '', type=str) or '').strip()
+    window = period_window_with_override(period, explicit_date_from, explicit_date_to)
     return {
+        'date_from': window['start'] or '',
+        'date_to': window['end'] or '',
+        'is_override': window['is_override'],
+        'time_period_key': period['key'],
+        'explicit_date_from': explicit_date_from,
+        'explicit_date_to': explicit_date_to,
+        'period_cycles': period_cycles(period),
+        'active_filter_overrides': build_filter_overrides(
+            date_from=explicit_date_from,
+            date_to=explicit_date_to,
+        ),
+    }
+
+
+def _base_context(
+    active_page: str,
+    table_available: bool,
+    cycle: int,
+    analysis_office: str,
+    analysis_district: str,
+    *,
+    window: dict | None = None,
+) -> dict:
+    ctx = {
         'active_page': active_page,
         'table_available': table_available,
         'cycle': cycle,
         'analysis_office': analysis_office,
         'analysis_district': analysis_district,
     }
+    if window:
+        ctx.update({
+            'date_from': window['date_from'],
+            'date_to': window['date_to'],
+            'time_period_key': window['time_period_key'],
+            'explicit_date_from': window['explicit_date_from'],
+            'explicit_date_to': window['explicit_date_to'],
+            'active_filter_overrides': window['active_filter_overrides'],
+        })
+    return ctx
 
 
 def _federal_cache_enabled() -> bool:
@@ -691,6 +746,9 @@ def federal_follow_the_money():
     """Multi-hop donor path tracing."""
     conn = current_app.get_database()
     cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
+    window = _parse_federal_window()
+    date_from = window['date_from'] or None
+    date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
 
     follow_donor_key = request.args.get('follow_donor_key', '', type=str).strip()
@@ -716,11 +774,13 @@ def federal_follow_the_money():
 
     top_donors = []
     if table_available:
-        top_donors = get_top_donor_entities(conn, cycle=cycle_filter, limit=200)
+        top_donors = get_top_donor_entities(
+            conn, cycle=cycle_filter, limit=200, date_from=date_from, date_to=date_to,
+        )
 
     return render_template(
         'federal_finance/follow_the_money.html',
-        **_base_context('follow_the_money', table_available, cycle, analysis_office, analysis_district),
+        **_base_context('follow_the_money', table_available, cycle, analysis_office, analysis_district, window=window),
         follow_donor_key=follow_donor_key,
         follow_max_hops=follow_max_hops,
         follow_min_edge_amount=follow_min_edge_amount,

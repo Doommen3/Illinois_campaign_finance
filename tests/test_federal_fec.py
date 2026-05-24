@@ -27,6 +27,7 @@ from database.federal_fec import (
     get_federal_local_overlap_network,
     get_federal_network_graph,
     get_federal_race_analytics,
+    get_top_donor_entities,
     list_federal_candidates,
     refresh_fec_transfer_source_committees,
     refresh_fec_local_donor_matches,
@@ -2490,5 +2491,79 @@ def test_federal_advanced_analytics(tmp_path: Path):
     assert overlap_candidates
     assert any(node["race_label"] == "U.S. House - IL-01" for node in overlap_candidates)
     assert any(node["party_display"] in {"Democratic", "Republican"} for node in overlap_candidates)
+
+    conn.close()
+
+
+def test_get_top_donor_entities_respects_date_window(tmp_path: Path):
+    """P2-1 pattern test: date_from/date_to filter Schedule A rows by contribution_receipt_date."""
+    db_path = str(tmp_path / "top_donor_date_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    rows = [
+        # In-window: 2026-03-15
+        ("sub-in-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "In-Window Donor", "Chicago", "IL", "60601",
+         None, None, None, 1,
+         "11AI", "IND", "Individual", "",
+         500.0, "2026-03-15", 2026,
+         "donor-in-1", "donor-in-1-entity", "name_state_zip",
+         "2026-03-16", "img-in-1", "src-in-1"),
+        # Out-of-window: 2025-06-01 (before window start)
+        ("sub-out-pre", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "Pre-Window Donor", "Chicago", "IL", "60601",
+         None, None, None, 1,
+         "11AI", "IND", "Individual", "",
+         9000.0, "2025-06-01", 2026,
+         "donor-out-pre", "donor-out-pre-entity", "name_state_zip",
+         "2025-06-02", "img-out-pre", "src-out-pre"),
+        # Out-of-window: 2026-12-31 (after window end)
+        ("sub-out-post", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "Post-Window Donor", "Chicago", "IL", "60601",
+         None, None, None, 1,
+         "11AI", "IND", "Individual", "",
+         7000.0, "2026-12-31", 2026,
+         "donor-out-post", "donor-out-post-entity", "name_state_zip",
+         "2027-01-02", "img-out-post", "src-out-post"),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+    # Legacy cycle-only path returns all three rows.
+    legacy = get_top_donor_entities(conn, cycle=2026, limit=100)
+    legacy_names = {row["donor_name"] for row in legacy}
+    assert legacy_names == {"In-Window Donor", "Pre-Window Donor", "Post-Window Donor"}
+
+    # Date-bounded path excludes pre + post.
+    windowed = get_top_donor_entities(
+        conn,
+        cycle=2026,
+        limit=100,
+        date_from="2026-01-01",
+        date_to="2026-06-30",
+    )
+    windowed_names = {row["donor_name"] for row in windowed}
+    assert windowed_names == {"In-Window Donor"}
+
+    # date_from alone (open-ended right side).
+    from_only = get_top_donor_entities(conn, cycle=2026, limit=100, date_from="2026-01-01")
+    assert {row["donor_name"] for row in from_only} == {"In-Window Donor", "Post-Window Donor"}
+
+    # date_to alone.
+    to_only = get_top_donor_entities(conn, cycle=2026, limit=100, date_to="2026-06-30")
+    assert {row["donor_name"] for row in to_only} == {"Pre-Window Donor", "In-Window Donor"}
 
     conn.close()

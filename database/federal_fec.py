@@ -7854,15 +7854,30 @@ def get_top_donor_entities(
     conn: sqlite3.Connection,
     cycle: int | None = None,
     limit: int = 200,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
-    """Return top donor entities by total contributions for use in dropdowns."""
+    """Return top donor entities by total contributions for use in dropdowns.
+
+    `date_from` / `date_to` filter on `contribution_receipt_date` and are
+    optional. When both are None, behavior matches the legacy cycle-only path.
+    """
     if not _table_exists(conn, "fec_schedule_a_contributions"):
         return []
-    cycle_filter = ""
+    where_parts = [
+        "sa.candidate_id IS NOT NULL",
+        "COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) IS NOT NULL",
+    ]
     params: list[Any] = []
     if cycle is not None:
-        cycle_filter = "AND sa.cycle = ?"
+        where_parts.append("sa.cycle = ?")
         params.append(int(cycle))
+    if date_from:
+        where_parts.append("sa.contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("sa.contribution_receipt_date <= ?")
+        params.append(date_to)
     params.append(min(max(int(limit), 50), 1000))
     rows = conn.execute(
         f"""
@@ -7873,9 +7888,7 @@ def get_top_donor_entities(
             SUM(COALESCE(sa.contribution_receipt_amount, 0)) AS total_amount,
             COUNT(*) AS contribution_count
         FROM fec_schedule_a_contributions sa
-        WHERE sa.candidate_id IS NOT NULL
-          AND COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) IS NOT NULL
-          {cycle_filter}
+        WHERE {' AND '.join(where_parts)}
         GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id)
         HAVING SUM(COALESCE(sa.contribution_receipt_amount, 0)) > 0
         ORDER BY total_amount DESC
