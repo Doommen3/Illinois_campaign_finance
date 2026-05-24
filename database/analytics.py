@@ -2509,7 +2509,17 @@ def _build_state_race_analytics_rows(
     date_to: str | None = None,
     election_cycle: int | None = None,
     include_supporting_rows: bool = False,
+    race_filter: tuple[str, str, str] | None = None,
 ) -> list[dict]:
+    """Build state-race analytics row(s).
+
+    When `race_filter` is set (office_sought, district_type, district), the
+    candidate aggregation is constrained at the SQL layer to that single
+    race. The downstream receipt / expenditure / donor scans then only
+    touch committees that actually belong to that race — turning the cold
+    path for `/analytics/state-races/<race_key>` from a ~38s full-cycle
+    rebuild into a sub-second targeted lookup.
+    """
     required_tables = {
         "bulk_candidate_committee_finance_agg",
         "bulk_receipts_clean",
@@ -2539,6 +2549,16 @@ def _build_state_race_analytics_rows(
     if has_cycle and resolved_cycle is not None:
         where_parts.append("CAST(election_cycle AS TEXT) = CAST(? AS TEXT)")
         where_params.append(int(resolved_cycle))
+    if race_filter is not None:
+        # COALESCE matches the Python-side default ("Unknown Office" / etc.)
+        # so a race whose underlying row has NULL office still resolves.
+        race_office, race_district_type, race_district = race_filter
+        where_parts.append(
+            "TRIM(COALESCE(office_sought, '')) = ? "
+            "AND TRIM(COALESCE(district_type, '')) = ? "
+            "AND TRIM(COALESCE(district, '')) = ?"
+        )
+        where_params.extend([race_office, race_district_type, race_district])
     candidate_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     candidate_rows = conn.execute(
@@ -2660,6 +2680,17 @@ def _build_state_race_analytics_rows(
     if receipts_date_column_exists and date_to:
         receipt_where_parts.append("r.received_date <= ?")
         receipt_params.append(date_to)
+    # When narrowed to a race with a small committee set, push an IN-filter
+    # into the receipts scan so we don't read millions of unrelated rows.
+    # Skip the IN-filter once the committee count gets large (e.g. Judge -
+    # Circuit Court Cook with ~58 sub-races) — at that scale the IN-list
+    # picks a worse plan than the full-cycle scan.
+    if race_filter is not None and committee_to_races:
+        race_committee_ids = sorted({cid for cid in committee_to_races.keys() if cid})
+        if 0 < len(race_committee_ids) <= 15:
+            placeholders = ",".join(["?"] * len(race_committee_ids))
+            receipt_where_parts.append(f"CAST(r.committee_id_sbe AS TEXT) IN ({placeholders})")
+            receipt_params.extend(race_committee_ids)
 
     receipt_rows = conn.execute(
         f"""
@@ -2737,6 +2768,17 @@ def _build_state_race_analytics_rows(
         if expended_date_exists and date_to:
             exp_where_parts.append("e.expended_date <= ?")
             exp_params.append(date_to)
+        # Same threshold idea as the receipts scan above — once the race
+        # spans many candidates, a large IN-list of names underperforms
+        # the full-cycle scan.
+        if race_filter is not None and candidate_name_to_races:
+            race_candidate_names = sorted({n for n in candidate_name_to_races.keys() if n})
+            if 0 < len(race_candidate_names) <= 15:
+                placeholders = ",".join(["?"] * len(race_candidate_names))
+                exp_where_parts.append(
+                    f"UPPER(TRIM(COALESCE(e.candidate_name, ''))) IN ({placeholders})"
+                )
+                exp_params.extend(race_candidate_names)
 
         outside_rows = conn.execute(
             f"""
@@ -2907,9 +2949,25 @@ def get_state_race_detail(
     date_to: str | None = None,
     election_cycle: int | None = None,
 ) -> dict | None:
-    """Return detail payload for one race key, or None if missing."""
+    """Return detail payload for one race key, or None if missing.
+
+    Two-pass lookup: (1) cheap DISTINCT query enumerates every
+    (office_sought, district_type, district) tuple in the requested
+    cycle and matches the slug back to a race; (2) the full builder
+    runs with `race_filter` set so downstream scans only touch the
+    one race's committees. Avoids the cold-path full-cycle rebuild
+    (~38s) the original Python-side linear scan triggered.
+    """
     normalized_race_key = (race_key or "").strip()
     if not normalized_race_key:
+        return None
+
+    race_filter = _resolve_state_race_filter(
+        conn,
+        race_key=normalized_race_key,
+        election_cycle=election_cycle,
+    )
+    if race_filter is None:
         return None
 
     rows = _build_state_race_analytics_rows(
@@ -2918,10 +2976,56 @@ def get_state_race_detail(
         date_to=date_to,
         election_cycle=election_cycle,
         include_supporting_rows=True,
+        race_filter=race_filter,
     )
     for row in rows:
         if (row.get("race_key") or "").strip() == normalized_race_key:
             return row
+    return None
+
+
+def _resolve_state_race_filter(
+    conn: sqlite3.Connection,
+    *,
+    race_key: str,
+    election_cycle: int | None,
+) -> tuple[str, str, str] | None:
+    """Map a race slug back to (office_sought, district_type, district).
+
+    Cheap DISTINCT scan over the candidate-committee aggregate to recover
+    the canonical race tuple. Returns None when no race matches the slug
+    (typo'd URL, stale bookmark from a previous cycle, etc.).
+    """
+    if not _table_exists(conn, "bulk_candidate_committee_finance_agg"):
+        return None
+    has_cycle = _column_exists(conn, "bulk_candidate_committee_finance_agg", "election_cycle")
+
+    where_parts: list[str] = []
+    where_params: list[object] = []
+    if has_cycle and election_cycle is not None:
+        where_parts.append("CAST(election_cycle AS TEXT) = CAST(? AS TEXT)")
+        where_params.append(int(election_cycle))
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+    distinct_rows = conn.execute(
+        f"""
+        SELECT DISTINCT
+            TRIM(COALESCE(office_sought, '')) AS office_sought,
+            TRIM(COALESCE(district_type, '')) AS district_type,
+            TRIM(COALESCE(district, '')) AS district
+        FROM bulk_candidate_committee_finance_agg
+        {where_sql}
+        """,
+        where_params,
+    ).fetchall()
+
+    for row in distinct_rows:
+        office = row["office_sought"] or "Unknown Office"
+        district_type = row["district_type"] or "Unknown District Type"
+        district = row["district"] or ""
+        candidate_slug = _state_race_slug(office, district_type, district)
+        if candidate_slug == race_key:
+            return (office, district_type, district)
     return None
 
 
