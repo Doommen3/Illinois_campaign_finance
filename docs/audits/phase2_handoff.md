@@ -5,8 +5,8 @@
 Multi-session forensic audit + redesign of `https://followthemoneyil.com`.
 Phase 1 (broken-data sweep + filter-coherence fixes) is **complete and
 deployed**. Phase 2 (filter & navigation coherence) is **in progress** —
-the P2-1 product decision is made, the foundation is shipped, and the bulk
-roll-out is the next session's work.
+P2-1 (Option A date-window rollout) is now complete; the remaining
+P2-2…P2-5 sub-tasks are the next session's work.
 
 The work is structured in **three sequential phases:**
 
@@ -89,95 +89,106 @@ Tagged commit: `948c128` — phase2 P2-1: foundation for date-windowed FEC queri
 - `/federal-finance/follow-the-money` returns 200 in ~1.9s with the chip rendering.
 - `?date_from=2026-01-01&date_to=2026-06-30` is honored end-to-end.
 
+### Phase 2 session 4 — P2-1.4 full rollout (shipped + deployed)
+
+Tagged commits (this session):
+- FEC functions: date_from/date_to kwargs on all Schedule A/B/E consumers
+- Routes: `_parse_federal_window()` wired into all 15 federal routes
+- Cache keys: `(date_from, date_to)` appended to every FEDERAL_* cache_params, with version bumps to invalidate stale entries
+- Tests: 15 new regression tests in `tests/test_federal_fec.py` named
+  `test_get_federal_*_respects_date_window`; one shared
+  `_seed_date_window_fixture` builds pre/in/post-window rows across A/B/E
+
+**P2-1.4 — FEC functions wired (Schedule A)**
+Helpers `_federal_edge_rows`, `_federal_donor_committee_edges`,
+`_federal_committee_candidate_edges`, `_filtered_edge_rows` accept
+`date_from` / `date_to` and filter Schedule A on
+`contribution_receipt_date`. This propagates automatically through every
+consumer that calls them. Consumers explicitly updated to forward the
+kwargs (or filter inline SQL):
+`get_federal_network_graph`, `get_federal_cross_role_organizations`,
+`get_federal_multilayer_network_graph` (also B/E), `get_federal_donor_segmentation`,
+`get_federal_donor_network_clusters`, `get_federal_influence_scores`,
+`get_federal_follow_the_money`, `get_federal_geographic_concentration`,
+`get_federal_geo_drilldown`, `get_federal_local_donor_matches`,
+`get_federal_local_overlap_network`, `get_federal_donor_detail`.
+
+**P2-1.4 — FEC functions wired (Schedule B / E)**
+- `get_federal_committee_receipts` — `contribution_receipt_date`
+  (Schedule A receipts for one committee)
+- `get_federal_candidate_detail` — A: `contribution_receipt_date`,
+  B: `disbursement_date`, E: `expenditure_date`. Cycle-totals summary
+  block (joined to `fec_candidate_cycle_totals`) stays cycle-only
+  because that table is pre-aggregated
+- `get_federal_race_outside_spending` — `expenditure_date`
+- `get_federal_race_analytics` — A: `contribution_receipt_date`,
+  E: `expenditure_date`
+
+**P2-1.4 — explicitly skipped per handoff guidance**
+- `count_federal_candidates` / `list_federal_candidates` — backed by
+  `fec_candidate_cycle_totals` (no per-row date). Route still passes
+  `window` so the chip renders; counts reflect the whole cycle. Docstring
+  on the route notes this.
+
+**P2-1.4 — routes**
+All 15 routes now call `_parse_federal_window()` and pass `window=` to
+`_base_context()` (or thread the chip vars directly when the template
+extends `base.html` rather than `federal_finance/base.html`):
+`federal_overview`, `federal_candidates`, `federal_networks`,
+`federal_donor_intelligence`, `federal_money_flow`, `federal_influence`,
+`federal_follow_the_money` (session 3), `federal_geography`,
+`federal_geo_drilldown`, `federal_matching`,
+`federal_matched_donor_profile`, `federal_donor_detail`,
+`federal_committee_receipts`, `federal_race_outside_spending`,
+`federal_candidate_detail`.
+
+**P2-1.4 — cache keys**
+Every `FEDERAL_*_CACHE_TTL` cache_params dict now includes
+`date_from` + `date_to` with a `version` bump so old entries don't
+collide:
+- `federal_overview` (v2 → v3)
+- `federal_networks` (v3 → v4)
+- `federal_donor_intelligence` (v2 → v3)
+- `federal_matching` (v1 → v2)
+- `federal_geo_drilldown` in-process cache (v1 → v2)
+
+**P2-1.4 — tests**
+29 federal_fec tests pass (14 pre-existing + 15 new date-window
+regression tests). Fast pre-deploy subset (58 tests) green.
+
 ---
 
-## What's next (session 4)
+## What's next (session 5)
 
-**Goal:** finish P2-1 by rolling out the date-window pattern to the
-remaining 18 FEC functions, then re-run the sweep to confirm
-`/federal-finance/*` payloads now differ across periods.
+**Goal:** start P2-2 / P2-3 / P2-4 / P2-5. P2-1 (Option A — federal
+date-window rollout) is now done and deployed. Next session should
+re-run the sweep and confirm federal routes drop off the period-filter
+no-op detector list, then begin the next sub-task.
 
-### Sequence
+### Suggested next sequence
 
-1. **Schedule A cluster (highest impact)** — these all filter on
-   `fec_schedule_a_contributions.contribution_receipt_date`. One commit
-   for the cluster.
+1. **Re-run the sweep on production**:
+   `python3 scripts/audit/route_sweep.py --host https://www.followthemoneyil.com`
+   and confirm `/federal-finance/networks` and `/federal-finance/matching`
+   no longer appear in the period-filter no-op detector. `/analytics/*`
+   ones remain and are part of P2-4 follow-up scope, not P2-1.
 
-   - `get_federal_geo_drilldown` (geography page — called by every
-     geo-drilldown query)
-   - `get_federal_geographic_concentration` (overview + geography)
-   - `get_federal_donor_segmentation` (donor intelligence)
-   - `get_federal_donor_network_clusters` (donor intelligence)
-   - `get_federal_local_donor_matches` (matching)
-   - `get_federal_local_overlap_network` (matching, networks)
-   - `get_federal_donor_detail` (donor detail pages)
-   - `get_federal_influence_scores` (influence page)
-   - `get_federal_network_graph` (networks)
-   - `get_federal_multilayer_network_graph` (networks)
-   - `get_federal_cross_role_organizations` (networks)
-   - `get_federal_follow_the_money` (follow-the-money — already partially
-     wired; remaining call to add date kwargs to the multi-hop SQL)
+2. **P2-3 (sitemap) and/or P2-4 (subnav propagation)** — parallel-safe
+   relative to P2-2/P2-5. See sections below.
 
-2. **Schedule B cluster** — filter on
-   `fec_schedule_b_disbursements.disbursement_date`.
+### P2-1 verification checklist (now done)
 
-   - `count_federal_candidates` (uses Schedule B aggregates — verify if
-     date-bounded counts are meaningful, otherwise skip)
-   - `list_federal_candidates` (same caveat)
-   - `get_federal_candidate_detail` (Schedule B section)
-   - `get_federal_committee_receipts` (Schedule B section)
-
-3. **Schedule E cluster** — filter on
-   `fec_schedule_e_independent_expenditures.expenditure_date`.
-
-   - `get_federal_race_outside_spending`
-   - `get_federal_race_analytics`
-
-4. **Route plumbing** — every federal route calls `_parse_federal_window()`
-   and threads `window` into `_base_context()`. The 12 routes:
-   `federal_overview`, `federal_candidates`, `federal_networks`,
-   `federal_donor_intelligence`, `federal_money_flow`, `federal_influence`,
-   `federal_follow_the_money` (already done), `federal_geography`,
-   `federal_geo_drilldown`, `federal_matching`,
-   `federal_matched_donor_profile`, `federal_donor_detail`,
-   `federal_committee_receipts`, `federal_race_outside_spending`,
-   `federal_candidate_detail`.
-
-5. **Cache keys** — every `FEDERAL_*_CACHE_TTL_SECONDS` cache currently
-   keys on cycle. Append `(date_from, date_to)` so different windows
-   don't collide. Caches to update: `_federal_geo_drilldown_cache` (in
-   `federal_finance.py`) and the RouteCache instances if any exist for
-   federal routes.
-
-6. **Tests** — for each date-bounded function, add a regression test
-   following the `test_get_top_donor_entities_respects_date_window`
-   pattern (synthetic rows inside/outside the window; assert filtering
-   is correct). Aim for one test per function in the Schedule A/B/E
-   clusters.
-
-7. **Sweep re-run** — `route_sweep.py --host https://www.followthemoneyil.com`.
-   The period-filter no-op detector currently flags these federal
-   routes; after this session, they should drop off the list:
-   - `/federal-finance/matching`
-   - `/federal-finance/networks`
-   - `/analytics/networks` (also flagged — separate story)
-   - `/analytics/relationships` (same)
-
-8. **Deploy** — group into 3 commits (one per schedule cluster) for
-   reviewability. Run fast pre-deploy subset and the federal-specific
-   tests before each commit.
-
-### Verification checklist for session 4
-
-- [ ] Every FEC function in the table above accepts `date_from`/`date_to`
-- [ ] Every federal route passes `window` to `_base_context()`
-- [ ] Active-filter chip shows override pills on every federal page when
+- [x] Every FEC function in the Schedule A/B/E clusters accepts `date_from`/`date_to`
+- [x] Every federal route passes `window` to `_base_context()` (or threads
+      chip context directly to templates that extend base.html)
+- [x] Active-filter chip shows override pills on every federal page when
       `?date_from=...&date_to=...` is set
-- [ ] Re-run sweep: zero federal entries in the period-filter no-op
-      detector
-- [ ] All federal tests pass (`pytest -q tests/test_federal_fec.py`)
-- [ ] Fast pre-deploy subset passes
-- [ ] Deployed + endpoint-sweep clean
+- [x] All federal tests pass (`pytest -q tests/test_federal_fec.py` — 29 tests)
+- [x] Fast pre-deploy subset passes (58 tests)
+- [x] Cache keys include `(date_from, date_to)` with version bumps to
+      invalidate pre-window-aware cached payloads
+- [ ] Re-run sweep against prod and confirm federal routes drop off the
+      period-filter no-op detector (next session's first action)
 
 ---
 
@@ -297,21 +308,18 @@ Copy/paste this when launching the next session:
 
 > We're continuing a multi-session forensic audit + redesign of the
 > production website at https://www.followthemoneyil.com. Phase 1 is
-> deployed; Phase 2 P2-1 foundation is deployed (commit `948c128`).
+> deployed; Phase 2 P2-1 (Option A federal date-window rollout) is now
+> deployed end-to-end.
 >
-> Pick up where session 3 left off. Read `docs/audits/phase2_handoff.md`
-> end to end and follow the "What's next (session 4)" sequence in order.
+> Pick up where session 4 left off. Read `docs/audits/phase2_handoff.md`
+> end to end. Start with the "What's next (session 5)" sequence: first
+> re-run the production sweep and confirm the federal routes have
+> dropped off the period-filter no-op detector list, then begin one of
+> the remaining P2 sub-tasks (P2-2 lobbying, P2-3 sitemap, P2-4 subnav
+> propagation, or P2-5 cross-section links).
 >
-> Goal for this session: finish P2-1 by rolling out the date-window
-> pattern to the remaining ~18 FEC functions, wire date_from/date_to
-> into the federal route cache keys, add regression tests, and re-run
-> the sweep to confirm the federal routes drop off the period-filter
-> no-op detector list.
->
-> Group commits by schedule (one for Schedule A, one for B, one for E).
 > Run the fast pre-deploy subset before each commit. Deploy + verify on
-> prod when done. Do not deploy autonomously between commits — only at
-> the end.
+> prod when done.
 
 ---
 
