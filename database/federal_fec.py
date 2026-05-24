@@ -4773,7 +4773,17 @@ def get_federal_candidate_detail(
     schedule_b_dir: str = "desc",
     schedule_e_sort: str = "date",
     schedule_e_dir: str = "desc",
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict | None:
+    """Per-candidate Schedule A/B/E detail.
+
+    `date_from` / `date_to` filter detail sections on their native date
+    columns (Schedule A receipts: `contribution_receipt_date`, B:
+    `disbursement_date`, E: `expenditure_date`). The cycle-totals summary
+    (`reported_total_*` from `fec_candidate_cycle_totals`) stays cycle-only
+    since that table is pre-aggregated and has no per-row date.
+    """
     _ensure_missing_donor_identities(conn, cycle=cycle)
     has_schedule_b = _table_exists(conn, "fec_schedule_b_disbursements")
     has_schedule_e = _table_exists(conn, "fec_schedule_e_independent_expenditures")
@@ -4916,6 +4926,12 @@ def get_federal_candidate_detail(
     if cycle is not None:
         contribution_where += " AND cycle = ?"
         contribution_params.append(int(cycle))
+    if date_from:
+        contribution_where += " AND contribution_receipt_date >= ?"
+        contribution_params.append(date_from)
+    if date_to:
+        contribution_where += " AND contribution_receipt_date <= ?"
+        contribution_params.append(date_to)
 
     top_donors = conn.execute(
         f"""
@@ -5004,6 +5020,12 @@ def get_federal_candidate_detail(
         if cycle is not None:
             schedule_b_where += " AND cycle = ?"
             schedule_b_params.append(int(cycle))
+        if date_from:
+            schedule_b_where += " AND disbursement_date >= ?"
+            schedule_b_params.append(date_from)
+        if date_to:
+            schedule_b_where += " AND disbursement_date <= ?"
+            schedule_b_params.append(date_to)
 
         schedule_b_rows = conn.execute(
             f"""
@@ -5067,6 +5089,12 @@ def get_federal_candidate_detail(
         if cycle is not None:
             schedule_e_where += " AND cycle = ?"
             schedule_e_params.append(int(cycle))
+        if date_from:
+            schedule_e_where += " AND expenditure_date >= ?"
+            schedule_e_params.append(date_from)
+        if date_to:
+            schedule_e_where += " AND expenditure_date <= ?"
+            schedule_e_params.append(date_to)
 
         schedule_e_rows = conn.execute(
             f"""
@@ -5342,8 +5370,13 @@ def get_federal_committee_receipts(
     receipt_offset: int = 0,
     receipt_sort: str = "date",
     receipt_dir: str = "desc",
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict | None:
-    """Return one committee's Schedule A receipts with transfer-source context."""
+    """Return one committee's Schedule A receipts with transfer-source context.
+
+    `date_from` / `date_to` filter receipts on `contribution_receipt_date`.
+    """
     if not _table_exists(conn, "fec_schedule_a_contributions"):
         return None
 
@@ -5368,6 +5401,12 @@ def get_federal_committee_receipts(
     if cycle is not None:
         where_sql += " AND cycle = ?"
         params.append(int(cycle))
+    if date_from:
+        where_sql += " AND contribution_receipt_date >= ?"
+        params.append(date_from)
+    if date_to:
+        where_sql += " AND contribution_receipt_date <= ?"
+        params.append(date_to)
 
     summary = conn.execute(
         f"""
@@ -5548,8 +5587,14 @@ def get_federal_race_analytics(
     office_code: str | None = None,
     district_code: str | None = None,
     limit: int = 100,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
-    """Aggregate race-level federal analytics for Illinois candidates."""
+    """Aggregate race-level federal analytics for Illinois candidates.
+
+    `date_from` / `date_to` filter Schedule A on `contribution_receipt_date`
+    and Schedule E on `expenditure_date`.
+    """
     _ensure_missing_donor_identities(conn, cycle=cycle)
 
     office_filter = _canonical_office_code(office_code)
@@ -5617,8 +5662,19 @@ def get_federal_race_analytics(
     if not races:
         return []
 
+    edge_where = [
+        "sa.candidate_id IS NOT NULL",
+        "(? IS NULL OR sa.cycle = ?)",
+    ]
+    edge_params: list[Any] = [cycle, cycle]
+    if date_from:
+        edge_where.append("sa.contribution_receipt_date >= ?")
+        edge_params.append(date_from)
+    if date_to:
+        edge_where.append("sa.contribution_receipt_date <= ?")
+        edge_params.append(date_to)
     edge_rows = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_entity_key,
             sa.candidate_id AS candidate_id,
@@ -5627,11 +5683,10 @@ def get_federal_race_analytics(
             MIN(sa.contribution_receipt_date) AS earliest_contribution_date,
             MAX(sa.contribution_receipt_date) AS latest_contribution_date
         FROM fec_schedule_a_contributions sa
-        WHERE sa.candidate_id IS NOT NULL
-          AND (? IS NULL OR sa.cycle = ?)
+        WHERE {' AND '.join(edge_where)}
                 GROUP BY 1, sa.candidate_id
         """,
-        (cycle, cycle),
+        edge_params,
     ).fetchall()
 
     for row in edge_rows:
@@ -5666,18 +5721,28 @@ def get_federal_race_analytics(
             race["latest_contribution_date"] = latest_date
 
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        outside_where = [
+            "candidate_id IS NOT NULL",
+            "(? IS NULL OR cycle = ?)",
+        ]
+        outside_params: list[Any] = [cycle, cycle]
+        if date_from:
+            outside_where.append("expenditure_date >= ?")
+            outside_params.append(date_from)
+        if date_to:
+            outside_where.append("expenditure_date <= ?")
+            outside_params.append(date_to)
         outside_rows = conn.execute(
-            """
+            f"""
             SELECT
                 candidate_id,
                 COUNT(*) AS expenditure_count,
                 COALESCE(SUM(expenditure_amount), 0.0) AS total_amount
             FROM fec_schedule_e_independent_expenditures
-            WHERE candidate_id IS NOT NULL
-              AND (? IS NULL OR cycle = ?)
+            WHERE {' AND '.join(outside_where)}
             GROUP BY candidate_id
             """,
-            (cycle, cycle),
+            outside_params,
         ).fetchall()
         for row in outside_rows:
             candidate_id = _clean_text(row["candidate_id"])
@@ -5759,8 +5824,13 @@ def get_federal_race_outside_spending(
     support_oppose: str = "",
     search: str = "",
     aggregate_limit: int = 15,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Return race-level Schedule E drilldown data with filters and pagination."""
+    """Return race-level Schedule E drilldown data with filters and pagination.
+
+    `date_from` / `date_to` filter on Schedule E `expenditure_date`.
+    """
     office_filter = _canonical_office_code(office_code)
     if not office_filter:
         return {
@@ -5885,6 +5955,13 @@ def get_federal_race_outside_spending(
     if support_oppose_filter in {"S", "O"}:
         where_parts.append("COALESCE(se.support_oppose_indicator, '') = ?")
         where_params.append(support_oppose_filter)
+
+    if date_from:
+        where_parts.append("se.expenditure_date >= ?")
+        where_params.append(date_from)
+    if date_to:
+        where_parts.append("se.expenditure_date <= ?")
+        where_params.append(date_to)
 
     search_text = _clean_text(search)
     if search_text:
@@ -6085,6 +6162,8 @@ def get_federal_network_graph(
     district_code: str | None = None,
     min_edge_amount: float = 1000.0,
     limit: int = 1000,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Build donor->candidate weighted network for federal contributions."""
     _ensure_missing_donor_identities(conn, cycle=cycle)
@@ -6094,8 +6173,21 @@ def get_federal_network_graph(
     edge_limit = max(1, int(limit))
     query_limit = max(edge_limit * 4, edge_limit)
 
+    where_parts = [
+        "sa.candidate_id IS NOT NULL",
+        "(? IS NULL OR sa.cycle = ?)",
+    ]
+    params: list[Any] = [cycle, cycle]
+    if date_from:
+        where_parts.append("sa.contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("sa.contribution_receipt_date <= ?")
+        params.append(date_to)
+    params.extend([float(max(0.0, min_edge_amount)), query_limit])
+
     rows = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_entity_key,
             COALESCE(MAX(sa.contributor_name), 'Unknown Donor') AS donor_name,
@@ -6117,14 +6209,13 @@ def get_federal_network_graph(
         LEFT JOIN fec_candidate_match cm
           ON cm.fec_candidate_id = sa.candidate_id
          AND cm.cycle = sa.cycle
-        WHERE sa.candidate_id IS NOT NULL
-          AND (? IS NULL OR sa.cycle = ?)
+        WHERE {' AND '.join(where_parts)}
                 GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id
         HAVING COALESCE(SUM(sa.contribution_receipt_amount), 0) >= ?
         ORDER BY total_amount DESC
         LIMIT ?
         """,
-        (cycle, cycle, float(max(0.0, min_edge_amount)), query_limit),
+        params,
     ).fetchall()
 
     nodes: dict[str, dict[str, Any]] = {}
@@ -6293,8 +6384,14 @@ def get_federal_cross_role_organizations(
     candidate_id: str | None = None,
     limit: int = 200,
     min_total_amount: float = 0.0,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Find organizations that appear as both Schedule A donors and Schedule B/E payees."""
+    """Find organizations that appear as both Schedule A donors and Schedule B/E payees.
+
+    `date_from` / `date_to` filter Schedule A by `contribution_receipt_date`,
+    Schedule B by `disbursement_date`, and Schedule E by `expenditure_date`.
+    """
     _ensure_missing_donor_identities(conn, cycle=cycle)
 
     limit_value = max(1, int(limit))
@@ -6337,8 +6434,19 @@ def get_federal_cross_role_organizations(
         return entity
 
     if _table_exists(conn, "fec_schedule_a_contributions"):
+        sa_where = [
+            "candidate_id IS NOT NULL",
+            "(? IS NULL OR cycle = ?)",
+        ]
+        sa_params: list[Any] = [cycle, cycle]
+        if date_from:
+            sa_where.append("contribution_receipt_date >= ?")
+            sa_params.append(date_from)
+        if date_to:
+            sa_where.append("contribution_receipt_date <= ?")
+            sa_params.append(date_to)
         donor_rows = conn.execute(
-            """
+            f"""
             SELECT
                 candidate_id,
                 contributor_name AS organization_name,
@@ -6347,11 +6455,10 @@ def get_federal_cross_role_organizations(
                 COUNT(*) AS row_count,
                 COALESCE(SUM(contribution_receipt_amount), 0.0) AS total_amount
             FROM fec_schedule_a_contributions
-            WHERE candidate_id IS NOT NULL
-              AND (? IS NULL OR cycle = ?)
+            WHERE {' AND '.join(sa_where)}
             GROUP BY candidate_id, contributor_name, contributor_state, contributor_zip
             """,
-            (cycle, cycle),
+            sa_params,
         ).fetchall()
         for row in donor_rows:
             candidate_key = _clean_text(row["candidate_id"])
@@ -6377,8 +6484,19 @@ def get_federal_cross_role_organizations(
             entity["donor_count"] += int(row["row_count"] or 0)
 
     if _table_exists(conn, "fec_schedule_b_disbursements"):
+        sb_where = [
+            "candidate_id IS NOT NULL",
+            "(? IS NULL OR cycle = ?)",
+        ]
+        sb_params: list[Any] = [cycle, cycle]
+        if date_from:
+            sb_where.append("disbursement_date >= ?")
+            sb_params.append(date_from)
+        if date_to:
+            sb_where.append("disbursement_date <= ?")
+            sb_params.append(date_to)
         schedule_b_rows = conn.execute(
-            """
+            f"""
             SELECT
                 candidate_id,
                 recipient_name AS organization_name,
@@ -6387,11 +6505,10 @@ def get_federal_cross_role_organizations(
                 COUNT(*) AS row_count,
                 COALESCE(SUM(disbursement_amount), 0.0) AS total_amount
             FROM fec_schedule_b_disbursements
-            WHERE candidate_id IS NOT NULL
-              AND (? IS NULL OR cycle = ?)
+            WHERE {' AND '.join(sb_where)}
             GROUP BY candidate_id, recipient_name, recipient_state, recipient_zip
             """,
-            (cycle, cycle),
+            sb_params,
         ).fetchall()
         for row in schedule_b_rows:
             candidate_key = _clean_text(row["candidate_id"])
@@ -6417,8 +6534,19 @@ def get_federal_cross_role_organizations(
             entity["schedule_b_count"] += int(row["row_count"] or 0)
 
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
+        se_where = [
+            "candidate_id IS NOT NULL",
+            "(? IS NULL OR cycle = ?)",
+        ]
+        se_params: list[Any] = [cycle, cycle]
+        if date_from:
+            se_where.append("expenditure_date >= ?")
+            se_params.append(date_from)
+        if date_to:
+            se_where.append("expenditure_date <= ?")
+            se_params.append(date_to)
         schedule_e_rows = conn.execute(
-            """
+            f"""
             SELECT
                 candidate_id,
                 payee_name AS organization_name,
@@ -6427,11 +6555,10 @@ def get_federal_cross_role_organizations(
                 COUNT(*) AS row_count,
                 COALESCE(SUM(expenditure_amount), 0.0) AS total_amount
             FROM fec_schedule_e_independent_expenditures
-            WHERE candidate_id IS NOT NULL
-              AND (? IS NULL OR cycle = ?)
+            WHERE {' AND '.join(se_where)}
             GROUP BY candidate_id, payee_name, payee_state, payee_zip
             """,
-            (cycle, cycle),
+            se_params,
         ).fetchall()
         for row in schedule_e_rows:
             candidate_key = _clean_text(row["candidate_id"])
@@ -6671,8 +6798,15 @@ def get_federal_multilayer_network_graph(
     district_code: str | None = None,
     min_edge_amount: float = 1000.0,
     limit: int = 1500,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Build a multi-layer flow network across Schedule A/B/E."""
+    """Build a multi-layer flow network across Schedule A/B/E.
+
+    `date_from` / `date_to` filter each layer on its native date column
+    (Schedule A: `contribution_receipt_date`, B: `disbursement_date`,
+    E: `expenditure_date`).
+    """
     _ensure_missing_donor_identities(conn, cycle=cycle)
 
     office_filter = _canonical_office_code(office_code)
@@ -6689,6 +6823,8 @@ def get_federal_multilayer_network_graph(
         cycle=cycle,
         office_code=office_filter or None,
         district_code=district_filter or None,
+        date_from=date_from,
+        date_to=date_to,
     )
     for row in schedule_a_edges:
         donor_key = _clean_text(row.get("donor_entity_key"))
@@ -6739,8 +6875,21 @@ def get_federal_multilayer_network_graph(
         )
 
     if _table_exists(conn, "fec_schedule_b_disbursements"):
+        sb_where = [
+            "sb.candidate_id IS NOT NULL",
+            "sb.committee_id IS NOT NULL",
+            "(? IS NULL OR sb.cycle = ?)",
+        ]
+        sb_params: list[Any] = [cycle, cycle]
+        if date_from:
+            sb_where.append("sb.disbursement_date >= ?")
+            sb_params.append(date_from)
+        if date_to:
+            sb_where.append("sb.disbursement_date <= ?")
+            sb_params.append(date_to)
+        sb_params.extend([min_edge, query_limit])
         schedule_b_rows = conn.execute(
-            """
+            f"""
             SELECT
                 sb.candidate_id,
                 sb.committee_id,
@@ -6756,9 +6905,7 @@ def get_federal_multilayer_network_graph(
                 MIN(sb.disbursement_date) AS earliest_date,
                 MAX(sb.disbursement_date) AS latest_date
             FROM fec_schedule_b_disbursements sb
-            WHERE sb.candidate_id IS NOT NULL
-              AND sb.committee_id IS NOT NULL
-              AND (? IS NULL OR sb.cycle = ?)
+            WHERE {' AND '.join(sb_where)}
             GROUP BY
                 sb.candidate_id,
                 sb.committee_id,
@@ -6769,7 +6916,7 @@ def get_federal_multilayer_network_graph(
             ORDER BY total_amount DESC
             LIMIT ?
             """,
-            (cycle, cycle, min_edge, query_limit),
+            sb_params,
         ).fetchall()
         for row in schedule_b_rows:
             candidate_id_value = _clean_text(row["candidate_id"])
@@ -6856,6 +7003,19 @@ def get_federal_multilayer_network_graph(
             conn,
             "COALESCE(se.support_oppose_indicator, '')",
         )
+        se_where = [
+            "se.candidate_id IS NOT NULL",
+            "se.committee_id IS NOT NULL",
+            "(? IS NULL OR se.cycle = ?)",
+        ]
+        se_params: list[Any] = [cycle, cycle]
+        if date_from:
+            se_where.append("se.expenditure_date >= ?")
+            se_params.append(date_from)
+        if date_to:
+            se_where.append("se.expenditure_date <= ?")
+            se_params.append(date_to)
+        se_params.extend([min_edge, query_limit])
         schedule_e_rows = conn.execute(
             f"""
             SELECT
@@ -6868,15 +7028,13 @@ def get_federal_multilayer_network_graph(
                 MIN(se.expenditure_date) AS earliest_date,
                 MAX(se.expenditure_date) AS latest_date
             FROM fec_schedule_e_independent_expenditures se
-            WHERE se.candidate_id IS NOT NULL
-              AND se.committee_id IS NOT NULL
-              AND (? IS NULL OR se.cycle = ?)
+            WHERE {' AND '.join(se_where)}
             GROUP BY se.candidate_id, se.committee_id
             HAVING COALESCE(SUM(se.expenditure_amount), 0.0) >= ?
             ORDER BY total_amount DESC
             LIMIT ?
             """,
-            (cycle, cycle, min_edge, query_limit),
+            se_params,
         ).fetchall()
         for row in schedule_e_rows:
             candidate_id_value = _clean_text(row["candidate_id"])
@@ -7337,9 +7495,22 @@ def _candidate_passes_filter(
 def _federal_edge_rows(
     conn: sqlite3.Connection,
     cycle: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
+    where_parts = [
+        "sa.candidate_id IS NOT NULL",
+        "(? IS NULL OR sa.cycle = ?)",
+    ]
+    params: list[Any] = [cycle, cycle]
+    if date_from:
+        where_parts.append("sa.contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("sa.contribution_receipt_date <= ?")
+        params.append(date_to)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_entity_key,
             COALESCE(MAX(sa.contributor_name), 'Unknown Donor') AS donor_name,
@@ -7354,11 +7525,10 @@ def _federal_edge_rows(
             MIN(sa.contribution_receipt_date) AS earliest_contribution_date,
             MAX(sa.contribution_receipt_date) AS latest_contribution_date
         FROM fec_schedule_a_contributions sa
-        WHERE sa.candidate_id IS NOT NULL
-          AND (? IS NULL OR sa.cycle = ?)
+        WHERE {' AND '.join(where_parts)}
                 GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.candidate_id
         """,
-        (cycle, cycle),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -7366,9 +7536,22 @@ def _federal_edge_rows(
 def _federal_donor_committee_edges(
     conn: sqlite3.Connection,
     cycle: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
+    where_parts = [
+        "sa.committee_id IS NOT NULL",
+        "(? IS NULL OR sa.cycle = ?)",
+    ]
+    params: list[Any] = [cycle, cycle]
+    if date_from:
+        where_parts.append("sa.contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("sa.contribution_receipt_date <= ?")
+        params.append(date_to)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id) AS donor_entity_key,
             COALESCE(MAX(sa.contributor_name), 'Unknown Donor') AS donor_name,
@@ -7379,11 +7562,10 @@ def _federal_donor_committee_edges(
             MIN(sa.contribution_receipt_date) AS earliest_contribution_date,
             MAX(sa.contribution_receipt_date) AS latest_contribution_date
         FROM fec_schedule_a_contributions sa
-        WHERE sa.committee_id IS NOT NULL
-          AND (? IS NULL OR sa.cycle = ?)
+        WHERE {' AND '.join(where_parts)}
                 GROUP BY COALESCE(NULLIF(sa.donor_entity_key, ''), NULLIF(sa.donor_key, ''), sa.sub_id), sa.committee_id
         """,
-        (cycle, cycle),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -7391,9 +7573,23 @@ def _federal_donor_committee_edges(
 def _federal_committee_candidate_edges(
     conn: sqlite3.Connection,
     cycle: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
+    where_parts = [
+        "sa.committee_id IS NOT NULL",
+        "sa.candidate_id IS NOT NULL",
+        "(? IS NULL OR sa.cycle = ?)",
+    ]
+    params: list[Any] = [cycle, cycle]
+    if date_from:
+        where_parts.append("sa.contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("sa.contribution_receipt_date <= ?")
+        params.append(date_to)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             sa.committee_id AS committee_id,
             COALESCE(MAX(sa.committee_name), sa.committee_id, 'Unknown Committee') AS committee_name,
@@ -7403,12 +7599,10 @@ def _federal_committee_candidate_edges(
             MIN(sa.contribution_receipt_date) AS earliest_contribution_date,
             MAX(sa.contribution_receipt_date) AS latest_contribution_date
         FROM fec_schedule_a_contributions sa
-        WHERE sa.committee_id IS NOT NULL
-          AND sa.candidate_id IS NOT NULL
-          AND (? IS NULL OR sa.cycle = ?)
+        WHERE {' AND '.join(where_parts)}
         GROUP BY sa.committee_id, sa.candidate_id
         """,
-        (cycle, cycle),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -7418,11 +7612,13 @@ def _filtered_edge_rows(
     cycle: int | None = None,
     office_code: str | None = None,
     district_code: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> tuple[list[dict], dict[str, dict[str, str]], str, str]:
     office_filter = _canonical_office_code(office_code)
     district_filter = _normalize_district_filter(office_filter, district_code) if office_filter else ""
     candidate_meta = _candidate_filter_metadata(conn, cycle=cycle)
-    base_edges = _federal_edge_rows(conn, cycle=cycle)
+    base_edges = _federal_edge_rows(conn, cycle=cycle, date_from=date_from, date_to=date_to)
 
     filtered: list[dict] = []
     for row in base_edges:
@@ -7465,6 +7661,8 @@ def get_federal_donor_segmentation(
     kmeans_k: int = 5,
     dbscan_eps: float = 1.0,
     dbscan_min_samples: int = 8,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Segment federal donors by amount/frequency/breadth profiles."""
     rows, _candidate_meta, office_filter, district_filter = _filtered_edge_rows(
@@ -7472,6 +7670,8 @@ def get_federal_donor_segmentation(
         cycle=cycle,
         office_code=office_code,
         district_code=district_code,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     donors: dict[str, dict[str, Any]] = {}
@@ -7615,6 +7815,8 @@ def get_federal_donor_network_clusters(
     district_code: str | None = None,
     min_edge_amount: float = 1000.0,
     limit: int = 1200,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Find donor communities using weighted label propagation on donor-candidate graph."""
     network = get_federal_network_graph(
@@ -7624,6 +7826,8 @@ def get_federal_donor_network_clusters(
         district_code=district_code,
         min_edge_amount=min_edge_amount,
         limit=limit,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     nodes = {node["id"]: dict(node) for node in network["nodes"]}
@@ -7779,6 +7983,8 @@ def get_federal_influence_scores(
     district_code: str | None = None,
     min_edge_amount: float = 500.0,
     limit: int = 1000,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Compute influence scores for donors and candidates on federal network."""
     network = get_federal_network_graph(
@@ -7788,6 +7994,8 @@ def get_federal_influence_scores(
         district_code=district_code,
         min_edge_amount=min_edge_amount,
         limit=limit,
+        date_from=date_from,
+        date_to=date_to,
     )
     nodes = {node["id"]: dict(node) for node in network["nodes"]}
     adjacency: dict[str, list[tuple[str, float]]] = defaultdict(list)
@@ -7916,8 +8124,14 @@ def get_federal_follow_the_money(
     district_code: str | None = None,
     max_hops: int = 3,
     min_edge_amount: float = 0.0,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Trace a donor through donor->committee->candidate multi-hop network."""
+    """Trace a donor through donor->committee->candidate multi-hop network.
+
+    `date_from` / `date_to` filter both edge sets on
+    `contribution_receipt_date`.
+    """
     key = _clean_text(donor_entity_key)
     if not key:
         return {
@@ -7934,8 +8148,12 @@ def get_federal_follow_the_money(
     office_filter = _canonical_office_code(office_code)
     district_filter = _normalize_district_filter(office_filter, district_code) if office_filter else ""
     candidate_meta = _candidate_filter_metadata(conn, cycle=cycle)
-    donor_committee_edges = _federal_donor_committee_edges(conn, cycle=cycle)
-    committee_candidate_edges = _federal_committee_candidate_edges(conn, cycle=cycle)
+    donor_committee_edges = _federal_donor_committee_edges(
+        conn, cycle=cycle, date_from=date_from, date_to=date_to,
+    )
+    committee_candidate_edges = _federal_committee_candidate_edges(
+        conn, cycle=cycle, date_from=date_from, date_to=date_to,
+    )
 
     graph_adj: dict[str, list[tuple[str, dict]]] = defaultdict(list)
     nodes: dict[str, dict[str, Any]] = {}
@@ -8172,6 +8390,8 @@ def get_federal_geographic_concentration(
     limit_states: int = 20,
     limit_cities: int = 30,
     limit_races: int = 25,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Compute federal donor geographic concentration at state/city and race level."""
     rows, _candidate_meta, office_filter, district_filter = _filtered_edge_rows(
@@ -8179,6 +8399,8 @@ def get_federal_geographic_concentration(
         cycle=cycle,
         office_code=office_code,
         district_code=district_code,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     states: dict[str, dict[str, Any]] = {}
@@ -8289,6 +8511,8 @@ def get_federal_geo_drilldown(
     per_page: int = 50,
     sort_by: str = "total_amount",
     sort_dir: str = "desc",
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Return paginated donor->candidate rows backing a federal geo aggregate."""
     geo_type_key = "city" if _clean_text(geo_type).lower() == "city" else "state"
@@ -8315,6 +8539,8 @@ def get_federal_geo_drilldown(
         cycle=cycle,
         office_code=office_code,
         district_code=district_code,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     detail_rows: list[dict] = []
@@ -8446,13 +8672,22 @@ def get_federal_local_donor_matches(
     federal_donor_limit: int = 5000,
     local_donor_limit: int = 100000,
     match_limit: int = 5000,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Match federal donors to local donors using deterministic name/address signatures."""
+    """Match federal donors to local donors using deterministic name/address signatures.
+
+    `date_from` / `date_to` narrow the federal donor side to Schedule A
+    contributions within the window. The local-donor side stays unbounded
+    (analytics_donor_summary is precomputed across all dates).
+    """
     rows, _candidate_meta, office_filter, district_filter = _filtered_edge_rows(
         conn,
         cycle=cycle,
         office_code=office_code,
         district_code=district_code,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     federal_donors: dict[str, dict[str, Any]] = {}
@@ -8802,6 +9037,8 @@ def get_federal_local_overlap_network(
     edge_limit: int = 600,
     federal_donor_limit: int = 5000,
     local_donor_limit: int = 100000,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
     """Build overlap network for donors matched across federal and local datasets."""
     matches_payload = get_federal_local_donor_matches(
@@ -8812,6 +9049,8 @@ def get_federal_local_overlap_network(
         federal_donor_limit=federal_donor_limit,
         local_donor_limit=local_donor_limit,
         match_limit=20000,
+        date_from=date_from,
+        date_to=date_to,
     )
     matches = matches_payload["matches"]
     if not matches:
@@ -8875,6 +9114,8 @@ def get_federal_local_overlap_network(
         cycle=cycle,
         office_code=office_code,
         district_code=district_code,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     nodes: dict[str, dict[str, Any]] = {}
@@ -9089,6 +9330,8 @@ def get_federal_donor_detail(
     cycle: int | None = None,
     contribution_limit: int = 200,
     contribution_offset: int = 0,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict | None:
     donor_entity_key = _clean_text(donor_entity_key)
     if not donor_entity_key:
@@ -9101,6 +9344,12 @@ def get_federal_donor_detail(
     if cycle is not None:
         where_cycle = " AND sa.cycle = ?"
         params.append(int(cycle))
+    if date_from:
+        where_cycle += " AND sa.contribution_receipt_date >= ?"
+        params.append(date_from)
+    if date_to:
+        where_cycle += " AND sa.contribution_receipt_date <= ?"
+        params.append(date_to)
 
     summary = conn.execute(
         f"""

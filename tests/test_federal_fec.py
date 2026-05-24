@@ -27,6 +27,7 @@ from database.federal_fec import (
     get_federal_local_overlap_network,
     get_federal_network_graph,
     get_federal_race_analytics,
+    get_federal_race_outside_spending,
     get_top_donor_entities,
     list_federal_candidates,
     refresh_fec_transfer_source_committees,
@@ -2565,5 +2566,556 @@ def test_get_top_donor_entities_respects_date_window(tmp_path: Path):
     # date_to alone.
     to_only = get_top_donor_entities(conn, cycle=2026, limit=100, date_to="2026-06-30")
     assert {row["donor_name"] for row in to_only} == {"Pre-Window Donor", "In-Window Donor"}
+
+    conn.close()
+
+
+def _seed_date_window_fixture(conn) -> None:
+    """Insert Schedule A/B/E rows across pre/in/post-window dates for shared tests.
+
+    Window under test: 2026-01-01 .. 2026-06-30.
+    In-window dates use 2026-03-* / 2026-04-*; pre-window uses 2025-09-*;
+    post-window uses 2026-11-*.
+    """
+    conn.executemany(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("seed-dw-a", "2026-02-07", 2026, "U.S. House", "H", "IL-01", "01",
+             "Democratic", "DEM", "Primary", "Candidate Alpha", "alpha candidate",
+             0, 0, "test.csv", 1),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle, fec_candidate_id, fec_name,
+            fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("seed-dw-a", "Candidate Alpha", "U.S. House", "H", "IL-01", "01",
+             "Democratic", "DEM", "Primary", 2026, "H2IL00001", "ALPHA, CANDIDATE",
+             "H", "IL", "01", "DEM", "matched", 98.0, "test"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            # Pre-window A: 2025-09-15
+            ("sa-pre-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "Pre Window Donor", "Chicago", "IL", "60601",
+             None, None, None, 1, "11AI", "IND", "Individual", "",
+             900.0, "2025-09-15", 2026,
+             "donor-pre", "donor-pre-key", "name_state_zip",
+             "2025-09-15", "img-pre", "src-pre"),
+            # In-window A: 2026-03-15
+            ("sa-in-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "In Window Donor", "Chicago", "IL", "60601",
+             None, None, None, 1, "11AI", "IND", "Individual", "",
+             500.0, "2026-03-15", 2026,
+             "donor-in", "donor-in-key", "name_state_zip",
+             "2026-03-15", "img-in", "src-in"),
+            # Post-window A: 2026-11-10
+            ("sa-post-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "Post Window Donor", "Chicago", "IL", "60601",
+             None, None, None, 1, "11AI", "IND", "Individual", "",
+             700.0, "2026-11-10", 2026,
+             "donor-post", "donor-post-key", "name_state_zip",
+             "2026-11-10", "img-post", "src-post"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, recipient_city, recipient_state, recipient_zip,
+            recipient_committee_id, recipient_candidate_id, recipient_candidate_name,
+            disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            # Pre-window B: 2025-09-20
+            ("sb-pre-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "PRE VENDOR", "Chicago", "IL", "60601",
+             None, None, None, 250.0, "2025-09-20", "src-sb-pre"),
+            # In-window B: 2026-04-10
+            ("sb-in-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "IN VENDOR", "Chicago", "IL", "60601",
+             None, None, None, 150.0, "2026-04-10", "src-sb-in"),
+            # Post-window B: 2026-11-20
+            ("sb-post-1", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+             "POST VENDOR", "Chicago", "IL", "60601",
+             None, None, None, 350.0, "2026-11-20", "src-sb-post"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_schedule_e_independent_expenditures (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            payee_name, payee_city, payee_state, payee_zip, support_oppose_indicator,
+            expenditure_amount, expenditure_date, report_type, line_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            # Pre-window E
+            ("se-pre-1", 2026, "H2IL00001", "ALPHA", "C00IE1", "IE COMMITTEE",
+             "PRE MEDIA", "Chicago", "IL", "60601", "S",
+             400.0, "2025-09-25", "48H3", "24A", "src-se-pre"),
+            # In-window E
+            ("se-in-1", 2026, "H2IL00001", "ALPHA", "C00IE1", "IE COMMITTEE",
+             "IN MEDIA", "Chicago", "IL", "60601", "S",
+             100.0, "2026-05-01", "48H3", "24A", "src-se-in"),
+            # Post-window E
+            ("se-post-1", 2026, "H2IL00001", "ALPHA", "C00IE1", "IE COMMITTEE",
+             "POST MEDIA", "Chicago", "IL", "60601", "O",
+             600.0, "2026-12-01", "48H3", "24A", "src-se-post"),
+        ],
+    )
+    conn.commit()
+
+
+def test_get_federal_network_graph_respects_date_window(tmp_path: Path):
+    """get_federal_network_graph filters Schedule A by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_network_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=100)
+    legacy_donors = {edge.get("donor_label") for edge in legacy["edges"]}
+    assert legacy_donors == {"Pre Window Donor", "In Window Donor", "Post Window Donor"}
+
+    windowed = get_federal_network_graph(
+        conn, cycle=2026, min_edge_amount=0.0, limit=100,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    windowed_donors = {edge.get("donor_label") for edge in windowed["edges"]}
+    assert windowed_donors == {"In Window Donor"}
+
+    conn.close()
+
+
+def test_get_federal_geographic_concentration_respects_date_window(tmp_path: Path):
+    """get_federal_geographic_concentration filters Schedule A by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_geo_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_geographic_concentration(conn, cycle=2026)
+    legacy_total_il = next((row["total_amount"] for row in legacy["states"] if row["state"] == "IL"), 0.0)
+    assert legacy_total_il == 900.0 + 500.0 + 700.0
+
+    windowed = get_federal_geographic_concentration(
+        conn, cycle=2026, date_from="2026-01-01", date_to="2026-06-30",
+    )
+    windowed_total_il = next((row["total_amount"] for row in windowed["states"] if row["state"] == "IL"), 0.0)
+    assert windowed_total_il == 500.0
+
+    conn.close()
+
+
+def test_get_federal_geo_drilldown_respects_date_window(tmp_path: Path):
+    """get_federal_geo_drilldown filters detail rows by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_geo_drilldown_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_geo_drilldown(conn, cycle=2026, geo_type="state", geo_value="IL")
+    assert legacy["summary"]["total_amount"] == 900.0 + 500.0 + 700.0
+
+    windowed = get_federal_geo_drilldown(
+        conn, cycle=2026, geo_type="state", geo_value="IL",
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed["summary"]["total_amount"] == 500.0
+    assert {row["donor_name"] for row in windowed["rows"]} == {"In Window Donor"}
+
+    conn.close()
+
+
+def test_get_federal_donor_segmentation_respects_date_window(tmp_path: Path):
+    """get_federal_donor_segmentation filters donor pool by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_segmentation_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_donor_segmentation(conn, cycle=2026)
+    assert legacy["donor_count"] == 3
+
+    windowed = get_federal_donor_segmentation(
+        conn, cycle=2026, date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed["donor_count"] == 1
+
+    conn.close()
+
+
+def test_get_federal_donor_network_clusters_respects_date_window(tmp_path: Path):
+    """get_federal_donor_network_clusters filters graph by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_clusters_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    windowed = get_federal_donor_network_clusters(
+        conn, cycle=2026, min_edge_amount=0.0, limit=100,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed["graph_summary"]["edge_count"] == 1
+
+    conn.close()
+
+
+def test_get_federal_influence_scores_respects_date_window(tmp_path: Path):
+    """get_federal_influence_scores narrows the underlying network by date."""
+    db_path = str(tmp_path / "fec_influence_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    windowed = get_federal_influence_scores(
+        conn, cycle=2026, min_edge_amount=0.0, limit=100,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    donor_keys = {row.get("donor_entity_key") for row in windowed["donors"]}
+    assert donor_keys == {"donor-in-key"}
+
+    conn.close()
+
+
+def test_get_federal_follow_the_money_respects_date_window(tmp_path: Path):
+    """get_federal_follow_the_money filters donor->committee->candidate edges by date."""
+    db_path = str(tmp_path / "fec_follow_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_follow_the_money(
+        conn, donor_entity_key="donor-pre-key", cycle=2026, min_edge_amount=0.0,
+    )
+    assert legacy["start_node_found"]
+
+    windowed = get_federal_follow_the_money(
+        conn, donor_entity_key="donor-pre-key", cycle=2026, min_edge_amount=0.0,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert not windowed["start_node_found"]
+
+    in_window = get_federal_follow_the_money(
+        conn, donor_entity_key="donor-in-key", cycle=2026, min_edge_amount=0.0,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert in_window["start_node_found"]
+
+    conn.close()
+
+
+def test_get_federal_local_donor_matches_respects_date_window(tmp_path: Path):
+    """get_federal_local_donor_matches narrows federal donor pool by date."""
+    db_path = str(tmp_path / "fec_local_match_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    windowed = get_federal_local_donor_matches(
+        conn, cycle=2026, date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed["federal_donors_considered"] == 1
+
+    conn.close()
+
+
+def test_get_federal_donor_detail_respects_date_window(tmp_path: Path):
+    """get_federal_donor_detail filters by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_donor_detail_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    # Add a second in-window contribution from the same donor to test counts.
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("sa-in-2", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "In Window Donor", "Chicago", "IL", "60601",
+         None, None, None, 1, "11AI", "IND", "Individual", "",
+         200.0, "2026-04-01", 2026,
+         "donor-in", "donor-in-key", "name_state_zip",
+         "2026-04-01", "img-in2", "src-in2"),
+    )
+    conn.commit()
+
+    windowed = get_federal_donor_detail(
+        conn, donor_entity_key="donor-in-key", cycle=2026,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed is not None
+    assert windowed["summary"]["contribution_count"] == 2
+    assert windowed["summary"]["total_amount"] == 700.0
+    assert windowed["total_contributions"] == 2
+
+    pre_only = get_federal_donor_detail(
+        conn, donor_entity_key="donor-pre-key", cycle=2026,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert pre_only is None
+
+    conn.close()
+
+
+def test_get_federal_committee_receipts_respects_date_window(tmp_path: Path):
+    """get_federal_committee_receipts filters Schedule A by contribution_receipt_date."""
+    db_path = str(tmp_path / "fec_committee_receipts_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_committee_receipts(conn, committee_id="C111", cycle=2026)
+    assert legacy is not None
+    assert legacy["total_receipts"] == 3
+
+    windowed = get_federal_committee_receipts(
+        conn, committee_id="C111", cycle=2026,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed is not None
+    assert windowed["total_receipts"] == 1
+    assert windowed["receipts"][0]["contribution_receipt_date"] == "2026-03-15"
+
+    conn.close()
+
+
+def test_get_federal_candidate_detail_respects_date_window(tmp_path: Path):
+    """get_federal_candidate_detail filters A/B/E detail sections by native date columns."""
+    db_path = str(tmp_path / "fec_candidate_detail_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    windowed = get_federal_candidate_detail(
+        conn, candidate_id="H2IL00001", cycle=2026,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed is not None
+    assert windowed["total_contributions"] == 1
+    assert windowed["total_schedule_b_disbursements"] == 1
+    assert windowed["total_schedule_e_expenditures"] == 1
+    assert windowed["contributions"][0]["contribution_receipt_date"] == "2026-03-15"
+    assert windowed["schedule_b_disbursements"][0]["disbursement_date"] == "2026-04-10"
+    assert windowed["schedule_e_independent_expenditures"][0]["expenditure_date"] == "2026-05-01"
+
+    conn.close()
+
+
+def test_get_federal_race_outside_spending_respects_date_window(tmp_path: Path):
+    """get_federal_race_outside_spending filters Schedule E by expenditure_date."""
+    db_path = str(tmp_path / "fec_race_outside_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_race_outside_spending(
+        conn, cycle=2026, office_code="H", district_code="01",
+    )
+    assert legacy["total_rows"] == 3
+
+    windowed = get_federal_race_outside_spending(
+        conn, cycle=2026, office_code="H", district_code="01",
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed["total_rows"] == 1
+    assert windowed["rows"][0]["expenditure_date"] == "2026-05-01"
+
+    conn.close()
+
+
+def test_get_federal_race_analytics_respects_date_window(tmp_path: Path):
+    """get_federal_race_analytics narrows Schedule A and Schedule E by date."""
+    db_path = str(tmp_path / "fec_race_analytics_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_race_analytics(conn, cycle=2026, office_code="H", district_code="01")
+    assert legacy
+    assert legacy[0]["total_amount"] == 900.0 + 500.0 + 700.0
+    assert legacy[0]["outside_spending_total"] == 400.0 + 100.0 + 600.0
+
+    windowed = get_federal_race_analytics(
+        conn, cycle=2026, office_code="H", district_code="01",
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    assert windowed
+    assert windowed[0]["total_amount"] == 500.0
+    assert windowed[0]["outside_spending_total"] == 100.0
+
+    conn.close()
+
+
+def test_get_federal_cross_role_organizations_respects_date_window(tmp_path: Path):
+    """get_federal_cross_role_organizations narrows all three schedules by date."""
+    db_path = str(tmp_path / "fec_cross_role_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    # Build a focused fixture where ONE org (DUAL CO) appears in all 3
+    # schedules in-window and another (LEGACY CO) only appears pre-window.
+    conn.executemany(
+        """
+        INSERT INTO fec_il_candidate_seed (
+            candidate_key, as_of_date, cycle, office, office_code, district, district_code,
+            party, party_code, election_stage, candidate_name, normalized_candidate_name,
+            write_in, already_listed_general, source_file, source_row_number
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("seed-cr", "2026-02-07", 2026, "U.S. House", "H", "IL-01", "01",
+             "Democratic", "DEM", "Primary", "Candidate Alpha", "alpha candidate",
+             0, 0, "test.csv", 1),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO fec_candidate_match (
+            seed_candidate_key, candidate_name, office, office_code, district, district_code,
+            party, party_code, election_stage, cycle, fec_candidate_id, fec_name,
+            fec_office, fec_state, fec_district, fec_party,
+            match_status, match_score, match_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("seed-cr", "Candidate Alpha", "U.S. House", "H", "IL-01", "01",
+             "Democratic", "DEM", "Primary", 2026, "H2IL00001", "ALPHA",
+             "H", "IL", "01", "DEM", "matched", 98.0, "test"),
+        ],
+    )
+    # Pre-window: LEGACY CO appears as donor and payee
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("cr-pre-a", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "LEGACY CO", "Chicago", "IL", "60601",
+         None, None, None, 0, "11AI", "SA", "Contribution", "",
+         800.0, "2025-09-15", 2026,
+         "legacy-donor", "legacy-org-key", "name_state_zip",
+         "2025-09-15", "img-cr-pre-a", "src-cr-pre-a"),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, recipient_city, recipient_state, recipient_zip,
+            recipient_committee_id, recipient_candidate_id, recipient_candidate_name,
+            disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("cr-pre-b", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "LEGACY CO", "Chicago", "IL", "60601",
+         None, None, None, 200.0, "2025-09-20", "src-cr-pre-b"),
+    )
+    # In-window: DUAL CO appears as donor and payee
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_contributions (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            contributor_name, contributor_city, contributor_state, contributor_zip,
+            contributor_employer, contributor_occupation, contributor_id, is_individual,
+            line_number, receipt_type, receipt_type_desc, memo_text,
+            contribution_receipt_amount, contribution_receipt_date, two_year_transaction_period,
+            donor_key, donor_entity_key, donor_entity_method, load_date, image_number, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("cr-in-a", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "DUAL CO", "Chicago", "IL", "60602",
+         None, None, None, 0, "11AI", "SA", "Contribution", "",
+         600.0, "2026-03-15", 2026,
+         "dual-donor", "dual-org-key", "name_state_zip",
+         "2026-03-15", "img-cr-in-a", "src-cr-in-a"),
+    )
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_b_disbursements (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            recipient_name, recipient_city, recipient_state, recipient_zip,
+            recipient_committee_id, recipient_candidate_id, recipient_candidate_name,
+            disbursement_amount, disbursement_date, api_source_identifier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("cr-in-b", 2026, "H2IL00001", "ALPHA", "C111", "ALPHA CMTE",
+         "DUAL CO", "Chicago", "IL", "60602",
+         None, None, None, 150.0, "2026-04-10", "src-cr-in-b"),
+    )
+    conn.commit()
+
+    legacy = get_federal_cross_role_organizations(conn, cycle=2026)
+    legacy_names = {row["organization_name"] for row in legacy["rows"]}
+    assert "LEGACY CO" in legacy_names
+    assert "DUAL CO" in legacy_names
+
+    windowed = get_federal_cross_role_organizations(
+        conn, cycle=2026, date_from="2026-01-01", date_to="2026-06-30",
+    )
+    windowed_names = {row["organization_name"] for row in windowed["rows"]}
+    assert windowed_names == {"DUAL CO"}
+
+    conn.close()
+
+
+def test_get_federal_multilayer_network_graph_respects_date_window(tmp_path: Path):
+    """get_federal_multilayer_network_graph filters all three layers by their native date columns."""
+    db_path = str(tmp_path / "fec_multilayer_window.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+
+    legacy = get_federal_multilayer_network_graph(
+        conn, cycle=2026, min_edge_amount=0.0, limit=100,
+    )
+    assert legacy["summary"]["edge_count"] >= 3
+
+    windowed = get_federal_multilayer_network_graph(
+        conn, cycle=2026, min_edge_amount=0.0, limit=100,
+        date_from="2026-01-01", date_to="2026-06-30",
+    )
+    layer_counts = {row["edge_type"]: row["edge_count"] for row in windowed["layer_summary"]}
+    assert layer_counts.get("donor_candidate", 0) == 1
+    assert layer_counts.get("committee_vendor", 0) == 1
+    assert layer_counts.get("ie_committee_candidate", 0) == 1
 
     conn.close()
