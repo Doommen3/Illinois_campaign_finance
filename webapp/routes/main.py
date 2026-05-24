@@ -2082,7 +2082,12 @@ def _build_overlap(left_profile: dict | None, right_profile: dict | None) -> dic
     }
 
 
-def _recent_local_candidate_donations(conn, limit: int = 75) -> list[dict]:
+def _recent_local_candidate_donations(
+    conn,
+    limit: int = 75,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
     required_tables = {"bulk_receipts_clean", "bulk_committee_candidate_links"}
     if not all(_table_exists(conn, table_name) for table_name in required_tables):
         return []
@@ -2119,6 +2124,16 @@ def _recent_local_candidate_donations(conn, limit: int = 75) -> list[dict]:
         else ""
     )
 
+    where_parts = [_bulk_receipts_base_filter(conn, alias='r')]
+    params: list = []
+    if date_from:
+        where_parts.append("r.received_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("r.received_date <= ?")
+        params.append(date_to)
+    params.append(max(1, int(limit)))
+
     rows = conn.execute(
         f"""
         SELECT
@@ -2137,11 +2152,11 @@ def _recent_local_candidate_donations(conn, limit: int = 75) -> list[dict]:
         JOIN bulk_committee_candidate_links link ON link.committee_id_sbe = r.committee_id_sbe
         {join_candidates}
         {join_committees}
-        WHERE {_bulk_receipts_base_filter(conn, alias='r')}
+        WHERE {' AND '.join(where_parts)}
         ORDER BY r.received_date DESC, row_id DESC
         LIMIT ?
         """,
-        (max(1, int(limit)),),
+        tuple(params),
     ).fetchall()
 
     output = []
@@ -2163,12 +2178,27 @@ def _recent_local_candidate_donations(conn, limit: int = 75) -> list[dict]:
     return output
 
 
-def _recent_federal_candidate_donations(conn, limit: int = 75) -> list[dict]:
+def _recent_federal_candidate_donations(
+    conn,
+    limit: int = 75,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
     if not _table_exists(conn, "fec_schedule_a_contributions"):
         return []
 
+    where_parts = ["COALESCE(contribution_receipt_amount, 0) > 0"]
+    params: list = []
+    if date_from:
+        where_parts.append("contribution_receipt_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("contribution_receipt_date <= ?")
+        params.append(date_to)
+    params.append(max(1, int(limit)))
+
     rows = conn.execute(
-        """
+        f"""
         SELECT
             sub_id,
             cycle,
@@ -2181,11 +2211,11 @@ def _recent_federal_candidate_donations(conn, limit: int = 75) -> list[dict]:
             contributor_state,
             contribution_receipt_amount
         FROM fec_schedule_a_contributions
-        WHERE COALESCE(contribution_receipt_amount, 0) > 0
+        WHERE {' AND '.join(where_parts)}
         ORDER BY contribution_receipt_date DESC, updated_at DESC, sub_id DESC
         LIMIT ?
         """,
-        (max(1, int(limit)),),
+        tuple(params),
     ).fetchall()
 
     output = []
@@ -2206,12 +2236,27 @@ def _recent_federal_candidate_donations(conn, limit: int = 75) -> list[dict]:
     return output
 
 
-def _recent_federal_schedule_b_disbursements(conn, limit: int = 75) -> list[dict]:
+def _recent_federal_schedule_b_disbursements(
+    conn,
+    limit: int = 75,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
     if not _table_exists(conn, "fec_schedule_b_disbursements"):
         return []
 
+    where_parts = ["COALESCE(disbursement_amount, 0) > 0"]
+    params: list = []
+    if date_from:
+        where_parts.append("disbursement_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("disbursement_date <= ?")
+        params.append(date_to)
+    params.append(max(1, int(limit)))
+
     rows = conn.execute(
-        """
+        f"""
         SELECT
             sub_id,
             cycle,
@@ -2226,11 +2271,11 @@ def _recent_federal_schedule_b_disbursements(conn, limit: int = 75) -> list[dict
             category_code_full,
             disbursement_type_desc
         FROM fec_schedule_b_disbursements
-        WHERE COALESCE(disbursement_amount, 0) > 0
+        WHERE {' AND '.join(where_parts)}
         ORDER BY disbursement_date DESC, updated_at DESC, sub_id DESC
         LIMIT ?
         """,
-        (max(1, int(limit)),),
+        tuple(params),
     ).fetchall()
 
     output = []
@@ -2252,12 +2297,27 @@ def _recent_federal_schedule_b_disbursements(conn, limit: int = 75) -> list[dict
     return output
 
 
-def _recent_federal_schedule_e_expenditures(conn, limit: int = 75) -> list[dict]:
+def _recent_federal_schedule_e_expenditures(
+    conn,
+    limit: int = 75,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
     if not _table_exists(conn, "fec_schedule_e_independent_expenditures"):
         return []
 
+    where_parts = ["COALESCE(expenditure_amount, 0) > 0"]
+    params: list = []
+    if date_from:
+        where_parts.append("expenditure_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("expenditure_date <= ?")
+        params.append(date_to)
+    params.append(max(1, int(limit)))
+
     rows = conn.execute(
-        """
+        f"""
         SELECT
             sub_id,
             cycle,
@@ -2272,11 +2332,11 @@ def _recent_federal_schedule_e_expenditures(conn, limit: int = 75) -> list[dict]
             expenditure_amount,
             category_code_full
         FROM fec_schedule_e_independent_expenditures
-        WHERE COALESCE(expenditure_amount, 0) > 0
+        WHERE {' AND '.join(where_parts)}
         ORDER BY expenditure_date DESC, updated_at DESC, sub_id DESC
         LIMIT ?
         """,
-        (max(1, int(limit)),),
+        tuple(params),
     ).fetchall()
 
     output = []
@@ -3296,6 +3356,12 @@ def person_intelligence():
 @main_bp.route('/live-feed')
 def live_feed():
     """Recent local donations and federal Schedule A/B/E activity feed."""
+    from webapp.utils.time_filter import (
+        build_filter_overrides,
+        get_active_period,
+        period_window_with_override,
+    )
+
     conn = current_app.get_database()
 
     output_format = request.args.get('format', 'html', type=str).strip().lower()
@@ -3305,10 +3371,17 @@ def live_feed():
     schedule_b_limit = min(max(request.args.get('schedule_b_limit', 75, type=int), 10), 300)
     schedule_e_limit = min(max(request.args.get('schedule_e_limit', 75, type=int), 10), 300)
 
-    local_rows = _recent_local_candidate_donations(conn, limit=local_limit)
-    federal_rows = _recent_federal_candidate_donations(conn, limit=federal_limit)
-    schedule_b_rows = _recent_federal_schedule_b_disbursements(conn, limit=schedule_b_limit)
-    schedule_e_rows = _recent_federal_schedule_e_expenditures(conn, limit=schedule_e_limit)
+    period = get_active_period()
+    explicit_date_from = (request.args.get('date_from', '', type=str) or '').strip()
+    explicit_date_to = (request.args.get('date_to', '', type=str) or '').strip()
+    window = period_window_with_override(period, explicit_date_from, explicit_date_to)
+    date_from = window['start'] or None
+    date_to = window['end'] or None
+
+    local_rows = _recent_local_candidate_donations(conn, limit=local_limit, date_from=date_from, date_to=date_to)
+    federal_rows = _recent_federal_candidate_donations(conn, limit=federal_limit, date_from=date_from, date_to=date_to)
+    schedule_b_rows = _recent_federal_schedule_b_disbursements(conn, limit=schedule_b_limit, date_from=date_from, date_to=date_to)
+    schedule_e_rows = _recent_federal_schedule_e_expenditures(conn, limit=schedule_e_limit, date_from=date_from, date_to=date_to)
 
     local_latest_date = local_rows[0]["received_date"] if local_rows else None
     federal_latest_date = federal_rows[0]["contribution_receipt_date"] if federal_rows else None
@@ -3340,7 +3413,9 @@ def live_feed():
                     row.get('category'),
                     row.get('amount'),
                 ]
-                for row in _recent_federal_schedule_b_disbursements(conn, limit=500000)
+                for row in _recent_federal_schedule_b_disbursements(
+                    conn, limit=500000, date_from=date_from, date_to=date_to,
+                )
             ]
             return _csv_response(
                 csv_rows,
@@ -3374,7 +3449,9 @@ def live_feed():
                     row.get('category'),
                     row.get('amount'),
                 ]
-                for row in _recent_federal_schedule_e_expenditures(conn, limit=500000)
+                for row in _recent_federal_schedule_e_expenditures(
+                    conn, limit=500000, date_from=date_from, date_to=date_to,
+                )
             ]
             return _csv_response(
                 csv_rows,
@@ -3411,6 +3488,10 @@ def live_feed():
         federal_schedule_b_latest_date=federal_schedule_b_latest_date,
         federal_schedule_e_latest_date=federal_schedule_e_latest_date,
         federal_latest_coverage_date=federal_latest_coverage_date,
+        active_filter_overrides=build_filter_overrides(
+            date_from=explicit_date_from,
+            date_to=explicit_date_to,
+        ),
     )
 
 

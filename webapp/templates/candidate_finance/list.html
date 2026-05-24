@@ -24,6 +24,8 @@
 {% block content %}
 <h1>Candidate Committee Finance</h1>
 
+{% include "_partials/active_filter_chip.html" %}
+
 {% if not table_available %}
 <div class="status-section">
     <p>No candidate finance data is available yet.</p>

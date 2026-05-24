@@ -12,7 +12,12 @@ from database.models import (
     CandidateCommitteeItemizedExpenditure,
     CandidateCommitteeItemizedReceipt,
 )
-from webapp.utils.time_filter import get_active_period, period_cycle, period_to_date_window
+from webapp.utils.time_filter import (
+    build_filter_overrides,
+    get_active_period,
+    period_cycle,
+    period_to_date_window,
+)
 
 _candidate_finance_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
 _candidate_finance_cache_lock = threading.Lock()
@@ -231,6 +236,13 @@ def list_candidate_finance():
         response.headers['Content-Disposition'] = 'attachment; filename=candidate_committee_finance.csv'
         return response
 
+    active_filter_overrides = build_filter_overrides(
+        start_date=start_date_raw,
+        end_date=end_date_raw,
+        year=year_raw,
+        cycle=cycle_raw,
+    )
+
     return render_template(
         'candidate_finance/list.html',
         rows=rows,
@@ -254,6 +266,7 @@ def list_candidate_finance():
         table_available=table_available,
         finance_source_type=finance_source_type,
         itemized_available=itemized_available,
+        active_filter_overrides=active_filter_overrides,
     )
 
 
@@ -396,6 +409,11 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
         )
         return response
 
+    active_filter_overrides = build_filter_overrides(
+        date_from=explicit_date_from,
+        date_to=explicit_date_to,
+    )
+
     return render_template(
         'candidate_finance/itemized.html',
         candidate_id=candidate_id,
@@ -413,6 +431,9 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
         archived=archived,
         min_amount=min_amount_raw,
         max_amount=max_amount_raw,
+        explicit_date_from=explicit_date_from,
+        explicit_date_to=explicit_date_to,
+        active_filter_overrides=active_filter_overrides,
     )
 
 
@@ -561,6 +582,11 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
         )
         return response
 
+    active_filter_overrides = build_filter_overrides(
+        date_from=explicit_date_from,
+        date_to=explicit_date_to,
+    )
+
     return render_template(
         'candidate_finance/itemized_expenditures.html',
         candidate_id=candidate_id,
@@ -579,4 +605,7 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
         anomalies_only=anomalies_only,
         min_amount=min_amount_raw,
         max_amount=max_amount_raw,
+        explicit_date_from=explicit_date_from,
+        explicit_date_to=explicit_date_to,
+        active_filter_overrides=active_filter_overrides,
     )

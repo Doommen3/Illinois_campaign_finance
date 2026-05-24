@@ -32,7 +32,11 @@ from database.analytics import (
 )
 from database.connection import get_db, close_db
 from webapp.cache_backend import RouteCache
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.time_filter import (
+    build_filter_overrides,
+    get_active_period,
+    period_to_date_window,
+)
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -48,6 +52,7 @@ _relationships_cache = RouteCache("analytics_relationships")
 _networks_cache = RouteCache("analytics_networks")
 _overview_cache = RouteCache("analytics_overview")
 _risk_cache = RouteCache("analytics_risk")
+_state_race_detail_cache = RouteCache("analytics_state_race_detail")
 _geo_drilldown_cache: dict[str, dict] = {}
 _geo_drilldown_cache_lock = threading.Lock()
 
@@ -162,6 +167,10 @@ def _parse_filters() -> dict:
         "explicit_date_from": explicit_date_from,
         "explicit_date_to": explicit_date_to,
         "time_period_key": period["key"],
+        "active_filter_overrides": build_filter_overrides(
+            date_from=explicit_date_from,
+            date_to=explicit_date_to,
+        ),
     }
 
 
@@ -574,13 +583,37 @@ def state_race_detail(race_key: str):
     conn = current_app.get_database()
     filters = _parse_filters()
     election_cycle = request.args.get("election_cycle", type=int)
-    race_detail = get_state_race_detail(
-        conn,
-        race_key=race_key,
-        date_from=filters["date_from"],
-        date_to=filters["date_to"],
-        election_cycle=election_cycle,
+
+    # `get_state_race_detail` rebuilds the full state-race rowset (every race in
+    # the cycle) just to filter for one race_key. With `?period=all` that's a
+    # 25–30 s response on prod. Cache the per-race detail payload so warm hits
+    # are sub-second. TTL piggybacks on the overview cache TTL — same data
+    # domain, same refresh cadence.
+    state_race_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 300)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    cache_key = (
+        race_key,
+        filters["date_from"],
+        filters["date_to"],
+        election_cycle,
     )
+
+    race_detail = None
+    if cache_enabled and not refresh_requested:
+        race_detail = _state_race_detail_cache.get(cache_key)
+
+    if race_detail is None:
+        race_detail = get_state_race_detail(
+            conn,
+            race_key=race_key,
+            date_from=filters["date_from"],
+            date_to=filters["date_to"],
+            election_cycle=election_cycle,
+        )
+        if race_detail and cache_enabled:
+            _state_race_detail_cache.set(cache_key, race_detail, state_race_cache_ttl)
+
     if not race_detail:
         abort(404)
 
@@ -593,6 +626,7 @@ def state_race_detail(race_key: str):
         time_period_key=filters["time_period_key"],
         explicit_date_from=filters["explicit_date_from"],
         explicit_date_to=filters["explicit_date_to"],
+        active_filter_overrides=filters["active_filter_overrides"],
         election_cycle=election_cycle,
         race_detail=race_detail,
     )

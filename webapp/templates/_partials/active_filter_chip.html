@@ -1,0 +1,20 @@
+{# Active-filter chip — shows the user the date window currently driving the page.
+   Caller may pass `active_filter_overrides` (list of (label, value) tuples from
+   build_filter_overrides) to indicate the global period has been overridden.
+   `time_period` is always available from the context processor.
+#}
+{% set _overrides = active_filter_overrides if active_filter_overrides is defined else [] %}
+<div class="active-filter-chip{% if _overrides %} active-filter-chip-override{% endif %}" role="status" aria-live="polite">
+    {% if _overrides %}
+        <span class="chip-label">Custom filter active</span>
+        {% for label, value in _overrides %}
+            <span class="chip-pill"><strong>{{ label }}:</strong> {{ value }}</span>
+        {% endfor %}
+        <span class="chip-note">overriding global period <strong>{{ time_period.label }}</strong></span>
+        <a class="chip-clear" href="?period={{ time_period.key }}">Reset to period</a>
+    {% else %}
+        <span class="chip-label">Period</span>
+        <span class="chip-value">{{ time_period.label }}</span>
+        <span class="chip-note">({{ time_period.description }})</span>
+    {% endif %}
+</div>

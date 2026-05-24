@@ -6,6 +6,8 @@
 <h1>Live Donation Feed</h1>
 <p class="help-text">Real-time feed of the most recently synced donation and spending records. Local rows come from ISBE bulk data; federal rows come from FEC Schedules A, B, and E.</p>
 
+{% include "_partials/active_filter_chip.html" %}
+
 <div class="status-section">
     <p><strong>Local feed latest date:</strong> {{ local_latest_date if local_latest_date else 'No rows synced' }}</p>
     <p><strong>Federal feed latest date:</strong> {{ federal_latest_date if federal_latest_date else 'No rows synced' }}</p>

@@ -22,6 +22,8 @@
 {% block content %}
 <h1>Candidate/Committee Itemized Receipts</h1>
 
+{% include "_partials/active_filter_chip.html" %}
+
 {% if not table_available %}
 <div class="status-section">
     <p>Itemized receipts are not available yet.</p>
@@ -48,6 +50,8 @@
 <form class="search-form" method="get" action="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=candidate_id, committee_id=committee_id) }}">
     <input type="text" name="q" value="{{ query }}" placeholder="Search donor, vendor, description, or filed doc">
     <input type="text" name="d2_part" value="{{ d2_part }}" placeholder="D2 part (1, 1A, 5, etc.)">
+    <input type="date" name="date_from" value="{{ explicit_date_from }}" placeholder="Date from" title="Override the global period">
+    <input type="date" name="date_to" value="{{ explicit_date_to }}" placeholder="Date to" title="Override the global period">
     <select name="archived">
         <option value="no" {% if archived == 'no' %}selected{% endif %}>Non-archived only</option>
         <option value="all" {% if archived == 'all' %}selected{% endif %}>All rows</option>

@@ -6,12 +6,14 @@ from datetime import date, timedelta
 from webapp.utils.time_filter import (
     TIME_PERIODS,
     DEFAULT_PERIOD,
+    build_filter_overrides,
     get_period_dates,
     period_cycle,
     period_cycles,
     period_qmark_date_clause,
     period_qmark_clause,
     period_to_date_window,
+    period_window_with_override,
 )
 
 
@@ -133,6 +135,56 @@ class TestPeriodHelpers:
         assert two_year_start is not None and two_year_end is not None
         assert two_year_start <= one_year_start
         assert one_year_end <= two_year_end
+
+
+class TestPeriodWindowWithOverride:
+
+    def test_no_override_uses_period_bounds(self):
+        period = {"key": "2026cycle", "start_date": "2025-01-01", "end_date": "2026-02-16"}
+        result = period_window_with_override(period)
+        assert result == {"start": "2025-01-01", "end": "2026-02-16", "is_override": False}
+
+    def test_empty_string_override_is_not_an_override(self):
+        period = {"key": "2026cycle", "start_date": "2025-01-01", "end_date": "2026-02-16"}
+        result = period_window_with_override(period, date_from="  ", date_to="")
+        assert result["is_override"] is False
+        assert result["start"] == "2025-01-01"
+        assert result["end"] == "2026-02-16"
+
+    def test_date_from_override_flags_is_override(self):
+        period = {"key": "2026cycle", "start_date": "2025-01-01", "end_date": "2026-02-16"}
+        result = period_window_with_override(period, date_from="2025-06-01")
+        assert result["is_override"] is True
+        assert result["start"] == "2025-06-01"
+        assert result["end"] == "2026-02-16"
+
+    def test_date_to_override_flags_is_override(self):
+        period = {"key": "all", "start_date": None, "end_date": None}
+        result = period_window_with_override(period, date_to="2024-12-31")
+        assert result["is_override"] is True
+        assert result["start"] is None
+        assert result["end"] == "2024-12-31"
+
+
+class TestBuildFilterOverrides:
+
+    def test_drops_none_and_empty(self):
+        items = build_filter_overrides(start_date="", end_date=None, year="  ")
+        assert items == []
+
+    def test_humanizes_keys(self):
+        items = build_filter_overrides(start_date="2025-06-01", min_receipts="1000")
+        labels = [label for label, _ in items]
+        assert "Start Date" in labels
+        assert "Min Receipts" in labels
+
+    def test_preserves_order(self):
+        items = build_filter_overrides(date_from="2025-06-01", date_to="2025-12-31")
+        assert items == [("Date From", "2025-06-01"), ("Date To", "2025-12-31")]
+
+    def test_strips_whitespace(self):
+        items = build_filter_overrides(year=" 2026 ")
+        assert items == [("Year", "2026")]
 
 
 class TestTimeFilterInApp:

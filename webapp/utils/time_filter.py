@@ -142,6 +142,42 @@ def period_to_date_window(
     return resolved_from, resolved_to
 
 
+def period_window_with_override(
+    period: dict,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    """Like period_to_date_window but also reports whether the user overrode the period.
+
+    Returns dict {start, end, is_override}. is_override is True iff the caller
+    supplied a non-empty date_from or date_to that would diverge from the period
+    defaults.
+    """
+    explicit_from = (date_from or "").strip() or None
+    explicit_to = (date_to or "").strip() or None
+    is_override = bool(explicit_from or explicit_to)
+    start = explicit_from or period.get("start_date")
+    end = explicit_to or period.get("end_date")
+    return {"start": start, "end": end, "is_override": is_override}
+
+
+def build_filter_overrides(**overrides) -> list[tuple[str, str]]:
+    """Turn keyword overrides into a [(label, value), ...] list for the chip partial.
+
+    Empty/None values are dropped. Keys are humanized: ``start_date`` → ``Start Date``.
+    """
+    items: list[tuple[str, str]] = []
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        label = key.replace("_", " ").strip().title()
+        items.append((label, text))
+    return items
+
+
 def period_cache_key(period: dict | None) -> str:
     """Stable cache key token for the current global period."""
     if not period:

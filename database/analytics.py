@@ -977,6 +977,11 @@ def _get_donor_committee_rows(
             )
         return output, source
 
+    # Date filtering uses ct.transaction_date only. Rows where the legacy scraper
+    # did not capture transaction_date are excluded from date-bounded queries.
+    # Previously these were attributed to r.filed_date via COALESCE, but report
+    # filing dates can be months after the actual transaction and pollute time
+    # bucketing.
     query = """
         SELECT
             d.id AS donor_id,
@@ -991,11 +996,13 @@ def _get_donor_committee_rows(
         JOIN reports r ON r.id = ct.report_id
         JOIN committees c ON c.id = r.committee_id
         WHERE 1=1
+          AND ct.transaction_date IS NOT NULL
+          AND ct.transaction_date <> ''
           AND (
-            ? IS NULL OR DATE(COALESCE(NULLIF(ct.transaction_date, ''), NULLIF(r.filed_date, ''))) >= DATE(?)
+            ? IS NULL OR DATE(ct.transaction_date) >= DATE(?)
           )
           AND (
-            ? IS NULL OR DATE(COALESCE(NULLIF(ct.transaction_date, ''), NULLIF(r.filed_date, ''))) <= DATE(?)
+            ? IS NULL OR DATE(ct.transaction_date) <= DATE(?)
           )
         GROUP BY d.id, c.id
         HAVING COALESCE(SUM(ct.amount), 0) >= ?
@@ -1889,7 +1896,10 @@ def get_anomaly_flags(
             amount = float(row["amount"] or 0.0)
             if amount < large_threshold:
                 break
-            event_date = _normalize_date_iso(row["transaction_date"]) or _normalize_date_iso(row["filed_date"])
+            # Use the contribution's transaction_date only. Falling back to
+            # r.filed_date misattributes transactions to their report's filing
+            # date (often months later).
+            event_date = _normalize_date_iso(row["transaction_date"])
             percentile = _percentile_rank(amounts, amount)
             flags.append(
                 {
@@ -1915,7 +1925,9 @@ def get_anomaly_flags(
             )
 
         for row in rows:
-            event_date = _parse_date(row["transaction_date"]) or _parse_date(row["filed_date"])
+            # Use the contribution's transaction_date only (no filed_date
+            # fallback); rows without it are excluded from monthly buckets.
+            event_date = _parse_date(row["transaction_date"])
             if not event_date:
                 continue
             month_key = event_date.strftime("%Y-%m")
@@ -2092,19 +2104,21 @@ def get_time_series(
             month_totals[month_key] += float(row["total_amount"] or 0.0)
             month_counts[month_key] += int(row["contribution_count"] or 0)
     else:
+        # Legacy contributions table path. transaction_date is the only
+        # authoritative event date; r.filed_date is the report's filing date,
+        # not the contribution date, and must not be used as a fallback for
+        # time-bucketed analytics.
         rows = conn.execute(
             """
             SELECT
                 ct.amount AS amount,
-                ct.transaction_date AS transaction_date,
-                r.filed_date AS filed_date
+                ct.transaction_date AS transaction_date
             FROM contributions ct
-            JOIN reports r ON r.id = ct.report_id
             WHERE ct.amount IS NOT NULL AND ct.amount > 0
             """
         ).fetchall()
         for row in rows:
-            event_date = _parse_date(row["transaction_date"]) or _parse_date(row["filed_date"])
+            event_date = _parse_date(row["transaction_date"])
             if not event_date:
                 continue
             month_key = event_date.strftime("%Y-%m")
@@ -3575,7 +3589,7 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
             'contributions' AS source,
             COALESCE(c.name, 'Unknown Committee') AS committee_name,
             'Unknown Donor' AS donor_name,
-            COALESCE(NULLIF(TRIM(ct.transaction_date), ''), NULLIF(TRIM(r.filed_date), '')) AS event_date,
+            NULLIF(TRIM(ct.transaction_date), '') AS event_date,
             ct.amount AS amount,
             ? AS large_threshold
         FROM contributions ct
