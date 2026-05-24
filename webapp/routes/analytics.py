@@ -147,6 +147,29 @@ def _parse_filters() -> dict:
     explicit_date_to = (request.args.get("date_to", "", type=str) or "").strip()
     date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
 
+    # Allow-list of analytics filters that should survive a subnav tab change.
+    # The dict is expanded into every url_for(...) in analytics/_subnav.html
+    # so users don't lose their tuning when they hop between Overview /
+    # Networks / Risk / Donors / Geography / Relationships.
+    #
+    # Excluded by design: refresh_cache / refresh_full / sync_full (one-shot
+    # actions); state_race_sort / state_race_dir / election_cycle / q (page-
+    # specific UI controls); geo_type / geo_value / geo_state / range /
+    # source_page / page / per_page / sort / dir (drilldown-specific).
+    subnav_persist_params = {
+        "load_mode": load_mode,
+        "date_from": explicit_date_from or (date_from or ""),
+        "date_to": explicit_date_to or (date_to or ""),
+        "min_edge_amount": min_edge_amount,
+        "network_limit": network_limit,
+        "anomaly_limit": anomaly_limit,
+        "concentration_limit": concentration_limit,
+        "months": months,
+        "geo_state_limit": geo_state_limit,
+        "geo_city_limit": geo_city_limit,
+        "nlp_limit": nlp_limit,
+    }
+
     return {
         "load_mode": load_mode,
         "full_mode_requested": load_mode == "full",
@@ -171,6 +194,7 @@ def _parse_filters() -> dict:
             date_from=explicit_date_from,
             date_to=explicit_date_to,
         ),
+        "subnav_persist_params": subnav_persist_params,
     }
 
 
@@ -627,6 +651,7 @@ def state_race_detail(race_key: str):
         explicit_date_from=filters["explicit_date_from"],
         explicit_date_to=filters["explicit_date_to"],
         active_filter_overrides=filters["active_filter_overrides"],
+        subnav_persist_params=filters["subnav_persist_params"],
         election_cycle=election_cycle,
         race_detail=race_detail,
     )
@@ -1040,6 +1065,11 @@ def relationships():
         load_mode=filters["load_mode"],
         date_from=filters["date_from"],
         date_to=filters["date_to"],
+        time_period_key=filters["time_period_key"],
+        explicit_date_from=filters["explicit_date_from"],
+        explicit_date_to=filters["explicit_date_to"],
+        active_filter_overrides=filters["active_filter_overrides"],
+        subnav_persist_params=filters["subnav_persist_params"],
         donor_limit=donor_limit,
         committee_limit=committee_limit,
         candidate_limit=candidate_limit,

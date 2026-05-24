@@ -1,39 +1,47 @@
+{# Routes that render this partial pass `subnav_persist_params` (built in
+   webapp/routes/federal_finance.py:_federal_subnav_persist_params as the
+   allow-list of filters that survive a tab change). Default to {} so
+   detail templates (committee receipts, donor detail, candidate detail,
+   race outside spending) that reuse the federal subnav without going
+   through _base_context don't crash — they just won't propagate filters
+   across tabs, which matches the pre-P2-4 behaviour. #}
+{% set subnav_persist_params = subnav_persist_params if subnav_persist_params is defined else {} %}
 <nav class="federal-subnav" aria-label="Federal finance section navigation">
     <a
         class="federal-subnav-link {% if active_page == 'overview' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_overview', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_overview', **subnav_persist_params) }}"
     >Overview</a>
     <a
         class="federal-subnav-link {% if active_page == 'candidates' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_candidates', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_candidates', **subnav_persist_params) }}"
     >Candidates</a>
     <a
         class="federal-subnav-link {% if active_page == 'networks' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_networks', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_networks', **subnav_persist_params) }}"
     >Networks</a>
     <a
         class="federal-subnav-link {% if active_page == 'money_flow' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_money_flow', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_money_flow', **subnav_persist_params) }}"
     >Money Flow</a>
     <a
         class="federal-subnav-link {% if active_page == 'donor_intelligence' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_donor_intelligence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_donor_intelligence', **subnav_persist_params) }}"
     >Donor Intelligence</a>
     <a
         class="federal-subnav-link {% if active_page == 'influence' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_influence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_influence', **subnav_persist_params) }}"
     >Influence</a>
     <a
         class="federal-subnav-link {% if active_page == 'follow_the_money' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_follow_the_money', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_follow_the_money', **subnav_persist_params) }}"
     >Follow the Money</a>
     <a
         class="federal-subnav-link {% if active_page == 'geography' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_geography', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_geography', **subnav_persist_params) }}"
     >Geography</a>
     <a
         class="federal-subnav-link {% if active_page == 'matching' %}active{% endif %}"
-        href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}"
+        href="{{ url_for('federal_finance.federal_matching', **subnav_persist_params) }}"
     >Matching</a>
 </nav>
 

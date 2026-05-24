@@ -1,27 +1,34 @@
+{# Routes that render this partial pass `subnav_persist_params` (built in
+   webapp/routes/analytics.py:_parse_filters as the allow-list of filters
+   that survive a tab change). Default to {} so detail templates that
+   reuse the analytics subnav without going through _base_context don't
+   crash — they just won't propagate filters across tabs, which matches
+   the pre-P2-4 behaviour. #}
+{% set subnav_persist_params = subnav_persist_params if subnav_persist_params is defined else {} %}
 <nav class="analytics-subnav" aria-label="Analytics section navigation">
     <a
         class="analytics-subnav-link {% if active_page == 'overview' %}active{% endif %}"
-        href="{{ url_for('analytics.dashboard', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.dashboard', **subnav_persist_params) }}"
     >Overview</a>
     <a
         class="analytics-subnav-link {% if active_page == 'networks' %}active{% endif %}"
-        href="{{ url_for('analytics.networks', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.networks', **subnav_persist_params) }}"
     >Networks</a>
     <a
         class="analytics-subnav-link {% if active_page == 'risk' %}active{% endif %}"
-        href="{{ url_for('analytics.risk', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.risk', **subnav_persist_params) }}"
     >Risk</a>
     <a
         class="analytics-subnav-link {% if active_page == 'donors' %}active{% endif %}"
-        href="{{ url_for('analytics.donors', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.donors', **subnav_persist_params) }}"
     >Donors</a>
     <a
         class="analytics-subnav-link {% if active_page == 'geography' %}active{% endif %}"
-        href="{{ url_for('analytics.geography', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.geography', **subnav_persist_params) }}"
     >Geography</a>
     <a
         class="analytics-subnav-link {% if active_page == 'relationships' %}active{% endif %}"
-        href="{{ url_for('analytics.relationships', load_mode=load_mode, date_from=date_from, date_to=date_to) }}"
+        href="{{ url_for('analytics.relationships', **subnav_persist_params) }}"
     >Relationships</a>
 </nav>
 

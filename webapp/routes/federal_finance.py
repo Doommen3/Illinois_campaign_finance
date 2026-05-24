@@ -97,6 +97,41 @@ def _parse_federal_window() -> dict:
     }
 
 
+def _federal_subnav_persist_params(
+    cycle: int | None,
+    analysis_office: str,
+    analysis_district: str,
+    window: dict | None = None,
+) -> dict:
+    """Allow-list of federal filters that survive a subnav tab change.
+
+    Expanded into every url_for(...) in federal_finance/_subnav.html so users
+    don't lose tuning when they hop between Overview / Candidates / Networks /
+    etc. Includes cycle + analysis scope (always present) and the global
+    date window when one is in effect.
+
+    Excluded by design: per-route knobs like network_min_edge_amount,
+    network_limit, segmentation_*, cluster_limit, local_match_limit,
+    match_limit, overlap_edge_limit, follow_donor_key, follow_max_hops,
+    follow_min_edge_amount, page, sort, dir, q, refresh_cache. Those are
+    page-specific UI controls; carrying them across tabs would noise URLs
+    without benefit.
+    """
+    persist: dict = {}
+    if cycle is not None:
+        persist['cycle'] = cycle
+    if analysis_office:
+        persist['analysis_office'] = analysis_office
+    if analysis_district:
+        persist['analysis_district'] = analysis_district
+    if window:
+        if window.get('date_from'):
+            persist['date_from'] = window['date_from']
+        if window.get('date_to'):
+            persist['date_to'] = window['date_to']
+    return persist
+
+
 def _base_context(
     active_page: str,
     table_available: bool,
@@ -112,6 +147,9 @@ def _base_context(
         'cycle': cycle,
         'analysis_office': analysis_office,
         'analysis_district': analysis_district,
+        'subnav_persist_params': _federal_subnav_persist_params(
+            cycle, analysis_office, analysis_district, window,
+        ),
     }
     if window:
         ctx.update({
@@ -1264,6 +1302,7 @@ def federal_donor_detail(donor_entity_key: str):
         explicit_date_from=window['explicit_date_from'],
         explicit_date_to=window['explicit_date_to'],
         active_filter_overrides=window['active_filter_overrides'],
+        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
     )
 
 
@@ -1321,6 +1360,7 @@ def federal_committee_receipts(committee_id: str):
         explicit_date_from=window['explicit_date_from'],
         explicit_date_to=window['explicit_date_to'],
         active_filter_overrides=window['active_filter_overrides'],
+        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
     )
 
 
@@ -1446,6 +1486,7 @@ def federal_race_outside_spending(office_code: str, district_code: str):
         explicit_date_from=window['explicit_date_from'],
         explicit_date_to=window['explicit_date_to'],
         active_filter_overrides=window['active_filter_overrides'],
+        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
     )
 
 
@@ -1692,4 +1733,5 @@ def federal_candidate_detail(candidate_id: str):
         explicit_date_from=window['explicit_date_from'],
         explicit_date_to=window['explicit_date_to'],
         active_filter_overrides=window['active_filter_overrides'],
+        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
     )
