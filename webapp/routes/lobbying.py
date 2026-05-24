@@ -953,11 +953,17 @@ def flows_data():
     if has_time_window:
         date_clause = ""
         date_params: list[object] = []
+        # Compare the underlying date column directly rather than wrapping
+        # it in DATE(...) — wrapping defeats the index on
+        # isbe_condensed_receipts(received_date) that this scan would
+        # otherwise use, which is why /lobbying/flows/data?period=... was
+        # timing out at 30s on prod. The compat view exposes received_date
+        # as text in ISO format, so lexicographic comparison is correct.
         if date_from:
-            date_clause += " AND DATE(r.received_date) >= DATE(?)"
+            date_clause += " AND r.received_date >= ?"
             date_params.append(date_from)
         if date_to:
-            date_clause += " AND DATE(r.received_date) <= DATE(?)"
+            date_clause += " AND r.received_date <= ?"
             date_params.append(date_to)
         archived_clause = " AND NOT COALESCE(r.is_archived::boolean, FALSE)" if _column_exists(conn, "bulk_receipts_clean", "is_archived") else ""
         rows = conn.execute(
