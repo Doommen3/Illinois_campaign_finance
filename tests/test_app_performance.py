@@ -70,8 +70,7 @@ def test_dashboard_insights_cached_across_requests(tmp_path: Path, monkeypatch):
         }
 
     monkeypatch.setattr(main_routes, "_build_dashboard_insights", fake_build)
-    main_routes._dashboard_insights_cache["value"] = None
-    main_routes._dashboard_insights_cache["expires_at"] = 0.0
+    main_routes._dashboard_insights_cache.invalidate()
 
     app = create_app(
         {
@@ -106,9 +105,7 @@ def test_relationships_network_cached_across_requests(tmp_path: Path, monkeypatc
             "ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS": 60,
         }
     )
-    analytics_routes._relationships_cache["payload"] = None
-    analytics_routes._relationships_cache["expires_at"] = 0.0
-    analytics_routes._relationships_cache["key"] = None
+    analytics_routes._relationships_cache.invalidate()
 
     call_count = {"value": 0}
 
