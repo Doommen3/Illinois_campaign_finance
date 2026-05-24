@@ -31,6 +31,7 @@ from database.analytics import (
     save_dashboard_snapshot,
 )
 from database.connection import get_db, close_db
+from webapp.cache_backend import RouteCache
 from webapp.utils.time_filter import get_active_period, period_to_date_window
 
 analytics_bp = Blueprint("analytics", __name__)
@@ -39,18 +40,14 @@ FULL_SNAPSHOT_TTL_SECONDS = 900
 _snapshot_executor = ThreadPoolExecutor(max_workers=1)
 _snapshot_lock = threading.Lock()
 _running_snapshot_keys: set[str] = set()
-_relationships_cache = {
-    "payload": None,
-    "expires_at": 0.0,
-    "key": None,
-}
-_relationships_cache_lock = threading.Lock()
-_networks_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
-_networks_cache_lock = threading.Lock()
-_overview_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
-_overview_cache_lock = threading.Lock()
-_risk_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
-_risk_cache_lock = threading.Lock()
+
+# Route-level caches. Backed by Redis when REDIS_URL is set, with in-process
+# dict fallback for dev / tests / when Redis is unreachable. See
+# webapp/cache_backend.py for the abstraction.
+_relationships_cache = RouteCache("analytics_relationships")
+_networks_cache = RouteCache("analytics_networks")
+_overview_cache = RouteCache("analytics_overview")
+_risk_cache = RouteCache("analytics_risk")
 _geo_drilldown_cache: dict[str, dict] = {}
 _geo_drilldown_cache_lock = threading.Lock()
 
@@ -442,13 +439,7 @@ def dashboard():
 
     cached_payload = None
     if cache_enabled and not refresh_requested:
-        with _overview_cache_lock:
-            if (
-                _overview_cache.get("payload") is not None
-                and _overview_cache.get("key") == cache_key
-                and float(_overview_cache.get("expires_at", 0.0)) > now
-            ):
-                cached_payload = _overview_cache["payload"]
+        cached_payload = _overview_cache.get(cache_key)
 
     if cached_payload is not None:
         network = cached_payload["network"]
@@ -538,8 +529,9 @@ def dashboard():
         )
         state_race_nonzero_below_visible = bool(visible_rows) and (not visible_has_nonzero_outside) and hidden_has_nonzero_outside
         if cache_enabled:
-            with _overview_cache_lock:
-                _overview_cache["payload"] = {
+            _overview_cache.set(
+                cache_key,
+                {
                     "network": network,
                     "anomalies": anomalies,
                     "concentration": concentration,
@@ -550,9 +542,9 @@ def dashboard():
                     "state_race_analytics": state_race_analytics,
                     "state_race_table_available": state_race_table_available,
                     "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
-                }
-                _overview_cache["key"] = cache_key
-                _overview_cache["expires_at"] = now + float(overview_cache_ttl)
+                },
+                overview_cache_ttl,
+            )
 
     latest_time_point = time_series[-1] if time_series else None
 
@@ -631,13 +623,7 @@ def networks():
 
     cached_payload = None
     if cache_enabled and not refresh_requested:
-        with _networks_cache_lock:
-            if (
-                _networks_cache.get("payload") is not None
-                and _networks_cache.get("key") == cache_key
-                and float(_networks_cache.get("expires_at", 0.0)) > now
-            ):
-                cached_payload = _networks_cache["payload"]
+        cached_payload = _networks_cache.get(cache_key)
 
     if cached_payload is not None:
         network = cached_payload["network"]
@@ -696,16 +682,17 @@ def networks():
         snapshot_state["heavy_sections_loaded"] = True
 
         if cache_enabled:
-            with _networks_cache_lock:
-                _networks_cache["payload"] = {
+            _networks_cache.set(
+                cache_key,
+                {
                     "network": network,
                     "vendor_network": vendor_network,
                     "overlap_graph": overlap_graph,
                     "lobbying_graph": lobbying_graph,
                     "ecosystem_527": ecosystem_527,
-                }
-                _networks_cache["key"] = cache_key
-                _networks_cache["expires_at"] = now + float(networks_cache_ttl)
+                },
+                networks_cache_ttl,
+            )
 
     return render_template(
         "analytics/networks.html",
@@ -742,13 +729,7 @@ def risk():
 
     cached_payload = None
     if cache_enabled and not refresh_requested:
-        with _risk_cache_lock:
-            if (
-                _risk_cache.get("payload") is not None
-                and _risk_cache.get("key") == cache_key
-                and float(_risk_cache.get("expires_at", 0.0)) > now
-            ):
-                cached_payload = _risk_cache["payload"]
+        cached_payload = _risk_cache.get(cache_key)
 
     if cached_payload is not None:
         anomalies = cached_payload["anomalies"]
@@ -772,13 +753,14 @@ def risk():
             )
             snapshot_state["heavy_sections_loaded"] = True
         if cache_enabled:
-            with _risk_cache_lock:
-                _risk_cache["payload"] = {
+            _risk_cache.set(
+                cache_key,
+                {
                     "anomalies": anomalies,
                     "reconciliation": reconciliation,
-                }
-                _risk_cache["key"] = cache_key
-                _risk_cache["expires_at"] = now + float(risk_cache_ttl)
+                },
+                risk_cache_ttl,
+            )
 
     return render_template(
         "analytics/risk.html",
@@ -975,13 +957,7 @@ def relationships():
 
     payload = None
     if cache_enabled and not refresh_requested:
-        with _relationships_cache_lock:
-            if (
-                _relationships_cache.get("payload") is not None
-                and _relationships_cache.get("key") == cache_key
-                and float(_relationships_cache.get("expires_at", 0.0)) > now
-            ):
-                payload = _relationships_cache.get("payload")
+        payload = _relationships_cache.get(cache_key)
 
     if payload is None:
         payload = {
@@ -1022,10 +998,7 @@ def relationships():
             ),
         }
         if cache_enabled:
-            with _relationships_cache_lock:
-                _relationships_cache["payload"] = payload
-                _relationships_cache["key"] = cache_key
-                _relationships_cache["expires_at"] = now + float(relationships_cache_ttl)
+            _relationships_cache.set(cache_key, payload, relationships_cache_ttl)
 
     return render_template(
         "analytics/relationships.html",
@@ -1116,13 +1089,11 @@ def warm_analytics_caches(
             default_period_key, default_date_from, default_date_to,
             default_anomaly_limit, default_recon_limit, default_recon_min_abs_diff,
         )
-        with _risk_cache_lock:
-            _risk_cache["payload"] = {
-                "anomalies": anomalies,
-                "reconciliation": reconciliation,
-            }
-            _risk_cache["key"] = cache_key
-            _risk_cache["expires_at"] = now + float(risk_ttl)
+        _risk_cache.set(
+            cache_key,
+            {"anomalies": anomalies, "reconciliation": reconciliation},
+            risk_ttl,
+        )
         logger.info("Analytics prewarm: risk cache populated")
         close_db(conn)
     except Exception:
@@ -1163,16 +1134,17 @@ def warm_analytics_caches(
             default_period_key, default_date_from, default_date_to,
             default_min_edge_amount, default_network_limit,
         )
-        with _networks_cache_lock:
-            _networks_cache["payload"] = {
+        _networks_cache.set(
+            cache_key,
+            {
                 "network": results.get("network", _empty_network()),
                 "vendor_network": results.get("vendor_network", empty_graph),
                 "overlap_graph": results.get("overlap_graph", empty_graph),
                 "lobbying_graph": results.get("lobbying_graph", empty_graph),
                 "ecosystem_527": results.get("ecosystem_527", empty_graph),
-            }
-            _networks_cache["key"] = cache_key
-            _networks_cache["expires_at"] = now + float(networks_ttl)
+            },
+            networks_ttl,
+        )
         logger.info("Analytics prewarm: networks cache populated")
     except Exception:
         logger.exception("Analytics prewarm: networks cache failed")
@@ -1204,10 +1176,7 @@ def warm_analytics_caches(
             default_client_limit, default_org_limit, default_edge_limit,
             default_min_shared_amount, default_min_shared_targets, default_min_shared_donors,
         )
-        with _relationships_cache_lock:
-            _relationships_cache["payload"] = rel_payload
-            _relationships_cache["key"] = cache_key
-            _relationships_cache["expires_at"] = now + float(relationships_ttl)
+        _relationships_cache.set(cache_key, rel_payload, relationships_ttl)
         logger.info("Analytics prewarm: relationships cache populated")
         close_db(conn)
     except Exception:
@@ -1297,8 +1266,9 @@ def warm_analytics_caches(
             default_state_race_sort,
             default_state_race_dir,
         )
-        with _overview_cache_lock:
-            _overview_cache["payload"] = {
+        _overview_cache.set(
+            cache_key,
+            {
                 "network": network,
                 "anomalies": anomalies,
                 "concentration": concentration,
@@ -1309,9 +1279,9 @@ def warm_analytics_caches(
                 "state_race_analytics": state_race_analytics,
                 "state_race_table_available": state_race_table_available,
                 "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
-            }
-            _overview_cache["key"] = cache_key
-            _overview_cache["expires_at"] = now + float(overview_ttl)
+            },
+            overview_ttl,
+        )
         logger.info("Analytics prewarm: overview cache populated")
         close_db(conn)
     except Exception:
