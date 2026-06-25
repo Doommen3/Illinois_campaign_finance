@@ -132,7 +132,7 @@ PostgreSQL only. Always write PostgreSQL-compatible SQL — never SQLite-specifi
    - Auto-runs `swap_bulk_to_isbe.py` after import to (re)create `bulk_*` compat views for legacy routes. `--skip-compat-swap` disables; `/candidate-finance/` then uses ISBE fallback mode.
    - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (works, but `isbe_*` is preferred)
 2. **FEC** (federal) — IL candidates + Schedule A/B/E
-   - CLI: `python run.py sync-fec-il-federal` (needs `FEC_API_KEY`). Backfills: `backfill-fec-schedule-{a,b,e}`. Donor matching: `refresh-fec-local-donor-matches` (runs automatically after `sync-fec-il-federal`).
+   - CLI: `python run.py sync-fec-il-federal --refresh-cache` (needs `FEC_API_KEY`; `--refresh-cache` forces a live pull — see "FEC silent no-op" under Data Refresh Schedule). Backfills: `backfill-fec-schedule-{a,b,e}`. Donor matching: `refresh-fec-local-donor-matches` (runs automatically after `sync-fec-il-federal`).
 3. **IL SOS** — Lobbying entities/clients + daily lobbyist/entity/client extract
 4. **IRS 527** — Political org registrations, reports, directors, expenditures
 5. **City of Chicago (Socrata)** — Contracts, payments, lobbyist contributions, lobbying activity (Phase 1)
@@ -316,8 +316,8 @@ Do **NOT** run autonomously via Claude. Provide the user the exact command to ru
 ## Data Refresh Schedule
 
 **Weekly** (routine):
-1. ISBE: `sunshine-import --download` (hardened native path — see "ISBE bulk download" above). Every few days near filing deadlines.
-2. FEC main sync: `sync-fec-il-federal`.
+1. ISBE: `sunshine-import --download` (hardened native path — see "ISBE bulk download" above). Every few days near filing deadlines. Then gate: `validate-freshness --source isbe`.
+2. FEC main sync: `sync-fec-il-federal --refresh-cache`. **The `--refresh-cache` flag is required** — without it the sync replays the legacy payload cache (`api_calls_made=0`) and refreshes **nothing**, while still reporting success (see "FEC silent no-op" below). Then gate: `validate-freshness --source fec`.
 3. Post-import chain: `run-cross-matching --only all` → `refresh-analytics --with-snapshot` → `systemctl restart ilcf-web.service`.
 
 **Monthly**: FEC backfills (`backfill-fec-schedule-{a,b,e}` — Schedule E weekly during election season), `import-irs527`, `import-chicago-phase1`, `import-openbook-batch` as needed.
@@ -327,6 +327,25 @@ Do **NOT** run autonomously via Claude. Provide the user the exact command to ru
 **Notes**:
 - `refresh-fec-local-donor-matches` runs automatically after `sync-fec-il-federal` (via `--refresh-local-matches` default). Standalone only after a backfill or if that flag was skipped.
 - `run-cross-matching` + `refresh-analytics` are long-running — use `tmux`/`screen` on the server.
+
+### FEC silent no-op + freshness gate
+
+**FEC silent no-op (2026-06-24):** `sync-fec-il-federal` routes every API request
+through a legacy SQLite payload cache (`database/federal_fec._request_with_cache`).
+A cache hit does **not** increment `api_calls_made`, so a routine sync can report
+success with `api_calls_made: 0` and re-upsert identical rows — leaving Schedule A
+months stale (it was stuck at 2025-12-31). **Always pass `--refresh-cache`** to force
+a live pull. Schedule B/E are only refreshed by `backfill-fec-schedule-{b,e}`, not the
+main sync.
+
+**`validate-freshness` gate** (`database/data_freshness.py`): post-refresh gate that
+checks `MAX(date)` per source table and exits non-zero if data is stale/empty/missing
+— the backstop that catches a no-op refresh regardless of cause. Run it as the final
+step of any refresh (`--source isbe` / `--source fec` to gate one half). Signals:
+ISBE uses `isbe_filed_docs.received_datetime` (transaction dates lag ~4-5 months and
+would false-positive); FEC uses Schedule A/B/E transaction dates. Thresholds are
+generous (catch broken refreshes, not normal filing lag) — see `DEFAULT_SPECS`.
+Tests: `tests/test_data_freshness.py` (includes the no-op regression).
 
 ## Common Operations
 

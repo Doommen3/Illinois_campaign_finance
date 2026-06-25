@@ -998,6 +998,69 @@ def refresh_analytics_command(
         conn.close()
 
 
+@cli.command('validate-freshness')
+@click.option('--source', type=click.Choice(['all', 'isbe', 'fec']), default='all', show_default=True,
+              help='Limit checks to one data source (run after a partial refresh)')
+@click.option('--max-staleness-days', type=int, default=None,
+              help='Override every table threshold with a single max age in days')
+@click.option('--allow-missing', is_flag=True,
+              help='Treat missing tables as a pass instead of a failure')
+@click.option('--warn-only', is_flag=True,
+              help='Report problems but always exit 0 (no gate)')
+def validate_freshness_command(source, max_staleness_days, allow_missing, warn_only):
+    """Validate that source tables hold recent data — refresh-chain gate.
+
+    Exits non-zero if any checked table is stale or empty (or missing, unless
+    --allow-missing). Catches silent no-op refreshes such as a FEC sync that
+    replays its cache (api_calls_made=0) and leaves data months stale. Run as
+    the final step of a refresh chain, e.g. `validate-freshness --source fec`
+    after `sync-fec-il-federal`.
+    """
+    from datetime import date
+    from database.data_freshness import (
+        DEFAULT_SPECS,
+        STATUS_MISSING,
+        check_freshness,
+        format_report,
+    )
+
+    source_arg = None if source == 'all' else source
+    conn = get_db(_db_target())
+    try:
+        as_of = date.today()
+        results = check_freshness(
+            conn,
+            DEFAULT_SPECS,
+            as_of=as_of,
+            source=source_arg,
+            max_staleness_days=max_staleness_days,
+        )
+    except Exception as e:
+        click.echo(f'Error validating freshness: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+    click.echo(format_report(results, as_of=as_of))
+
+    if not results:
+        click.echo('No freshness checks matched the given --source.', err=True)
+        sys.exit(1)
+
+    failures = [
+        r for r in results
+        if not r.ok and not (allow_missing and r.status == STATUS_MISSING)
+    ]
+    if failures:
+        labels = ', '.join(r.spec.label for r in failures)
+        click.echo(f'FAIL: {len(failures)} table(s) failed freshness validation: {labels}', err=True)
+        if not warn_only:
+            sys.exit(1)
+        click.echo('(--warn-only set: not failing the gate)')
+    else:
+        click.echo(f'OK: all {len(results)} freshness check(s) passed')
+
+
 @cli.command('rebuild-local-donor-entities')
 @click.option('--source', default='bulk_receipts', show_default=True,
               help='analytics_donor_summary source to process')
