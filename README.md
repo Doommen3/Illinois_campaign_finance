@@ -110,6 +110,21 @@ python run.py runserver --port 5000
 
 In production the app is served via Gunicorn against the WSGI entry point (`wsgi.py`). Run `python run.py --help` to see the full set of ingestion, scraping, and maintenance commands.
 
+### Privacy and removal requests
+
+Contributor addresses come from public ISBE filings. Removal requests under the
+Illinois Judicial Privacy Act (705 ILCS 90) and similar laws are honored by
+scrubbing the address to ISBE's own `Redaction Requested` format while keeping
+the contribution record. The public policy is at `/privacy`.
+
+```bash
+python run.py add-privacy-redaction --first Jane --last Doe --zip 60601 \
+  --requested-by "Requester" --request-date 2026-07-16 --statute "705 ILCS 90"
+python run.py apply-privacy-redactions   # re-apply after sync-prod-db; sunshine-import does this automatically
+```
+
+Runbook: `docs/runbooks/privacy_takedown_response.md`.
+
 ### Tests
 
 ```bash
