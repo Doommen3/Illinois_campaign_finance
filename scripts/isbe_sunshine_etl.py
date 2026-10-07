@@ -1829,6 +1829,30 @@ def print_summary(conn):
 # Main
 # ---------------------------------------------------------------------------
 
+
+def apply_privacy_redactions_post_load(db_url: str) -> dict:
+    """Re-apply personal-information redactions after the drop-and-reload.
+
+    create_schema() drops isbe_* every run, so any address scrubbed under the
+    Judicial Privacy Act would resurface without this. Runs before the
+    matviews are built so they never contain the unredacted rows. Returns {}
+    when the privacy_redactions table does not exist (fresh DB before init-db).
+    """
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from database.pg_compat import PostgresCompatConnection
+    from database.privacy_redactions import apply_privacy_redactions
+
+    compat = PostgresCompatConnection(db_url)
+    try:
+        counts = apply_privacy_redactions(compat)
+        compat.commit()
+    finally:
+        compat.close()
+    return counts
+
+
 def main():
     parser = argparse.ArgumentParser(description="ISBE Sunshine ETL for PostgreSQL")
     parser.add_argument("--bulk-dir", default=str(DEFAULT_BULK_DIR),
@@ -1928,6 +1952,11 @@ def main():
             update_officer_committees(conn)
         if "CmteCandidateLinks.txt" in files_to_load:
             infer_missing_candidate_links(conn)
+
+        # Privacy redactions (must precede the matviews; see the function docstring)
+        counts = apply_privacy_redactions_post_load(args.db_url)
+        if any(counts.values()):
+            print(f"  Privacy redactions applied: {counts}")
 
         # Materialized views
         if not args.skip_views:

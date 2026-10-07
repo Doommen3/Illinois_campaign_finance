@@ -319,6 +319,22 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_city_state
     ON analytics_donor_summary(donor_state, donor_city);
 
+-- Personal-information removal requests (Judicial Privacy Act etc.). Request
+-- rows are inserted on prod, never committed to the repo. Applied by
+-- apply_privacy_redactions() in database/privacy_redactions.py.
+CREATE TABLE IF NOT EXISTS privacy_redactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    last_name TEXT NOT NULL,
+    first_name TEXT, -- NULL matches any first name
+    zip5 TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    request_date DATE NOT NULL,
+    statute TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_applied_at TIMESTAMP
+);
+
 -- Local donor entity resolution layer (confidence-scored merges)
 CREATE TABLE IF NOT EXISTS donor_entity_local (
     entity_id TEXT PRIMARY KEY,

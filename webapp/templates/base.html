@@ -151,8 +151,11 @@
                 {% if public_contact_email %}
                 <a href="mailto:{{ public_contact_email }}">{{ public_contact_email }}</a>
                 {% else %}
-                Please contact the site maintainer for questions, corrections, or data issues.
+                Please contact the site maintainer for questions, corrections, data issues, or <a href="{{ url_for('main.privacy') }}">removal requests</a>.
                 {% endif %}
+            </p>
+            <p class="footer-contact">
+                <a href="{{ url_for('main.privacy') }}">Privacy &amp; removal requests</a>
             </p>
             <p class="footer-attribution">
                 Built on ETL groundwork from

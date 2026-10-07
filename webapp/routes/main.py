@@ -2699,6 +2699,12 @@ def about():
     return render_template('about.html')
 
 
+@main_bp.route('/privacy')
+def privacy():
+    """How the site handles personal-information removal requests."""
+    return render_template('privacy.html')
+
+
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""

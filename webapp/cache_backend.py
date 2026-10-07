@@ -176,3 +176,29 @@ class RouteCache:
                 client.delete(self._redis_key(cache_key))
             except Exception:
                 logger.exception(f"RouteCache[{self.name}].invalidate: Redis delete failed")
+
+
+def flush_all_route_caches() -> int:
+    """Delete every `ilcf:cache:*` key in Redis; return the number deleted.
+
+    Only the Redis layer is flushed. The in-process fallback dicts live in
+    each gunicorn worker and are cleared by restarting the service.
+    """
+    client = _get_redis_client()
+    if client is None:
+        logger.info("flush_all_route_caches: Redis unavailable; nothing flushed")
+        return 0
+    deleted = 0
+    try:
+        # SCAN, not KEYS, so a large keyspace does not block Redis.
+        cursor = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match="ilcf:cache:*", count=100)
+            if keys:
+                deleted += client.delete(*keys)
+            if cursor == 0:
+                break
+    except Exception as exc:
+        logger.info(f"flush_all_route_caches: Redis scan/delete failed ({exc})")
+        return 0
+    return deleted

@@ -1060,6 +1060,87 @@ def validate_freshness_command(source, max_staleness_days, allow_missing, warn_o
     else:
         click.echo(f'OK: all {len(results)} freshness check(s) passed')
 
+def _run_privacy_redaction_post_steps(conn, skip_matview_refresh=False, skip_cache_flush=False):
+    """Apply every recorded privacy redaction, refresh the matview, flush route caches."""
+    import time
+    from database.privacy_redactions import apply_privacy_redactions, refresh_dependent_views
+
+    counts = apply_privacy_redactions(conn)
+    conn.commit()
+    for table, changed in counts.items():
+        click.echo(f'{table}: {changed}')
+    if not skip_matview_refresh:
+        started = time.monotonic()
+        refresh_dependent_views(conn)
+        conn.commit()
+        click.echo(f'isbe_condensed_receipts refresh: {time.monotonic() - started:.1f}s')
+    if not skip_cache_flush:
+        from webapp.cache_backend import flush_all_route_caches
+        click.echo(f'Route cache keys flushed: {flush_all_route_caches()}')
+    click.echo('Restart ilcf-web.service to clear the in-process search cache.')
+
+
+@cli.command('add-privacy-redaction')
+@click.option('--last', 'last_name', required=True, help='Last name as it appears in the filings')
+@click.option('--zip', 'zip5', required=True, help='Five-digit zip code')
+@click.option('--requested-by', required=True, help='Requester, or the representative acting for them')
+@click.option('--first', 'first_name', default=None, help='First name (omit to match any first name)')
+@click.option('--request-date', default=None, help='Date of the request, YYYY-MM-DD  [default: today]')
+@click.option('--statute', default='705 ILCS 90', show_default=True, help='Statute cited in the request')
+@click.option('--notes', default=None, help='Free-text notes')
+@click.option('--no-apply', is_flag=True, help='Record the request without applying it')
+def add_privacy_redaction_command(last_name, zip5, requested_by, first_name, request_date, statute, notes, no_apply):
+    """Record a personal-information removal request and apply it.
+
+    Matches contributor rows on last name + zip5 (first name optional) and
+    scrubs their address to ISBE's `Redaction Requested` format. Unless
+    --no-apply, then runs the same steps as `apply-privacy-redactions`.
+    """
+    from datetime import date
+    from database.privacy_redactions import add_privacy_redaction
+
+    conn = get_db(_db_target())
+    try:
+        new_id = add_privacy_redaction(
+            conn,
+            last_name=last_name,
+            zip5=zip5,
+            first_name=first_name,
+            requested_by=requested_by,
+            request_date=request_date or date.today(),
+            statute=statute,
+            notes=notes,
+        )
+        conn.commit()
+        click.echo(f'Added privacy redaction id {new_id}')
+        if not no_apply:
+            _run_privacy_redaction_post_steps(conn)
+    except Exception as e:
+        click.echo(f'Error in add-privacy-redaction: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@cli.command('apply-privacy-redactions')
+@click.option('--skip-matview-refresh', is_flag=True,
+              help='Skip REFRESH MATERIALIZED VIEW CONCURRENTLY isbe_condensed_receipts')
+@click.option('--skip-cache-flush', is_flag=True, help='Skip deleting the Redis route-cache keys')
+def apply_privacy_redactions_command(skip_matview_refresh, skip_cache_flush):
+    """Re-apply every recorded privacy redaction.
+
+    Use after `sync-prod-db` or a manual DB change.
+    """
+    conn = get_db(_db_target())
+    try:
+        _run_privacy_redaction_post_steps(conn, skip_matview_refresh, skip_cache_flush)
+    except Exception as e:
+        click.echo(f'Error applying privacy redactions: {e}', err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 
 @cli.command('rebuild-local-donor-entities')
 @click.option('--source', default='bulk_receipts', show_default=True,

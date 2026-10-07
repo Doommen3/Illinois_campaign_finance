@@ -4,6 +4,7 @@
 # Usage (run on the server, inside tmux):
 #   LOG=/srv/illinois_campaign_finance/shared/refresh_$(date +%Y%m%d_%H%M%S).log
 #   nohup bash /srv/illinois_campaign_finance/app/scripts/refresh_prod_chain.sh "$LOG" > /dev/null 2>&1 &
+# Set SKIP_RESTART=1 to leave the web service untouched at the end.
 #
 # Each step emits STEP_N_START/STEP_N_END markers so a Monitor (or `tail -f`)
 # can react per-step. Failures emit STEP_FAILED + CHAIN_FAILED and exit non-zero.
@@ -57,7 +58,8 @@ fi
 log "STEP4_END sunshine_import"
 
 log "STEP5_START sync_fec_il_federal"
-if ! $PYTHON run.py sync-fec-il-federal >> "$LOG" 2>&1; then
+# --refresh-cache is required: without it the sync replays the payload cache and refreshes nothing (CLAUDE.md "FEC silent no-op").
+if ! $PYTHON run.py sync-fec-il-federal --refresh-cache >> "$LOG" 2>&1; then
   fail "sync_fec_il_federal" 5
 fi
 log "STEP5_END sync_fec_il_federal"
@@ -74,6 +76,10 @@ if ! $PYTHON run.py refresh-analytics --with-snapshot >> "$LOG" 2>&1; then
 fi
 log "STEP7_END refresh_analytics"
 
+if [ "${SKIP_RESTART:-0}" = "1" ]; then
+  # SKIP_RESTART=1 keeps the site offline (e.g. a refresh that must land before a deploy goes live).
+  log "STEP8_SKIPPED restart_service (SKIP_RESTART=1)"
+else
 log "STEP8_START restart_service"
 systemctl restart ilcf-web.service
 sleep 5
@@ -85,5 +91,6 @@ if [ "$HTTP" != "200" ]; then
   fail "smoke_test_http_$HTTP" 9
 fi
 log "STEP8_END restart_service http=$HTTP"
+fi
 
 log "CHAIN_END"

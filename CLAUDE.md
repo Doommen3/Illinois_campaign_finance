@@ -368,6 +368,11 @@ python run.py import-openbook-batch --seed-source ameren_case_study --seed-like 
 # Cross-matching + analytics
 python run.py run-cross-matching --only all
 python run.py refresh-analytics --with-snapshot
+
+# Personal-information removal request (Judicial Privacy Act etc.) — see
+# docs/runbooks/privacy_takedown_response.md. Request rows live only in the DB.
+python run.py add-privacy-redaction --first Jane --last Doe --zip 60601 --requested-by "Requester" --request-date 2026-07-16
+python run.py apply-privacy-redactions   # re-apply after sync-prod-db; sunshine-import does this automatically
 ```
 
 ## Database Notes
@@ -379,3 +384,20 @@ python run.py refresh-analytics --with-snapshot
 - All IRS 527 tables prefixed `irs527_`.
 - OpenBook tables: `openbook_vendor_seed` (candidate names), `openbook_vendor_match` (autosuggest matches; `UNIQUE(seed_id, openbook_vendor_key)`; `search_term_used` tracks which smart-search term produced each match), `openbook_contracts_raw` / `openbook_contract_warrants` / `openbook_contract_detail_status` (scraped contract data), `openbook_contributions_raw`, `openbook_scrape_runs`.
 - OpenBook routes: `/openbook/` (resolved vendor directory) and `/openbook/<vendor_key>` (vendor detail with seed provenance). Cross-matching uses `openbook_vendor_seed → openbook_vendor_match` as canonical linkage to source datasets.
+
+## Privacy redactions (removal requests)
+
+`privacy_redactions` (schema.sql) holds personal-information removal requests
+(last name + zip5, first name optional). `database/privacy_redactions.py`
+scrubs matching rows in `isbe_receipts`, any real `bulk_receipts_clean*` table
+and `donors` to ISBE's own format (`address1 = 'Redaction Requested'`, other
+address fields NULL, `redaction_requested = TRUE`) and deletes the donor's
+`analytics_donor_summary` rows (rebuilt redacted on the next `refresh-analytics`).
+Contribution rows are never deleted. Because `sunshine-import` drops and
+reloads every `isbe_*` table, the ETL re-applies all requests before building
+matviews (`apply_privacy_redactions_post_load` in `scripts/isbe_sunshine_etl.py`).
+Donor keys embed the street address, so a redacted donor gets a new key and the
+old address-bearing `/donors/key/...` URL 404s by design. Public policy page:
+`/privacy`. Never commit request rows or real names to the repo; tests use
+fictional people. Legal background: `docs/audits/judicial_privacy_takedown_2026-07-16.md`.
+

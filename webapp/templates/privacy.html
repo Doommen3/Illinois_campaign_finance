@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy &amp; Removal Requests - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Privacy &amp; Removal Requests</h1>
+<p class="subtitle">
+    What personal information appears on FollowTheMoneyIL.com, where it comes from, and how to ask us to remove a
+    home address.
+</p>
+
+<div class="status-section">
+    <h2>What This Site Publishes and Where It Comes From</h2>
+    <p>This site republishes public campaign finance and lobbying records from these sources:</p>
+    <ul>
+        <li>Illinois State Board of Elections (ISBE) bulk campaign-disclosure files</li>
+        <li>U.S. Federal Election Commission (FEC)</li>
+        <li>Illinois Secretary of State lobbying data</li>
+        <li>IRS filings by political organizations (Section 527)</li>
+    </ul>
+    <p>
+        Contributor names, amounts, dates, employers, occupations, and addresses are part of the public disclosure
+        record as it was filed.
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Removal Requests We Honor</h2>
+    <p>We remove home addresses when we receive a written request under any of these laws:</p>
+    <ul>
+        <li>the Illinois Judicial Privacy Act (705 ILCS 90), for judges and their immediate family members;</li>
+        <li>the Public Official Safety and Privacy Act (5 ILCS 347), for the public officials it covers;</li>
+        <li>the federal Daniel Anderl Judicial Security and Privacy Act, for federal judges.</li>
+    </ul>
+    <p>We act on a written request within 72 hours of receiving it.</p>
+</div>
+
+<div class="status-section">
+    <h2>What a Request Needs</h2>
+    <ul>
+        <li>The name exactly as it appears on this site.</li>
+        <li>The zip code shown with that name.</li>
+        <li>Which law the request is made under.</li>
+        <li>
+            If a representative sends the request, a copy of the officer's written consent
+            (705 ILCS 90/2-10(c)).
+        </li>
+    </ul>
+</div>
+
+<div class="status-section">
+    <h2>What We Redact and What We Keep</h2>
+    <p>We use the same redaction format as the State Board of Elections:</p>
+    <ul>
+        <li>The street address is replaced with "Redaction Requested".</li>
+        <li>The second address line, city, state, and zip code are removed.</li>
+    </ul>
+    <p>
+        The rest of the contribution record stays: the contributor's name, the amount, the date, the committee that
+        received it, and the contributor's occupation and employer. That information is the disclosure itself.
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>The Durable Fix: Redaction at the Source</h2>
+    <p>
+        The State Board of Elections accepts redaction requests through its
+        <a href="https://www.elections.il.gov/RedactionRequest.aspx" target="_blank" rel="noopener noreferrer">Redaction Request form</a>.
+        Select "Judge" or the position that applies.
+    </p>
+    <p>
+        Once the State Board redacts a record at the source, this site picks up the change on its next data import,
+        and so does every other site that republishes State Board data.
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>How to Contact Us</h2>
+    <p>
+        {% if public_contact_email %}
+        Send removal requests to <a href="mailto:{{ public_contact_email }}">{{ public_contact_email }}</a>.
+        {% else %}
+        Please contact the site maintainer for questions, corrections, data issues, or removal requests.
+        {% endif %}
+    </p>
+</div>
+{% endblock %}
