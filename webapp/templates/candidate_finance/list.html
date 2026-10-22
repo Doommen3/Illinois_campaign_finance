@@ -9,13 +9,11 @@
     office=office,
     candidate_party=candidate_party,
     committee_party=committee_party,
-    start_date=start_date,
-    year=year,
-    cycle=cycle,
     min_receipts=min_receipts,
     min_expenditures=min_expenditures,
     sort=field,
-    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc',
+    **scope_query
 ) }}">
     {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
 </a>
@@ -24,7 +22,7 @@
 {% block content %}
 <h1>Candidate Committee Finance</h1>
 
-{% include "_partials/active_filter_chip.html" %}
+{% include "_partials/time_scope_bar.html" %}
 
 {% if not table_available %}
 <div class="status-section">
@@ -38,21 +36,11 @@
     <input type="text" name="q" value="{{ query }}" placeholder="Search candidate, committee, or office">
     <input type="text" name="office" value="{{ office }}" placeholder="Office contains...">
     <input type="text" name="candidate_party" value="{{ candidate_party }}" placeholder="Candidate party contains...">
-    <input type="date" name="start_date" value="{{ start_date }}" placeholder="Start date">
-    <select name="year">
-        <option value="">All years</option>
-        {% for option in available_years %}
-        <option value="{{ option }}" {% if year|int == option %}selected{% endif %}>{{ option }}</option>
-        {% endfor %}
-    </select>
-    <select name="cycle">
-        <option value="">All cycles</option>
-        {% for option in available_cycles %}
-        <option value="{{ option }}" {% if cycle|int == option %}selected{% endif %}>{{ option }}</option>
-        {% endfor %}
-    </select>
     <input type="text" name="min_receipts" value="{{ min_receipts }}" placeholder="Min receipts">
     <input type="text" name="min_expenditures" value="{{ min_expenditures }}" placeholder="Min expenditures">
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="dir" value="{{ sort_dir }}">
     <button type="submit">Apply</button>
@@ -67,13 +55,11 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
-        start_date=start_date,
-        year=year,
-        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Export CSV</a>
     |
     <a href="{{ url_for(
@@ -82,13 +68,11 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
-        start_date=start_date,
-        year=year,
-        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Share This View</a>
 </div>
 
@@ -182,13 +166,11 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
-        start_date=start_date,
-        year=year,
-        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">&laquo; Previous</a>
     {% endif %}
 
@@ -202,13 +184,11 @@
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
-        start_date=start_date,
-        year=year,
-        cycle=cycle,
         min_receipts=min_receipts,
         min_expenditures=min_expenditures,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Next &raquo;</a>
     {% endif %}
 </nav>

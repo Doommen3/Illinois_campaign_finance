@@ -334,7 +334,7 @@ def _extract_top_state_race_href(response_data: bytes, race_label: str) -> str:
 def _extract_first_top_state_race_label(response_data: bytes) -> str:
     html = response_data.decode("utf-8")
     match = re.search(
-        r"<h2>Top State Races</h2>.*?<tbody>\s*<tr>\s*<td>\s*<a[^>]*>\s*([^<]+)\s*</a>",
+        r"<h2>Top State Races.*?</h2>.*?<tbody>\s*<tr>\s*<td>\s*<a[^>]*>\s*([^<]+)\s*</a>",
         html,
         flags=re.DOTALL,
     )
@@ -1127,7 +1127,7 @@ def test_top_state_races_rows_include_clickable_hrefs(analytics_client):
     params = parse_qs(parsed.query)
 
     assert parsed.path.startswith("/analytics/state-races/")
-    assert params.get("period") == ["2026cycle"]
+    assert params.get("period") == ["cycle:2026"]  # links carry the canonical scope key
     assert "date_from" not in params
     assert "date_to" not in params
 

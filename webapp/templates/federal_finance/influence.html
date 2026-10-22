@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Influence Scores - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_influence') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -21,7 +22,7 @@
     <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
     <input type="text" name="cluster_limit" value="{{ cluster_limit }}" placeholder="Limit">
     <button type="submit">Update</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_influence') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_influence', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -31,7 +32,7 @@
 {% else %}
 <div class="two-column">
     <div class="column">
-        <h2>Top Donors by Influence</h2>
+        <h2>Top Donors by Influence {{ scope_tag() }}</h2>
         <p class="help-text">Donors ranked by a composite influence score combining total contribution amounts, number of candidate connections, and network centrality (PageRank).</p>
         <table class="data-table">
             <thead>
@@ -42,7 +43,7 @@
                 <tr>
                     <td>
                         {% if row.donor_entity_key %}
-                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, cycle=cycle) }}">{{ row.label }}</a>
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.donor_entity_key, **scope_query) }}">{{ row.label }}</a>
                         {% else %}{{ row.label }}{% endif %}
                     </td>
                     <td>{{ row.influence_score }}</td>
@@ -58,7 +59,7 @@
     </div>
 
     <div class="column">
-        <h2>Top Candidates by Influence</h2>
+        <h2>Top Candidates by Influence {{ scope_tag() }}</h2>
         <p class="help-text">Candidates ranked by influence score. Higher scores indicate candidates with more donors, larger total contributions, and connections to influential donors.</p>
         <table class="data-table">
             <thead>
@@ -69,7 +70,7 @@
                 <tr>
                     <td>
                         {% if row.candidate_id %}
-                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.label }}</a>
                         {% else %}{{ row.label }}{% endif %}
                     </td>
                     <td>{{ row.influence_score }}</td>

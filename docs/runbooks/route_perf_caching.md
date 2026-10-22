@@ -21,22 +21,24 @@ All caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags. Append `?refr
 
 ## Performance baselines
 
-| Route | TTL | Cold | Warm (median) |
-|---|---|---|---|
-| `/analytics/networks` | 1800s | ~104s | ~420ms |
-| `/analytics/` | 1800s | ~27s | ~14ms |
-| `/analytics/risk` | 1800s | ~18s | ~400ms |
-| `/analytics/relationships` | 1800s | ~110s | ~400ms |
-| `/candidate-finance/` | 180s | — | — |
+| Route | TTL | Cold | Warm (median) | After time-scope overhaul (local M3 Pro, 2026-10-22; cold / warm median of 2) |
+|---|---|---|---|---|
+| `/analytics/networks` | 1800s | ~104s | ~420ms | 92.5s / 116ms |
+| `/analytics/` | 1800s | ~27s | ~14ms | 32.0s / 49ms |
+| `/analytics/risk` | 1800s | ~18s | ~400ms | 10.9s / 30ms |
+| `/analytics/relationships` | 1800s | ~110s | ~400ms | 107.3s / 24ms |
+| `/candidate-finance/` | 180s | — | — | — |
+
+The first Cold/Warm columns are the pre-overhaul prod measurements; the last column was taken on the local prod-sized `ilcf` after cache keys moved to the resolved scope (`scope_cache_key`), so the default window is the whole current cycle (`2025-01-01..2026-12-31`) rather than cycle-start..today. Cold cost is the same order of magnitude; warm hits are unchanged in kind (in-process cache). Not directly comparable machine-to-machine — re-measure on prod after deploy.
 
 `bulk_candidate_committee_finance_agg` is a **view**, not a table — it joins/aggregates 6.4M receipt rows on each access.
 
 ## Per-worker cache + startup prewarm
 
-`warm_analytics_caches()` runs in a background thread per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`). It pre-populates risk, networks, and relationships caches with default filter values (`period=2026cycle`, default limits).
+`warm_analytics_caches()` runs in a background thread per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`). It pre-populates risk, networks, and relationships caches with default filter values (the current election cycle resolved by `resolve_time_scope(default="cycle:current", args={})`, default limits; the risk cache keys on the `filed` axis, the others on `received`).
 
 - **Why prewarm**: gunicorn `--workers 3` means 3 separate Python processes, each with its own in-process dict cache. Without prewarm, ~33% of requests hit a warm worker. Prewarm warms all workers on startup.
-- **Cache key alignment**: prewarm keys must exactly match `_parse_filters()` defaults — otherwise prewarm results won't be hit.
+- **Cache key alignment**: prewarm keys must exactly match `_parse_filters()` defaults — otherwise prewarm results won't be hit. Both sides derive the key from the resolved scope (`scope_cache_key(scope)` = `axis:start:end`), so a cycle preset's key is stable across days; only `last12m` and custom windows roll.
 - **TTL choice**: 1800s (30 min) ensures caches survive between typical user sessions. Data only changes on import, so long TTL is safe.
 - **Cost**: ~2-3 min per worker for prewarm to complete.
 
@@ -57,7 +59,7 @@ Endpoint: `/experimental/viz-lab/data/network_slice`.
 
 - Report-driven pages/queries filter by `filed_date`.
 - Contribution-driven pages/queries filter by `transaction_date` (or `received_date` where bulk receipts don't expose transaction timestamps).
-- Legacy routes (`/reports`, `/donors`, `/committees`, search report/filed-doc/donor-key sections) propagate the active global period window end-to-end.
+- Every page resolves its own time scope from the URL (`period=`, `cycle=`, `year=`, or `date_from`/`date_to`) via `webapp/utils/time_scope.py`; list and search pages default to the current cycle, entity profiles to all time with a current-cycle subtotal. The scope bar partial shows the resolved window; links inside a section carry it, top-nav links do not (there is no global period any more).
 - Geo drilldown cache keys include range + geo coords (`period/range`, `date_from/date_to`, `geo_type`, `geo_value`, optional `geo_state`) plus pagination/sort params.
 
 ## Search route guardrails

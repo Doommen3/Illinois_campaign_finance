@@ -8,7 +8,7 @@ import re
 
 from flask import Blueprint, render_template, request, current_app, abort, jsonify
 from webapp.utils.search_normalize import normalize_search_query
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.time_scope import current_cycle, cycle_window, resolve_time_scope, scope_params
 
 lobbying_bp = Blueprint('lobbying', __name__)
 
@@ -45,11 +45,20 @@ def _scalar(conn, sql, params=(), default=0):
     return default if value is None else value
 
 
-def _resolved_time_window() -> tuple[str | None, str | None]:
-    period = get_active_period()
-    explicit_from = request.args.get("date_from", "", type=str).strip()
-    explicit_to = request.args.get("date_to", "", type=str).strip()
-    return period_to_date_window(period, explicit_from, explicit_to)
+def _resolved_time_window():
+    scope = resolve_time_scope(default="cycle:current", axis="received")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
+    return scope, date_from, date_to
+
+
+def _scope_context(scope) -> dict:
+    return {
+        "time_scope": scope,
+        "scope_default_key": f"cycle:{current_cycle()}",
+        "time_scope_source_label": "IL SOS",
+        "scope_query": scope_params(scope),
+    }
 
 
 def _bulk_donor_key_sql(alias: str = "r") -> str:
@@ -658,10 +667,11 @@ def _build_money_destinations(
 def list_entities():
     """List lobbying entities with client counts and match counts."""
     conn = current_app.get_database()
+    scope = resolve_time_scope(default="cycle:current", axis="reg_year")
 
     if not _table_exists(conn, "lobbying_entities"):
         return render_template('lobbying/list.html', entities=[], total=0,
-                               page=1, total_pages=1, query='')
+                               page=1, total_pages=1, query='', **_scope_context(scope))
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -669,11 +679,19 @@ def list_entities():
     raw_query = request.args.get('q', '').strip()
     query = normalize_search_query(raw_query) or raw_query.strip()
 
-    where_clause = ""
+    # reg_year scopes snap to whole years; NULL reg_year rows are hidden under a bound.
+    conditions = []
     params = []
     if query:
-        where_clause = "WHERE e.entity_name LIKE ?"
+        conditions.append("e.entity_name LIKE ?")
         params.append(f"%{query}%")
+    if scope.start:
+        conditions.append("e.reg_year >= ?")
+        params.append(scope.start.year)
+    if scope.end:
+        conditions.append("e.reg_year <= ?")
+        params.append(scope.end.year)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     total = _scalar(
         conn,
@@ -702,7 +720,8 @@ def list_entities():
 
     return render_template('lobbying/list.html',
                            entities=entities, total=total,
-                           page=page, total_pages=total_pages, query=query)
+                           page=page, total_pages=total_pages, query=query,
+                           **_scope_context(scope))
 
 
 @lobbying_bp.route('/suggest')
@@ -751,7 +770,9 @@ def suggest_flow_clients():
 def entity_detail(entity_id):
     """Entity detail: clients, matched donors, money destinations, matched payees."""
     conn = current_app.get_database()
-    date_from, date_to = _resolved_time_window()
+    scope = resolve_time_scope(default="all", axis="received")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     if not _table_exists(conn, "lobbying_entities"):
         abort(404)
@@ -806,6 +827,14 @@ def entity_detail(entity_id):
         date_from=date_from,
         date_to=date_to,
     )
+    cycle_start, cycle_end = cycle_window(current_cycle())
+    cycle_total = _build_money_destinations(
+        conn,
+        donor_matches,
+        top_limit=10,
+        date_from=cycle_start.isoformat(),
+        date_to=cycle_end.isoformat(),
+    )["total_amount"]
 
     # Expenditure matches for this entity
     expenditure_matches = []
@@ -826,14 +855,20 @@ def entity_detail(entity_id):
                            donor_matches=donor_matches,
                            donor_band_summary=donor_band_summary,
                            money_destinations=money_destinations,
-                           expenditure_matches=expenditure_matches)
+                           expenditure_matches=expenditure_matches,
+                           time_scope=scope,
+                           scope_default_key="all",
+                           time_scope_source_label="ISBE",
+                           cycle_total=cycle_total)
 
 
 @lobbying_bp.route('/client/<int:client_id>')
 def client_detail(client_id):
     """Client detail: entities, donor links, money destinations, payee and 527 matches."""
     conn = current_app.get_database()
-    date_from, date_to = _resolved_time_window()
+    scope = resolve_time_scope(default="all", axis="received")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     if not _table_exists(conn, "lobbying_clients"):
         abort(404)
@@ -880,6 +915,14 @@ def client_detail(client_id):
         date_from=date_from,
         date_to=date_to,
     )
+    cycle_start, cycle_end = cycle_window(current_cycle())
+    cycle_total = _build_money_destinations(
+        conn,
+        donor_matches,
+        top_limit=10,
+        date_from=cycle_start.isoformat(),
+        date_to=cycle_end.isoformat(),
+    )["total_amount"]
 
     # Expenditure matches
     expenditure_matches = []
@@ -915,7 +958,11 @@ def client_detail(client_id):
                            donor_band_summary=donor_band_summary,
                            money_destinations=money_destinations,
                            expenditure_matches=expenditure_matches,
-                           org_527_matches=org_527_matches)
+                           org_527_matches=org_527_matches,
+                           time_scope=scope,
+                           scope_default_key="all",
+                           time_scope_source_label="ISBE",
+                           cycle_total=cycle_total)
 
 
 @lobbying_bp.route('/flows')
@@ -923,14 +970,16 @@ def flows():
     """Sankey diagram page: lobbying client -> committee money flows via matched donors."""
     raw_client = request.args.get('client', '').strip()
     client_filter = normalize_search_query(raw_client) or raw_client.strip()
-    return render_template('lobbying/flows.html', client_filter=client_filter)
+    scope = resolve_time_scope(default="cycle:current", axis="received")
+    return render_template('lobbying/flows.html', client_filter=client_filter,
+                           **_scope_context(scope))
 
 
 @lobbying_bp.route('/flows/data')
 def flows_data():
     """JSON for Sankey diagram."""
     conn = current_app.get_database()
-    date_from, date_to = _resolved_time_window()
+    _scope, date_from, date_to = _resolved_time_window()
     has_time_window = bool((date_from or "").strip() or (date_to or "").strip())
 
     if not _table_exists(conn, "lobbying_donor_matches"):

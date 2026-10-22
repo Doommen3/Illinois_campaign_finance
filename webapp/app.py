@@ -12,7 +12,7 @@ from flask import Flask, abort, g, jsonify, render_template, request
 import config as app_config
 from database.connection import close_db, get_db
 from webapp.auth import get_csrf_token, get_current_user, validate_csrf_token
-from webapp.utils.time_filter import TIME_PERIODS, get_active_period
+from webapp.utils.scope_links import scope_form_hidden, scope_presets, scope_url
 
 DEFAULT_INSECURE_SECRET = "dev-secret-key-change-in-production"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
@@ -55,7 +55,14 @@ def _scalar(conn, sql: str, params=(), default=None):
     return default if value is None else value
 
 
-def _parse_date(value: str | None) -> date | None:
+def _parse_date(value: str | date | datetime | None) -> date | None:
+    # psycopg returns date/datetime objects for DATE/TIMESTAMP columns; the
+    # legacy string parsing below silently broke the whole data-status
+    # snapshot (and the prod "Data Status" strip) when handed one.
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
     text = (value or "").strip()
     if not text:
         return None
@@ -68,7 +75,7 @@ def _parse_date(value: str | None) -> date | None:
     return None
 
 
-def _age_days(value: str | None) -> int | None:
+def _age_days(value: str | date | datetime | None) -> int | None:
     parsed = _parse_date(value)
     if not parsed:
         return None
@@ -484,14 +491,12 @@ def create_app(config=None):
 
         threading.Thread(target=_prewarm_analytics_caches, daemon=True).start()
 
-    # Context processors
-    @app.context_processor
-    def inject_helpers():
-        def format_currency(value):
-            if value is None:
-                return '$0.00'
-            return '${:,.2f}'.format(value)
+    def get_global_data_status():
+        """Cached data-freshness snapshot (per-source latest dates); None on failure.
 
+        Shared by the context processor (Data Status strip) and by routes that
+        need a `data_through` date for the time-scope bar (webapp/utils/data_through.py).
+        """
         data_status = None
         try:
             ttl_seconds = max(0, int(app.config.get("GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS", 45)))
@@ -517,6 +522,19 @@ def create_app(config=None):
                             }
         except Exception:
             data_status = None
+        return data_status
+
+    app.get_global_data_status = get_global_data_status
+
+    # Context processors
+    @app.context_processor
+    def inject_helpers():
+        def format_currency(value):
+            if value is None:
+                return '$0.00'
+            return '${:,.2f}'.format(value)
+
+        data_status = get_global_data_status()
 
         return dict(
             format_currency=format_currency,
@@ -525,8 +543,9 @@ def create_app(config=None):
             public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
             csrf_token=get_csrf_token,
             global_data_status=data_status,
-            time_period=get_active_period(),
-            time_periods=TIME_PERIODS,
+            scope_url=scope_url,
+            scope_form_hidden=scope_form_hidden,
+            scope_presets=scope_presets,
             experimental_viz_lab_enabled=_as_bool(app.config.get("EXPERIMENTAL_VIZ_LAB_ENABLED", False)),
         )
 

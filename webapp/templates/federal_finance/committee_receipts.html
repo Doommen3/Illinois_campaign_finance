@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Committee Receipts - {{ detail.summary.committee_name if detail and detail.summary else committee_id }}{% endblock %}
 
@@ -7,7 +8,6 @@
 <p class="subtitle">
     Committee: <strong>{{ detail.summary.committee_name if detail and detail.summary else committee_id }}</strong>
     {% if detail and detail.summary %}| Committee ID: {{ detail.summary.committee_id }}{% endif %}
-    | Cycle: {{ cycle }}
 </p>
 <p class="help-text">
     This page shows itemized Schedule A receipts for one federal committee. When this committee appears in transfer chains, these rows provide source-of-funds context for committee-to-candidate transfer analysis.
@@ -41,7 +41,7 @@
         Linked candidate committees:
         {% for owner in detail.committee_owners %}
             {% if owner.candidate_id %}
-                <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=owner.candidate_id, cycle=cycle) }}">{{ owner.candidate_name }}</a>{% if owner.is_principal %} (principal){% endif %}{% if not loop.last %}, {% endif %}
+                <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=owner.candidate_id, **scope_query) }}">{{ owner.candidate_name }}</a>{% if owner.is_principal %} (principal){% endif %}{% if not loop.last %}, {% endif %}
             {% else %}
                 {{ owner.candidate_name }}{% if not loop.last %}, {% endif %}
             {% endif %}
@@ -52,17 +52,17 @@
 
 {% set next_receipt_dir = 'asc' if receipt_dir == 'desc' else 'desc' %}
 <div class="status-section">
-    <h2>Itemized Receipts (Schedule A)</h2>
+    <h2>Itemized Receipts (Schedule A) {{ scope_tag() }}</h2>
     <div class="table-scroll">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='date', receipt_dir=next_receipt_dir if receipt_sort == 'date' else 'desc') }}">Date</a></th>
-                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='donor', receipt_dir=next_receipt_dir if receipt_sort == 'donor' else 'asc') }}">Donor</a></th>
-                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='state', receipt_dir=next_receipt_dir if receipt_sort == 'state' else 'asc') }}">Location</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page, receipt_sort='date', receipt_dir=next_receipt_dir if receipt_sort == 'date' else 'desc', **scope_query) }}">Date</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page, receipt_sort='donor', receipt_dir=next_receipt_dir if receipt_sort == 'donor' else 'asc', **scope_query) }}">Donor</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page, receipt_sort='state', receipt_dir=next_receipt_dir if receipt_sort == 'state' else 'asc', **scope_query) }}">Location</a></th>
                     <th>Employer / Occupation</th>
-                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='type', receipt_dir=next_receipt_dir if receipt_sort == 'type' else 'asc') }}">Type</a></th>
-                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page, receipt_sort='amount', receipt_dir=next_receipt_dir if receipt_sort == 'amount' else 'desc') }}">Amount</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page, receipt_sort='type', receipt_dir=next_receipt_dir if receipt_sort == 'type' else 'asc', **scope_query) }}">Type</a></th>
+                    <th><a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page, receipt_sort='amount', receipt_dir=next_receipt_dir if receipt_sort == 'amount' else 'desc', **scope_query) }}">Amount</a></th>
                 </tr>
             </thead>
             <tbody>
@@ -72,7 +72,7 @@
                     <td>
                         {{ row.contributor_name if row.contributor_name else '-' }}
                         {% if row.candidate_id %}
-                        <br><small>Linked candidate: <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name if row.candidate_name else row.candidate_id }}</a></small>
+                        <br><small>Linked candidate: <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.candidate_name if row.candidate_name else row.candidate_id }}</a></small>
                         {% endif %}
                     </td>
                     <td>{{ row.contributor_city if row.contributor_city else '' }}{% if row.contributor_city and row.contributor_state %}, {% endif %}{{ row.contributor_state if row.contributor_state else '' }} {{ row.contributor_zip if row.contributor_zip else '' }}</td>
@@ -81,7 +81,7 @@
                     <td>{{ format_currency(row.contribution_receipt_amount) }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6">No Schedule A receipts found for this committee/cycle.</td></tr>
+                <tr><td colspan="6">No Schedule A receipts found for this committee in {{ time_scope.label }}.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -90,13 +90,13 @@
     {% if receipt_pages > 1 %}
     <nav class="pagination">
         {% if receipt_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page-1, receipt_sort=receipt_sort, receipt_dir=receipt_dir) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page-1, receipt_sort=receipt_sort, receipt_dir=receipt_dir, **scope_query) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ receipt_page }} of {{ receipt_pages }}</span>
 
         {% if receipt_page < receipt_pages %}
-        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, cycle=cycle, receipt_page=receipt_page+1, receipt_sort=receipt_sort, receipt_dir=receipt_dir) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=committee_id, receipt_page=receipt_page+1, receipt_sort=receipt_sort, receipt_dir=receipt_dir, **scope_query) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}

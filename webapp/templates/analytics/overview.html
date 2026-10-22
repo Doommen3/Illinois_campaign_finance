@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Analytics Overview - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -17,17 +18,12 @@
             <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
         </select>
     </label>
-    <label>
-        Date From
-        <input type="date" name="date_from" value="{{ date_from }}">
-    </label>
-    <label>
-        Date To
-        <input type="date" name="date_to" value="{{ date_to }}">
-    </label>
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     <label>
         Months
-        <input type="number" name="months" min="1" max="120" value="{{ months }}">
+        <input type="number" name="months" min="1" max="120" value="{{ months_param or '' }}" placeholder="{{ months }}">
     </label>
     <label>
         NLP Rows
@@ -97,7 +93,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Top State Races</h2>
+    <h2>Top State Races {{ scope_tag() }}</h2>
     {% if state_race_nonzero_below_visible %}
     <p class="help-text">Outside spending exists in lower-ranked races; sort by Outside Spending to view.</p>
     {% endif %}
@@ -121,7 +117,7 @@
             {% for row in state_race_analytics %}
             <tr>
                 <td>
-                    <a href="{{ url_for('analytics.state_race_detail', race_key=row.race_key, period=time_period_key, date_from=explicit_date_from if explicit_date_from else None, date_to=explicit_date_to if explicit_date_to else None, election_cycle=election_cycle if election_cycle is not none else None) }}">
+                    <a href="{{ url_for('analytics.state_race_detail', race_key=row.race_key, election_cycle=election_cycle if election_cycle is not none else None, **scope_query) }}">
                         {{ row.race_label }}
                     </a>
                 </td>
@@ -142,7 +138,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Trend Visuals</h2>
+    <h2>Trend Visuals {{ scope_tag() }}</h2>
     <p class="subtitle">Interactive monthly trend line and month-over-month change profile.</p>
     <div class="two-column">
         <div class="column">
@@ -163,7 +159,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Time-Series Preview</h2>
+    <h2>Time-Series Preview {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -189,7 +185,7 @@
         </tbody>
     </table>
     <p>
-        <a href="{{ url_for('analytics.geography', load_mode=load_mode, date_from=date_from, date_to=date_to, months=months, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit) }}">
+        <a href="{{ url_for('analytics.geography', load_mode=load_mode, months=months_param, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit, **scope_query) }}">
             View full geography and trends
         </a>
     </p>
@@ -197,7 +193,7 @@
 
 <div class="two-column">
     <div class="column">
-        <h2>NLP Preview</h2>
+        <h2>NLP Preview {{ scope_tag('All time') }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -219,14 +215,14 @@
             </tbody>
         </table>
         <p>
-            <a href="{{ url_for('analytics.donors', load_mode=load_mode, date_from=date_from, date_to=date_to, concentration_limit=concentration_limit, nlp_limit=nlp_limit) }}">
+            <a href="{{ url_for('analytics.donors', load_mode=load_mode, concentration_limit=concentration_limit, nlp_limit=nlp_limit, **scope_query) }}">
                 View full donor analytics
             </a>
         </p>
     </div>
 
     <div class="column">
-        <h2>Reconciliation Preview</h2>
+        <h2>Reconciliation Preview {{ scope_tag('All time') }}</h2>
         {% if data_sources.reconciliation_available %}
         <table class="data-table">
             <thead>
@@ -250,7 +246,7 @@
         <p>Reconciliation table is not available. Run bulk import to generate it.</p>
         {% endif %}
         <p>
-            <a href="{{ url_for('analytics.risk', load_mode=load_mode, date_from=date_from, date_to=date_to, anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff) }}">
+            <a href="{{ url_for('analytics.risk', load_mode=load_mode, anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff, **scope_query) }}">
                 View full risk analytics
             </a>
         </p>
@@ -258,7 +254,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Full-Mode Preview</h2>
+    <h2>Full-Mode Preview {{ scope_tag() }}</h2>
     {% if heavy_sections_loaded %}
     <p>
         Network nodes: <strong>{{ network.summary.node_count }}</strong>
@@ -268,13 +264,13 @@
         | City rows: <strong>{{ geo_summary.cities|length }}</strong>
     </p>
     <p>
-        <a href="{{ url_for('analytics.networks', load_mode='full', date_from=date_from, date_to=date_to, min_edge_amount=min_edge_amount, network_limit=network_limit) }}">View full network analytics</a>
+        <a href="{{ url_for('analytics.networks', load_mode='full', min_edge_amount=min_edge_amount, network_limit=network_limit, **scope_query) }}">View full network analytics</a>
         |
-        <a href="{{ url_for('analytics.risk', load_mode='full', date_from=date_from, date_to=date_to, anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff) }}">View full risk analytics</a>
+        <a href="{{ url_for('analytics.risk', load_mode='full', anomaly_limit=anomaly_limit, recon_limit=recon_limit, recon_min_abs_diff=recon_min_abs_diff, **scope_query) }}">View full risk analytics</a>
         |
-        <a href="{{ url_for('analytics.donors', load_mode='full', date_from=date_from, date_to=date_to, concentration_limit=concentration_limit, nlp_limit=nlp_limit) }}">View full donor analytics</a>
+        <a href="{{ url_for('analytics.donors', load_mode='full', concentration_limit=concentration_limit, nlp_limit=nlp_limit, **scope_query) }}">View full donor analytics</a>
         |
-        <a href="{{ url_for('analytics.geography', load_mode='full', date_from=date_from, date_to=date_to, months=months, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit) }}">View full geography analytics</a>
+        <a href="{{ url_for('analytics.geography', load_mode='full', months=months_param, geo_state_limit=geo_state_limit, geo_city_limit=geo_city_limit, **scope_query) }}">View full geography analytics</a>
     </p>
     {% else %}
     <p>Heavy sections are available in Full mode after the snapshot completes.</p>

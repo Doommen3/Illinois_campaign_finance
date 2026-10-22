@@ -1,28 +1,30 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Dashboard - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Dashboard Overview</h1>
-<p class="subtitle">Track Illinois local and federal campaign finance from bulk files and FEC syncs.
-    <span class="period-badge">{{ time_period.label }} ({{ time_period.description }})</span>
-</p>
+
+{% include "_partials/time_scope_bar.html" %}
+
+<p class="subtitle">Track Illinois local and federal campaign finance from bulk files and FEC syncs.</p>
 <p class="help-text">Dashboard showing aggregate statistics across all loaded data sources: ISBE state campaign finance (receipts, expenditures, committees, candidates), FEC federal data (Schedules A/B/E), IL SOS lobbying entities, and IRS 527 political organizations.</p>
 
 <div class="status-section">
     <h2>Start Here</h2>
     <p>Use guided templates first, then move to advanced pages as needed.</p>
     <p>
-        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='investigate') }}">Investigate a person/organization</a>
-        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='flow') }}">Trace money flow</a>
-        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='patterns') }}">Find unusual patterns this month</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='investigate', **scope_query) }}">Investigate a person/organization</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='flow', **scope_query) }}">Trace money flow</a>
+        <a class="btn btn-primary" href="{{ url_for('main.investigate_workspace', tab='patterns', **scope_query) }}">Find unusual patterns this month</a>
     </p>
     <p class="help-text">Advanced pages (optional):</p>
     <p>
-        <a class="btn btn-small btn-success" href="{{ url_for('main.candidates') }}">Candidates</a>
-        <a class="btn btn-small btn-success" href="{{ url_for('main.live_feed') }}">Live Feed</a>
-        <a class="btn btn-small btn-success" href="{{ url_for('analytics.dashboard') }}">Analytics</a>
-        <a class="btn btn-small btn-success" href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('main.candidates', **scope_query) }}">Candidates</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('main.live_feed', **scope_query) }}">Live Feed</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('analytics.dashboard', **scope_query) }}">Analytics</a>
+        <a class="btn btn-small btn-success" href="{{ url_for('federal_finance.federal_networks', **scope_query) }}">Federal Networks</a>
     </p>
 </div>
 
@@ -32,7 +34,7 @@
 
     <div class="two-column">
         <div class="column">
-            <h3>Donor-Dependent Committees</h3>
+            <h3>Donor-Dependent Committees {{ scope_tag('All time') }}</h3>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead>
@@ -45,8 +47,8 @@
                     <tbody>
                         {% for r in insights.donor_dependent_committees %}
                         <tr>
-                            <td><a href="{{ url_for('main.search', q=r.committee_name, type='committees') }}">{{ r.committee_name }}</a></td>
-                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts') }}">{{ r.donor_name }}</a></td>
+                            <td><a href="{{ url_for('main.search', q=r.committee_name, type='committees', **scope_query) }}">{{ r.committee_name }}</a></td>
+                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts', **scope_query) }}">{{ r.donor_name }}</a></td>
                             <td>{{ (r.pct_of_total * 100)|round(1) }}%</td>
                         </tr>
                         {% else %}
@@ -56,7 +58,7 @@
                 </table>
             </div>
 
-            <h3>527 Directors Who Are Also Candidates</h3>
+            <h3>527 Directors Who Are Also Candidates {{ scope_tag('All time') }}</h3>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead>
@@ -70,7 +72,7 @@
                         {% for r in insights.director_candidates %}
                         {% set label, cls = r.score|confidence_label %}
                         <tr>
-                            <td><a href="{{ url_for('irs527.org_detail', ein=r.ein) }}">{{ r.director_name }}</a></td>
+                            <td><a href="{{ url_for('irs527.org_detail', ein=r.ein, **scope_query) }}">{{ r.director_name }}</a></td>
                             <td>{{ r.candidate_name }}</td>
                             <td><span class="{{ cls }}">{{ label }}</span></td>
                         </tr>
@@ -83,7 +85,7 @@
         </div>
 
         <div class="column">
-            <h3>Lobbying Clients With Donor Matches</h3>
+            <h3>Lobbying Clients With Donor Matches {{ scope_tag('All time') }}</h3>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead>
@@ -97,8 +99,8 @@
                         {% for r in insights.lobbying_donor_overlap %}
                         {% set label, cls = r.score|confidence_label %}
                         <tr>
-                            <td><a href="{{ url_for('lobbying.client_detail', client_id=r.client_id) }}">{{ r.client_name }}</a></td>
-                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts') }}">{{ r.donor_name }}</a></td>
+                            <td><a href="{{ url_for('lobbying.client_detail', client_id=r.client_id, **scope_query) }}">{{ r.client_name }}</a></td>
+                            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=r.donor_key, source='bulk_receipts', **scope_query) }}">{{ r.donor_name }}</a></td>
                             <td><span class="{{ cls }}">{{ label }}</span></td>
                         </tr>
                         {% else %}
@@ -108,7 +110,7 @@
                 </table>
             </div>
 
-            <h3>Matched Dark Money Expenditures</h3>
+            <h3>Matched Dark Money Expenditures {{ scope_tag() }}</h3>
             <div class="stats-grid">
                 <div class="stat-card">
                     <h4>Matched Amount</h4>
@@ -122,57 +124,57 @@
 
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Local Candidate Rows</h3>
+        <h3>Local Candidate Rows {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.local_candidate_rows }}</p>
     </div>
     <div class="stat-card">
-        <h3>Local Candidates</h3>
+        <h3>Local Candidates {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.local_candidates }}</p>
     </div>
     <div class="stat-card">
-        <h3>Local Committees</h3>
+        <h3>Local Committees {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.local_committees }}</p>
     </div>
     <div class="stat-card">
-        <h3>Local Receipts</h3>
+        <h3>Local Receipts {{ scope_tag() }}</h3>
         <p class="stat-value">{{ format_currency(stats.local_total_receipts) }}</p>
     </div>
     <div class="stat-card">
-        <h3>Federal Candidates</h3>
+        <h3>Federal Candidates {{ scope_tag() }}</h3>
         <p class="stat-value">{{ stats.federal_candidates }}</p>
     </div>
     <div class="stat-card">
-        <h3>Federal Contributions</h3>
+        <h3>Federal Contributions {{ scope_tag() }}</h3>
         <p class="stat-value">{{ stats.federal_contributions }}</p>
         <p class="stat-detail">{{ format_currency(stats.federal_total_amount) }} total</p>
     </div>
     <div class="stat-card">
-        <h3>Federal Disbursements (Schedule B)</h3>
+        <h3>Federal Disbursements (Schedule B) {{ scope_tag() }}</h3>
         <p class="stat-value">{{ stats.federal_disbursements }}</p>
         <p class="stat-detail">{{ format_currency(stats.federal_disbursement_total) }} total</p>
     </div>
     <div class="stat-card">
-        <h3>Federal Independent Expenditures (Schedule E)</h3>
+        <h3>Federal Independent Expenditures (Schedule E) {{ scope_tag() }}</h3>
         <p class="stat-value">{{ stats.federal_independent_expenditures }}</p>
         <p class="stat-detail">{{ format_currency(stats.federal_independent_expenditure_total) }} total</p>
     </div>
     <div class="stat-card">
-        <h3>Matched Donor Pairs</h3>
+        <h3>Matched Donor Pairs {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.federal_matched_donors }}</p>
     </div>
     <div class="stat-card">
-        <h3>OpenBook Vendors Matched</h3>
+        <h3>OpenBook Vendors Matched {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.openbook_vendors_matched }}</p>
         <p class="stat-detail">{{ stats.openbook_contracts_total }} contracts · {{ format_currency(stats.openbook_award_total) }}</p>
     </div>
     <div class="stat-card">
-        <h3>Archived Local Filings</h3>
+        <h3>Archived Local Filings {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ stats.local_archived_filings }}</p>
     </div>
 </div>
 
 <p>
-    <a class="btn btn-primary" href="{{ url_for('openbook.list_vendors') }}">OpenBook Vendor Explorer</a>
+    <a class="btn btn-primary" href="{{ url_for('openbook.list_vendors', **scope_query) }}">OpenBook Vendor Explorer</a>
 </p>
 
 <div class="status-section">
@@ -180,31 +182,31 @@
     <p class="help-text">IRS Section 527 political organizations with Illinois connections. These tax-exempt organizations can raise unlimited funds for political activities.</p>
     <div class="stats-grid">
         <div class="stat-card">
-            <h3>527 Organizations</h3>
+            <h3>527 Organizations {{ scope_tag('All time') }}</h3>
             <p class="stat-value">{{ stats.irs527_orgs }}</p>
         </div>
         <div class="stat-card">
-            <h3>Total 527 Expenditures</h3>
+            <h3>Total 527 Expenditures {{ scope_tag() }}</h3>
             <p class="stat-value">{{ format_currency(stats.get('irs527_total_expenditures', 0)) }}</p>
         </div>
         <div class="stat-card">
-            <h3>Total 527 Contributions Received</h3>
+            <h3>Total 527 Contributions Received {{ scope_tag() }}</h3>
             <p class="stat-value">{{ format_currency(stats.get('irs527_total_contributions_received', 0)) }}</p>
             <p class="stat-detail">{{ stats.get('irs527_contribution_records', 0) }} contribution records</p>
         </div>
         <div class="stat-card">
-            <h3>Director-Donor Overlaps</h3>
+            <h3>Director-Donor Overlaps {{ scope_tag('All time') }}</h3>
             <p class="stat-value">{{ stats.get('irs527_director_donor_matches', 0) }}</p>
         </div>
         <div class="stat-card">
-            <h3>Lobbying Entities</h3>
+            <h3>Lobbying Entities {{ scope_tag('All time') }}</h3>
             <p class="stat-value">{{ stats.lobbying_entities }}</p>
         </div>
     </div>
     <p>
-        <a class="btn btn-primary" href="{{ url_for('irs527.list_orgs') }}">527 Organizations</a>
-        <a class="btn btn-primary" href="{{ url_for('irs527.dark_money') }}">Dark Money Tracker</a>
-        <a class="btn btn-primary" href="{{ url_for('main.person_intelligence') }}">Person Intelligence</a>
+        <a class="btn btn-primary" href="{{ url_for('irs527.list_orgs', **scope_query) }}">527 Organizations</a>
+        <a class="btn btn-primary" href="{{ url_for('irs527.dark_money', **scope_query) }}">Dark Money Tracker</a>
+        <a class="btn btn-primary" href="{{ url_for('main.person_intelligence', **scope_query) }}">Person Intelligence</a>
     </p>
 </div>
 
@@ -230,19 +232,19 @@
                 </thead>
                 <tbody>
                     <tr>
-                        <td><a href="{{ url_for('main.candidates') }}">Candidates</a></td>
+                        <td><a href="{{ url_for('main.candidates', **scope_query) }}">Candidates</a></td>
                         <td>State (ISBE) and federal (FEC) candidate finance — totals, drilldowns, and race-level metrics.</td>
                     </tr>
                     <tr>
-                        <td><a href="{{ url_for('federal_finance.federal_networks') }}">Federal Networks</a></td>
+                        <td><a href="{{ url_for('federal_finance.federal_networks', **scope_query) }}">Federal Networks</a></td>
                         <td>Donor-candidate trend views and overlap analysis for matched donors.</td>
                     </tr>
                     <tr>
-                        <td><a href="{{ url_for('analytics.dashboard') }}">Analytics</a></td>
+                        <td><a href="{{ url_for('analytics.dashboard', **scope_query) }}">Analytics</a></td>
                         <td>Network, concentration, risk, and geography intelligence across local finance data.</td>
                     </tr>
                     <tr>
-                        <td><a href="{{ url_for('donors.list_donors') }}">Donors Directory</a></td>
+                        <td><a href="{{ url_for('donors.list_donors', **scope_query) }}">Donors Directory</a></td>
                         <td>Cross-committee donor summaries and donor-to-committee breakdowns.</td>
                     </tr>
                 </tbody>
@@ -251,7 +253,7 @@
     </div>
 
     <div class="column">
-        <h2>Top Donors</h2>
+        <h2>Top Donors {{ scope_tag() }}</h2>
         <div class="table-scroll">
             <table class="data-table">
                 <thead>
@@ -266,15 +268,15 @@
                     <tr>
                         <td>
                             {% if donor.entity_id %}
-                            <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=donor.entity_id, source=donor.source if donor.source else 'bulk_receipts') }}">
+                            <a href="{{ url_for('donors.donor_detail_by_entity', entity_id=donor.entity_id, source=donor.source if donor.source else 'bulk_receipts', **scope_query) }}">
                                 {{ donor.name|truncate(28) }}
                             </a>
                             {% elif donor.id %}
-                            <a href="{{ url_for('donors.donor_detail', donor_id=donor.id) }}">
+                            <a href="{{ url_for('donors.donor_detail', donor_id=donor.id, **scope_query) }}">
                                 {{ donor.name|truncate(28) }}
                             </a>
                             {% elif donor.donor_key %}
-                            <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts') }}">
+                            <a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key, source=donor.source if donor.source else 'bulk_receipts', **scope_query) }}">
                                 {{ donor.name|truncate(28) }}
                             </a>
                             {% else %}
@@ -292,15 +294,15 @@
                 </tbody>
             </table>
         </div>
-        <p><a href="{{ url_for('donors.list_donors') }}">View all donors</a></p>
+        <p><a href="{{ url_for('donors.list_donors', **scope_query) }}">View all donors</a></p>
     </div>
 </div>
 
 <div class="status-section">
-    <h2>Legacy Pages</h2>
+    <h2>Legacy Pages {{ scope_tag('All time') }}</h2>
     <p>Scrape-era committee and report pages are still available for QA and backfill checks.</p>
     <p>
-        <a href="{{ url_for('main.legacy') }}">Open Legacy Tools</a>
+        <a href="{{ url_for('main.legacy', **scope_query) }}">Open Legacy Tools</a>
     </p>
     <p class="stat-detail">
         Committees: {{ stats.legacy_committees }} |

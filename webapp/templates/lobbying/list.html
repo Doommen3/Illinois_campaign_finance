@@ -4,17 +4,19 @@
 
 {% block content %}
 <h1>IL Lobbying Entities</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">{{ total }} lobbying entities registered with IL Secretary of State</p>
 <p class="help-text">Active lobbying entities registered with the Illinois Secretary of State and their client relationships. Cross-matched against campaign donors and expenditure payees to surface lobbying-campaign finance connections.</p>
 
 <form action="{{ url_for('lobbying.list_entities') }}" method="get" class="search-form">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <input type="text" name="q" placeholder="Search entities..." value="{{ query }}"
            data-autocomplete-url="{{ url_for('lobbying.suggest_entities') }}">
     <button type="submit">Search</button>
 </form>
 
 <p>
-    <a class="btn btn-primary" href="{{ url_for('lobbying.flows') }}">Money Flows Diagram</a>
+    <a class="btn btn-primary" href="{{ url_for('lobbying.flows', **scope_query) }}">Money Flows Diagram</a>
 </p>
 
 <table class="data-table">
@@ -31,7 +33,7 @@
         <tr>
             <td>{{ entity.entity_id }}</td>
             <td>
-                <a href="{{ url_for('lobbying.entity_detail', entity_id=entity.entity_id) }}">
+                <a href="{{ url_for('lobbying.entity_detail', entity_id=entity.entity_id, **scope_query) }}">
                     {{ entity.entity_name }}
                 </a>
             </td>
@@ -49,11 +51,11 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('lobbying.list_entities', page=page-1, q=query) }}">&laquo; Previous</a>
+    <a href="{{ url_for('lobbying.list_entities', page=page-1, q=query, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="{{ url_for('lobbying.list_entities', page=page+1, q=query) }}">Next &raquo;</a>
+    <a href="{{ url_for('lobbying.list_entities', page=page+1, q=query, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}

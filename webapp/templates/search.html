@@ -1,13 +1,16 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Search - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Search</h1>
 <p class="subtitle">Search across committees, donors, candidates, reports, filed doc IDs, and donor keys.</p>
+{% include "_partials/time_scope_bar.html" %}
 
 <form action="{{ url_for('main.search') }}" method="get" class="search-form">
     <input type="text" name="q" value="{{ query }}" placeholder="Search names, IDs, donor keys, filed docs...">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="type">
         <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
         <option value="committees" {% if type == 'committees' %}selected{% endif %}>Committees</option>
@@ -50,7 +53,7 @@
 <div class="search-results">
     {% if type in ('all', 'committees') and committees %}
     <section>
-        <h2>Committees ({{ committees|length }})</h2>
+        <h2>Committees ({{ committees|length }}) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -86,7 +89,7 @@
 
     {% if type in ('all', 'donors') and donors %}
     <section>
-        <h2>Donors ({{ donors|length }})</h2>
+        <h2>Donors ({{ donors|length }}) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -130,7 +133,7 @@
 
     {% if type in ('all', 'candidates') and candidates %}
     <section>
-        <h2>Candidates ({{ candidates|length }})</h2>
+        <h2>Candidates ({{ candidates|length }}) {{ scope_tag('All time') }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -187,7 +190,7 @@
 
     {% if type in ('all', 'reports') and reports %}
     <section>
-        <h2>Reports ({{ reports|length }})</h2>
+        <h2>Reports ({{ reports|length }}) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -228,7 +231,7 @@
 
     {% if type in ('all', 'filed_docs') and filed_docs %}
     <section>
-        <h2>Filed Doc IDs ({{ filed_docs|length }})</h2>
+        <h2>Filed Doc IDs ({{ filed_docs|length }}) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -269,7 +272,7 @@
 
     {% if type in ('all', 'donor_keys') and donor_keys %}
     <section>
-        <h2>Donor Keys ({{ donor_keys|length }})</h2>
+        <h2>Donor Keys ({{ donor_keys|length }}) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>

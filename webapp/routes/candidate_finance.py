@@ -1,6 +1,5 @@
 """Candidate/committee aggregate finance routes."""
 import csv
-from datetime import date
 from io import StringIO
 import threading
 import time
@@ -12,12 +11,8 @@ from database.models import (
     CandidateCommitteeItemizedExpenditure,
     CandidateCommitteeItemizedReceipt,
 )
-from webapp.utils.time_filter import (
-    build_filter_overrides,
-    get_active_period,
-    period_cycle,
-    period_to_date_window,
-)
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
 _candidate_finance_cache: dict = {"payload": None, "expires_at": 0.0, "key": None}
 _candidate_finance_cache_lock = threading.Lock()
@@ -35,31 +30,11 @@ def _parse_float(value: str) -> float | None:
         return None
 
 
-def _parse_int(value: str) -> int | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
-def _parse_iso_date(value: str) -> str | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        return date.fromisoformat(text).isoformat()
-    except ValueError:
-        return None
-
-
 @candidate_finance_bp.route('/')
 def list_candidate_finance():
     """List candidate-committee aggregate finance rows from bulk imports."""
     conn = current_app.get_database()
-    period = get_active_period()
+    scope = resolve_time_scope(default="cycle:current", axis="report_period", data_through=latest_data_date("isbe"))
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 50
@@ -71,20 +46,16 @@ def list_candidate_finance():
     office = request.args.get('office', '').strip()
     candidate_party = request.args.get('candidate_party', '').strip()
     committee_party = request.args.get('committee_party', '').strip()
-    start_date_raw = request.args.get('start_date', '').strip()
-    end_date_raw = request.args.get('end_date', '').strip()
-    year_raw = request.args.get('year', '').strip()
-    cycle_raw = request.args.get('cycle', '').strip()
     min_receipts_raw = request.args.get('min_receipts', '').strip()
     min_expenditures_raw = request.args.get('min_expenditures', '').strip()
 
-    resolved_start_date, resolved_end_date = period_to_date_window(period, start_date_raw, end_date_raw)
-    start_date = _parse_iso_date(resolved_start_date or "")
-    end_date = _parse_iso_date(resolved_end_date or "")
-    year = _parse_int(year_raw)
-    cycle = _parse_int(cycle_raw)
-    if cycle is None:
-        cycle = period_cycle(period)
+    if scope.key.startswith("cycle:"):
+        cycle = int(scope.key[6:])
+        start_date = end_date = None
+    else:
+        cycle = None
+        start_date = scope.start.isoformat() if scope.start else None
+        end_date = scope.end.isoformat() if scope.end else None
     min_receipts = _parse_float(min_receipts_raw)
     min_expenditures = _parse_float(min_expenditures_raw)
     output_format = request.args.get('format', 'html').strip().lower()
@@ -92,14 +63,13 @@ def list_candidate_finance():
     table_available = CandidateCommitteeFinanceAgg.is_available(conn)
     finance_source_type = CandidateCommitteeFinanceAgg.source_type(conn)
     itemized_available = CandidateCommitteeItemizedReceipt.is_available(conn)
-    period_values = {"years": [], "cycles": []}
 
     # --- TTL cache for expensive view-backed queries ---
     cache_ttl = 180  # 3 minutes
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     cache_key = (
         page, sort_by, sort_dir, query, office, candidate_party, committee_party,
-        start_date, end_date, year, cycle, min_receipts, min_expenditures,
+        scope_cache_key(scope), cycle, min_receipts, min_expenditures,
     )
     now = time.monotonic()
 
@@ -120,9 +90,7 @@ def list_candidate_finance():
         rows = cached["rows"]
         total = cached["total"]
         total_pages = cached["total_pages"]
-        period_values = cached["period_values"]
     elif table_available:
-        period_values = CandidateCommitteeFinanceAgg.list_period_values(conn)
         rows = CandidateCommitteeFinanceAgg.get_all(
             conn,
             limit=per_page,
@@ -135,7 +103,6 @@ def list_candidate_finance():
             committee_party=committee_party,
             start_date=start_date,
             end_date=end_date,
-            year=year,
             cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
@@ -148,7 +115,6 @@ def list_candidate_finance():
             committee_party=committee_party,
             start_date=start_date,
             end_date=end_date,
-            year=year,
             cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
@@ -160,7 +126,6 @@ def list_candidate_finance():
                     "rows": rows,
                     "total": total,
                     "total_pages": total_pages,
-                    "period_values": period_values,
                 }
                 _candidate_finance_cache["key"] = cache_key
                 _candidate_finance_cache["expires_at"] = now + float(cache_ttl)
@@ -181,7 +146,6 @@ def list_candidate_finance():
             committee_party=committee_party,
             start_date=start_date,
             end_date=end_date,
-            year=year,
             cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
@@ -236,13 +200,6 @@ def list_candidate_finance():
         response.headers['Content-Disposition'] = 'attachment; filename=candidate_committee_finance.csv'
         return response
 
-    active_filter_overrides = build_filter_overrides(
-        start_date=start_date_raw,
-        end_date=end_date_raw,
-        year=year_raw,
-        cycle=cycle_raw,
-    )
-
     return render_template(
         'candidate_finance/list.html',
         rows=rows,
@@ -255,18 +212,15 @@ def list_candidate_finance():
         office=office,
         candidate_party=candidate_party,
         committee_party=committee_party,
-        start_date=start_date_raw,
-        end_date=end_date_raw,
-        year=year_raw,
-        cycle=cycle_raw or (str(cycle) if cycle is not None else ""),
-        available_years=period_values["years"],
-        available_cycles=period_values["cycles"],
         min_receipts=min_receipts_raw,
         min_expenditures=min_expenditures_raw,
         table_available=table_available,
         finance_source_type=finance_source_type,
         itemized_available=itemized_available,
-        active_filter_overrides=active_filter_overrides,
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )
 
 
@@ -274,7 +228,7 @@ def list_candidate_finance():
 def candidate_committee_itemized(candidate_id: int, committee_id: int):
     """Show itemized receipt rows for one candidate/committee pair."""
     conn = current_app.get_database()
-    period = get_active_period()
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 100
@@ -288,9 +242,8 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
     min_amount_raw = request.args.get('min_amount', '').strip()
     max_amount_raw = request.args.get('max_amount', '').strip()
     output_format = request.args.get('format', 'html').strip().lower()
-    explicit_date_from = request.args.get('date_from', '').strip()
-    explicit_date_to = request.args.get('date_to', '').strip()
-    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     min_amount = _parse_float(min_amount_raw)
     max_amount = _parse_float(max_amount_raw)
@@ -409,11 +362,6 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
         )
         return response
 
-    active_filter_overrides = build_filter_overrides(
-        date_from=explicit_date_from,
-        date_to=explicit_date_to,
-    )
-
     return render_template(
         'candidate_finance/itemized.html',
         candidate_id=candidate_id,
@@ -431,9 +379,10 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
         archived=archived,
         min_amount=min_amount_raw,
         max_amount=max_amount_raw,
-        explicit_date_from=explicit_date_from,
-        explicit_date_to=explicit_date_to,
-        active_filter_overrides=active_filter_overrides,
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )
 
 
@@ -441,7 +390,7 @@ def candidate_committee_itemized(candidate_id: int, committee_id: int):
 def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: int):
     """Show itemized expenditure rows for one candidate/committee pair."""
     conn = current_app.get_database()
-    period = get_active_period()
+    scope = resolve_time_scope(default="cycle:current", axis="transaction", data_through=latest_data_date("isbe"))
 
     page = max(request.args.get('page', 1, type=int), 1)
     per_page = 100
@@ -456,9 +405,8 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
     min_amount_raw = request.args.get('min_amount', '').strip()
     max_amount_raw = request.args.get('max_amount', '').strip()
     output_format = request.args.get('format', 'html').strip().lower()
-    explicit_date_from = request.args.get('date_from', '').strip()
-    explicit_date_to = request.args.get('date_to', '').strip()
-    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     min_amount = _parse_float(min_amount_raw)
     max_amount = _parse_float(max_amount_raw)
@@ -582,11 +530,6 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
         )
         return response
 
-    active_filter_overrides = build_filter_overrides(
-        date_from=explicit_date_from,
-        date_to=explicit_date_to,
-    )
-
     return render_template(
         'candidate_finance/itemized_expenditures.html',
         candidate_id=candidate_id,
@@ -605,7 +548,8 @@ def candidate_committee_itemized_expenditures(candidate_id: int, committee_id: i
         anomalies_only=anomalies_only,
         min_amount=min_amount_raw,
         max_amount=max_amount_raw,
-        explicit_date_from=explicit_date_from,
-        explicit_date_to=explicit_date_to,
-        active_filter_overrides=active_filter_overrides,
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )

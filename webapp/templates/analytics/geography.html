@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Analytics Geography - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -16,17 +17,12 @@
             <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
         </select>
     </label>
-    <label>
-        Date From
-        <input type="date" name="date_from" value="{{ date_from }}">
-    </label>
-    <label>
-        Date To
-        <input type="date" name="date_to" value="{{ date_to }}">
-    </label>
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     <label>
         Months
-        <input type="number" name="months" min="1" max="120" value="{{ months }}">
+        <input type="number" name="months" min="1" max="120" value="{{ months_param or '' }}" placeholder="{{ months }}">
     </label>
     <label>
         State Rows
@@ -42,7 +38,7 @@
 {% include "analytics/_status.html" %}
 
 <div class="status-section">
-    <h2>Interactive Geo Views</h2>
+    <h2>Interactive Geo Views {{ scope_tag() }}</h2>
     <p class="subtitle">State choropleth-style grid and city concentration chart for the active filters.</p>
     <div class="two-column">
         <div class="column">
@@ -64,7 +60,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Time-Series Intelligence</h2>
+    <h2>Time-Series Intelligence {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -94,7 +90,7 @@
 
 <div class="two-column">
     <div class="column">
-        <h2>Geospatial Summary - States</h2>
+        <h2>Geospatial Summary - States {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -115,14 +111,11 @@
                                 geo_type='state',
                                 geo_value=row.state,
                                 load_mode=load_mode,
-                                date_from=date_from,
-                                date_to=date_to,
-                                months=months,
+                                months=months_param,
                                 geo_state_limit=geo_state_limit,
                                 geo_city_limit=geo_city_limit,
                                 source_page='geography',
-                                range=time_period_key,
-                                period=time_period_key
+                                **scope_query
                             ) }}">{{ format_currency(row.total_amount) }}</a>
                         </td>
                         <td>{{ row.contribution_count }}</td>
@@ -143,7 +136,7 @@
     </div>
 
     <div class="column">
-        <h2>Geospatial Summary - Cities</h2>
+        <h2>Geospatial Summary - Cities {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -166,14 +159,11 @@
                                 geo_value=row.city,
                                 geo_state=row.state,
                                 load_mode=load_mode,
-                                date_from=date_from,
-                                date_to=date_to,
-                                months=months,
+                                months=months_param,
                                 geo_state_limit=geo_state_limit,
                                 geo_city_limit=geo_city_limit,
                                 source_page='geography',
-                                range=time_period_key,
-                                period=time_period_key
+                                **scope_query
                             ) }}">{{ format_currency(row.total_amount) }}</a>
                         </td>
                         <td>{{ row.contribution_count }}</td>

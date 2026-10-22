@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Live Donation Feed - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -6,7 +7,7 @@
 <h1>Live Donation Feed</h1>
 <p class="help-text">Real-time feed of the most recently synced donation and spending records. Local rows come from ISBE bulk data; federal rows come from FEC Schedules A, B, and E.</p>
 
-{% include "_partials/active_filter_chip.html" %}
+{% include "_partials/time_scope_bar.html" %}
 
 <div class="status-section">
     <p><strong>Local feed latest date:</strong> {{ local_latest_date if local_latest_date else 'No rows synced' }}</p>
@@ -50,7 +51,7 @@
     <div class="tab-panels">
         <div class="tab-panel panel-local">
             <div class="status-section">
-                <h2>Local Candidate Donations ({{ local_rows|length }})</h2>
+                <h2>Local Candidate Donations ({{ local_rows|length }}) {{ scope_tag() }}</h2>
                 <div class="table-scroll">
                     <table class="data-table">
                         <thead>
@@ -96,7 +97,7 @@
 
         <div class="tab-panel panel-federal">
             <div class="status-section">
-                <h2>Federal Candidate Donations ({{ federal_rows|length }})</h2>
+                <h2>Federal Candidate Donations ({{ federal_rows|length }}) {{ scope_tag() }}</h2>
                 <div class="table-scroll">
                     <table class="data-table">
                         <thead>
@@ -138,7 +139,7 @@
 
         <div class="tab-panel panel-schedule-b">
             <div class="status-section">
-                <h2>Federal Committee Disbursements (Schedule B) ({{ schedule_b_rows|length }})</h2>
+                <h2>Federal Committee Disbursements (Schedule B) ({{ schedule_b_rows|length }}) {{ scope_tag() }}</h2>
                 <p class="subtitle"><a href="{{ url_for('main.live_feed', format='csv', table='schedule_b') }}">Export Schedule B CSV</a></p>
                 <div class="table-scroll">
                     <table class="data-table">
@@ -183,7 +184,7 @@
 
         <div class="tab-panel panel-schedule-e">
             <div class="status-section">
-                <h2>Federal Independent Expenditures (Schedule E) ({{ schedule_e_rows|length }})</h2>
+                <h2>Federal Independent Expenditures (Schedule E) ({{ schedule_e_rows|length }}) {{ scope_tag() }}</h2>
                 <p class="subtitle"><a href="{{ url_for('main.live_feed', format='csv', table='schedule_e') }}">Export Schedule E CSV</a></p>
                 <div class="table-scroll">
                     <table class="data-table">

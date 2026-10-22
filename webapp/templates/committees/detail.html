@@ -1,15 +1,17 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}{{ committee.name }} - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>{{ committee.name }}</h1>
+{% include "_partials/time_scope_bar.html" %}
 
 <div class="committee-summary">
-    <p><strong>Total Contributions:</strong> {{ format_currency(total_amount) }}</p>
+    <p><strong>Total Contributions:</strong> {{ format_currency(total_amount) }} {{ scope_tag() }}</p>
 </div>
 
-<h2>Reports</h2>
+<h2>Reports {{ scope_tag() }}</h2>
 <table class="data-table">
     <thead>
         <tr>
@@ -78,7 +80,7 @@
 </nav>
 {% endif %}
 
-<h2>Recent Contributions</h2>
+<h2>Recent Contributions {{ scope_tag() }}</h2>
 <table class="data-table">
     <thead>
         <tr>

@@ -1,10 +1,12 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}{{ entity.entity_name }} - Lobbying Entity{% endblock %}
 
 {% block content %}
 <h1>{{ entity.entity_name }}</h1>
 <p class="subtitle">Lobbying Entity ID: {{ entity.entity_id }} | Registration Year: {{ entity.reg_year or 'N/A' }}</p>
+{% include "_partials/time_scope_bar.html" %}
 <p class="help-text">This is a registered lobbying entity (firm or individual lobbyist) filed with the Illinois Secretary of State. The financial connections shown below are derived by fuzzy name-matching this entity's clients against campaign contribution donor records.</p>
 
 <div class="status-badges">
@@ -15,10 +17,11 @@
 </div>
 
 <div class="status-section lobbying-money-card">
-    <h2>Money Destinations</h2>
+    <h2>Money Destinations {{ scope_tag() }}</h2>
     <p class="help-text">These are campaign contributions made by donors whose names match this entity's clients. The amounts shown are contributions from those matched donors, not direct payments from the lobbying entity itself.</p>
     <p class="subtitle">
         Matched donor dollars: <strong>{{ format_currency(money_destinations.total_amount or 0) }}</strong> |
+        This cycle: <strong>{{ format_currency(cycle_total) }}</strong> |
         Contributions: <strong>{{ money_destinations.contribution_count or 0 }}</strong> |
         First donation: <strong>{{ money_destinations.first_donation_date or '-' }}</strong> |
         Last donation: <strong>{{ money_destinations.last_donation_date or '-' }}</strong>
@@ -95,7 +98,7 @@
     </div>
 </div>
 
-<h2>Clients ({{ clients|length }})</h2>
+<h2>Clients ({{ clients|length }}) {{ scope_tag('All time') }}</h2>
 <p class="help-text">These are the companies and organizations that hired this lobbying entity to represent them, sourced from Illinois Secretary of State lobbying registration records. Financial connections are established by fuzzy name-matching clients against campaign contribution donor records.</p>
 <table class="data-table">
     <thead>
@@ -123,7 +126,7 @@
 </table>
 
 {% if donor_matches %}
-<h2>Matched Campaign Donors Across Clients</h2>
+<h2>Matched Campaign Donors Across Clients {{ scope_tag('All time') }}</h2>
 <table class="data-table">
     <thead>
         <tr>
@@ -181,7 +184,7 @@
 {% endif %}
 
 {% if expenditure_matches %}
-<h2>Matched Expenditure Payees</h2>
+<h2>Matched Expenditure Payees {{ scope_tag('All time') }}</h2>
 <table class="data-table">
     <thead>
         <tr>

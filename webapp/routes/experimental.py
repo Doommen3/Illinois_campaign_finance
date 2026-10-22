@@ -14,7 +14,8 @@ from database.analytics import (
     get_network_graph,
     get_state_race_analytics,
 )
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import TimeScope, current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
 experimental_bp = Blueprint("experimental", __name__)
 
@@ -124,12 +125,11 @@ def _is_true_arg(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _resolved_date_window() -> tuple[dict, str | None, str | None]:
-    period = get_active_period()
-    explicit_from = (request.args.get("date_from", "", type=str) or "").strip()
-    explicit_to = (request.args.get("date_to", "", type=str) or "").strip()
-    date_from, date_to = period_to_date_window(period, explicit_from, explicit_to)
-    return period, date_from, date_to
+def _resolved_date_window() -> tuple[TimeScope, str | None, str | None]:
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
+    return scope, date_from, date_to
 
 
 def _parse_pagination() -> tuple[int, int]:
@@ -1207,7 +1207,7 @@ def _guard_feature_flag():
 @experimental_bp.route("/viz-lab")
 @experimental_bp.route("/viz-lab/<prototype_key>")
 def viz_lab(prototype_key: str | None = None):
-    period, date_from, date_to = _resolved_date_window()
+    scope, _, _ = _resolved_date_window()
     active_key = prototype_key if prototype_key in PROTOTYPE_BUILDERS else None
     prototype_payload = []
     for item in PROTOTYPE_META:
@@ -1223,9 +1223,10 @@ def viz_lab(prototype_key: str | None = None):
         "experimental/viz_lab.html",
         active_prototype=active_key,
         prototypes=prototype_payload,
-        period_key=period.get("key"),
-        date_from=date_from or "",
-        date_to=date_to or "",
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )
 
 
@@ -1236,12 +1237,11 @@ def viz_lab_data(prototype_key: str):
         return jsonify({"error": "unknown_prototype"}), 404
 
     conn = current_app.get_database()
-    period, date_from, date_to = _resolved_date_window()
+    scope, date_from, date_to = _resolved_date_window()
     page, per_page = _parse_pagination()
     cache_params = {
-        "period": period.get("key"),
-        "date_from": date_from,
-        "date_to": date_to,
+        "scope": scope_cache_key(scope),
+        "period": scope.key,
         "page": page,
         "per_page": per_page,
         "prototype_key": prototype_key,
@@ -1275,7 +1275,7 @@ def viz_lab_data(prototype_key: str):
                 per_page=per_page,
             )
         payload["window"] = {
-            "period_key": period.get("key"),
+            "period_key": scope.key,
             "date_from": date_from,
             "date_to": date_to,
         }

@@ -1,5 +1,6 @@
 """Analytics dashboard routes."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 import json
 import logging
 import threading
@@ -32,11 +33,8 @@ from database.analytics import (
 )
 from database.connection import get_db, close_db
 from webapp.cache_backend import RouteCache
-from webapp.utils.time_filter import (
-    build_filter_overrides,
-    get_active_period,
-    period_to_date_window,
-)
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -126,8 +124,24 @@ def _store_cached_geo_drilldown(cache_key: str, payload: dict, ttl_seconds: int)
                     _geo_drilldown_cache.pop(key, None)
 
 
-def _parse_filters() -> dict:
-    period = get_active_period()
+def _iso_or_empty(day: date | None) -> str:
+    return day.isoformat() if day else ""
+
+
+def _months_for_scope(scope) -> int:
+    """Calendar months the scope window spans (inclusive), 120 when it has no start.
+
+    Used when ``?months=`` is absent so "All time" is not silently cut to 24 months.
+    """
+    if scope.start is None:
+        return 120
+    end = scope.end or date.today()
+    span = (end.year - scope.start.year) * 12 + end.month - scope.start.month + 1
+    return min(max(span, 1), 120)
+
+
+def _parse_filters(axis: str = "received") -> dict:
+    scope = resolve_time_scope(default="cycle:current", axis=axis, data_through=latest_data_date("isbe"))
     load_mode = (request.args.get("load_mode", "quick", type=str) or "quick").strip().lower()
     if load_mode not in {"quick", "full"}:
         load_mode = "quick"
@@ -136,16 +150,19 @@ def _parse_filters() -> dict:
     network_limit = min(max(request.args.get("network_limit", 200, type=int) or 200, 50), 5000)
     anomaly_limit = min(max(request.args.get("anomaly_limit", 25, type=int) or 25, 1), 500)
     concentration_limit = min(max(request.args.get("concentration_limit", 25, type=int) or 25, 1), 500)
-    months = min(max(request.args.get("months", 24, type=int) or 24, 1), 120)
+    # An explicit ?months= wins; otherwise the number derives from the scope. Only the
+    # explicit value (months_param) is carried into links, so a derived count is never
+    # frozen into a link and then caps a later "All time" click.
+    months_arg = request.args.get("months", type=int)
+    months_param = min(max(months_arg, 1), 120) if months_arg else None
+    months = months_param or _months_for_scope(scope)
     geo_state_limit = min(max(request.args.get("geo_state_limit", 15, type=int) or 15, 1), 100)
     geo_city_limit = min(max(request.args.get("geo_city_limit", 25, type=int) or 25, 1), 500)
     nlp_limit = min(max(request.args.get("nlp_limit", 20, type=int) or 20, 1), 500)
     recon_limit = min(max(request.args.get("recon_limit", 20, type=int) or 20, 1), 500)
     recon_min_abs_diff = max(request.args.get("recon_min_abs_diff", 1000.0, type=float) or 1000.0, 0.0)
 
-    explicit_date_from = (request.args.get("date_from", "", type=str) or "").strip()
-    explicit_date_to = (request.args.get("date_to", "", type=str) or "").strip()
-    date_from, date_to = period_to_date_window(period, explicit_date_from, explicit_date_to)
+    date_from, date_to = _iso_or_empty(scope.start), _iso_or_empty(scope.end)
 
     # Allow-list of analytics filters that should survive a subnav tab change.
     # The dict is expanded into every url_for(...) in analytics/_subnav.html
@@ -154,17 +171,18 @@ def _parse_filters() -> dict:
     #
     # Excluded by design: refresh_cache / refresh_full / sync_full (one-shot
     # actions); state_race_sort / state_race_dir / election_cycle / q (page-
-    # specific UI controls); geo_type / geo_value / geo_state / range /
+    # specific UI controls); geo_type / geo_value / geo_state /
     # source_page / page / per_page / sort / dir (drilldown-specific).
     subnav_persist_params = {
         "load_mode": load_mode,
-        "date_from": explicit_date_from or (date_from or ""),
-        "date_to": explicit_date_to or (date_to or ""),
+        # The scope travels as its key (period=cycle:2024); resolved dates only
+        # travel for a user-typed custom range (time-scope overhaul, step Q1).
+        **scope_params(scope),
         "min_edge_amount": min_edge_amount,
         "network_limit": network_limit,
         "anomaly_limit": anomaly_limit,
         "concentration_limit": concentration_limit,
-        "months": months,
+        "months": months_param,
         "geo_state_limit": geo_state_limit,
         "geo_city_limit": geo_city_limit,
         "nlp_limit": nlp_limit,
@@ -180,20 +198,19 @@ def _parse_filters() -> dict:
         "anomaly_limit": anomaly_limit,
         "concentration_limit": concentration_limit,
         "months": months,
+        "months_param": months_param,
         "geo_state_limit": geo_state_limit,
         "geo_city_limit": geo_city_limit,
         "nlp_limit": nlp_limit,
         "recon_limit": recon_limit,
         "recon_min_abs_diff": recon_min_abs_diff,
-        "date_from": date_from or "",
-        "date_to": date_to or "",
-        "explicit_date_from": explicit_date_from,
-        "explicit_date_to": explicit_date_to,
-        "time_period_key": period["key"],
-        "active_filter_overrides": build_filter_overrides(
-            date_from=explicit_date_from,
-            date_to=explicit_date_to,
-        ),
+        "date_from": date_from,
+        "date_to": date_to,
+        "time_scope": scope,
+        "scope_default_key": f"cycle:{current_cycle()}",
+        "time_scope_source_label": "ISBE",
+        "scope_query": scope_params(scope),
+        "time_period_key": scope_cache_key(scope),
         "subnav_persist_params": subnav_persist_params,
     }
 
@@ -366,16 +383,17 @@ def _refresh_params(filters: dict) -> dict:
         "network_limit",
         "anomaly_limit",
         "concentration_limit",
-        "months",
         "geo_state_limit",
         "geo_city_limit",
         "nlp_limit",
         "recon_limit",
         "recon_min_abs_diff",
-        "date_from",
-        "date_to",
     ]
-    return {key: filters[key] for key in keys}
+    params = {key: filters[key] for key in keys}
+    if filters["months_param"]:
+        params["months"] = filters["months_param"]
+    params.update(filters["scope_query"])
+    return params
 
 
 _networks_parallel_executor = ThreadPoolExecutor(max_workers=5)
@@ -647,10 +665,10 @@ def state_race_detail(race_key: str):
         load_mode=filters["load_mode"],
         date_from=filters["date_from"],
         date_to=filters["date_to"],
-        time_period_key=filters["time_period_key"],
-        explicit_date_from=filters["explicit_date_from"],
-        explicit_date_to=filters["explicit_date_to"],
-        active_filter_overrides=filters["active_filter_overrides"],
+        time_scope=filters["time_scope"],
+        scope_default_key=filters["scope_default_key"],
+        time_scope_source_label=filters["time_scope_source_label"],
+        scope_query=filters["scope_query"],
         subnav_persist_params=filters["subnav_persist_params"],
         election_cycle=election_cycle,
         race_detail=race_detail,
@@ -768,7 +786,7 @@ def networks():
 def risk():
     """Render anomaly and reconciliation analytics page."""
     conn = current_app.get_database()
-    filters = _parse_filters()
+    filters = _parse_filters(axis="filed")
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
@@ -903,7 +921,6 @@ def geo_drilldown():
     geo_value = (request.args.get("geo_value", "", type=str) or "").strip()
     geo_state = (request.args.get("geo_state", "", type=str) or "").strip().upper()
     source_page = (request.args.get("source_page", "geography", type=str) or "geography").strip().lower()
-    range_key = (request.args.get("range", "", type=str) or "").strip() or filters["time_period_key"]
 
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     per_page = min(max(request.args.get("per_page", 50, type=int) or 50, 10), 250)
@@ -914,7 +931,6 @@ def geo_drilldown():
     cache_ttl = max(15, int(current_app.config.get("ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS", 180)))
     cache_params = {
         "version": 1,
-        "range": range_key,
         "period": filters["time_period_key"],
         "date_from": filters["date_from"],
         "date_to": filters["date_to"],
@@ -949,30 +965,25 @@ def geo_drilldown():
         back_url = url_for(
             "analytics.dashboard",
             load_mode=filters["load_mode"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-            months=filters["months"],
+            months=filters["months_param"],
             geo_state_limit=filters["geo_state_limit"],
             geo_city_limit=filters["geo_city_limit"],
-            period=filters["time_period_key"],
+            **filters["scope_query"],
         )
     else:
         back_url = url_for(
             "analytics.geography",
             load_mode=filters["load_mode"],
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-            months=filters["months"],
+            months=filters["months_param"],
             geo_state_limit=filters["geo_state_limit"],
             geo_city_limit=filters["geo_city_limit"],
-            period=filters["time_period_key"],
+            **filters["scope_query"],
         )
 
     return render_template(
         "analytics/geo_drilldown.html",
         active_page="geography",
         **filters,
-        range_key=range_key,
         source_page=source_page,
         drilldown=drilldown,
         back_url=back_url,
@@ -1065,10 +1076,10 @@ def relationships():
         load_mode=filters["load_mode"],
         date_from=filters["date_from"],
         date_to=filters["date_to"],
-        time_period_key=filters["time_period_key"],
-        explicit_date_from=filters["explicit_date_from"],
-        explicit_date_to=filters["explicit_date_to"],
-        active_filter_overrides=filters["active_filter_overrides"],
+        time_scope=filters["time_scope"],
+        scope_default_key=filters["scope_default_key"],
+        time_scope_source_label=filters["time_scope_source_label"],
+        scope_query=filters["scope_query"],
         subnav_persist_params=filters["subnav_persist_params"],
         donor_limit=donor_limit,
         committee_limit=committee_limit,
@@ -1100,18 +1111,17 @@ def warm_analytics_caches(
     calls this independently so all workers end up with warm caches.
 
     Cache keys must match the defaults produced by _parse_filters() for a
-    request with no query parameters (period="2026cycle", default limits).
+    request with no query parameters (period=current cycle, default limits).
     """
-    from webapp.utils.time_filter import period_to_date_window as _ptdw
-
     logger = logging.getLogger(__name__)
 
-    # Compute the default date window matching _parse_filters() defaults
-    from datetime import date as _date
-    _today = _date.today().isoformat()
-    default_period_key = "2026cycle"
-    default_date_from = "2025-01-01"
-    default_date_to = _today
+    # Resolve the default scope exactly as _parse_filters() does for a request with
+    # no query args (args={} so no request context is needed). The risk page keys on
+    # the "filed" axis, every other page on "received".
+    default_scope = resolve_time_scope(default="cycle:current", axis="received", args={})
+    default_period_key = scope_cache_key(default_scope)
+    risk_period_key = scope_cache_key(resolve_time_scope(default="cycle:current", axis="filed", args={}))
+    default_date_from, default_date_to = _iso_or_empty(default_scope.start), _iso_or_empty(default_scope.end)
 
     # Default filter values matching _parse_filters() with no query params
     default_anomaly_limit = 25
@@ -1120,7 +1130,7 @@ def warm_analytics_caches(
     default_min_edge_amount = 1000.0
     default_network_limit = 200
     default_concentration_limit = 25
-    default_months = 24
+    default_months = _months_for_scope(default_scope)
     default_nlp_limit = 20
     default_state_race_sort = "total_amount"
     default_state_race_dir = "desc"
@@ -1150,7 +1160,7 @@ def warm_analytics_caches(
         )
         now = time.monotonic()
         cache_key = (
-            default_period_key, default_date_from, default_date_to,
+            risk_period_key, default_date_from, default_date_to,
             default_anomaly_limit, default_recon_limit, default_recon_min_abs_diff,
         )
         _risk_cache.set(

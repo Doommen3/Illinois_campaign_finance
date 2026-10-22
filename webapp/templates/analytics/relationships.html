@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Analytics Relationships - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,8 +11,9 @@
 
 <form class="search-form analytics-form" method="get" action="{{ url_for('analytics.relationships') }}">
     <input type="hidden" name="load_mode" value="{{ load_mode }}">
-    <input type="hidden" name="date_from" value="{{ date_from }}">
-    <input type="hidden" name="date_to" value="{{ date_to }}">
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     <label>
         Donor limit
         <input type="number" name="donor_limit" min="50" max="5000" value="{{ donor_limit }}">
@@ -57,7 +59,7 @@
 </div>
 
 <div class="status-section graph-section" data-graph-section="donor-cogiving">
-    <h2>Donor Co-Giving Network</h2>
+    <h2>Donor Co-Giving Network {{ scope_tag('All time') }}</h2>
     <p class="subtitle">
         Nodes: <strong>{{ donor_cogiving.summary.node_count }}</strong> |
         Edges: <strong>{{ donor_cogiving.summary.edge_count }}</strong> |
@@ -126,7 +128,7 @@
 </div>
 
 <div class="status-section graph-section" data-graph-section="committee-similarity">
-    <h2>Committee Similarity Network</h2>
+    <h2>Committee Similarity Network {{ scope_tag('All time') }}</h2>
     <p class="subtitle">
         Nodes: <strong>{{ committee_similarity.summary.node_count }}</strong> |
         Edges: <strong>{{ committee_similarity.summary.edge_count }}</strong> |
@@ -195,7 +197,7 @@
 </div>
 
 <div class="status-section graph-section" data-graph-section="candidate-competition">
-    <h2>Candidate Competition Networks</h2>
+    <h2>Candidate Competition Networks {{ scope_tag('All time') }}</h2>
     <p class="subtitle">
         State edges: <strong>{{ candidate_competition.state.summary.edge_count }}</strong> |
         Federal edges: <strong>{{ candidate_competition.federal.summary.edge_count }}</strong> |
@@ -380,7 +382,7 @@
 </div>
 
 <div class="status-section graph-section" data-graph-section="lobbying-influence">
-    <h2>Lobbying Influence Graph</h2>
+    <h2>Lobbying Influence Graph {{ scope_tag() }}</h2>
     <p class="subtitle">
         Nodes: <strong>{{ lobbying_influence.summary.node_count }}</strong> |
         Edges: <strong>{{ lobbying_influence.summary.edge_count }}</strong> |
@@ -444,7 +446,7 @@
 </div>
 
 <div class="status-section graph-section" data-graph-section="ecosystem-527">
-    <h2>527 Ecosystem Graph</h2>
+    <h2>527 Ecosystem Graph {{ scope_tag() }}</h2>
     <p class="subtitle">
         Nodes: <strong>{{ ecosystem_527.summary.node_count }}</strong> |
         Edges: <strong>{{ ecosystem_527.summary.edge_count }}</strong> |

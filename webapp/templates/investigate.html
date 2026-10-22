@@ -19,9 +19,9 @@
 
 <div class="status-section">
     <div class="federal-subnav" role="tablist" aria-label="Investigation tabs">
-        <a class="federal-subnav-link {% if tab == 'investigate' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='investigate', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Investigate</a>
-        <a class="federal-subnav-link {% if tab == 'flow' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='flow', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Money Flow</a>
-        <a class="federal-subnav-link {% if tab == 'patterns' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='patterns', q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None) }}">Unusual Patterns</a>
+        <a class="federal-subnav-link {% if tab == 'investigate' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='investigate', q=query, month=month_key, advanced='1' if show_advanced else None) }}">Investigate</a>
+        <a class="federal-subnav-link {% if tab == 'flow' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='flow', q=query, month=month_key, advanced='1' if show_advanced else None) }}">Money Flow</a>
+        <a class="federal-subnav-link {% if tab == 'patterns' %}active{% endif %}" href="{{ url_for('main.investigate_workspace', tab='patterns', q=query, month=month_key, advanced='1' if show_advanced else None) }}">Unusual Patterns</a>
     </div>
 
     <form action="{{ url_for('main.investigate_workspace') }}" method="get" class="search-form">
@@ -35,10 +35,6 @@
         <form action="{{ url_for('main.investigate_workspace') }}" method="get" class="search-form">
             <input type="hidden" name="tab" value="{{ tab }}">
             <input type="hidden" name="q" value="{{ query }}">
-            <label>
-                Cycle
-                <input type="text" name="cycle" value="{{ cycle }}" placeholder="2026">
-            </label>
             <label>
                 Month
                 <select name="month">
@@ -55,8 +51,8 @@
 
     <p class="stat-detail"><strong>Auto-generated summary:</strong> {{ narrative_summary }}</p>
     <p>
-        <a class="btn btn-success btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None, format='csv') }}">Export data (CSV)</a>
-        <a class="btn btn-primary btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, cycle=cycle, month=month_key, advanced='1' if show_advanced else None, format='notes') }}">Export methodology notes</a>
+        <a class="btn btn-success btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, month=month_key, advanced='1' if show_advanced else None, format='csv') }}">Export data (CSV)</a>
+        <a class="btn btn-primary btn-small" href="{{ url_for('main.investigate_workspace', tab=tab, q=query, month=month_key, advanced='1' if show_advanced else None, format='notes') }}">Export methodology notes</a>
     </p>
 </div>
 

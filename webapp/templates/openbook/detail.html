@@ -1,10 +1,12 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}OpenBook Vendor Detail - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>{{ vendor.openbook_vendor_label or vendor.openbook_vendor_key }}</h1>
 <p class="subtitle">{{ vendor.openbook_vendor_key }}</p>
+{% include "_partials/time_scope_bar.html" %}
 <p class="help-text">This page combines OpenBook contracts and contribution records with in-platform seed provenance so you can trace which expenditure payees or lobbying entities produced this resolved vendor key.</p>
 
 <p>
@@ -26,18 +28,19 @@
         <p class="stat-detail">{{ format_currency(totals.award_total) }} total awards</p>
     </div>
     <div class="stat-card">
-        <h3>Warrant Rows</h3>
+        <h3>Warrant Rows {{ scope_tag() }}</h3>
         <p class="stat-value">{{ totals.warrant_count }}</p>
         <p class="stat-detail">{{ format_currency(totals.warrant_total) }} total payments</p>
     </div>
     <div class="stat-card">
-        <h3>Contributions</h3>
+        <h3>Contributions {{ scope_tag() }}</h3>
         <p class="stat-value">{{ totals.contribution_count }}</p>
         <p class="stat-detail">{{ format_currency(totals.contribution_total) }} total</p>
+        <p class="stat-detail">This cycle: {{ format_currency(cycle_total) }}</p>
     </div>
 </div>
 
-<h2>Seed Provenance</h2>
+<h2>Seed Provenance {{ scope_tag('All time') }}</h2>
 <table class="data-table">
     <thead>
         <tr>
@@ -69,7 +72,7 @@
     </tbody>
 </table>
 
-<h2>Contracts</h2>
+<h2>Contracts {{ scope_tag('All time') }}</h2>
 <div class="table-scroll">
     <table class="data-table">
         <thead>
@@ -103,7 +106,7 @@
     </table>
 </div>
 
-<h2>Contract Warrant Details</h2>
+<h2>Contract Warrant Details {{ scope_tag() }}</h2>
 <div class="table-scroll">
     <table class="data-table">
         <thead>
@@ -129,7 +132,7 @@
     </table>
 </div>
 
-<h2>Contributions</h2>
+<h2>Contributions {{ scope_tag() }}</h2>
 <div class="table-scroll">
     <table class="data-table">
         <thead>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}State Race Detail - {{ race_detail.race_label }}{% endblock %}
 
@@ -9,7 +10,7 @@
 {% include "analytics/_subnav.html" %}
 
 <p>
-    <a href="{{ url_for('analytics.dashboard', load_mode=load_mode, period=time_period_key, date_from=explicit_date_from if explicit_date_from else None, date_to=explicit_date_to if explicit_date_to else None, election_cycle=election_cycle if election_cycle is not none else None) }}">
+    <a href="{{ url_for('analytics.dashboard', load_mode=load_mode, election_cycle=election_cycle if election_cycle is not none else None, **scope_query) }}">
         Back to Top State Races
     </a>
 </p>
@@ -42,7 +43,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Candidate Committee Rows</h2>
+    <h2>Candidate Committee Rows {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -70,7 +71,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Committee Contribution Rows</h2>
+    <h2>Committee Contribution Rows {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -96,7 +97,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Outside Spending Rows (D-2 Part 9)</h2>
+    <h2>Outside Spending Rows (D-2 Part 9) {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>

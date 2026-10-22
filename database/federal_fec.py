@@ -4913,6 +4913,7 @@ def get_federal_candidate_detail(
         {schedule_e_join_sql}
         WHERE m.fec_candidate_id = ?
         {where_cycle}
+        ORDER BY m.cycle DESC
         LIMIT 1
         """,
         params,

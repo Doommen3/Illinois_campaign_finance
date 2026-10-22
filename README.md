@@ -22,7 +22,7 @@ Follow The Money IL aggregates, normalizes, and analyzes Illinois campaign-finan
 - **Bulk ETL** — Chunked loading of large CSV/TXT bulk exports with amendment-safe aggregation, duplicate detection by source identifiers, and quarantining of malformed rows.
 - **Entity resolution & cross-matching** — Jaccard-similarity matching across state and federal records, plus a cross-matching engine that links lobbying entities, 527 directors and organizations, donors, committees, and candidates.
 - **Analytics** — Network/graph analysis, anomaly detection (large-contribution and monthly-spike flags), concentration metrics (HHI, Gini, top-N donor share), time-series aggregation, geographic donor rollups, and per-flag risk explainability.
-- **Interactive web app** — Flask UI with sortable/filterable tables, global period filtering, candidate/committee drilldowns, side-by-side compare mode, money-flow and network visualizations, a dark-money tracker, and unified cross-dataset person search, with CSV/JSON export throughout.
+- **Interactive web app** — Flask UI with sortable/filterable tables, a per-page time-scope bar (current/previous cycle, last 12 months, all time, custom range; the scope follows drill-down links), candidate/committee drilldowns, side-by-side compare mode, money-flow and network visualizations, a dark-money tracker, and unified cross-dataset person search, with CSV/JSON export throughout.
 - **Production-ready API surface** — Optional API-key auth, per-key rate limiting, and Redis-backed route caching for heavy aggregate views.
 
 ## Tech stack

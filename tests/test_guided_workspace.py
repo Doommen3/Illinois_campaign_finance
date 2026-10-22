@@ -113,3 +113,11 @@ def test_guided_workspace_methodology_export(client):
     text = response.data.decode()
     assert 'How calculated:' in text
     assert 'Caveats:' in text
+
+
+def test_investigate_has_no_cosmetic_cycle_box(client):
+    """Step 1.4: the advanced-filter Cycle input filtered nothing, so it is gone (Appendix A.2 spot 9)."""
+    response = client.get('/investigate?tab=investigate&q=Alpha&advanced=1')
+    assert response.status_code == 200
+    assert b'name="cycle"' not in response.data
+    assert b'cycle=2026' not in response.data

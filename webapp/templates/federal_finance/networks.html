@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Networks - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_networks') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -21,7 +22,7 @@
     <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
     <input type="text" name="network_limit" value="{{ network_limit }}" placeholder="Federal edges">
     <button type="submit">Update</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_networks') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_networks', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -31,7 +32,7 @@
 </div>
 {% else %}
 <div class="status-section">
-    <h2>Federal Donor-Candidate Network</h2>
+    <h2>Federal Donor-Candidate Network {{ scope_tag() }}</h2>
     <p class="subtitle">
         Nodes: <strong>{{ federal_network.summary.node_count }}</strong> |
         Edges: <strong>{{ federal_network.summary.edge_count }}</strong> |
@@ -77,9 +78,9 @@
             <tr>
                 <td>
                     {% if row.node_type == 'candidate' and row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.label }}</a>
                     {% elif row.node_type == 'donor' and row.entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.entity_key, cycle=cycle) }}">{{ row.label }}</a>
+                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.entity_key, **scope_query) }}">{{ row.label }}</a>
                     {% else %}
                     {{ row.label }}
                     {% endif %}
@@ -134,7 +135,7 @@
 </div>
 
 <div class="status-section" style="margin-top: 1.5rem;">
-    <h3>Custom Sankey</h3>
+    <h3>Custom Sankey {{ scope_tag(((cycle ~ ' Cycle') if time_scope.key.startswith('cycle:') else 'All cycles')) }}</h3>
     <p class="help-text">Search for any federal donor, candidate, committee, or vendor (Schedule B payee) and see a focused Sankey diagram of money flow around that entity.</p>
     <form id="fed-custom-sankey-form" class="search-form graph-controls" onsubmit="return false;">
         <label for="fed-custom-sankey-search">Entity Search
@@ -184,15 +185,16 @@
 
 <p class="help-text" style="margin-top: 1rem;">
     Looking for multi-layer money flow (A/B/E) or cross-role organizations?
-    See <a href="{{ url_for('federal_finance.federal_money_flow', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Money Flow</a>.
-    For local/federal donor overlap, see <a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Matching</a>.
+    See <a href="{{ url_for('federal_finance.federal_money_flow', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Money Flow</a>.
+    For local/federal donor overlap, see <a href="{{ url_for('federal_finance.federal_matching', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Matching</a>.
 </p>
 
 <script src="{{ url_for('static', filename='js/autocomplete.js', v='20260224-1') }}"></script>
 <script>
 (() => {
     const SVG_NS = "http://www.w3.org/2000/svg";
-    const cycle = {{ cycle|tojson }};
+    const cycle = {{ (cycle if time_scope.key.startswith('cycle:') else none)|tojson }};
+    const scopeQuery = new URLSearchParams({{ scope_query|tojson }}).toString();
     const federalGraph = {{ federal_network|tojson }} || {};
     const overlapGraph = {};
     const PARTY_COLORS = {
@@ -455,10 +457,10 @@
         };
     };
 
-    const withCycleQuery = (path) => {
-        if (cycle === null || cycle === undefined || cleanText(cycle) === "") return path;
+    const withScopeQuery = (path) => {
+        if (!scopeQuery) return path;
         const separator = path.includes("?") ? "&" : "?";
-        return `${path}${separator}cycle=${encodeURIComponent(String(cycle))}`;
+        return `${path}${separator}${scopeQuery}`;
     };
 
     const formatDateRange = (startDate, endDate) => {
@@ -547,7 +549,7 @@
             const donorCell = document.createElement("td");
             if (row.donor_entity_key) {
                 const donorLink = document.createElement("a");
-                donorLink.href = withCycleQuery(`/federal-finance/donors/${encodeURIComponent(row.donor_entity_key)}`);
+                donorLink.href = withScopeQuery(`/federal-finance/donors/${encodeURIComponent(row.donor_entity_key)}`);
                 donorLink.textContent = row.donor_name;
                 donorCell.appendChild(donorLink);
             } else {
@@ -558,7 +560,7 @@
             const candidateCell = document.createElement("td");
             if (row.candidate_id) {
                 const candidateLink = document.createElement("a");
-                candidateLink.href = withCycleQuery(`/federal-finance/${encodeURIComponent(row.candidate_id)}`);
+                candidateLink.href = withScopeQuery(`/federal-finance/${encodeURIComponent(row.candidate_id)}`);
                 candidateLink.textContent = row.candidate_name;
                 candidateCell.appendChild(candidateLink);
             } else {

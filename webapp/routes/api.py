@@ -18,16 +18,18 @@ from database.analytics import (
 )
 from database.models import Committee, Report, Donor, Contribution, ScrapeState
 from webapp.utils.search_normalize import normalize_search_query
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import resolve_time_scope
 
 api_bp = Blueprint('api', __name__)
 
 
 def _resolved_date_window() -> tuple[str | None, str | None]:
-    period = get_active_period()
-    explicit_from = (request.args.get('date_from', '', type=str) or '').strip()
-    explicit_to = (request.args.get('date_to', '', type=str) or '').strip()
-    return period_to_date_window(period, explicit_from, explicit_to)
+    scope = resolve_time_scope(default='cycle:current', axis='received', data_through=latest_data_date('isbe'))
+    return (
+        scope.start.isoformat() if scope.start else None,
+        scope.end.isoformat() if scope.end else None,
+    )
 
 
 def _public_error_marker(error_message: str | None) -> str | None:

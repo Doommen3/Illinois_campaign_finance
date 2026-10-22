@@ -5,7 +5,8 @@ from io import StringIO
 from flask import Blueprint, Response, current_app, render_template, request
 
 from database.models import D2ExpendituresRecon
-from webapp.utils.time_filter import get_active_period
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
 
 d2_expenditures_recon_bp = Blueprint("d2_expenditures_recon", __name__)
 
@@ -34,9 +35,9 @@ def _parse_int(value: str) -> int | None:
 def list_d2_expenditures_recon():
     """List D2 rows with itemized expenditure reconciliation metrics."""
     conn = current_app.get_database()
-    period = get_active_period()
-    period_start = period.get("start_date")
-    period_end = period.get("end_date")
+    scope = resolve_time_scope(default="cycle:current", axis="filed", data_through=latest_data_date("isbe"))
+    period_start = scope.start.isoformat() if scope.start else None
+    period_end = scope.end.isoformat() if scope.end else None
 
     page = max(request.args.get("page", 1, type=int), 1)
     per_page = 50
@@ -181,4 +182,8 @@ def list_d2_expenditures_recon():
         min_expenditure_rows=min_expenditure_rows_raw,
         anomalies_only=anomalies_only,
         table_available=table_available,
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )

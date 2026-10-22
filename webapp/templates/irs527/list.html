@@ -4,10 +4,12 @@
 
 {% block content %}
 <h1>IRS 527 Political Organizations</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">{{ total }} organizations with Illinois connections</p>
 <p class="help-text">IRS Section 527 political organizations with Illinois connections. These tax-exempt organizations can raise unlimited funds for political activities. Cross-matched against state committees and campaign donors.</p>
 
 <form action="{{ url_for('irs527.list_orgs') }}" method="get" class="search-form">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <input type="text" name="q" placeholder="Search organizations..." value="{{ query }}"
            data-autocomplete-url="{{ url_for('irs527.suggest') }}">
     <button type="submit">Search</button>
@@ -31,7 +33,7 @@
         <tr>
             <td>{{ org.ein }}</td>
             <td>
-                <a href="{{ url_for('irs527.org_detail', ein=org.ein) }}">
+                <a href="{{ url_for('irs527.org_detail', ein=org.ein, **scope_query) }}">
                     {{ org.org_name or 'Unknown' }}
                 </a>
             </td>
@@ -53,11 +55,11 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('irs527.list_orgs', page=page-1, q=query) }}">&laquo; Previous</a>
+    <a href="{{ url_for('irs527.list_orgs', page=page-1, q=query, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="{{ url_for('irs527.list_orgs', page=page+1, q=query) }}">Next &raquo;</a>
+    <a href="{{ url_for('irs527.list_orgs', page=page+1, q=query, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}

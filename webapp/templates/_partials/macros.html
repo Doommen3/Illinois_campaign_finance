@@ -1,0 +1,8 @@
+{# Shared macros. Import with: {% from "_partials/macros.html" import scope_tag with context %} #}
+
+{# scope_tag — every heading above an aggregate carries one. No argument: the page's
+   time scope label. With text: a fixed scope that ignores the page scope, e.g.
+   scope_tag('All time'), scope_tag('Latest filing'). #}
+{% macro scope_tag(text=None) -%}
+<span class="scope-tag{% if text %} scope-tag-fixed{% endif %}">{{ text if text else (time_scope.label if time_scope is defined else '') }}</span>
+{%- endmacro %}

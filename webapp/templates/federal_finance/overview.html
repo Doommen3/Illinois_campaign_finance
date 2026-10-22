@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Finance Overview - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_overview') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -19,7 +20,7 @@
     </select>
     <input type="text" name="analysis_district" value="{{ analysis_district }}" placeholder="District (e.g., 01)">
     <button type="submit">Apply Filters</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_overview') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_overview', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -32,7 +33,7 @@
     <div class="stat-card">
         <h3>Candidates</h3>
         <div class="stat-value">{{ overview.candidate_count }}</div>
-        <div class="stat-detail">Seed rows in cycle {{ cycle }}</div>
+        <div class="stat-detail">{{ 'Seed rows in cycle ' ~ cycle if time_scope.key.startswith('cycle:') else 'Seed rows across all cycles' }}</div>
     </div>
     <div class="stat-card">
         <h3>Races</h3>
@@ -63,13 +64,13 @@
 
 {% if overview.candidate_count == 0 %}
 <div class="status-section">
-    <p>No synced FEC candidate rows found for cycle {{ cycle }}.</p>
+    <p>No synced FEC candidate rows found for {{ time_scope.label }}.</p>
     <p>Run the sync command and then refresh this page.</p>
 </div>
 {% endif %}
 
 <div class="status-section">
-    <h2>Top Federal Races</h2>
+    <h2>Top Federal Races {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -88,14 +89,14 @@
             {% set race_district_slug = row.district_code if row.office_code == 'H' and row.district_code else 'NA' %}
             <tr>
                 <td>
-                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, cycle=cycle) }}">{{ row.race_label }}</a>
+                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, **scope_query) }}">{{ row.race_label }}</a>
                 </td>
                 <td>{{ row.candidate_count }}</td>
                 <td>{{ row.donor_count }}</td>
                 <td>{{ row.contribution_count }}</td>
                 <td>{{ format_currency(row.total_amount) }}</td>
                 <td>
-                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, cycle=cycle) }}">{{ format_currency(row.outside_spending_total) }}</a>
+                    <a href="{{ url_for('federal_finance.federal_race_outside_spending', office_code=row.office_code, district_code=race_district_slug, **scope_query) }}">{{ format_currency(row.outside_spending_total) }}</a>
                 </td>
                 <td>{{ (row.outside_pressure_ratio * 100)|round(2) }}%</td>
                 <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
@@ -109,7 +110,7 @@
 
 <div class="two-column">
     <div class="column">
-        <h2>Top Donors (Network)</h2>
+        <h2>Top Donors (Network) {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -123,7 +124,7 @@
                 <tr>
                     <td>
                         {% if row.entity_key %}
-                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.entity_key, cycle=cycle) }}">{{ row.label }}</a>
+                        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.entity_key, **scope_query) }}">{{ row.label }}</a>
                         {% else %}
                         {{ row.label }}
                         {% endif %}
@@ -139,7 +140,7 @@
     </div>
 
     <div class="column">
-        <h2>Top Candidate Nodes</h2>
+        <h2>Top Candidate Nodes {{ scope_tag() }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
@@ -153,7 +154,7 @@
                 <tr>
                     <td>
                         {% if row.candidate_id %}
-                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.label }}</a>
+                        <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.label }}</a>
                         {% else %}
                         {{ row.label }}
                         {% endif %}
@@ -170,7 +171,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Geographic Snapshot - States</h2>
+    <h2>Geographic Snapshot - States {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -189,12 +190,10 @@
                         'federal_finance.federal_geo_drilldown',
                         geo_type='state',
                         geo_value=row.state,
-                        cycle=cycle,
                         analysis_office=analysis_office,
                         analysis_district=analysis_district,
                         source_page='overview',
-                        range=time_period.key,
-                        period=time_period.key
+                        **scope_query
                     ) }}">{{ format_currency(row.total_amount) }}</a>
                 </td>
                 <td>{{ row.contribution_count }}</td>
@@ -208,7 +207,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Geographic Snapshot - Cities</h2>
+    <h2>Geographic Snapshot - Cities {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -229,12 +228,10 @@
                         geo_type='city',
                         geo_value=row.city,
                         geo_state=row.state,
-                        cycle=cycle,
                         analysis_office=analysis_office,
                         analysis_district=analysis_district,
                         source_page='overview',
-                        range=time_period.key,
-                        period=time_period.key
+                        **scope_query
                     ) }}">{{ format_currency(row.total_amount) }}</a>
                 </td>
                 <td>{{ row.contribution_count }}</td>
@@ -249,10 +246,10 @@
 <div class="status-section">
     <h2>Explore More</h2>
     <ul>
-        <li><a href="{{ url_for('federal_finance.federal_candidates', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open candidate table and drill-down</a></li>
-        <li><a href="{{ url_for('federal_finance.federal_networks', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open network visualizations (Sankey + force)</a></li>
-        <li><a href="{{ url_for('federal_finance.federal_donor_intelligence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open donor segmentation, influence, and follow-the-money</a></li>
-        <li><a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Open federal/local donor matching diagnostics</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_candidates', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Open candidate table and drill-down</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_networks', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Open network visualizations (Sankey + force)</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_donor_intelligence', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Open donor segmentation, influence, and follow-the-money</a></li>
+        <li><a href="{{ url_for('federal_finance.federal_matching', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Open federal/local donor matching diagnostics</a></li>
     </ul>
 </div>
 {% endif %}

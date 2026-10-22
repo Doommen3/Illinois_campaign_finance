@@ -1,16 +1,17 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Donor Intelligence - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Federal Donor Intelligence</h1>
 <p class="subtitle">Donor segmentation and network clustering analysis.</p>
-<p class="help-text">This page groups donors by behavior (K-Means/DBSCAN segmentation) and finds clusters of donors who give to the same candidates. For influence scores, see <a href="{{ url_for('federal_finance.federal_influence', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Influence</a>. For multi-hop path tracing, see <a href="{{ url_for('federal_finance.federal_follow_the_money', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Follow the Money</a>.</p>
+<p class="help-text">This page groups donors by behavior (K-Means/DBSCAN segmentation) and finds clusters of donors who give to the same candidates. For influence scores, see <a href="{{ url_for('federal_finance.federal_influence', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Influence</a>. For multi-hop path tracing, see <a href="{{ url_for('federal_finance.federal_follow_the_money', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Follow the Money</a>.</p>
 
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_donor_intelligence') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -32,7 +33,7 @@
     <input type="text" name="cluster_limit" value="{{ cluster_limit }}" placeholder="Cluster limit">
 
     <button type="submit">Update</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_donor_intelligence') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_donor_intelligence', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -42,7 +43,7 @@
 </div>
 {% else %}
 <div class="status-section">
-    <h2>Donor Segmentation</h2>
+    <h2>Donor Segmentation {{ scope_tag() }}</h2>
     <p class="subtitle">
         Method: <strong>{{ donor_segmentation.method }}</strong> |
         Donors analyzed: <strong>{{ donor_segmentation.donor_count }}</strong> |
@@ -79,7 +80,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Donor Network Clustering</h2>
+    <h2>Donor Network Clustering {{ scope_tag() }}</h2>
     <p class="subtitle">Clusters found: <strong>{{ donor_clusters.cluster_count }}</strong></p>
     <table class="data-table">
         <thead>
@@ -104,14 +105,14 @@
                 </td>
                 <td>
                     {% if row.cluster_anchor_candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.cluster_anchor_candidate_id, cycle=cycle) }}">{{ row.cluster_anchor_candidate if row.cluster_anchor_candidate else '-' }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.cluster_anchor_candidate_id, **scope_query) }}">{{ row.cluster_anchor_candidate if row.cluster_anchor_candidate else '-' }}</a>
                     {% else %}
                     {{ row.cluster_anchor_candidate if row.cluster_anchor_candidate else '-' }}
                     {% endif %}
                 </td>
                 <td>
                     {% if row.cluster_anchor_donor_entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.cluster_anchor_donor_entity_key, cycle=cycle) }}">{{ row.cluster_anchor_donor if row.cluster_anchor_donor else '-' }}</a>
+                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.cluster_anchor_donor_entity_key, **scope_query) }}">{{ row.cluster_anchor_donor if row.cluster_anchor_donor else '-' }}</a>
                     {% else %}
                     {{ row.cluster_anchor_donor if row.cluster_anchor_donor else '-' }}
                     {% endif %}
@@ -128,7 +129,7 @@
     </table>
 </div>
 <div class="status-section">
-    <h2>Community Treemap / Sunburst</h2>
+    <h2>Community Treemap / Sunburst {{ scope_tag() }}</h2>
     <p class="subtitle">Visual summary of network communities by cluster weight and composition.</p>
     <div class="graph-controls">
         <label>View

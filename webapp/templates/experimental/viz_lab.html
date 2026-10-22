@@ -4,6 +4,7 @@
 
 {% block content %}
 <h1>Visualization Lab</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">Local-only experimental gallery for candidate race, payee, entity-resolution, and network prototypes.</p>
 <p class="help-text">These views are intentionally experimental and isolated under <code>/experimental</code>. They are built for local evaluation and easy rollback.</p>
 
@@ -13,29 +14,16 @@
         Route: <code>/experimental/viz-lab</code> |
         Feature flag: <code>EXPERIMENTAL_VIZ_LAB_ENABLED</code>
     </p>
-    <p class="help-text">Current period: <strong>{{ time_period.label }}</strong> {% if date_from or date_to %}| Date window: <strong>{{ date_from if date_from else 'earliest' }}</strong> to <strong>{{ date_to if date_to else 'latest' }}</strong>{% endif %}</p>
 </section>
 
-<form class="search-form analytics-form" method="get" action="{{ url_for('experimental.viz_lab', prototype_key=active_prototype) if active_prototype else url_for('experimental.viz_lab') }}">
-    <input type="hidden" name="period" value="{{ period_key }}">
-    <label>
-        Date From
-        <input type="date" name="date_from" value="{{ date_from }}">
-    </label>
-    <label>
-        Date To
-        <input type="date" name="date_to" value="{{ date_to }}">
-    </label>
-    <button type="submit">Apply Window</button>
-    {% if active_prototype %}
-    <a class="analytics-subnav-link" href="{{ url_for('experimental.viz_lab', period=period_key, date_from=date_from if date_from else None, date_to=date_to if date_to else None) }}">Show All Prototypes</a>
-    {% endif %}
-</form>
+{% if active_prototype %}
+<p><a class="analytics-subnav-link" href="{{ url_for('experimental.viz_lab', **scope_query) }}">Show All Prototypes</a></p>
+{% endif %}
 
 <section class="status-section">
     <h2>Map Visualizations</h2>
     <div class="viz-lab-grid">
-        <a class="viz-lab-card" href="{{ url_for('viz_lab.viz_lab_state_maps', period=period_key, date_from=date_from if date_from else None, date_to=date_to if date_to else None) }}">
+        <a class="viz-lab-card" href="{{ url_for('viz_lab.viz_lab_state_maps', **scope_query) }}">
             <h3>Illinois State Maps</h3>
             <p class="help-text">Interactive district boundaries for Congressional, State House, and State Senate layers.</p>
             <span class="viz-lab-card-meta">Hover and click district details</span>
@@ -208,7 +196,7 @@
 {% endfor %}
 
 <script id="viz-lab-prototypes" type="application/json">{{ prototypes|tojson }}</script>
-<script id="viz-lab-state" type="application/json">{{ {'active_prototype': active_prototype, 'period_key': period_key, 'date_from': date_from, 'date_to': date_to}|tojson }}</script>
+<script id="viz-lab-state" type="application/json">{{ {'active_prototype': active_prototype, 'period_key': scope_query.get('period', ''), 'date_from': scope_query.get('date_from', ''), 'date_to': scope_query.get('date_to', '')}|tojson }}</script>
 {% endblock %}
 
 {% block extra_js %}

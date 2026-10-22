@@ -528,6 +528,70 @@ class TestWebApp:
         assert response.status_code == 200
         assert b'no candidate finance data is available yet' in response.data.lower()
 
+    def test_candidate_finance_scope_overrides_replace_period(self, app, client):
+        """Step 1.2: a year/cycle/custom scope REPLACES the global period instead of
+        being AND-ed with it (today `year=2024&period=2026cycle` returns 0 rows),
+        and the page carries exactly one time-scope bar instead of the chip."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidate_committee_finance_agg (
+                candidate_id INTEGER, candidate_full_name TEXT, office_sought TEXT,
+                district_type TEXT, district TEXT, candidate_party_affiliation TEXT,
+                committee_id_sbe INTEGER, committee_name TEXT, committee_type TEXT,
+                committee_party_affiliation TEXT, period_year INTEGER, election_cycle INTEGER,
+                filing_count INTEGER, sum_total_receipts REAL, sum_total_expenditures REAL,
+                max_ending_funds_available REAL, archived_filing_count INTEGER,
+                period_start_date TEXT, period_end_date TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO bulk_candidate_committee_finance_agg VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (301, "Pat Oldcycle", "Governor", "Statewide", "At-Large", "Democratic",
+                 111, "Committee Old", "Candidate", "Democratic", 2024, 2024, 2, 4000.0, 100.0, 50.0, 0, "2024-01-01", "2024-06-30"),
+                (302, "Pat Newcycle", "Governor", "Statewide", "At-Large", "Democratic",
+                 112, "Committee New", "Candidate", "Democratic", 2025, 2026, 1, 3000.0, 100.0, 50.0, 0, "2025-01-01", "2025-06-30"),
+                (302, "Pat Newcycle", "Governor", "Statewide", "At-Large", "Democratic",
+                 112, "Committee New", "Candidate", "Democratic", 2026, 2026, 1, 2000.0, 100.0, 50.0, 0, "2026-01-01", "2026-06-30"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        # Year override under the current-cycle period must show the 2024 row.
+        resp = client.get('/candidate-finance/?q=Pat&year=2024&period=2026cycle')
+        assert resp.status_code == 200
+        assert b'Pat Oldcycle' in resp.data
+        assert b'Pat Newcycle' not in resp.data
+
+        # Previous-cycle preset (new key) shows only the 2024-cycle row.
+        resp = client.get('/candidate-finance/?q=Pat&period=cycle:2024')
+        assert b'Pat Oldcycle' in resp.data
+        assert b'Pat Newcycle' not in resp.data
+
+        # Current-cycle preset shows both 2026-cycle rows and not the 2024 row.
+        resp = client.get('/candidate-finance/?q=Pat&period=cycle:2026')
+        assert b'Pat Newcycle' in resp.data
+        assert b'Pat Oldcycle' not in resp.data
+        assert b'2025' in resp.data and b'2026' in resp.data
+
+        # Custom window on the reporting period end replaces the preset entirely.
+        resp = client.get('/candidate-finance/?q=Pat&date_from=2024-01-01&date_to=2024-12-31&period=2026cycle')
+        assert b'Pat Oldcycle' in resp.data
+        assert b'Pat Newcycle' not in resp.data
+
+        # One bar, no chip, and the bar names the scope.
+        html = resp.get_data(as_text=True)
+        assert html.count('class="time-scope-bar') == 1
+        assert 'active-filter-chip' not in html
+        assert 'time-scope-bar-custom' in html
+
     def test_candidate_finance_page_loads_with_bulk_table(self, app, client):
         """Test candidate finance page renders imported aggregate data and supports query params."""
         conn = get_db(app.config['DATABASE_PATH'])
@@ -1076,7 +1140,7 @@ class TestWebApp:
         assert b'Schedule E Rows' in overview.data
         assert b'Outside Spending (E)' in overview.data
         assert b'Outside Pressure Ratio' in overview.data
-        assert b'/federal-finance/races/H/01/outside-spending?cycle=2026' in overview.data
+        assert b'/federal-finance/races/H/01/outside-spending?period=cycle:2026' in overview.data
         assert b'$625.00 total disbursed' in overview.data
         assert b'$640.75 total independent expenditures' in overview.data
         assert b'$425.00' in overview.data
@@ -1182,7 +1246,7 @@ class TestWebApp:
         assert b'Total Source:' in detail.data
         assert b'FEC candidate totals endpoint' in detail.data
         assert b'Export CSV' in detail.data
-        assert b'/federal-finance/committees/C00011111/receipts?cycle=2026' in detail.data
+        assert b'/federal-finance/committees/C00011111/receipts?period=cycle:2026' in detail.data
 
         committee_receipts = client.get('/federal-finance/committees/C00011111/receipts?cycle=2026')
         assert committee_receipts.status_code == 200
@@ -1827,6 +1891,16 @@ class TestWebApp:
         response = client.get('/search')
         assert response.status_code == 200
 
+    def test_search_page_carries_scope_bar_and_form_keeps_scope(self, client):
+        """Step 1.4: one scope bar, default current cycle, a chosen scope survives a new search."""
+        from webapp.utils.time_scope import current_cycle
+        html = client.get('/search').get_data(as_text=True)
+        assert html.count('class="time-scope-bar') == 1
+        assert f'data-scope-key="cycle:{current_cycle()}"' in html
+        html = client.get('/search?q=zz&period=all').get_data(as_text=True)
+        assert 'data-scope-key="all"' in html
+        assert '<input type="hidden" name="period" value="all">' in html
+
     def test_search_local_candidates_uses_safe_numeric_and_text_casts(self, monkeypatch):
         conn = _CaptureSqlConn()
         monkeypatch.setattr(main_routes, "_table_exists", lambda _conn, _table: True)
@@ -2187,6 +2261,65 @@ class TestWebApp:
         assert b"Testname Donor" in resp.data
         assert b"Candidates" in resp.data
         assert b"Testname Candidate" in resp.data
+        # Step 1.4: windowed sections carry the page scope; candidate search is all-time and says so.
+        from webapp.utils.time_scope import current_cycle
+        html = resp.get_data(as_text=True)
+        assert f'<h2>Committees (1) <span class="scope-tag">{current_cycle()} Cycle</span></h2>' in html
+        assert f'<h2>Donors (1) <span class="scope-tag">{current_cycle()} Cycle</span></h2>' in html
+        assert '<h2>Candidates (1) <span class="scope-tag scope-tag-fixed">All time</span></h2>' in html
+
+    def test_search_is_case_insensitive(self, app, client):
+        """Q2: a lowercase query must match title-cased committee, donor and candidate names."""
+        conn = get_db(app.config['DATABASE_PATH'])
+        conn.execute("DROP TABLE IF EXISTS isbe_committees")
+        conn.execute(
+            """
+            CREATE TABLE isbe_committees (
+                id INTEGER PRIMARY KEY, name TEXT, type TEXT, party TEXT,
+                city TEXT, state TEXT, status_date TEXT,
+                state_committee BOOLEAN DEFAULT FALSE, state_id TEXT,
+                local_id TEXT, active BOOLEAN DEFAULT TRUE, purpose TEXT,
+                zipcode TEXT, creation_date TEXT, creation_amount REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO isbe_committees (id, name, type, party, city, state) VALUES (?, ?, ?, ?, ?, ?)",
+            (20002, "Citizens for Casey Mixedcase", "Candidate", "Democratic", "Chicago", "IL"),
+        )
+        conn.execute("DELETE FROM analytics_donor_summary")
+        conn.execute(
+            """
+            INSERT INTO analytics_donor_summary (
+                source, donor_key, local_donor_id, donor_name, donor_address,
+                donor_city, donor_state, occupation, employer, total_amount,
+                contribution_count, committee_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("bulk_receipts", "casey|mixedcase|1 st|chicago|il|60601", None, "Casey Mixedcase",
+             "1 St, Chicago, IL 60601", "Chicago", "IL", "Retired", "Self", 500.0, 1, 1),
+        )
+        conn.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg")
+        conn.execute(
+            """
+            CREATE TABLE bulk_candidate_committee_finance_agg (
+                candidate_id INTEGER, candidate_full_name TEXT, office_sought TEXT,
+                committee_id_sbe INTEGER, sum_total_receipts REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bulk_candidate_committee_finance_agg VALUES (?, ?, ?, ?, ?)",
+            (502, "Casey Mixedcase", "State Rep", 20002, 1000.0),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = client.get("/search?q=mixedcase&type=all")
+        assert resp.status_code == 200
+        assert b"Citizens for Casey Mixedcase" in resp.data
+        assert b"Casey Mixedcase" in resp.data
+        assert b"Candidates (1)" in resp.data
 
     def test_search_committees_legacy_fallback(self, app, client):
         """Committee search falls back to legacy committees table when ISBE is absent."""

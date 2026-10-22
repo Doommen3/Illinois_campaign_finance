@@ -1,14 +1,16 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Donor Detail - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Federal Donor Detail</h1>
+{% include "_partials/time_scope_bar.html" %}
 
 {% if not detail %}
 <div class="status-section">
-    <p>No donor rows were found for donor key <strong>{{ donor_entity_key }}</strong> in cycle {{ cycle }}.</p>
-    <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
+    <p>No donor rows were found for donor key <strong>{{ donor_entity_key }}</strong> in {{ time_scope.label }}.</p>
+    <p><a href="{{ url_for('federal_finance.list_federal_finance', **scope_query) }}">Back to Federal Finance</a></p>
 </div>
 {% else %}
 <div class="status-section">
@@ -20,17 +22,17 @@
     <p><strong>Employer:</strong> {{ detail.summary.contributor_employer if detail.summary.contributor_employer else '-' }}</p>
     <p><strong>Occupation:</strong> {{ detail.summary.contributor_occupation if detail.summary.contributor_occupation else '-' }}</p>
     <p><strong>Identity Method:</strong> {{ detail.summary.donor_entity_method_label }}</p>
-    <p><strong>Cycle:</strong> {{ cycle }}</p>
     <p><strong>Candidates Donated To:</strong> {{ detail.summary.candidate_count }}</p>
     <p><strong>Committees:</strong> {{ detail.summary.committee_count }}</p>
     <p><strong>Total Contributions:</strong> {{ detail.summary.contribution_count }}</p>
     <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }}</p>
+    <p><strong>This cycle:</strong> {{ format_currency(cycle_total) }}</p>
     <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }}</p>
-    <p><a href="{{ url_for('federal_finance.list_federal_finance', cycle=cycle) }}">Back to Federal Finance</a></p>
+    <p><a href="{{ url_for('federal_finance.list_federal_finance', **scope_query) }}">Back to Federal Finance</a></p>
 </div>
 
 <div class="status-section">
-    <h2>Donations by Candidate</h2>
+    <h2>Donations by Candidate {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -49,7 +51,7 @@
             <tr>
                 <td>
                     {% if row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">
                         {{ row.candidate_name }}
                     </a>
                     <br><small>{{ row.candidate_id }}</small>
@@ -73,7 +75,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Name Variants</h2>
+    <h2>Name Variants {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -97,7 +99,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Recent Contributions</h2>
+    <h2>Recent Contributions {{ scope_tag() }}</h2>
     <p class="subtitle">Showing {{ detail.contributions|length }} of {{ contribution_total }} rows</p>
     <table class="data-table">
         <thead>
@@ -115,7 +117,7 @@
                 <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
                 <td>
                     {% if row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">
                         {{ row.candidate_name }}
                     </a>
                     {% else %}
@@ -135,13 +137,13 @@
     {% if contribution_pages > 1 %}
     <nav class="pagination">
         {% if contribution_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=donor_entity_key, cycle=cycle, contribution_page=contribution_page-1) }}">&laquo; Previous</a>
+        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=donor_entity_key, contribution_page=contribution_page-1, **scope_query) }}">&laquo; Previous</a>
         {% endif %}
 
         <span class="page-info">Page {{ contribution_page }} of {{ contribution_pages }}</span>
 
         {% if contribution_page < contribution_pages %}
-        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=donor_entity_key, cycle=cycle, contribution_page=contribution_page+1) }}">Next &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=donor_entity_key, contribution_page=contribution_page+1, **scope_query) }}">Next &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}

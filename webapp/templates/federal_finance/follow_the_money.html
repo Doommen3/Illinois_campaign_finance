@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Follow the Money - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_follow_the_money') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -29,7 +30,7 @@
     <input type="text" name="follow_max_hops" value="{{ follow_max_hops }}" placeholder="Max hops (1-8)">
     <input type="text" name="follow_min_edge_amount" value="{{ follow_min_edge_amount }}" placeholder="Min edge amount">
     <button type="submit">Trace</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_follow_the_money') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_follow_the_money', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -92,7 +93,7 @@
     {% endif %}
 
     {% if follow_money.reachable_candidates %}
-    <h3>Reachable Candidates</h3>
+    <h3>Reachable Candidates {{ scope_tag() }}</h3>
     <p class="help-text">Candidates that can be reached from the starting donor within {{ follow_max_hops }} hops. Lower hop distance means a more direct financial connection.</p>
     <table class="data-table">
         <thead>
@@ -103,7 +104,7 @@
             <tr>
                 <td>
                     {% if row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.candidate_name }}</a>
                     {% else %}{{ row.candidate_name }}{% endif %}
                 </td>
                 <td>{{ row.race_label if row.race_label else '-' }}</td>
@@ -116,7 +117,7 @@
     {% endif %}
 
     {% if follow_money.reachable_committees %}
-    <h3>Reachable Committees</h3>
+    <h3>Reachable Committees {{ scope_tag() }}</h3>
     <p class="help-text">Committees reached in the donor path. Open any committee to inspect its underlying Schedule A receipts.</p>
     <table class="data-table">
         <thead>
@@ -127,7 +128,7 @@
             <tr>
                 <td>
                     {% if row.committee_id %}
-                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=row.committee_id, cycle=cycle) }}">{{ row.committee_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=row.committee_id, **scope_query) }}">{{ row.committee_name }}</a>
                     {% else %}{{ row.committee_name }}{% endif %}
                 </td>
                 <td>{{ row.hop_distance }}</td>

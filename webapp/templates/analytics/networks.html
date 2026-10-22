@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Analytics Networks - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -17,14 +18,9 @@
             <option value="full" {% if load_mode == 'full' %}selected{% endif %}>Full mode</option>
         </select>
     </label>
-    <label>
-        Date From
-        <input type="date" name="date_from" value="{{ date_from }}">
-    </label>
-    <label>
-        Date To
-        <input type="date" name="date_to" value="{{ date_to }}">
-    </label>
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     <label>
         Min Edge Amount
         <input type="number" name="min_edge_amount" min="0" step="100" value="{{ min_edge_amount }}">
@@ -39,7 +35,7 @@
 {% include "analytics/_status.html" %}
 
 <div class="status-section">
-    <h2>Network Graph Analytics</h2>
+    <h2>Network Graph Analytics {{ scope_tag() }}</h2>
     <p class="subtitle">Donor edges source: {{ network.summary.donor_committee_source }}</p>
     <p>
         Nodes: {{ network.summary.node_count }}

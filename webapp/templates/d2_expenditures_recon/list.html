@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}D2 Expenditures Reconciliation - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,8 @@
     min_expenditure_rows=min_expenditure_rows,
     anomalies_only=anomalies_only,
     sort=field,
-    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc',
+    **scope_query
 ) }}">
     {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
 </a>
@@ -18,6 +20,7 @@
 
 {% block content %}
 <h1>D2 Expenditures Reconciliation</h1>
+{% include "_partials/time_scope_bar.html" %}
 
 {% if not table_available %}
 <div class="status-section">
@@ -25,7 +28,7 @@
     <p>Run <code>python run.py import-bulk-download --directory Bulk_download</code> with an <code>expenditures_*.txt</code> file to build this page's data.</p>
 </div>
 {% else %}
-<p class="subtitle">{{ total }} filing rows</p>
+<p class="subtitle">{{ total }} filing rows {{ scope_tag() }}</p>
 
 <form class="search-form" method="get" action="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">
     <input type="text" name="q" value="{{ query }}" placeholder="Search committee, committee ID, or filed doc ID">
@@ -37,8 +40,9 @@
     </select>
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="dir" value="{{ sort_dir }}">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <button type="submit">Apply</button>
-    <a class="btn btn-small" href="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('d2_expenditures_recon.list_d2_expenditures_recon', **scope_query) }}">Clear</a>
 </form>
 
 <div class="filter-controls">
@@ -50,7 +54,8 @@
         min_expenditure_rows=min_expenditure_rows,
         anomalies_only=anomalies_only,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Export CSV</a>
     |
     <a href="{{ url_for(
@@ -60,7 +65,8 @@
         min_expenditure_rows=min_expenditure_rows,
         anomalies_only=anomalies_only,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Share This View</a>
 </div>
 
@@ -126,7 +132,8 @@
         min_expenditure_rows=min_expenditure_rows,
         anomalies_only=anomalies_only,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">&laquo; Previous</a>
     {% endif %}
 
@@ -141,7 +148,8 @@
         min_expenditure_rows=min_expenditure_rows,
         anomalies_only=anomalies_only,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Next &raquo;</a>
     {% endif %}
 </nav>

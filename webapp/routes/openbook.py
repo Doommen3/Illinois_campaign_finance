@@ -1,6 +1,6 @@
 """OpenBook vendor contracts and contributions routes."""
 from flask import Blueprint, render_template, request, current_app, abort
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.time_scope import current_cycle, cycle_window, resolve_time_scope, scope_params
 
 openbook_bp = Blueprint("openbook", __name__)
 
@@ -30,16 +30,23 @@ def _scalar(conn, sql, params=(), default=0):
     return default if value is None else value
 
 
-def _cash_date_window() -> tuple[str | None, str | None]:
-    period = get_active_period()
-    explicit_from = request.args.get("date_from", "", type=str).strip()
-    explicit_to = request.args.get("date_to", "", type=str).strip()
-    return period_to_date_window(period, explicit_from, explicit_to)
+def _cash_date_window():
+    scope = resolve_time_scope(default="cycle:current", axis="transaction")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
+    return scope, date_from, date_to
 
 
 @openbook_bp.route("/")
 def list_vendors():
     conn = current_app.get_database()
+    scope, cash_date_from, cash_date_to = _cash_date_window()
+    scope_ctx = {
+        "time_scope": scope,
+        "scope_default_key": f"cycle:{current_cycle()}",
+        "time_scope_source_label": "OpenBook",
+        "scope_query": scope_params(scope),
+    }
     if not _table_exists(conn, "openbook_vendor_match"):
         return render_template(
             "openbook/list.html",
@@ -48,13 +55,13 @@ def list_vendors():
             page=1,
             total_pages=1,
             query="",
+            **scope_ctx,
         )
 
     query = request.args.get("q", "").strip()
     page = request.args.get("page", 1, type=int)
     per_page = 50
     offset = max(0, page - 1) * per_page
-    cash_date_from, cash_date_to = _cash_date_window()
 
     where_sql = "WHERE m.match_method != 'no_match' AND m.openbook_vendor_key != '' AND m.confidence >= 0.8"
     params = []
@@ -175,13 +182,16 @@ def list_vendors():
         total_pages=total_pages,
         query=query,
         summary=summary,
+        **scope_ctx,
     )
 
 
 @openbook_bp.route("/<path:vendor_key>")
 def vendor_detail(vendor_key: str):
     conn = current_app.get_database()
-    cash_date_from, cash_date_to = _cash_date_window()
+    scope = resolve_time_scope(default="all", axis="transaction")
+    cash_date_from = scope.start.isoformat() if scope.start else None
+    cash_date_to = scope.end.isoformat() if scope.end else None
     if not _table_exists(conn, "openbook_vendor_match"):
         abort(404)
 
@@ -283,6 +293,22 @@ def vendor_detail(vendor_key: str):
         tuple(contribution_date_params),
     ).fetchall() if _table_exists(conn, "openbook_contributions_raw") else []
 
+    cycle_total = 0.0
+    if _table_exists(conn, "openbook_contributions_raw"):
+        cycle_start, cycle_end = cycle_window(current_cycle())
+        cycle_total = float(_scalar(
+            conn,
+            """
+            SELECT COALESCE(SUM(amount), 0)
+            FROM openbook_contributions_raw
+            WHERE openbook_vendor_key = ?
+              AND contribution_date >= ?
+              AND contribution_date <= ?
+            """,
+            (vendor_key, cycle_start.isoformat(), cycle_end.isoformat()),
+            default=0.0,
+        ))
+
     seed_links = conn.execute(
         """
         SELECT
@@ -319,4 +345,8 @@ def vendor_detail(vendor_key: str):
         contributions=contributions,
         seed_links=seed_links,
         totals=totals,
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="OpenBook",
+        cycle_total=cycle_total,
     )

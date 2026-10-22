@@ -10,7 +10,7 @@
             <p class="subtitle">District boundaries for Congressional, State House, and State Senate layers.</p>
         </div>
         <div class="viz-lab-actions">
-            <a class="btn" href="{{ url_for('experimental.viz_lab', period=time_period.key) }}">Back to Lab</a>
+            <a class="btn" href="{{ url_for('experimental.viz_lab', **scope_query) }}">Back to Lab</a>
         </div>
     </header>
 

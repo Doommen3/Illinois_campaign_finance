@@ -13,14 +13,11 @@
     sort=field,
     dir='asc' if drilldown.sort.sort_by != field or drilldown.sort.sort_dir == 'desc' else 'desc',
     load_mode=load_mode,
-    date_from=date_from,
-    date_to=date_to,
-    months=months,
+    months=months_param,
     geo_state_limit=geo_state_limit,
     geo_city_limit=geo_city_limit,
     source_page=source_page,
-    range=range_key,
-    period=time_period_key
+    **scope_query
 ) }}">
     {{ label }}{% if drilldown.sort.sort_by == field %} {{ '↑' if drilldown.sort.sort_dir == 'asc' else '↓' }}{% endif %}
 </a>
@@ -95,14 +92,11 @@
         sort=drilldown.sort.sort_by,
         dir=drilldown.sort.sort_dir,
         load_mode=load_mode,
-        date_from=date_from,
-        date_to=date_to,
-        months=months,
+        months=months_param,
         geo_state_limit=geo_state_limit,
         geo_city_limit=geo_city_limit,
         source_page=source_page,
-        range=range_key,
-        period=time_period_key
+        **scope_query
     ) }}">&laquo; Previous</a>
     {% endif %}
 
@@ -119,14 +113,11 @@
         sort=drilldown.sort.sort_by,
         dir=drilldown.sort.sort_dir,
         load_mode=load_mode,
-        date_from=date_from,
-        date_to=date_to,
-        months=months,
+        months=months_param,
         geo_state_limit=geo_state_limit,
         geo_city_limit=geo_city_limit,
         source_page=source_page,
-        range=range_key,
-        period=time_period_key
+        **scope_query
     ) }}">Next &raquo;</a>
     {% endif %}
 </nav>

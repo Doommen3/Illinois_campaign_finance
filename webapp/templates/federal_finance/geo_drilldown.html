@@ -8,7 +8,6 @@
     geo_type=drilldown.summary.geo_type,
     geo_value=drilldown.summary.geo_value,
     geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
-    cycle=cycle,
     analysis_office=analysis_office,
     analysis_district=analysis_district,
     page=1,
@@ -16,8 +15,7 @@
     sort=field,
     dir='asc' if drilldown.sort.sort_by != field or drilldown.sort.sort_dir == 'desc' else 'desc',
     source_page=source_page,
-    range=range_key,
-    period=time_period.key
+    **scope_query
 ) }}">
     {{ label }}{% if drilldown.sort.sort_by == field %} {{ '↑' if drilldown.sort.sort_dir == 'asc' else '↓' }}{% endif %}
 </a>
@@ -52,7 +50,7 @@
         | Sum check delta: <strong>{{ format_currency(drilldown.summary.sum_check_delta) }}</strong>
     </p>
     <p class="help-text">
-        Cycle: {{ cycle if cycle else 'all' }}
+        Scope: {{ time_scope.label }}
         {% if drilldown.office_filter %}| Office filter: {{ drilldown.office_filter }}{% endif %}
         {% if drilldown.district_filter %}| District filter: {{ drilldown.district_filter }}{% endif %}
     </p>
@@ -79,7 +77,7 @@
                 <td>{{ row.donor_state if row.donor_state else '-' }}</td>
                 <td>
                     {% if row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle, period=time_period.key) }}">{{ row.candidate_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.candidate_name }}</a>
                     {% else %}
                     {{ row.candidate_name }}
                     {% endif %}
@@ -103,7 +101,6 @@
         geo_type=drilldown.summary.geo_type,
         geo_value=drilldown.summary.geo_value,
         geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
-        cycle=cycle,
         analysis_office=analysis_office,
         analysis_district=analysis_district,
         page=drilldown.pagination.page-1,
@@ -111,8 +108,7 @@
         sort=drilldown.sort.sort_by,
         dir=drilldown.sort.sort_dir,
         source_page=source_page,
-        range=range_key,
-        period=time_period.key
+        **scope_query
     ) }}">&laquo; Previous</a>
     {% endif %}
 
@@ -124,7 +120,6 @@
         geo_type=drilldown.summary.geo_type,
         geo_value=drilldown.summary.geo_value,
         geo_state=drilldown.summary.geo_state if drilldown.summary.geo_type == 'city' else None,
-        cycle=cycle,
         analysis_office=analysis_office,
         analysis_district=analysis_district,
         page=drilldown.pagination.page+1,
@@ -132,8 +127,7 @@
         sort=drilldown.sort.sort_by,
         dir=drilldown.sort.sort_dir,
         source_page=source_page,
-        range=range_key,
-        period=time_period.key
+        **scope_query
     ) }}">Next &raquo;</a>
     {% endif %}
 </nav>

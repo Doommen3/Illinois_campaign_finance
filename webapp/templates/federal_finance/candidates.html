@@ -1,6 +1,9 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Candidates - Illinois Campaign Finance Tracker{% endblock %}
+
+{% set cycle_tag = (cycle ~ ' Cycle') if time_scope.key.startswith('cycle:') else 'All cycles' %}
 
 {% macro sort_link(field, label) -%}
 <a href="{{ url_for(
@@ -9,11 +12,11 @@
     candidate_office=candidate_office,
     candidate_party=candidate_party,
     match_status=match_status,
-    cycle=cycle,
     analysis_office=analysis_office,
     analysis_district=analysis_district,
     sort=field,
-    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc'
+    dir='asc' if sort_by != field or sort_dir == 'desc' else 'desc',
+    **scope_query
 ) }}">
     {{ label }}{% if sort_by == field %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
 </a>
@@ -36,7 +39,7 @@
         <option value="ambiguous" {% if match_status == 'ambiguous' %}selected{% endif %}>Ambiguous</option>
         <option value="unmatched" {% if match_status == 'unmatched' %}selected{% endif %}>Unmatched</option>
     </select>
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All analytics offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -47,7 +50,7 @@
     <input type="hidden" name="sort" value="{{ sort_by }}">
     <input type="hidden" name="dir" value="{{ sort_dir }}">
     <button type="submit">Apply</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_candidates') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_candidates', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -56,7 +59,7 @@
     <p>Run <code>python run.py sync-fec-il-federal --candidates-csv docs/il_federal_candidates_2026_asof_2026-02-07.csv</code> to build this page's data.</p>
 </div>
 {% else %}
-<p class="subtitle">{{ total }} candidate seed rows (cycle {{ cycle }})</p>
+<p class="subtitle">{{ total }} candidate seed rows {{ scope_tag(cycle_tag) }}</p>
 
 <div class="table-scroll">
     <table class="data-table">
@@ -80,7 +83,7 @@
             <tr>
                 <td>
                     {% if row.fec_candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.fec_candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.fec_candidate_id, **scope_query) }}">{{ row.candidate_name }}</a>
                     {% else %}
                     {{ row.candidate_name }}
                     {% endif %}
@@ -116,11 +119,11 @@
         candidate_office=candidate_office,
         candidate_party=candidate_party,
         match_status=match_status,
-        cycle=cycle,
         analysis_office=analysis_office,
         analysis_district=analysis_district,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">&laquo; Previous</a>
     {% endif %}
 
@@ -134,11 +137,11 @@
         candidate_office=candidate_office,
         candidate_party=candidate_party,
         match_status=match_status,
-        cycle=cycle,
         analysis_office=analysis_office,
         analysis_district=analysis_district,
         sort=sort_by,
-        dir=sort_dir
+        dir=sort_dir,
+        **scope_query
     ) }}">Next &raquo;</a>
     {% endif %}
 </nav>

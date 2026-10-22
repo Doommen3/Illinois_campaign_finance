@@ -26,7 +26,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from urllib import error as urlerror
 from urllib import parse as urlparse
@@ -55,6 +55,8 @@ ERROR_MARKERS = (
     "<title>error",
 )
 
+SCOPE_BAR_MARKER = b'class="time-scope-bar'
+
 
 @dataclass
 class RouteResult:
@@ -70,6 +72,9 @@ class RouteResult:
     note: str = ""
     body_hash: str = ""
     body_truncated: bool = False
+    # Occurrences of SCOPE_BAR_MARKER in an HTML body; None = not an HTML
+    # response, or --check-scope-bar not set.
+    scope_bar_count: int | None = None
 
     def category(self) -> str:
         if self.note == "skipped":
@@ -91,6 +96,22 @@ class RouteResult:
         if self.empty_markers:
             return "200-empty"
         return "200-ok"
+
+
+def current_cycle(today: date | None = None) -> int:
+    """Current election cycle year: this year if even, else next year.
+
+    Computed locally (not imported from webapp) so the script stays standalone.
+    """
+    today = today or date.today()
+    return today.year if today.year % 2 == 0 else today.year + 1
+
+
+def resolve_period(period: str) -> str:
+    """Expand the `cycle:current` alias to `cycle:<current_cycle>`; pass anything else through verbatim."""
+    if period == "cycle:current":
+        return f"cycle:{current_cycle()}"
+    return period
 
 
 def enumerate_routes() -> list[tuple[str, str]]:
@@ -324,11 +345,11 @@ BODY_HASH_CAP_BYTES = 16 * 1024 * 1024  # 16MB cap for hash streaming
 ERROR_BODY_CAP_BYTES = 50_000
 
 
-def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool]:
+def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool, str]:
     """GET the URL.
 
     Returns (status_code, elapsed_seconds, body_bytes, note, body_hash,
-    body_truncated). `body_bytes` is capped at 8MB for marker scanning;
+    body_truncated, content_type). `body_bytes` is capped at 8MB for marker scanning;
     `body_hash` is a SHA-256 of up to 16MB streamed in chunks so the
     no-op detector can compare full content even when 200KB+ pages
     would otherwise look identical post-truncation.
@@ -358,7 +379,8 @@ def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool]:
                 truncated = resp.read(1) != b""
             elapsed = time.monotonic() - start
             return (resp.status, elapsed, bytes(collected), "",
-                    hasher.hexdigest(), truncated)
+                    hasher.hexdigest(), truncated,
+                    resp.headers.get("Content-Type", ""))
     except urlerror.HTTPError as e:
         elapsed = time.monotonic() - start
         try:
@@ -366,10 +388,11 @@ def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool]:
         except Exception:
             body = b""
         return (e.code, elapsed, body, "",
-                hashlib.sha256(body).hexdigest() if body else "", False)
+                hashlib.sha256(body).hexdigest() if body else "", False,
+                e.headers.get("Content-Type", "") if e.headers else "")
     except (urlerror.URLError, TimeoutError, OSError) as e:
         elapsed = time.monotonic() - start
-        return None, elapsed, b"", f"net-error: {e}", "", False
+        return None, elapsed, b"", f"net-error: {e}", "", False, ""
 
 
 def scan_markers(body: bytes) -> tuple[list[str], list[str]]:
@@ -391,7 +414,8 @@ def scan_markers(body: bytes) -> tuple[list[str], list[str]]:
 
 
 def sweep(host: str, routes: list[tuple[str, str]], seeds: dict[str, list[str]],
-          periods: list[str], concurrency: int = 6) -> list[RouteResult]:
+          periods: list[str], concurrency: int = 6,
+          check_scope_bar: bool = False) -> list[RouteResult]:
     expanded: list[tuple[str, str, str]] = []  # (rule, endpoint, concrete_url_path)
     skipped: list[RouteResult] = []
     for rule, endpoint in routes:
@@ -423,21 +447,26 @@ def sweep(host: str, routes: list[tuple[str, str]], seeds: dict[str, list[str]],
         }
         for fut in as_completed(future_map):
             rule, endpoint, full, period = future_map[fut]
-            status, elapsed, body, note, body_hash, body_truncated = fut.result()
+            status, elapsed, body, note, body_hash, body_truncated, content_type = fut.result()
             empty, errors = scan_markers(body) if body else ([], [])
+            scope_bar_count = None
+            if check_scope_bar and "text/html" in content_type.lower():
+                scope_bar_count = body.count(SCOPE_BAR_MARKER)
             results.append(RouteResult(
                 rule=rule, endpoint=endpoint, url=full, status=status,
                 elapsed_ms=round(elapsed * 1000.0, 1),
                 payload_bytes=len(body), period=period,
                 empty_markers=empty, error_markers=errors, note=note,
                 body_hash=body_hash, body_truncated=body_truncated,
+                scope_bar_count=scope_bar_count,
             ))
 
     results.extend(skipped)
     return results
 
 
-def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -> str:
+def render_markdown(results: list[RouteResult], host: str, periods: list[str],
+                    check_scope_bar: bool = False) -> str:
     by_cat: dict[str, list[RouteResult]] = {}
     for r in results:
         by_cat.setdefault(r.category(), []).append(r)
@@ -503,13 +532,14 @@ def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -
         lines.append("")
 
     # Detect "claims to filter but doesn't" — routes whose full-body SHA-256
-    # hash is identical across ?period=2026cycle and ?period=all. Compares
+    # hash is identical across the first two swept periods. Compares
     # hashes rather than payload bytes so big pages (>200KB) don't false-
     # positive when both responses get truncated to the same size.
     if len(periods) >= 2:
+        period_a, period_b = periods[0], periods[1]
         lines.append("## Period-filter no-op detector")
         lines.append("")
-        lines.append("Routes whose SHA-256 body hash is identical across `?period=2026cycle` and `?period=all`")
+        lines.append(f"Routes whose SHA-256 body hash is identical across `?period={period_a}` and `?period={period_b}`")
         lines.append("(suggests the route does not actually filter by period):")
         lines.append("")
         by_url_no_period: dict[str, dict[str, RouteResult]] = {}
@@ -520,8 +550,8 @@ def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -
             by_url_no_period.setdefault(base, {})[r.period] = r
         no_op = []
         for base, p_map in by_url_no_period.items():
-            if "2026cycle" in p_map and "all" in p_map:
-                a, b = p_map["2026cycle"], p_map["all"]
+            if period_a in p_map and period_b in p_map:
+                a, b = p_map[period_a], p_map[period_b]
                 if a.body_hash and b.body_hash and a.body_hash == b.body_hash and a.payload_bytes > 0:
                     no_op.append((base, a.payload_bytes, a.body_truncated or b.body_truncated))
         if not no_op:
@@ -533,6 +563,30 @@ def render_markdown(results: list[RouteResult], host: str, periods: list[str]) -
                 lines.append(f"| `{base.replace(host, '')}` | {size} | {'⚠' if was_truncated else '—'} |")
         lines.append("")
 
+    if check_scope_bar:
+        # Only HTTP 200 HTML pages: 4xx/5xx error pages are already reported
+        # above and would pollute the "0 bars" list. Non-HTML probes have
+        # scope_bar_count None and are skipped.
+        html_ok = [r for r in results if r.scope_bar_count is not None and r.status == 200]
+        no_bar = [r for r in html_ok if r.scope_bar_count == 0]
+        multi_bar = [r for r in html_ok if r.scope_bar_count > 1]
+        lines.append("## Scope bar coverage")
+        lines.append("")
+        lines.append(
+            f"HTML 200 pages checked: {len(html_ok)}. Counting occurrences of "
+            "`class=\"time-scope-bar` per page (expect exactly 1)."
+        )
+        lines.append("")
+        for title, rows in (("Pages with 0 bars", no_bar), ("Pages with more than 1 bar", multi_bar)):
+            lines.append(f"### {title} ({len(rows)})")
+            lines.append("")
+            if not rows:
+                lines.append("_None._")
+            for r in sorted(rows, key=lambda x: (x.rule, x.period)):
+                path = re.sub(r"[?&]period=[^&]*", "", r.url).replace(host.rstrip("/"), "")
+                lines.append(f"- `{path}` — {r.scope_bar_count} — period `{r.period}`")
+            lines.append("")
+
     return "\n".join(lines) + "\n"
 
 
@@ -542,11 +596,18 @@ def main() -> int:
                         help="Base URL of the deployment to sweep (HTTPS scheme).")
     parser.add_argument("--output", default=None, help="Markdown output path.")
     parser.add_argument("--json", default=None, help="Optional raw-JSON output path.")
-    parser.add_argument("--periods", default="2026cycle,all",
-                        help="Comma-separated list of period keys to test per route.")
+    parser.add_argument("--periods", default="cycle:current,all",
+                        help="Comma-separated list of period keys to test per route. "
+                             "`cycle:current` expands to cycle:<current cycle year>; legacy "
+                             "values such as 2026cycle are sent verbatim. The no-op detector "
+                             "compares the first two.")
     parser.add_argument("--concurrency", type=int, default=6)
     parser.add_argument("--limit", type=int, default=0,
                         help="Limit total HTTP requests (for smoke tests). 0 = unlimited.")
+    parser.add_argument("--check-scope-bar", action="store_true",
+                        help="Count `class=\"time-scope-bar` occurrences in every HTML response, "
+                             "record scope_bar_count per probe, and add a 'Scope bar coverage' "
+                             "report section.")
     args = parser.parse_args()
 
     if not args.host.startswith("http"):
@@ -562,23 +623,28 @@ def main() -> int:
         if v:
             print(f"  - {k}: {len(v)} seed(s)", file=sys.stderr)
 
-    periods = [p.strip() for p in args.periods.split(",") if p.strip()]
+    periods = [resolve_period(p.strip()) for p in args.periods.split(",") if p.strip()]
 
     if args.limit > 0:
         routes = routes[:args.limit]
 
     print(f"[sweep] Sweeping {args.host} with periods={periods} ...", file=sys.stderr)
     t0 = time.monotonic()
-    results = sweep(args.host, routes, seeds, periods, concurrency=args.concurrency)
+    results = sweep(args.host, routes, seeds, periods, concurrency=args.concurrency,
+                    check_scope_bar=args.check_scope_bar)
     dt = time.monotonic() - t0
     print(f"[sweep] Done in {dt:.1f}s. {len(results)} probes.", file=sys.stderr)
 
     if args.json:
         with open(args.json, "w") as f:
-            json.dump([asdict(r) for r in results], f, indent=2)
+            rows = [asdict(r) for r in results]
+            if not args.check_scope_bar:
+                for row in rows:
+                    row.pop("scope_bar_count", None)  # keep JSON shape unchanged without the flag
+            json.dump(rows, f, indent=2)
         print(f"[sweep] Wrote JSON to {args.json}", file=sys.stderr)
 
-    md = render_markdown(results, args.host, periods)
+    md = render_markdown(results, args.host, periods, check_scope_bar=args.check_scope_bar)
     if args.output:
         with open(args.output, "w") as f:
             f.write(md)

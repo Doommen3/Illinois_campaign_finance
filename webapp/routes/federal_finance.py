@@ -10,13 +10,8 @@ import time
 from flask import Blueprint, Response, current_app, render_template, request, url_for
 
 from database.models import Donor
-from webapp.utils.time_filter import (
-    build_filter_overrides,
-    get_active_period,
-    period_cycle,
-    period_cycles,
-    period_window_with_override,
-)
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
 from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
@@ -47,17 +42,11 @@ _federal_geo_drilldown_cache: dict[str, dict] = {}
 _federal_geo_drilldown_cache_lock = threading.Lock()
 
 
-def _parse_shared_filters() -> tuple[int | None, int, str, str]:
-    """Resolve cycle + analysis filters, defaulting cycle from global period."""
-    period = get_active_period()
-    derived_cycle = period_cycle(period)
-    cycle_filter = derived_cycle
-
-    explicit_cycle = request.args.get('cycle', type=int)
-    if explicit_cycle is not None and 1970 <= explicit_cycle <= 2100:
-        cycle_filter = explicit_cycle
-
-    cycle_for_ui = cycle_filter if cycle_filter is not None else 2026
+def _parse_shared_filters(window: dict | None = None) -> tuple[int | None, int, str, str]:
+    """Resolve cycle + analysis filters; the cycle comes from the time-scope window."""
+    window = window or _parse_federal_window()
+    cycle_filter = window['cycle_filter']
+    cycle_for_ui = cycle_filter or current_cycle()
 
     analysis_office = request.args.get('analysis_office', '', type=str).strip().upper()
     if analysis_office not in {'', 'H', 'S', 'P'}:
@@ -67,48 +56,40 @@ def _parse_shared_filters() -> tuple[int | None, int, str, str]:
 
 
 def _parse_federal_window() -> dict:
-    """Resolve the global period into a federal-side date window + chip context.
+    """Resolve the request's time scope once into the federal query window.
 
-    Companion to `_parse_shared_filters()` (which handles cycle + analysis).
-    Routes that want to honor the global date filter call this and forward
-    `date_from` / `date_to` to FEC query functions. Templates receive
-    `active_filter_overrides` and render the active-filter chip.
-
-    `period_cycles` is included for callsites that need to broaden / narrow
-    the cycle filter when the window spans multiple cycles (e.g. "Past 2
-    Years" overlaps both 2024 and 2026 cycles).
+    A `cycle:N` scope filters by `cycle_filter` with no dates; any other scope
+    (all time, last 12 months, custom range) leaves `cycle_filter` None and
+    forwards ISO `date_from` / `date_to` ('' when unbounded) to FEC queries.
+    `scope_query` reproduces the scope in links (`period=...` or the custom
+    bounds, never both).
     """
-    period = get_active_period()
-    explicit_date_from = (request.args.get('date_from', '', type=str) or '').strip()
-    explicit_date_to = (request.args.get('date_to', '', type=str) or '').strip()
-    window = period_window_with_override(period, explicit_date_from, explicit_date_to)
+    scope = resolve_time_scope(
+        default=f"cycle:{current_cycle()}", axis="transaction", data_through=latest_data_date("fec"),
+    )
+    if scope.key.startswith('cycle:'):
+        cycle_filter, date_from, date_to = int(scope.key[6:]), '', ''
+    else:
+        cycle_filter = None
+        date_from = scope.start.isoformat() if scope.start else ''
+        date_to = scope.end.isoformat() if scope.end else ''
     return {
-        'date_from': window['start'] or '',
-        'date_to': window['end'] or '',
-        'is_override': window['is_override'],
-        'time_period_key': period['key'],
-        'explicit_date_from': explicit_date_from,
-        'explicit_date_to': explicit_date_to,
-        'period_cycles': period_cycles(period),
-        'active_filter_overrides': build_filter_overrides(
-            date_from=explicit_date_from,
-            date_to=explicit_date_to,
-        ),
+        'scope': scope,
+        'cycle_filter': cycle_filter,
+        'date_from': date_from,
+        'date_to': date_to,
+        'scope_query': scope_params(scope),
     }
 
 
-def _federal_subnav_persist_params(
-    cycle: int | None,
-    analysis_office: str,
-    analysis_district: str,
-    window: dict | None = None,
-) -> dict:
+def _federal_subnav_persist_params(window: dict, analysis_office: str, analysis_district: str) -> dict:
     """Allow-list of federal filters that survive a subnav tab change.
 
     Expanded into every url_for(...) in federal_finance/_subnav.html so users
     don't lose tuning when they hop between Overview / Candidates / Networks /
-    etc. Includes cycle + analysis scope (always present) and the global
-    date window when one is in effect.
+    etc. Carries the time scope as its key (`period=...`, or the custom bounds)
+    plus the analysis scope — never a resolved date window or a derived cycle,
+    which the next page re-derives from the scope.
 
     Excluded by design: per-route knobs like network_min_edge_amount,
     network_limit, segmentation_*, cluster_limit, local_match_limit,
@@ -117,19 +98,23 @@ def _federal_subnav_persist_params(
     page-specific UI controls; carrying them across tabs would noise URLs
     without benefit.
     """
-    persist: dict = {}
-    if cycle is not None:
-        persist['cycle'] = cycle
+    persist: dict = dict(window['scope_query'])
     if analysis_office:
         persist['analysis_office'] = analysis_office
     if analysis_district:
         persist['analysis_district'] = analysis_district
-    if window:
-        if window.get('date_from'):
-            persist['date_from'] = window['date_from']
-        if window.get('date_to'):
-            persist['date_to'] = window['date_to']
     return persist
+
+
+def _scope_context(window: dict, analysis_office: str = '', analysis_district: str = '') -> dict:
+    """Template context for the time-scope bar and the federal subnav."""
+    return {
+        'time_scope': window['scope'],
+        'scope_default_key': f"cycle:{current_cycle()}",
+        'time_scope_source_label': 'FEC',
+        'scope_query': window['scope_query'],
+        'subnav_persist_params': _federal_subnav_persist_params(window, analysis_office, analysis_district),
+    }
 
 
 def _base_context(
@@ -139,28 +124,16 @@ def _base_context(
     analysis_office: str,
     analysis_district: str,
     *,
-    window: dict | None = None,
+    window: dict,
 ) -> dict:
-    ctx = {
+    return {
         'active_page': active_page,
         'table_available': table_available,
         'cycle': cycle,
         'analysis_office': analysis_office,
         'analysis_district': analysis_district,
-        'subnav_persist_params': _federal_subnav_persist_params(
-            cycle, analysis_office, analysis_district, window,
-        ),
+        **_scope_context(window, analysis_office, analysis_district),
     }
-    if window:
-        ctx.update({
-            'date_from': window['date_from'],
-            'date_to': window['date_to'],
-            'time_period_key': window['time_period_key'],
-            'explicit_date_from': window['explicit_date_from'],
-            'explicit_date_to': window['explicit_date_to'],
-            'active_filter_overrides': window['active_filter_overrides'],
-        })
-    return ctx
 
 
 def _federal_cache_enabled() -> bool:
@@ -337,8 +310,8 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
 def federal_overview():
     """Overview page with high-level federal race, donor, and geography summaries."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -469,12 +442,12 @@ def federal_candidates():
 
     Note: candidate totals are cycle-aggregated (joined to
     `fec_candidate_cycle_totals`), so the global date window does not narrow
-    the row counts here. The chip still renders to make the active period
+    the row counts here. The scope bar still renders to make the active period
     visible, but rows reflect the whole cycle.
     """
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     table_available = federal_data_available(conn)
 
     page = max(request.args.get('page', 1, type=int), 1)
@@ -539,8 +512,8 @@ def federal_candidates():
 def federal_networks():
     """Visual network analysis page (federal and local/federal overlap)."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -620,8 +593,8 @@ def federal_networks():
 def federal_donor_intelligence():
     """Donor segmentation, clustering, influence, and multi-hop tracing."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -735,8 +708,8 @@ def federal_donor_intelligence():
 def federal_money_flow():
     """Multi-layer money flow network (A/B/E) and cross-role organizations."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -794,8 +767,8 @@ def federal_money_flow():
 def federal_influence():
     """Influence scores for donors and candidates."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -829,8 +802,8 @@ def federal_influence():
 def federal_follow_the_money():
     """Multi-hop donor path tracing."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -879,8 +852,8 @@ def federal_follow_the_money():
 def federal_geography():
     """Geographic concentration analysis for federal contributions."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -908,8 +881,8 @@ def federal_geography():
 def federal_geo_drilldown():
     """Render donor->candidate detail rows behind geographic aggregates."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -918,8 +891,6 @@ def federal_geo_drilldown():
     geo_value = (request.args.get('geo_value', '', type=str) or '').strip()
     geo_state = (request.args.get('geo_state', '', type=str) or '').strip().upper()
     source_page = (request.args.get('source_page', 'overview', type=str) or 'overview').strip().lower()
-    period = get_active_period()
-    range_key = (request.args.get('range', '', type=str) or '').strip() or (period.get('key') or '')
 
     page = max(request.args.get('page', 1, type=int) or 1, 1)
     per_page = min(max(request.args.get('per_page', 50, type=int) or 50, 10), 250)
@@ -954,8 +925,6 @@ def federal_geo_drilldown():
         cache_ttl = max(15, int(current_app.config.get('FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 180)))
         cache_params = {
             'version': 2,
-            'range': range_key,
-            'period': period.get('key'),
             'cycle': cycle_filter,
             'analysis_office': analysis_office or '',
             'analysis_district': analysis_district or '',
@@ -996,18 +965,16 @@ def federal_geo_drilldown():
     if source_page == 'geography':
         back_url = url_for(
             'federal_finance.federal_geography',
-            cycle=cycle,
             analysis_office=analysis_office,
             analysis_district=analysis_district,
-            period=period.get('key'),
+            **window['scope_query'],
         )
     else:
         back_url = url_for(
             'federal_finance.federal_overview',
-            cycle=cycle,
             analysis_office=analysis_office,
             analysis_district=analysis_district,
-            period=period.get('key'),
+            **window['scope_query'],
         )
 
     return render_template(
@@ -1015,7 +982,6 @@ def federal_geo_drilldown():
         **_base_context('geography', table_available, cycle, analysis_office, analysis_district, window=window),
         drilldown=drilldown,
         source_page=source_page,
-        range_key=range_key,
         back_url=back_url,
     )
 
@@ -1024,8 +990,8 @@ def federal_geo_drilldown():
 def federal_matching():
     """Federal/local donor matching diagnostics and confidence review."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -1134,8 +1100,8 @@ def federal_matching():
 def federal_matched_donor_profile(federal_donor_entity_key: str, local_donor_key: str):
     """Show a combined profile view for one matched federal/local donor pair."""
     conn = current_app.get_database()
-    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, analysis_office, analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
@@ -1268,10 +1234,14 @@ def federal_donor_detail(donor_entity_key: str):
     """Show one donor's contributions across federal candidates."""
     conn = current_app.get_database()
 
-    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
-    window = _parse_federal_window()
-    date_from = window['date_from'] or None
-    date_to = window['date_to'] or None
+    scope = resolve_time_scope(default="all", axis="transaction", data_through=latest_data_date("fec"))
+    if scope.key.startswith('cycle:'):
+        cycle_filter, date_from, date_to = int(scope.key[6:]), None, None
+    else:
+        cycle_filter = None
+        date_from = scope.start.isoformat() if scope.start else None
+        date_to = scope.end.isoformat() if scope.end else None
+    cycle = cycle_filter or current_cycle()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
     contribution_per_page = 100
     contribution_offset = (contribution_page - 1) * contribution_per_page
@@ -1287,6 +1257,14 @@ def federal_donor_detail(donor_entity_key: str):
     )
     contribution_total = detail['total_contributions'] if detail else 0
     contribution_pages = (contribution_total + contribution_per_page - 1) // contribution_per_page if detail else 0
+    cycle_total = conn.execute(
+        """
+        SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total
+        FROM fec_schedule_a_contributions
+        WHERE donor_entity_key = ? AND cycle = ?
+        """,
+        (donor_entity_key, current_cycle()),
+    ).fetchone()['total']
 
     return render_template(
         'federal_finance/donor_detail.html',
@@ -1296,13 +1274,12 @@ def federal_donor_detail(donor_entity_key: str):
         contribution_page=contribution_page,
         contribution_total=contribution_total,
         contribution_pages=contribution_pages,
-        date_from=window['date_from'],
-        date_to=window['date_to'],
-        time_period_key=window['time_period_key'],
-        explicit_date_from=window['explicit_date_from'],
-        explicit_date_to=window['explicit_date_to'],
-        active_filter_overrides=window['active_filter_overrides'],
-        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
+        cycle_total=cycle_total,
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="FEC",
+        scope_query=scope_params(scope),
+        subnav_persist_params=scope_params(scope),
     )
 
 
@@ -1310,8 +1287,8 @@ def federal_donor_detail(donor_entity_key: str):
 def federal_committee_receipts(committee_id: str):
     """Show one federal committee's Schedule A receipt rows."""
     conn = current_app.get_database()
-    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     receipt_page = max(request.args.get('receipt_page', 1, type=int), 1)
@@ -1358,13 +1335,7 @@ def federal_committee_receipts(committee_id: str):
         receipt_pages=receipt_pages,
         receipt_sort=receipt_sort,
         receipt_dir=receipt_dir,
-        date_from=window['date_from'],
-        date_to=window['date_to'],
-        time_period_key=window['time_period_key'],
-        explicit_date_from=window['explicit_date_from'],
-        explicit_date_to=window['explicit_date_to'],
-        active_filter_overrides=window['active_filter_overrides'],
-        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
+        **_scope_context(window),
     )
 
 
@@ -1372,8 +1343,8 @@ def federal_committee_receipts(committee_id: str):
 def federal_race_outside_spending(office_code: str, district_code: str):
     """Race-level Schedule E independent expenditure drilldown."""
     conn = current_app.get_database()
-    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
     window = _parse_federal_window()
+    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters(window)
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     race_cycle = cycle_filter if cycle_filter is not None else cycle
@@ -1484,13 +1455,7 @@ def federal_race_outside_spending(office_code: str, district_code: str):
         dir=sort_dir,
         support_oppose=support_oppose,
         q=query,
-        date_from=window['date_from'],
-        date_to=window['date_to'],
-        time_period_key=window['time_period_key'],
-        explicit_date_from=window['explicit_date_from'],
-        explicit_date_to=window['explicit_date_to'],
-        active_filter_overrides=window['active_filter_overrides'],
-        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
+        **_scope_context(window),
     )
 
 
@@ -1499,10 +1464,14 @@ def federal_candidate_detail(candidate_id: str):
     """Show top donors and recent FEC Schedule A contributions for one candidate."""
     conn = current_app.get_database()
 
-    cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters()
-    window = _parse_federal_window()
-    date_from = window['date_from'] or None
-    date_to = window['date_to'] or None
+    scope = resolve_time_scope(default=f"cycle:{current_cycle()}", axis="transaction", data_through=latest_data_date("fec"))
+    if scope.key.startswith('cycle:'):
+        cycle_filter, date_from, date_to = int(scope.key[6:]), None, None
+    else:
+        cycle_filter = None
+        date_from = scope.start.isoformat() if scope.start else None
+        date_to = scope.end.isoformat() if scope.end else None
+    cycle = cycle_filter or current_cycle()
     output_format = request.args.get('format', 'html', type=str).strip().lower()
     export_table = request.args.get('table', '', type=str).strip().lower()
     contribution_page = max(request.args.get('contribution_page', 1, type=int), 1)
@@ -1731,11 +1700,9 @@ def federal_candidate_detail(candidate_id: str):
         schedule_e_pages=schedule_e_pages,
         schedule_e_sort=schedule_e_sort,
         schedule_e_dir=schedule_e_dir,
-        date_from=window['date_from'],
-        date_to=window['date_to'],
-        time_period_key=window['time_period_key'],
-        explicit_date_from=window['explicit_date_from'],
-        explicit_date_to=window['explicit_date_to'],
-        active_filter_overrides=window['active_filter_overrides'],
-        subnav_persist_params=_federal_subnav_persist_params(cycle_filter, '', '', window),
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="FEC",
+        scope_query=scope_params(scope),
+        subnav_persist_params=scope_params(scope),
     )

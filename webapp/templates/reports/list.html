@@ -4,15 +4,16 @@
 
 {% block content %}
 <h1>Reports</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">{{ total }} total reports</p>
 
 <div class="filter-controls">
     <span>Filter:</span>
-    <a href="{{ url_for('reports.list_reports', sort=sort_by, dir=sort_dir) }}"
+    <a href="{{ url_for('reports.list_reports', sort=sort_by, dir=sort_dir, **scope_query) }}"
        class="{% if not paper_filed_filter %}active{% endif %}">All</a> |
-    <a href="{{ url_for('reports.list_reports', paper_filed='false', sort=sort_by, dir=sort_dir) }}"
+    <a href="{{ url_for('reports.list_reports', paper_filed='false', sort=sort_by, dir=sort_dir, **scope_query) }}"
        class="{% if paper_filed_filter == 'false' %}active{% endif %}">Electronic Only</a> |
-    <a href="{{ url_for('reports.list_reports', paper_filed='true', sort=sort_by, dir=sort_dir) }}"
+    <a href="{{ url_for('reports.list_reports', paper_filed='true', sort=sort_by, dir=sort_dir, **scope_query) }}"
        class="{% if paper_filed_filter == 'true' %}active{% endif %}">Paper Filed</a>
 </div>
 
@@ -26,32 +27,32 @@
     <thead>
         <tr>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='committee', dir='asc' if sort_by != 'committee' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Committee{% if sort_by == 'committee' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='report_type', dir='asc' if sort_by != 'report_type' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='report_type', dir='asc' if sort_by != 'report_type' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Type{% if sort_by == 'report_type' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='reporting_period', dir='asc' if sort_by != 'reporting_period' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='reporting_period', dir='asc' if sort_by != 'reporting_period' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Period{% if sort_by == 'reporting_period' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='filed_date', dir='asc' if sort_by != 'filed_date' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='filed_date', dir='asc' if sort_by != 'filed_date' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Filed{% if sort_by == 'filed_date' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='pages', dir='asc' if sort_by != 'pages' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='pages', dir='asc' if sort_by != 'pages' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Pages{% if sort_by == 'pages' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='status', dir='asc' if sort_by != 'status' or sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('reports.list_reports', paper_filed=paper_filed_filter, sort='status', dir='asc' if sort_by != 'status' or sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Status{% if sort_by == 'status' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -87,13 +88,13 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('reports.list_reports', page=page-1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir) }}">&laquo; Previous</a>
+    <a href="{{ url_for('reports.list_reports', page=page-1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
 
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
 
     {% if page < total_pages %}
-    <a href="{{ url_for('reports.list_reports', page=page+1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir) }}">Next &raquo;</a>
+    <a href="{{ url_for('reports.list_reports', page=page+1, paper_filed=paper_filed_filter, sort=sort_by, dir=sort_dir, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}

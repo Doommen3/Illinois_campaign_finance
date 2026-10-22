@@ -1,0 +1,40 @@
+{# Time-scope bar — the ONE place a page shows and changes its active date range.
+   Context required: `time_scope` (webapp.utils.time_scope.TimeScope).
+   Optional: `scope_default_key` (str, for the Reset link; defaults to the first preset),
+             `time_scope_source_label` (e.g. "ISBE", "FEC") for the data-through note.
+   Jinja globals used: scope_url(), scope_form_hidden(), scope_presets().
+#}
+{% set _presets = scope_presets() %}
+{% set _default_key = scope_default_key if scope_default_key is defined else _presets[0][0] %}
+{% set _source = time_scope_source_label if time_scope_source_label is defined else '' %}
+<section class="time-scope-bar{% if time_scope.is_custom %} time-scope-bar-custom{% endif %}" role="status" aria-live="polite" data-scope-key="{{ time_scope.key }}">
+    <div class="time-scope-summary">
+        <span class="time-scope-kicker">Showing</span>
+        <strong class="time-scope-label">{{ time_scope.label }}</strong>
+        <span class="time-scope-window">{{ time_scope.window_label }}</span>
+        {% if time_scope.axis_label %}<span class="time-scope-axis">{{ time_scope.axis_label }}</span>{% endif %}
+        {% if time_scope.snap_note %}<span class="time-scope-snap">{{ time_scope.snap_note }}</span>{% endif %}
+        {% if time_scope.data_through %}
+        <span class="time-scope-through">latest {{ _source ~ ' ' if _source else '' }}data: {{ time_scope.data_through.strftime('%b %-d, %Y') }}</span>
+        {% endif %}
+    </div>
+    <nav class="time-scope-presets" aria-label="Change time scope">
+        {% for key, label in _presets %}
+        <a class="time-scope-preset{% if key == time_scope.key and not time_scope.is_custom %} active{% endif %}" href="{{ scope_url(period=key) }}">{{ label }}</a>
+        {% endfor %}
+        <details class="time-scope-custom"{% if time_scope.is_custom %} open{% endif %}>
+            <summary>Custom range</summary>
+            <form method="get" action="{{ request.path }}" class="time-scope-form">
+                {% for name, value in scope_form_hidden() %}
+                <input type="hidden" name="{{ name }}" value="{{ value }}">
+                {% endfor %}
+                <label>From <input type="date" name="date_from" value="{{ time_scope.start.isoformat() if time_scope.is_custom and time_scope.start else '' }}"></label>
+                <label>To <input type="date" name="date_to" value="{{ time_scope.end.isoformat() if time_scope.is_custom and time_scope.end else '' }}"></label>
+                <button type="submit">Apply</button>
+            </form>
+        </details>
+        {% if not time_scope.is_default %}
+        <a class="time-scope-reset" href="{{ scope_url(period=_default_key) }}">Reset</a>
+        {% endif %}
+    </nav>
+</section>

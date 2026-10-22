@@ -1,14 +1,16 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Dark Money Tracker - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Dark Money Tracker</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">527 organization expenditures matched to IL committees and candidates ({{ total }} matches)</p>
 
 {% if contribution_stats and contribution_stats.row_count > 0 %}
 <section class="status-section">
-    <h2>527 Funding Sources</h2>
+    <h2>527 Funding Sources {{ scope_tag() }}</h2>
     <p class="help-text">Contributions received by Illinois-connected 527 organizations from IRS Form 8872 filings.</p>
     <div class="stats-grid">
         <div class="stat-card">
@@ -65,7 +67,7 @@
             <th>Matched To</th>
             <th>Match Type</th>
             <th>
-                <a href="{{ url_for('irs527.dark_money', sort='score', dir='asc' if sort == 'score' and sort_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('irs527.dark_money', sort='score', dir='asc' if sort == 'score' and sort_dir == 'desc' else 'desc', **scope_query) }}">
                     Score{% if sort == 'score' %} {{ '&uarr;' if sort_dir == 'asc' else '&darr;' }}{% endif %}
                 </a>
             </th>
@@ -76,7 +78,7 @@
         {% set label, cls = m.score|confidence_label %}
         <tr data-confidence="{{ cls }}">
             <td>
-                <a href="{{ url_for('irs527.org_detail', ein=m.ein) }}">
+                <a href="{{ url_for('irs527.org_detail', ein=m.ein, **scope_query) }}">
                     {{ m.org_name or 'Unknown' }}
                 </a>
             </td>
@@ -97,11 +99,11 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('irs527.dark_money', page=page-1, sort=sort, dir=sort_dir) }}">&laquo; Previous</a>
+    <a href="{{ url_for('irs527.dark_money', page=page-1, sort=sort, dir=sort_dir, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="{{ url_for('irs527.dark_money', page=page+1, sort=sort, dir=sort_dir) }}">Next &raquo;</a>
+    <a href="{{ url_for('irs527.dark_money', page=page+1, sort=sort, dir=sort_dir, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}

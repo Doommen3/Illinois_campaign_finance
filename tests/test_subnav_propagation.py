@@ -119,11 +119,21 @@ def test_federal_subnav_propagates_allow_listed_filters(tmp_path: Path):
     subnav_html = body[start:end]
 
     # Allow-listed params should appear inside every federal subnav anchor.
-    assert "cycle=2026" in subnav_html
     assert "analysis_office=H" in subnav_html
     assert "analysis_district=01" in subnav_html
     assert "date_from=2026-01-01" in subnav_html
     assert "date_to=2026-06-30" in subnav_html
+
+    # A cycle alone is carried as the scope key, never as a derived `cycle=` param.
+    resp = client.get("/federal-finance/networks?cycle=2026&analysis_office=H")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    start = body.find('class="federal-subnav"')
+    end = body.find("</nav>", start)
+    subnav_html = body[start:end]
+    assert "period=cycle%3A2026" in subnav_html or "period=cycle:2026" in subnav_html
+    assert "analysis_office=H" in subnav_html
+    assert "cycle=" not in subnav_html
 
 
 def test_federal_subnav_does_not_propagate_excluded_params(tmp_path: Path):
@@ -167,3 +177,50 @@ def test_federal_committee_receipts_empty_committee_renders_200(tmp_path: Path):
     assert b"federal-subnav" in resp.data
     # Template's empty-state branch fires when detail is None.
     assert "No committee receipt data found." in body
+
+
+# ---------- Q1 (time-scope overhaul): never freeze period-derived dates ----------
+
+
+def test_analytics_subnav_does_not_freeze_period_derived_dates(tmp_path: Path):
+    """Under a preset period with no user-typed dates, subnav anchors and the
+    overview's "View full" links must NOT carry date_from/date_to. Carrying the
+    period's resolved window made the next page report "Custom filter active"
+    and silently disabled the global period selector."""
+    client = _make_client(str(tmp_path / "analytics_nofreeze.db"))
+
+    resp = client.get("/analytics/networks?period=2026cycle&min_edge_amount=750")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    start = body.find('class="analytics-subnav"')
+    end = body.find("</nav>", start)
+    subnav_html = body[start:end]
+    assert "min_edge_amount=750" in subnav_html
+    assert "date_from=" not in subnav_html
+    assert "date_to=" not in subnav_html
+
+    # Date inputs are blank unless the user typed something; the chip, not the
+    # inputs, shows the active window.
+    assert 'name="date_from" value=""' in body
+
+    resp = client.get("/analytics/?period=2026cycle")
+    assert resp.status_code == 200
+    assert "date_from=20" not in resp.get_data(as_text=True)
+
+
+def test_federal_subnav_does_not_freeze_period_derived_window(tmp_path: Path):
+    """Federal subnav anchors carry cycle/date_from/date_to only when the user
+    set them explicitly; a period-derived window or cycle is re-derived on the
+    next page instead of being frozen into the URL."""
+    client = _make_client(str(tmp_path / "federal_nofreeze.db"))
+
+    resp = client.get("/federal-finance/networks?period=2026cycle&analysis_office=H")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    start = body.find('class="federal-subnav"')
+    end = body.find("</nav>", start)
+    subnav_html = body[start:end]
+    assert "analysis_office=H" in subnav_html
+    assert "date_from=" not in subnav_html
+    assert "date_to=" not in subnav_html
+    assert "cycle=" not in subnav_html

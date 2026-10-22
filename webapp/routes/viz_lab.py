@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, send_file, url_for
+from webapp.utils.time_scope import resolve_time_scope, scope_params
 
 viz_lab_bp = Blueprint("viz_lab", __name__)
 
@@ -74,7 +75,8 @@ def viz_lab_triple_pipeline():
 
 @viz_lab_bp.route("/state-maps")
 def viz_lab_state_maps():
-    return render_template("experimental/viz_lab_state_maps.html")
+    scope = resolve_time_scope(default="cycle:current", axis="received")
+    return render_template("experimental/viz_lab_state_maps.html", scope_query=scope_params(scope))
 
 
 @viz_lab_bp.route("/data/triple-pipeline/graph")

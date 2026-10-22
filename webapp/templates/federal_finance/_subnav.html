@@ -1,10 +1,9 @@
 {# Routes that render this partial pass `subnav_persist_params` (built in
    webapp/routes/federal_finance.py:_federal_subnav_persist_params as the
-   allow-list of filters that survive a tab change). Default to {} so
-   detail templates (committee receipts, donor detail, candidate detail,
-   race outside spending) that reuse the federal subnav without going
-   through _base_context don't crash — they just won't propagate filters
-   across tabs, which matches the pre-P2-4 behaviour. #}
+   allow-list of filters that survive a tab change) plus the time-scope bar
+   context (`time_scope`, `scope_default_key`, `time_scope_source_label`,
+   `scope_query`; see _scope_context). Default to {} so the subnav links
+   don't crash when it is rendered without them. #}
 {% set subnav_persist_params = subnav_persist_params if subnav_persist_params is defined else {} %}
 <nav class="federal-subnav" aria-label="Federal finance section navigation">
     <a
@@ -45,4 +44,4 @@
     >Matching</a>
 </nav>
 
-{% include "_partials/active_filter_chip.html" %}
+{% include "_partials/time_scope_bar.html" %}

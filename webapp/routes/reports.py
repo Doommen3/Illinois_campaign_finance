@@ -2,7 +2,8 @@
 from flask import Blueprint, render_template, request, current_app, abort
 
 from database.models import Report, Contribution
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
 
 reports_bp = Blueprint('reports', __name__)
 
@@ -11,8 +12,9 @@ reports_bp = Blueprint('reports', __name__)
 def list_reports():
     """List all reports."""
     conn = current_app.get_database()
-    period = get_active_period()
-    date_from, date_to = period_to_date_window(period)
+    scope = resolve_time_scope(default="cycle:current", axis="filed", data_through=latest_data_date("isbe"))
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -63,7 +65,11 @@ def list_reports():
                            paper_filed_filter=request.args.get('paper_filed'),
                            status_counts=status_counts,
                            sort_by=sort_by,
-                           sort_dir=sort_dir)
+                           sort_dir=sort_dir,
+                           time_scope=scope,
+                           scope_default_key=f"cycle:{current_cycle()}",
+                           time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope))
 
 
 @reports_bp.route('/<int:report_id>')

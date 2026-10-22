@@ -203,13 +203,18 @@ def _csv_response(rows: list[list], headers: list[str], filename: str) -> Respon
     return response
 
 
-def _period_cache_token(period) -> str:
-    from webapp.utils.time_filter import period_cache_key
+def _scope_token(scope) -> str:
+    """Cache-key token for a TimeScope; None (no scope, nothing windowed) gets its own token."""
+    from webapp.utils.time_scope import scope_cache_key
 
-    key = period_cache_key(period)
-    if not period:
-        return key
-    return f"{key}:{period.get('start_date') or ''}:{period.get('end_date') or ''}"
+    return scope_cache_key(scope) if scope is not None else "unscoped"
+
+
+def _default_home_scope():
+    """The dashboard's default scope with no request, so prewarmed cache keys match the request path."""
+    from webapp.utils.time_scope import resolve_time_scope
+
+    return resolve_time_scope(default="cycle:current", axis="received", args={})
 
 
 def _search_results_cache_enabled() -> bool:
@@ -240,15 +245,14 @@ def _is_donor_key_query(query: str) -> bool:
     return digit_count >= 3
 
 
-def _search_results_cache_key(period, query: str, search_type: str) -> str:
-    period_key = _period_cache_token(period)
-    return f"{period_key}:{search_type}:{query.strip().lower()}"
+def _search_results_cache_key(scope_token: str, query: str, search_type: str) -> str:
+    return f"{scope_token}:{search_type}:{query.strip().lower()}"
 
 
-def _get_cached_search_results(period, query: str, search_type: str) -> dict | None:
+def _get_cached_search_results(scope_token: str, query: str, search_type: str) -> dict | None:
     if not _search_results_cache_enabled():
         return None
-    key = _search_results_cache_key(period, query, search_type)
+    key = _search_results_cache_key(scope_token, query, search_type)
     now = time.monotonic()
     with _search_results_cache_lock:
         entry = _search_results_cache.get(key)
@@ -264,10 +268,10 @@ def _get_cached_search_results(period, query: str, search_type: str) -> dict | N
         return payload
 
 
-def _set_cached_search_results(period, query: str, search_type: str, payload: dict) -> None:
+def _set_cached_search_results(scope_token: str, query: str, search_type: str, payload: dict) -> None:
     if not _search_results_cache_enabled():
         return
-    key = _search_results_cache_key(period, query, search_type)
+    key = _search_results_cache_key(scope_token, query, search_type)
     now = time.monotonic()
     max_entries = _search_results_cache_max_entries()
     with _search_results_cache_lock:
@@ -280,7 +284,7 @@ def _set_cached_search_results(period, query: str, search_type: str, payload: di
             _search_results_cache.popitem(last=False)
 
 
-def _call_build_dashboard_insights(conn, period=None) -> dict:
+def _call_build_dashboard_insights(conn, scope=None) -> dict:
     """Call _build_dashboard_insights with backward-compatible signature handling."""
     build_fn = _build_dashboard_insights
     try:
@@ -288,13 +292,13 @@ def _call_build_dashboard_insights(conn, period=None) -> dict:
     except (TypeError, ValueError):
         signature = None
 
-    if signature and "period" in signature.parameters:
-        return build_fn(conn, period=period)
+    if signature and "scope" in signature.parameters:
+        return build_fn(conn, scope=scope)
     return build_fn(conn)
 
 
-def _build_dashboard_insights(conn, period=None) -> dict:
-    from webapp.utils.time_filter import period_qmark_date_clause
+def _build_dashboard_insights(conn, scope=None) -> dict:
+    from webapp.utils.time_scope import scope_where
 
     insights = {
         "donor_dependent_committees": [],
@@ -372,7 +376,7 @@ def _build_dashboard_insights(conn, period=None) -> dict:
         ).fetchall()
 
     if _table_exists(conn, "irs527_expenditures") and _table_exists(conn, "irs527_expenditure_recipient_matches"):
-        tx_clause, tx_params = period_qmark_date_clause("e.date", period) if period else ("", [])
+        tx_clause, tx_params = scope_where(scope, "DATE(e.date)", style="qmark") if scope is not None else ("", [])
         row = conn.execute(
             f"""
             SELECT COALESCE(SUM(e.amount), 0) AS total_amount, COUNT(*) AS match_count
@@ -393,18 +397,18 @@ def _build_dashboard_insights(conn, period=None) -> dict:
     return insights
 
 
-def _get_dashboard_insights(conn, period=None) -> dict:
-    cache_key = _period_cache_token(period)
+def _get_dashboard_insights(conn, scope=None) -> dict:
+    cache_key = _scope_token(scope)
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
-        return _call_build_dashboard_insights(conn, period=period)
+        return _call_build_dashboard_insights(conn, scope=scope)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS", 180)))
     cached = _dashboard_insights_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    insights = _call_build_dashboard_insights(conn, period=period)
+    insights = _call_build_dashboard_insights(conn, scope=scope)
     _dashboard_insights_cache.set(cache_key, insights, ttl_seconds)
     return insights
 
@@ -414,10 +418,11 @@ def warm_dashboard_insights_cache(database_path: str, ttl_seconds: int = 180) ->
         return
     from database.connection import get_db
 
+    scope = _default_home_scope()
     conn = get_db(database_path)
     try:
-        insights = _call_build_dashboard_insights(conn)
-        _dashboard_insights_cache.set("2026cycle", insights, ttl_seconds)
+        insights = _call_build_dashboard_insights(conn, scope=scope)
+        _dashboard_insights_cache.set(_scope_token(scope), insights, ttl_seconds)
     finally:
         conn.close()
 
@@ -430,45 +435,28 @@ def warm_dashboard_home_cache(
 ) -> None:
     from database.connection import get_db
 
+    scope = _default_home_scope()
     conn = get_db(database_path)
     try:
-        insights = _call_build_dashboard_insights(conn)
-        stats = _get_candidate_stats(conn)
-        if _table_exists(conn, "analytics_donor_summary"):
-            donors = conn.execute(
-                """
-                SELECT
-                    donor_name AS name,
-                    donor_key,
-                    source,
-                    total_amount,
-                    contribution_count,
-                    NULL AS entity_id,
-                    NULL AS id
-                FROM analytics_donor_summary
-                WHERE source = 'bulk_receipts'
-                ORDER BY total_amount DESC
-                LIMIT 8
-                """
-            ).fetchall()
-        else:
-            donors = Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
-        _dashboard_insights_cache.set("2026cycle", insights, max(15, insights_ttl_seconds))
-        _candidate_stats_cache.set("2026cycle", stats, max(15, candidate_stats_ttl_seconds))
-        _top_donors_cache.set("2026cycle", donors, max(15, top_donors_ttl_seconds))
+        insights = _call_build_dashboard_insights(conn, scope=scope)
+        stats = _get_candidate_stats(conn, scope=scope)
+        donors = _query_top_donors(conn, scope)
+        key = _scope_token(scope)
+        _dashboard_insights_cache.set(key, insights, max(15, insights_ttl_seconds))
+        _candidate_stats_cache.set(key, stats, max(15, candidate_stats_ttl_seconds))
+        _top_donors_cache.set(key, donors, max(15, top_donors_ttl_seconds))
     finally:
         conn.close()
 
 
-def _get_candidate_stats(conn, period=None):
+def _get_candidate_stats(conn, scope=None):
     """Return (stats_dict, freshness_dict) for state and federal candidate data.
 
-    If period is provided (from time_filter.get_active_period()), date-bearing
-    queries are filtered to the given window.
+    If scope (a TimeScope) is provided, date-bearing queries are filtered to its window.
     """
-    from webapp.utils.time_filter import period_cycles, period_qmark_clause
+    from webapp.utils.time_scope import scope_cycles, scope_where
 
-    federal_cycles = period_cycles(period) if period else None
+    federal_cycles = scope_cycles(scope) if scope is not None else None
 
     def _cycle_clause(date_column: str) -> tuple[str, list[object]]:
         if federal_cycles is None:
@@ -532,8 +520,8 @@ def _get_candidate_stats(conn, period=None):
         d2_period_join = ""
         d2_clause = ""
         d2_period_params = ()
-        if period and period.get("start_date"):
-            d2_clause, d2_plist = period_qmark_clause("fd.reporting_period_end", period)
+        if scope is not None:
+            d2_clause, d2_plist = scope_where(scope, "fd.reporting_period_end", style="qmark")
             if d2_clause:
                 d2_period_join = " JOIN isbe_filed_docs fd ON fd.id = d2.filed_doc_id"
                 d2_period_params = tuple(d2_plist)
@@ -767,79 +755,80 @@ def _get_candidate_stats(conn, period=None):
     return stats, freshness
 
 
-def _get_candidate_stats_cached(conn, period=None):
-    cache_key = _period_cache_token(period)
+def _get_candidate_stats_cached(conn, scope=None):
+    cache_key = _scope_token(scope)
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
-        return _get_candidate_stats(conn, period=period)
+        return _get_candidate_stats(conn, scope=scope)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS", 180)))
     cached = _candidate_stats_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    value = _get_candidate_stats(conn, period=period)
+    value = _get_candidate_stats(conn, scope=scope)
     _candidate_stats_cache.set(cache_key, value, ttl_seconds)
     return value
 
 
-def _get_top_donors_cached(conn, period=None):
-    from webapp.utils.time_filter import period_qmark_clause
+def _query_top_donors(conn, scope=None):
+    from webapp.utils.time_scope import scope_where
 
-    cache_key = _period_cache_token(period)
+    if scope is not None and (scope.start or scope.end) and _table_exists(conn, "bulk_receipts_clean"):
+        td_clause, td_params = scope_where(scope, "received_date", style="qmark")
+        base_filter = _bulk_receipts_base_filter(conn, "r")
+        return conn.execute(
+            f"""
+            SELECT
+                {_bulk_donor_name_sql('r')} AS name,
+                {_bulk_donor_key_sql('r')} AS donor_key,
+                'bulk_receipts' AS source,
+                COALESCE(SUM(r.amount), 0) AS total_amount,
+                COUNT(*) AS contribution_count,
+                NULL AS entity_id,
+                NULL AS id
+            FROM bulk_receipts_clean r
+            WHERE {base_filter}{td_clause}
+            GROUP BY name, donor_key
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """,
+            tuple(td_params),
+        ).fetchall()
 
-    def _query_top_donors():
-        if period and period.get("key") != "all" and _table_exists(conn, "bulk_receipts_clean"):
-            td_clause, td_params = period_qmark_clause("received_date", period)
-            base_filter = _bulk_receipts_base_filter(conn, "r")
-            return conn.execute(
-                f"""
-                SELECT
-                    {_bulk_donor_name_sql('r')} AS name,
-                    {_bulk_donor_key_sql('r')} AS donor_key,
-                    'bulk_receipts' AS source,
-                    COALESCE(SUM(r.amount), 0) AS total_amount,
-                    COUNT(*) AS contribution_count,
-                    NULL AS entity_id,
-                    NULL AS id
-                FROM bulk_receipts_clean r
-                WHERE {base_filter}{td_clause}
-                GROUP BY name, donor_key
-                ORDER BY total_amount DESC
-                LIMIT 8
-                """,
-                tuple(td_params),
-            ).fetchall()
+    if _table_exists(conn, "analytics_donor_summary"):
+        return conn.execute(
+            """
+            SELECT
+                donor_name AS name,
+                donor_key,
+                source,
+                total_amount,
+                contribution_count,
+                NULL AS entity_id,
+                NULL AS id
+            FROM analytics_donor_summary
+            WHERE source = 'bulk_receipts'
+            ORDER BY total_amount DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    return Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
 
-        if _table_exists(conn, "analytics_donor_summary"):
-            return conn.execute(
-                """
-                SELECT
-                    donor_name AS name,
-                    donor_key,
-                    source,
-                    total_amount,
-                    contribution_count,
-                    NULL AS entity_id,
-                    NULL AS id
-                FROM analytics_donor_summary
-                WHERE source = 'bulk_receipts'
-                ORDER BY total_amount DESC
-                LIMIT 8
-                """
-            ).fetchall()
-        return Donor.get_all_with_totals(conn, limit=8, sort_by='total_amount')
+
+def _get_top_donors_cached(conn, scope=None):
+    cache_key = _scope_token(scope)
 
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     if not cache_enabled:
-        return _query_top_donors()
+        return _query_top_donors(conn, scope)
 
     ttl_seconds = max(15, int(current_app.config.get("DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS", 180)))
     cached = _top_donors_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    value = _query_top_donors()
+    value = _query_top_donors(conn, scope)
     _top_donors_cache.set(cache_key, value, ttl_seconds)
     return value
 
@@ -2383,7 +2372,6 @@ def investigate_workspace():
         tab = 'investigate'
 
     query = request.args.get('q', '').strip()
-    cycle = request.args.get('cycle', '2026').strip() or '2026'
     month = request.args.get('month', '').strip()
     show_advanced = request.args.get('advanced', '').strip() == '1'
     export_format = request.args.get('format', '').strip().lower()
@@ -2442,7 +2430,7 @@ def investigate_workspace():
                     "entity_key": row["donor_entity_key"],
                     "total_amount": float(row["total_amount"] or 0.0),
                     "record_count": int(row["contribution_count"] or 0),
-                    "extra": f"cycle {cycle}",
+                    "extra": "all cycles",
                 }
             )
 
@@ -2680,7 +2668,6 @@ def investigate_workspace():
         'investigate.html',
         tab=tab,
         query=query,
-        cycle=cycle,
         month_key=month_key,
         show_advanced=show_advanced,
         available_months=available_months,
@@ -2708,17 +2695,20 @@ def privacy():
 @main_bp.route('/')
 def index():
     """Bulk-first dashboard with local/federal finance entry points."""
-    from webapp.utils.time_filter import get_active_period, period_to_date_window
+    from webapp.utils.data_through import latest_data_date
+    from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
+
     conn = current_app.get_database()
-    period = get_active_period()
-    date_from, date_to = period_to_date_window(period)
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     def _safe_count(table_name: str) -> int:
         if not _table_exists(conn, table_name):
             return 0
         return int(_scalar(conn, f"SELECT COUNT(*) AS count FROM {table_name}", default=0))
 
-    stats, freshness = _get_candidate_stats_cached(conn, period=period)
+    stats, freshness = _get_candidate_stats_cached(conn, scope=scope)
     stats['legacy_reports'] = _safe_count("reports")
     stats['legacy_committees'] = _safe_count("committees")
     stats['legacy_donors'] = _safe_count("donors")
@@ -2800,25 +2790,36 @@ def index():
         stats['irs527_total_contributions_received'] = 0
         stats['irs527_contribution_records'] = 0
 
-    top_donors = _get_top_donors_cached(conn, period=period)
-    insights = _get_dashboard_insights(conn, period=period)
+    top_donors = _get_top_donors_cached(conn, scope=scope)
+    insights = _get_dashboard_insights(conn, scope=scope)
 
     return render_template('index.html',
                            stats=stats,
                            top_donors=top_donors,
                            freshness=freshness,
-                           insights=insights)
+                           insights=insights,
+                           time_scope=scope,
+                           scope_default_key=f"cycle:{current_cycle()}",
+                           time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope))
 
 
 @main_bp.route('/candidates')
 def candidates():
     """Unified candidates landing page — state and federal entry points."""
-    from webapp.utils.time_filter import get_active_period
+    from webapp.utils.data_through import latest_data_date
+    from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
 
     conn = current_app.get_database()
-    period = get_active_period()
-    stats, freshness = _get_candidate_stats_cached(conn, period=period)
-    return render_template('candidates.html', stats=stats, freshness=freshness)
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    stats, freshness = _get_candidate_stats_cached(conn, scope=scope)
+    return render_template('candidates.html',
+                           stats=stats,
+                           freshness=freshness,
+                           time_scope=scope,
+                           scope_default_key=f"cycle:{current_cycle()}",
+                           time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope))
 
 
 @main_bp.route('/legacy')
@@ -2839,11 +2840,14 @@ def legacy():
 @main_bp.route('/search')
 def search():
     """Global search."""
-    from webapp.utils.time_filter import get_active_period, period_to_date_window
+    from webapp.utils.data_through import latest_data_date
+    from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
     conn = current_app.get_database()
-    period = get_active_period()
-    date_from, date_to = period_to_date_window(period)
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    scope_token = scope_cache_key(scope)
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
     raw_query = request.args.get('q', '')
     max_query_len = max(8, int(current_app.config.get('SEARCH_MAX_QUERY_LENGTH', 64)))
     min_query_len = max(1, int(current_app.config.get('SEARCH_MIN_QUERY_LENGTH', 2)))
@@ -2881,12 +2885,16 @@ def search():
         'query': query,
         'type': search_type,
         'search_meta': search_meta,
+        'time_scope': scope,
+        'scope_default_key': f"cycle:{current_cycle()}",
+        'time_scope_source_label': 'ISBE',
+        'scope_query': scope_params(scope),
     }
 
     search_start = time.perf_counter()
 
     if query and not is_short_query:
-        cached_payload = _get_cached_search_results(period, query, search_type)
+        cached_payload = _get_cached_search_results(scope_token, query, search_type)
         if cached_payload is not None:
             for section_name in ("committees", "donors", "candidates", "reports", "filed_docs", "donor_keys"):
                 results[section_name] = cached_payload.get(section_name, [])
@@ -3015,7 +3023,7 @@ def search():
 
         if not search_meta["timed_out_sections"] and not search_meta["errored_sections"]:
             _set_cached_search_results(
-                period,
+                scope_token,
                 query,
                 search_type,
                 {
@@ -3362,11 +3370,8 @@ def person_intelligence():
 @main_bp.route('/live-feed')
 def live_feed():
     """Recent local donations and federal Schedule A/B/E activity feed."""
-    from webapp.utils.time_filter import (
-        build_filter_overrides,
-        get_active_period,
-        period_window_with_override,
-    )
+    from webapp.utils.data_through import latest_data_date
+    from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
 
     conn = current_app.get_database()
 
@@ -3377,12 +3382,9 @@ def live_feed():
     schedule_b_limit = min(max(request.args.get('schedule_b_limit', 75, type=int), 10), 300)
     schedule_e_limit = min(max(request.args.get('schedule_e_limit', 75, type=int), 10), 300)
 
-    period = get_active_period()
-    explicit_date_from = (request.args.get('date_from', '', type=str) or '').strip()
-    explicit_date_to = (request.args.get('date_to', '', type=str) or '').strip()
-    window = period_window_with_override(period, explicit_date_from, explicit_date_to)
-    date_from = window['start'] or None
-    date_to = window['end'] or None
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     local_rows = _recent_local_candidate_donations(conn, limit=local_limit, date_from=date_from, date_to=date_to)
     federal_rows = _recent_federal_candidate_donations(conn, limit=federal_limit, date_from=date_from, date_to=date_to)
@@ -3494,10 +3496,10 @@ def live_feed():
         federal_schedule_b_latest_date=federal_schedule_b_latest_date,
         federal_schedule_e_latest_date=federal_schedule_e_latest_date,
         federal_latest_coverage_date=federal_latest_coverage_date,
-        active_filter_overrides=build_filter_overrides(
-            date_from=explicit_date_from,
-            date_to=explicit_date_to,
-        ),
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
     )
 
 

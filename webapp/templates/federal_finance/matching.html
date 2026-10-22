@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal/Local Matching - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -9,7 +10,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_matching') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -22,7 +23,7 @@
     <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Overlap min edge">
     <input type="text" name="overlap_edge_limit" value="{{ overlap_edge_limit }}" placeholder="Overlap edge limit">
     <button type="submit">Update</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_matching') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_matching', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -51,7 +52,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Match Method Tiers</h2>
+    <h2>Match Method Tiers {{ scope_tag() }}</h2>
     <p class="subtitle">
         {% for tier, count in local_matches.tier_counts.items() %}
         <strong>{{ tier }}</strong>: {{ count }}{% if not loop.last %} | {% endif %}
@@ -69,7 +70,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Local vs Federal Overlap Bubble View</h2>
+    <h2>Local vs Federal Overlap Bubble View {{ scope_tag() }}</h2>
     <p class="subtitle">Bridge view: x = local amount, y = federal amount, bubble size = combined amount.</p>
     <div class="graph-controls">
         <label>Color mode
@@ -90,7 +91,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Matched Donor Rows</h2>
+    <h2>Matched Donor Rows {{ scope_tag() }}</h2>
     <table class="data-table">
         <thead>
             <tr>
@@ -108,9 +109,9 @@
             <tr>
                 <td>
                     {% if row.federal_donor_entity_key and row.local_donor_key %}
-                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score) }}">{{ row.federal_donor_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score, **scope_query) }}">{{ row.federal_donor_name }}</a>
                     {% elif row.federal_donor_entity_key %}
-                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.federal_donor_entity_key, cycle=cycle) }}">{{ row.federal_donor_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=row.federal_donor_entity_key, **scope_query) }}">{{ row.federal_donor_name }}</a>
                     {% else %}
                     {{ row.federal_donor_name }}
                     {% endif %}
@@ -127,7 +128,7 @@
                 <td>{{ row.confidence_score }}</td>
                 <td>
                     {% if row.federal_donor_entity_key and row.local_donor_key %}
-                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score) }}">View Combined</a>
+                    <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=row.federal_donor_entity_key, local_donor_key=row.local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source='bulk_receipts', local_donor_keys=(row.local_donor_keys|join(',')) if row.local_donor_keys else '', match_method=row.match_method, confidence=row.confidence_score, **scope_query) }}">View Combined</a>
                     {% else %}
                     -
                     {% endif %}

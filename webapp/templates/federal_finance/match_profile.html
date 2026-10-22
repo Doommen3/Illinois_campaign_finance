@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Matched Donor Profile - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -26,12 +27,11 @@
         {% if local_donor_keys and local_donor_keys|length > 1 %}
         | <strong>Merged local keys:</strong> {{ local_donor_keys|length }}
         {% endif %}
-        | <strong>Cycle:</strong> {{ cycle }}
     </p>
     <p>
-        <a href="{{ url_for('federal_finance.federal_matching', cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district) }}">Back to Matching</a>
+        <a href="{{ url_for('federal_finance.federal_matching', analysis_office=analysis_office, analysis_district=analysis_district, **scope_query) }}">Back to Matching</a>
         {% if federal_detail %}
-        | <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=federal_donor_entity_key, cycle=cycle) }}">Federal-only detail</a>
+        | <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=federal_donor_entity_key, **scope_query) }}">Federal-only detail</a>
         {% endif %}
         {% if local_donor %}
         | <a href="{{ url_for('donors.donor_detail_by_key', donor_key=local_donor_key, source=local_source) }}">Local-only detail</a>
@@ -41,7 +41,7 @@
 
 <div class="two-column">
     <div class="column">
-        <h2>Federal Summary</h2>
+        <h2>Federal Summary {{ scope_tag() }}</h2>
         {% if federal_detail %}
         <table class="info-table">
             <tbody>
@@ -57,12 +57,12 @@
             </tbody>
         </table>
         {% else %}
-        <p>No federal donor detail found for this key and cycle.</p>
+        <p>No federal donor detail found for this key in {{ time_scope.label }}.</p>
         {% endif %}
     </div>
 
     <div class="column">
-        <h2>Local Summary</h2>
+        <h2>Local Summary {{ scope_tag('All time') }}</h2>
         {% if local_donor %}
         <table class="info-table">
             <tbody>
@@ -91,7 +91,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Federal Contributions</h2>
+    <h2>Federal Contributions {{ scope_tag() }}</h2>
     {% if federal_detail %}
     <p class="subtitle">Showing {{ federal_detail.contributions|length }} of {{ federal_total }} rows</p>
     <table class="data-table">
@@ -110,7 +110,7 @@
                 <td>{{ row.contribution_receipt_date if row.contribution_receipt_date else '-' }}</td>
                 <td>
                     {% if row.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, cycle=cycle) }}">{{ row.candidate_name }}</a>
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">{{ row.candidate_name }}</a>
                     {% else %}
                     {{ row.candidate_name }}
                     {% endif %}
@@ -128,13 +128,13 @@
     {% if federal_pages > 1 %}
     <nav class="pagination">
         {% if federal_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page-1, local_page=local_page) }}">&laquo; Previous Federal</a>
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page-1, local_page=local_page, **scope_query) }}">&laquo; Previous Federal</a>
         {% endif %}
 
         <span class="page-info">Federal page {{ federal_page }} of {{ federal_pages }}</span>
 
         {% if federal_page < federal_pages %}
-        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page+1, local_page=local_page) }}">Next Federal &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page+1, local_page=local_page, **scope_query) }}">Next Federal &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}
@@ -144,7 +144,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Local Donations (Committee Breakdown)</h2>
+    <h2>Local Donations (Committee Breakdown) {{ scope_tag('All time') }}</h2>
     {% if local_donor %}
     <p class="subtitle">Showing {{ local_committees|length }} of {{ local_committee_count }} committee rows</p>
     <table class="data-table">
@@ -171,13 +171,13 @@
     {% if local_pages > 1 %}
     <nav class="pagination">
         {% if local_page > 1 %}
-        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page-1) }}">&laquo; Previous Local</a>
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page-1, **scope_query) }}">&laquo; Previous Local</a>
         {% endif %}
 
         <span class="page-info">Local page {{ local_page }} of {{ local_pages }}</span>
 
         {% if local_page < local_pages %}
-        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, cycle=cycle, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page+1) }}">Next Local &raquo;</a>
+        <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=federal_donor_entity_key, local_donor_key=local_donor_key, analysis_office=analysis_office, analysis_district=analysis_district, local_source=local_source, local_donor_keys=(local_donor_keys|join(',')) if local_donor_keys else '', match_method=match_method, confidence=confidence_score, federal_page=federal_page, local_page=local_page+1, **scope_query) }}">Next Local &raquo;</a>
         {% endif %}
     </nav>
     {% endif %}

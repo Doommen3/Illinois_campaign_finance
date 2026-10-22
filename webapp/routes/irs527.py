@@ -5,7 +5,9 @@ import time
 from flask import Blueprint, jsonify, render_template, request, current_app, abort
 from webapp.cache_backend import RouteCache
 from webapp.utils.search_normalize import normalize_search_query
-from webapp.utils.time_filter import get_active_period, period_cache_key, period_to_date_window
+from webapp.utils.time_scope import (
+    TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_cache_key, scope_params,
+)
 
 irs527_bp = Blueprint('irs527', __name__)
 
@@ -37,12 +39,20 @@ def _scalar(conn, sql, params=(), default=0):
     return default if value is None else value
 
 
-def _resolved_transaction_window() -> tuple[dict, str | None, str | None]:
-    period = get_active_period()
-    explicit_from = request.args.get("date_from", "", type=str).strip()
-    explicit_to = request.args.get("date_to", "", type=str).strip()
-    date_from, date_to = period_to_date_window(period, explicit_from, explicit_to)
-    return period, date_from, date_to
+def _resolved_transaction_window() -> tuple[TimeScope, str | None, str | None]:
+    scope = resolve_time_scope(default="cycle:current", axis="transaction")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
+    return scope, date_from, date_to
+
+
+def _scope_context(scope: TimeScope) -> dict:
+    return {
+        "time_scope": scope,
+        "scope_default_key": f"cycle:{current_cycle()}",
+        "time_scope_source_label": "IRS",
+        "scope_query": scope_params(scope),
+    }
 
 
 def _text_date_window_clause(
@@ -167,11 +177,11 @@ def _get_dark_money_contribution_stats(
 def list_orgs():
     """List 527 organizations with totals and committee match status."""
     conn = current_app.get_database()
-    _period, date_from, date_to = _resolved_transaction_window()
+    scope, date_from, date_to = _resolved_transaction_window()
 
     if not _table_exists(conn, "irs527_organizations"):
         return render_template('irs527/list.html', orgs=[], total=0,
-                               page=1, total_pages=1, query='')
+                               page=1, total_pages=1, query='', **_scope_context(scope))
 
     page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
@@ -220,6 +230,18 @@ def list_orgs():
             GROUP BY ein
         ) ic ON ic.ein = o.ein
         """
+
+    # A bounded scope must not fall back to all-time report totals (irs527_reports has no dates).
+    if date_from or date_to:
+        total_contributions_sql = "COALESCE(ic.total_contributions, 0)"
+        total_expenditures_sql = "COALESCE(ex.total_expenditures, 0)"
+        received_contributions_sql = "COALESCE(ic.total_contributions, 0)"
+        order_by_sql = "COALESCE(ex.total_expenditures, 0) DESC, o.org_name ASC"
+    else:
+        total_contributions_sql = "COALESCE(r.total_contributions, ic.total_contributions, 0)"
+        total_expenditures_sql = "COALESCE(r.total_expenditures, ex.total_expenditures, 0)"
+        received_contributions_sql = "COALESCE(ic.total_contributions, rc.received_contributions, 0)"
+        order_by_sql = "COALESCE(r.total_expenditures, 0) DESC, o.org_name ASC"
 
     latest_orgs_cte = f"""
     WITH ranked_orgs AS (
@@ -272,9 +294,9 @@ def list_orgs():
             o.city,
             o.state,
             o.formation_date,
-            COALESCE(r.total_contributions, ic.total_contributions, 0) AS total_contributions,
-            COALESCE(r.total_expenditures, ex.total_expenditures, 0) AS total_expenditures,
-            COALESCE(ic.total_contributions, rc.received_contributions, 0) AS received_contributions,
+            {total_contributions_sql} AS total_contributions,
+            {total_expenditures_sql} AS total_expenditures,
+            {received_contributions_sql} AS received_contributions,
             CASE WHEN cm.ein IS NOT NULL THEN 1 ELSE 0 END AS has_committee_match
         FROM latest_orgs o
         LEFT JOIN (
@@ -292,14 +314,15 @@ def list_orgs():
         LEFT JOIN (
             SELECT DISTINCT ein FROM irs527_committee_matches
         ) cm ON cm.ein = o.ein
-        ORDER BY COALESCE(r.total_expenditures, 0) DESC, o.org_name ASC
+        ORDER BY {order_by_sql}
         LIMIT ? OFFSET ?
         """,
         params + expenditure_join_params + contribution_join_params + [per_page, offset],
     ).fetchall()
 
     return render_template('irs527/list.html', orgs=orgs, total=total,
-                           page=page, total_pages=total_pages, query=query)
+                           page=page, total_pages=total_pages, query=query,
+                           **_scope_context(scope))
 
 
 @irs527_bp.route('/suggest')
@@ -327,7 +350,9 @@ def suggest():
 def org_detail(ein):
     """527 org detail: directors, related orgs, expenditures, matches, financial summary."""
     conn = current_app.get_database()
-    _period, date_from, date_to = _resolved_transaction_window()
+    scope = resolve_time_scope(default="all", axis="transaction")
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     if not _table_exists(conn, "irs527_organizations"):
         abort(404)
@@ -582,6 +607,27 @@ def org_detail(ein):
             tuple(contrib_date_params),
         ).fetchall()
 
+    # Current-cycle subtotal shown beside the (default all-time) contributions total
+    cycle_start, cycle_end = cycle_window(current_cycle())
+    cycle_clause, cycle_clause_params = _text_date_window_clause(
+        "date",
+        date_from=cycle_start.isoformat(),
+        date_to=cycle_end.isoformat(),
+    )
+    cycle_total = 0.0
+    if _table_exists(conn, "irs527_contributions"):
+        cycle_total = float(_scalar(
+            conn,
+            f"""
+            SELECT COALESCE(SUM(amount), 0)
+            FROM irs527_contributions
+            WHERE ein = ? AND amount > 0
+              {cycle_clause}
+            """,
+            (ein, *cycle_clause_params),
+            default=0.0,
+        ))
+
     # Top expenditure recipients
     top_recipients = []
     expenditure_count = 0
@@ -626,20 +672,24 @@ def org_detail(ein):
                            committee_matches=committee_matches,
                            director_donor_matches=director_donor_matches,
                            director_candidate_matches=director_candidate_matches,
-                           reports=reports)
+                           reports=reports,
+                           time_scope=scope,
+                           scope_default_key="all",
+                           time_scope_source_label="IRS",
+                           cycle_total=cycle_total)
 
 
 @irs527_bp.route('/dark-money')
 def dark_money():
     """Dark money tracker: 527 expenditures flowing to IL committees/candidates."""
     conn = current_app.get_database()
-    period, date_from, date_to = _resolved_transaction_window()
-    period_key = period_cache_key(period)
+    scope, date_from, date_to = _resolved_transaction_window()
 
     if not _table_exists(conn, "irs527_expenditure_recipient_matches"):
         return render_template('irs527/dark_money.html', matches=[], total=0,
                                page=1, total_pages=1, sort='score', sort_dir='desc',
-                               contribution_stats={"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []})
+                               contribution_stats={"total_amount": 0, "unique_contributors": 0, "row_count": 0, "top_contributors": []},
+                               **_scope_context(scope))
 
     page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
@@ -746,7 +796,7 @@ def dark_money():
     # Contribution stats
     contribution_stats = _get_dark_money_contribution_stats(
         conn,
-        period_key=period_key,
+        period_key=scope_cache_key(scope),
         date_from=date_from,
         date_to=date_to,
     )
@@ -754,4 +804,5 @@ def dark_money():
     return render_template('irs527/dark_money.html', matches=matches, total=total,
                            page=page, total_pages=total_pages,
                            sort=sort, sort_dir=sort_dir,
-                           contribution_stats=contribution_stats)
+                           contribution_stats=contribution_stats,
+                           **_scope_context(scope))

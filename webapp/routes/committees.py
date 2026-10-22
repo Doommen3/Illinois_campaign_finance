@@ -1,8 +1,13 @@
 """Committee routes."""
+from dataclasses import replace
+
 from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for, jsonify
 
 from database.models import Committee, Report, Contribution
-from webapp.utils.time_filter import get_active_period, period_to_date_window
+from webapp.utils.data_through import latest_data_date
+from webapp.utils.time_scope import (
+    TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_params, scope_where,
+)
 from webapp.utils.search_normalize import normalize_search_query
 
 committees_bp = Blueprint('committees', __name__)
@@ -23,9 +28,10 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
     return any(row["name"] == column_name for row in rows)
 
 
-def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
-    from webapp.utils.time_filter import get_active_period, period_qmark_date_clause
-    period = get_active_period()
+def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> dict | None:
+    # Same filters as the scope-windowed totals, but over the CURRENT cycle, whatever the scope is.
+    cycle_start, cycle_end = cycle_window(current_cycle())
+    cycle_scope = replace(scope, start=cycle_start, end=cycle_end)
 
     has_bulk_committees = _table_exists(conn, "bulk_committees_clean")
     has_bulk_receipts = _table_exists(conn, "bulk_receipts_clean")
@@ -123,7 +129,10 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             receipts_filter += " AND archived = FALSE"
         elif _column_exists(conn, rcpt_table, "is_archived"):
             receipts_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
-        rcpt_clause, rcpt_plist = period_qmark_date_clause("received_date", period)
+        cycle_clause, cycle_plist = scope_where(cycle_scope, "DATE(received_date)")
+        receipts_cycle_filter = receipts_filter + cycle_clause
+        receipts_cycle_params = receipts_params + cycle_plist
+        rcpt_clause, rcpt_plist = scope_where(scope, "DATE(received_date)")
         if rcpt_clause:
             receipts_filter += rcpt_clause
             receipts_params.extend(rcpt_plist)
@@ -133,6 +142,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         "total_amount": 0.0,
         "first_date": None,
         "last_date": None,
+        "cycle_total": 0.0,
     }
     top_donors: list[dict] = []
     if rcpt_table:
@@ -154,7 +164,19 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                 "total_amount": float(row["total_amount"] or 0.0),
                 "first_date": row["first_date"],
                 "last_date": row["last_date"],
+                "cycle_total": 0.0,
             }
+
+        cycle_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(amount), 0.0) AS cycle_total
+            FROM {rcpt_table}
+            {receipts_cycle_filter}
+            """,
+            tuple(receipts_cycle_params),
+        ).fetchone()
+        if cycle_row:
+            receipts_summary["cycle_total"] = float(cycle_row["cycle_total"] or 0.0)
 
         top_donor_rows = conn.execute(
             f"""
@@ -213,7 +235,10 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
             expenditures_filter += " AND archived = FALSE"
         elif _column_exists(conn, exp_table, "is_archived"):
             expenditures_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
-        exp_clause, exp_plist = period_qmark_date_clause("expended_date", period)
+        cycle_clause, cycle_plist = scope_where(cycle_scope, "DATE(expended_date)")
+        expenditures_cycle_filter = expenditures_filter + cycle_clause
+        expenditures_cycle_params = expenditures_params + cycle_plist
+        exp_clause, exp_plist = scope_where(scope, "DATE(expended_date)")
         if exp_clause:
             expenditures_filter += exp_clause
             expenditures_params.extend(exp_plist)
@@ -223,6 +248,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
         "total_amount": 0.0,
         "first_date": None,
         "last_date": None,
+        "cycle_total": 0.0,
     }
     top_payees: list[dict] = []
     if exp_table:
@@ -244,7 +270,19 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
                 "total_amount": float(row["total_amount"] or 0.0),
                 "first_date": row["first_date"],
                 "last_date": row["last_date"],
+                "cycle_total": 0.0,
             }
+
+        cycle_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(amount), 0.0) AS cycle_total
+            FROM {exp_table}
+            {expenditures_cycle_filter}
+            """,
+            tuple(expenditures_cycle_params),
+        ).fetchone()
+        if cycle_row:
+            expenditures_summary["cycle_total"] = float(cycle_row["cycle_total"] or 0.0)
 
         top_payee_rows = conn.execute(
             f"""
@@ -451,10 +489,42 @@ def _bulk_committee_profile(conn, committee_id_sbe: int) -> dict | None:
     }
 
 
+def _windowed_receipts_cte(conn, scope: TimeScope):
+    """CTE (sql, params) of per-committee receipt totals inside ``scope``, or None without a receipts source.
+
+    Prefers ``isbe_condensed_receipts`` (native date column, indexed: ~35 ms warm
+    for a cycle window locally) over the ``bulk_receipts_clean`` compat view, whose
+    text-cast ``received_date`` forces a 3.7M-row scan (~1.4 s). Archived rows are
+    excluded either way, as in ``_bulk_committee_profile``.
+    """
+    if _table_exists(conn, "isbe_condensed_receipts"):
+        table, cmte_col, archived = "isbe_condensed_receipts", "committee_id", "archived = FALSE"
+    elif _table_exists(conn, "bulk_receipts_clean"):
+        table, cmte_col = "bulk_receipts_clean", "committee_id_sbe"
+        archived = (
+            "NOT COALESCE(is_archived::boolean, FALSE)"
+            if _column_exists(conn, table, "is_archived") else "TRUE"
+        )
+    else:
+        return None
+    clause, params = scope_where(scope, "DATE(received_date)")
+    return (
+        f"WITH windowed AS (SELECT {cmte_col} AS committee_id, SUM(amount) AS total "
+        f"FROM {table} WHERE {archived}{clause} GROUP BY {cmte_col})"
+    ), params
+
+
 @committees_bp.route('/')
 def list_committees():
     """List all committees from ISBE data."""
     conn = current_app.get_database()
+    scope = resolve_time_scope(default="cycle:current", axis="received", data_through=latest_data_date("isbe"))
+    scope_context = dict(
+        time_scope=scope,
+        scope_default_key=f"cycle:{current_cycle()}",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
+    )
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -489,7 +559,24 @@ def list_committees():
         ).fetchone()
         total = count_row["count"] if count_row else 0
 
-        if has_money:
+        bounded = bool(scope.start or scope.end)
+        windowed = _windowed_receipts_cte(conn, scope) if bounded else None
+        if windowed:
+            cte_sql, cte_params = windowed
+            rows = conn.execute(
+                f"""
+                {cte_sql}
+                SELECT c.id, c.name, c.type, c.party, c.active,
+                       COALESCE(w.total, 0) AS total_contributions
+                FROM isbe_committees c
+                LEFT JOIN windowed w ON w.committee_id = c.id
+                {where_clause}
+                ORDER BY {sort_field} {direction}, c.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(cte_params + params + [per_page, offset]),
+            ).fetchall()
+        elif has_money and not bounded:
             rows = conn.execute(
                 f"""
                 SELECT c.id, c.name, c.type, c.party, c.active,
@@ -516,8 +603,8 @@ def list_committees():
             ).fetchall()
     else:
         # Fallback to legacy committees table
-        period = get_active_period()
-        date_from, date_to = period_to_date_window(period)
+        date_from = scope.start.isoformat() if scope.start else None
+        date_to = scope.end.isoformat() if scope.end else None
         committees_legacy = Committee.get_all(
             conn,
             limit=per_page,
@@ -541,7 +628,8 @@ def list_committees():
                                sort_by=sort_by,
                                sort_dir=sort_dir,
                                query=query,
-                               use_isbe=False)
+                               use_isbe=False,
+                               **scope_context)
 
     committees = [
         {
@@ -565,7 +653,8 @@ def list_committees():
                            sort_by=sort_by,
                            sort_dir=sort_dir,
                            query=query,
-                           use_isbe=True)
+                           use_isbe=True,
+                           **scope_context)
 
 
 @committees_bp.route('/suggest')
@@ -593,20 +682,27 @@ def suggest_committees():
 def committee_detail(committee_id):
     """Committee detail page."""
     conn = current_app.get_database()
-    period = get_active_period()
-    date_from, date_to = period_to_date_window(period)
+    data_through = latest_data_date("isbe")
 
     committee = Committee.get_by_id(conn, committee_id)
     if not committee:
         # Fallback: treat committee_id as an ISBE SBE committee ID
-        profile = _bulk_committee_profile(conn, committee_id)
+        scope = resolve_time_scope(default="all", axis="received", data_through=data_through)
+        profile = _bulk_committee_profile(conn, committee_id, scope)
         if profile:
             return render_template(
                 'committees/detail_sbe.html',
                 committee_id_sbe=committee_id,
                 profile=profile,
+                time_scope=scope,
+                scope_default_key="all",
+                time_scope_source_label="ISBE",
             )
         abort(404)
+
+    scope = resolve_time_scope(default="all", axis="transaction", data_through=data_through)
+    date_from = scope.start.isoformat() if scope.start else None
+    date_to = scope.end.isoformat() if scope.end else None
 
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -667,7 +763,10 @@ def committee_detail(committee_id):
                            report_sort=report_sort,
                            report_dir=report_dir,
                            contrib_sort=contrib_sort,
-                           contrib_dir=contrib_dir)
+                           contrib_dir=contrib_dir,
+                           time_scope=scope,
+                           scope_default_key="all",
+                           time_scope_source_label="ISBE")
 
 
 @committees_bp.route('/sbe/<int:committee_id_sbe>')
@@ -676,15 +775,21 @@ def committee_detail_by_sbe(committee_id_sbe):
     conn = current_app.get_database()
     committee = Committee.get_by_sbe_id(conn, committee_id_sbe)
     if not committee:
-        profile = _bulk_committee_profile(conn, committee_id_sbe)
+        scope = resolve_time_scope(default="all", axis="received", data_through=latest_data_date("isbe"))
+        profile = _bulk_committee_profile(conn, committee_id_sbe, scope)
         if not profile:
             abort(404)
         return render_template(
             'committees/detail_sbe.html',
             committee_id_sbe=committee_id_sbe,
             profile=profile,
+            time_scope=scope,
+            scope_default_key="all",
+            time_scope_source_label="ISBE",
         )
-    return redirect(url_for('committees.committee_detail', committee_id=committee.id))
+    target = url_for('committees.committee_detail', committee_id=committee.id)
+    query = request.query_string.decode()
+    return redirect(f"{target}?{query}" if query else target)
 
 
 @committees_bp.route('/filing/<int:filed_doc_id>')

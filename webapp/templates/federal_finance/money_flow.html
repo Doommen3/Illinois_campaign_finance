@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Money Flow (A/B/E) - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -10,7 +11,7 @@
 {% include "federal_finance/_subnav.html" %}
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_money_flow') }}">
-    <input type="text" name="cycle" value="{{ cycle }}" placeholder="Cycle">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <select name="analysis_office">
         <option value="" {% if not analysis_office %}selected{% endif %}>All offices</option>
         <option value="H" {% if analysis_office == 'H' %}selected{% endif %}>U.S. House</option>
@@ -21,7 +22,7 @@
     <input type="text" name="network_min_edge_amount" value="{{ network_min_edge_amount }}" placeholder="Min edge amount">
     <input type="text" name="network_limit" value="{{ network_limit }}" placeholder="Edge limit">
     <button type="submit">Update</button>
-    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_money_flow') }}">Clear</a>
+    <a class="btn btn-small" href="{{ url_for('federal_finance.federal_money_flow', **scope_query) }}">Clear</a>
 </form>
 
 {% if not table_available %}
@@ -30,7 +31,7 @@
 </div>
 {% else %}
 <div class="status-section">
-    <h2>Layer Summary</h2>
+    <h2>Layer Summary {{ scope_tag() }}</h2>
     <p class="help-text">Each layer represents a different type of financial transaction in the federal campaign finance system.</p>
     <p class="subtitle">
         Nodes: <strong>{{ multilayer_network.summary.node_count }}</strong> |
@@ -67,7 +68,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Top Multi-layer Flows</h2>
+    <h2>Top Multi-layer Flows {{ scope_tag() }}</h2>
     <p class="help-text">The largest financial flows across all layers, showing how money moves from donors through committees to candidates and vendors.</p>
     <table class="data-table">
         <thead>
@@ -82,7 +83,7 @@
                 <td>{{ edge.layer_label }}</td>
                 <td>
                     {% if edge.committee_id %}
-                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=edge.committee_id, cycle=cycle) }}">
+                    <a href="{{ url_for('federal_finance.federal_committee_receipts', committee_id=edge.committee_id, **scope_query) }}">
                         {{ edge.source_label if edge.source_label else edge.source }}
                     </a>
                     {% else %}
@@ -92,7 +93,7 @@
                 <td>{{ edge.target_label if edge.target_label else edge.target }}</td>
                 <td>
                     {% if edge.candidate_id %}
-                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=edge.candidate_id, cycle=cycle) }}">
+                    <a href="{{ url_for('federal_finance.federal_candidate_detail', candidate_id=edge.candidate_id, **scope_query) }}">
                         {{ edge.candidate_name if edge.candidate_name else edge.candidate_id }}
                     </a>
                     {% else %}-{% endif %}
@@ -109,7 +110,7 @@
 </div>
 
 <div class="status-section">
-    <h2>Cross-Role Organizations (Donor and Payee)</h2>
+    <h2>Cross-Role Organizations (Donor and Payee) {{ scope_tag() }}</h2>
     <p class="help-text">Organizations that appear on both sides of campaign finance: as donors (Schedule A contributions) and as recipients of payments (Schedule B disbursements or Schedule E independent expenditures). This can reveal entities with outsized influence across the system.</p>
     <p class="help-text"><strong>Column definitions:</strong> Donated (A) = money given as a donor in Schedule A. Received via B = money received as a Schedule B payee/recipient. Received via E = money received as a Schedule E payee. Net In-Out = Donated (A) - Total Out received.</p>
     <p class="subtitle">

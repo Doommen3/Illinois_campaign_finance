@@ -218,3 +218,47 @@ def test_search_all_skips_heavy_sections_for_non_key_queries(tmp_path: Path, mon
     assert response.status_code == 200
     assert call_count["filed_docs"] == 0
     assert call_count["donor_keys"] == 0
+
+
+def test_home_prewarm_key_matches_default_request(tmp_path: Path, monkeypatch):
+    """Step 2.4: the startup prewarm and a bare request derive the same cache key
+    (the resolved default scope), and other scopes never share that entry."""
+    db_path = str(tmp_path / "home_prewarm.db")
+    init_db(db_path)
+
+    calls = {"value": 0}
+
+    def fake_build(conn, scope=None):
+        calls["value"] += 1
+        return {
+            "donor_dependent_committees": [],
+            "lobbying_donor_overlap": [],
+            "director_candidates": [],
+            "dark_money_totals": {"total_amount": 0.0, "match_count": 0},
+        }
+
+    monkeypatch.setattr(main_routes, "_build_dashboard_insights", fake_build)
+    for cache in (main_routes._dashboard_insights_cache, main_routes._candidate_stats_cache,
+                  main_routes._top_donors_cache):
+        cache.invalidate()
+
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE_PATH": db_path,
+            "DASHBOARD_PREWARM_ENABLED": False,
+            "ROUTE_PERF_CACHE_ENABLED": True,
+            "DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS": 60,
+        }
+    )
+    with app.app_context():
+        main_routes.warm_dashboard_home_cache(db_path)
+    assert calls["value"] == 1
+
+    client = app.test_client()
+    assert client.get("/").status_code == 200
+    assert calls["value"] == 1                     # served from the prewarmed entry
+    assert client.get("/?period=all").status_code == 200
+    assert calls["value"] == 2                     # a different scope gets its own key
+    assert client.get("/?period=all").status_code == 200
+    assert calls["value"] == 2

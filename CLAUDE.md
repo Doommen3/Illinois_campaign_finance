@@ -199,8 +199,9 @@ Heavy routes use in-process TTL caching (per-worker dict). Architecture details,
 - TTLs are in `config.py` — grep `_CACHE_TTL_SECONDS` for the current list
 - Caches respect `ROUTE_PERF_CACHE_ENABLED` + `TESTING` flags
 - `warm_analytics_caches()` runs per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`) — pre-populates risk/networks/relationships caches; ~2-3 min per worker
-- Cache keys must include date/filter identity + (for Viz Lab) all advanced params, to prevent metric cross-talk
+- Cache keys must include the resolved time scope (`scope_cache_key(scope)` = `axis:start:end`) + filter identity + (for Viz Lab) all advanced params, to prevent metric cross-talk; prewarm derives the same default key with `resolve_time_scope(default="cycle:current", args={})`
 - Time-filter semantics: report-driven queries → `filed_date`; contribution-driven → `transaction_date` (or `received_date` for bulk receipts)
+- Time scope (no global period, no nav dropdown): every page resolves its own window from the URL via `webapp/utils/time_scope.py` (`resolve_time_scope`; precedence `date_from`/`date_to` > `year` > `cycle` > `period` > the page's default; legacy keys like `2026cycle`/`1y`/`2y` still resolve). Lists, dashboards and search default to the current cycle (`cycle:2026` = 2025-01-01..2026-12-31); entity profiles default to all time with a "This cycle" subtotal; lobbying lists snap to registration years. `_partials/time_scope_bar.html` renders the window (include it after the `<h1>`, pass `time_scope`/`scope_default_key`/`time_scope_source_label`/`scope_query`); in-section links end with `**scope_query`, forms carry it as hidden inputs, top-nav links carry nothing. Tag windowed `<h2>`s with `{{ scope_tag() }}` and all-time ones with `{{ scope_tag('All time') }}`.
 
 ## Testing
 

@@ -1,9 +1,13 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Candidates - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Candidates</h1>
+
+{% include "_partials/time_scope_bar.html" %}
+
 <p class="subtitle">Explore Illinois campaign finance data from state (ISBE) and federal (FEC) sources.</p>
 
 <div class="two-column candidates-columns">
@@ -13,19 +17,19 @@
 
         <div class="stats-grid">
             <div class="stat-card">
-                <h3>Candidates</h3>
+                <h3>Candidates {{ scope_tag('All time') }}</h3>
                 <p class="stat-value">{{ stats.local_candidates }}</p>
             </div>
             <div class="stat-card">
-                <h3>Committees</h3>
+                <h3>Committees {{ scope_tag('All time') }}</h3>
                 <p class="stat-value">{{ stats.local_committees }}</p>
             </div>
             <div class="stat-card">
-                <h3>Total Receipts</h3>
+                <h3>Total Receipts {{ scope_tag() }}</h3>
                 <p class="stat-value">{{ format_currency(stats.local_total_receipts) }}</p>
             </div>
             <div class="stat-card">
-                <h3>Total Expenditures</h3>
+                <h3>Total Expenditures {{ scope_tag() }}</h3>
                 <p class="stat-value">{{ format_currency(stats.local_total_expenditures) }}</p>
             </div>
         </div>
@@ -38,7 +42,7 @@
         </div>
 
         <p class="candidate-source-action">
-            <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance') }}">Explore State Candidates</a>
+            <a class="btn btn-primary" href="{{ url_for('candidate_finance.list_candidate_finance', **scope_query) }}">Explore State Candidates</a>
         </p>
     </div>
 
@@ -48,16 +52,16 @@
 
         <div class="stats-grid">
             <div class="stat-card">
-                <h3>Candidates</h3>
+                <h3>Candidates {{ scope_tag() }}</h3>
                 <p class="stat-value">{{ stats.federal_candidates }}</p>
             </div>
             <div class="stat-card">
-                <h3>Contributions</h3>
+                <h3>Contributions {{ scope_tag() }}</h3>
                 <p class="stat-value">{{ stats.federal_contributions }}</p>
                 <p class="stat-detail">{{ format_currency(stats.federal_total_amount) }} total</p>
             </div>
             <div class="stat-card">
-                <h3>Matched Donors</h3>
+                <h3>Matched Donors {{ scope_tag('All time') }}</h3>
                 <p class="stat-value">{{ stats.federal_matched_donors }}</p>
             </div>
         </div>
@@ -82,7 +86,7 @@
         </div>
 
         <p class="candidate-source-action">
-            <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance') }}">Explore Federal Candidates</a>
+            <a class="btn btn-success" href="{{ url_for('federal_finance.list_federal_finance', **scope_query) }}">Explore Federal Candidates</a>
         </p>
     </div>
 </div>

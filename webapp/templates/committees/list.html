@@ -4,12 +4,14 @@
 
 {% block content %}
 <h1>Committees</h1>
+{% include "_partials/time_scope_bar.html" %}
 <p class="subtitle">{{ total }} {% if query %}results for "{{ query }}"{% else %}total committees{% endif %}</p>
 <p class="help-text">State-level committees registered with the Illinois State Board of Elections (ISBE). Each committee is linked to candidates and files periodic disclosure reports (D-2 forms) listing receipts and expenditures.</p>
 
 <form action="{{ url_for('committees.list_committees') }}" method="get" class="search-form">
     <input type="text" name="q" placeholder="Search committees..." value="{{ query }}"
            data-autocomplete-url="{{ url_for('committees.suggest_committees') }}">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     <button type="submit">Search</button>
 </form>
 
@@ -17,7 +19,7 @@
     <thead>
         <tr>
             <th>
-                <a href="{{ url_for('committees.list_committees', sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc', q=query) }}">
+                <a href="{{ url_for('committees.list_committees', sort='name', dir='asc' if sort_by != 'name' or sort_dir == 'desc' else 'desc', q=query, **scope_query) }}">
                     Name{% if sort_by == 'name' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -26,7 +28,7 @@
             <th>Party</th>
             {% endif %}
             <th>
-                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc', q=query) }}">
+                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc', q=query, **scope_query) }}">
                     Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -37,11 +39,11 @@
         <tr>
             <td>
                 {% if use_isbe %}
-                <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=committee.id) }}">
+                <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=committee.id, **scope_query) }}">
                     {{ committee.name }}
                 </a>
                 {% else %}
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id) }}">
+                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, **scope_query) }}">
                     {{ committee.name }}
                 </a>
                 {% endif %}
@@ -63,13 +65,13 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('committees.list_committees', page=page-1, sort=sort_by, dir=sort_dir, q=query) }}">&laquo; Previous</a>
+    <a href="{{ url_for('committees.list_committees', page=page-1, sort=sort_by, dir=sort_dir, q=query, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
 
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
 
     {% if page < total_pages %}
-    <a href="{{ url_for('committees.list_committees', page=page+1, sort=sort_by, dir=sort_dir, q=query) }}">Next &raquo;</a>
+    <a href="{{ url_for('committees.list_committees', page=page+1, sort=sort_by, dir=sort_dir, q=query, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}
