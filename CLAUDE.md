@@ -328,6 +328,7 @@ Do **NOT** run autonomously via Claude. Provide the user the exact command to ru
 **Notes**:
 - `refresh-fec-local-donor-matches` runs automatically after `sync-fec-il-federal` (via `--refresh-local-matches` default). Standalone only after a backfill or if that flag was skipped.
 - `run-cross-matching` + `refresh-analytics` are long-running — use `tmux`/`screen` on the server.
+- On prod, run `scripts/swap_bulk_to_isbe.py` (also auto-run by `sunshine-import`) with `ilcf-web.service` stopped: live readers hold share locks on the `bulk_*` compat views and the swap DDL deadlocks or times out (2026-10-27; see the runbook's "Release 2026-10-27" block).
 
 ### FEC silent no-op + freshness gate
 

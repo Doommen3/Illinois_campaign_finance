@@ -163,3 +163,23 @@ Bounded synthetic benchmarks (local):
 - analytics contributions materialization: ~2.07s → ~0.79s (300k synthetic rows)
 - IRS Illinois EIN first-pass extraction: ~1.34s → ~0.23s (800k synthetic lines)
 - receipt date normalization loop: ~13.65s → ~0.09s (2M repeated values)
+
+## Prod measurements — Release 2026-10-27 (`2301286`)
+
+Measured over HTTPS from the laptop (3 passes, warm unless noted) after the restart at 14:52 UTC; "before" = the pre-release code the same morning.
+
+| Route | Before | After |
+|---|---|---|
+| `/donors/?cycle=2026` | 5.7–6.9 s (live query) | 0.34–0.56 s (`analytics_donor_cycle_summary`; prod table 1,475,932 rows, cycle 2026 46,308 — built from the old matview picker, see below) |
+| `/analytics/state-races/` | 404 (new) | cold 19.8 s on the server during prewarm; warm 0.42–0.72 s |
+| `/analytics/state-races/governor-statewide-illinois` | — | warm 0.16–0.21 s (prewarmed detail); an unwarmed race (`alderperson-city-aurora`) 2.4 s cold |
+| `/candidates/16872` | 404 (new) | 0.29–0.33 s |
+| `/committees/1126` | 0.64–1.07 s | 0.93–1.52 s (reordered page; same queries plus donor-key links) |
+| `/committees/1126/donors` | — | 0.62–0.74 s |
+| `/committees/?by=family` | — | 0.34–0.39 s (753 pending families, none accepted yet) |
+| `/analytics/` | 0.22 s (cached) | 0.25 s (cached) |
+| `/` | — | 0.21–0.31 s; first hit after restart 13.3 s (prewarm threads competing) |
+
+Server-side steps: `init-db` 7 s; expenditures index 1.9 s; `refresh-analytics --with-snapshot` 4 min 23 s (14:47:20 → 14:51:43 UTC); swap script 6 s under an 8 s service stop (see the deployment runbook, "Release 2026-10-27" step 5 note for why it must run stopped); `committee_families.py seed` 2.2 s (753 families / 1,626 members).
+
+**Data caveat (A2, still open on prod):** prod's `isbe_most_recent_filings` picker has no `NULLS LAST` yet (the DDL fix ships in the ETL and lands at the next `sunshine-import`, or by the hand rebuild in the deployment runbook). Measured 2026-10-27: condensed non-archived receipts for the 2026 cycle = 112,469 rows / $348.1M against 230,305 / $601.1M raw non-archived (42 % of the dollars hidden); all time $5.457B against $6.702B; 60,067 A-1 filed docs have a NULL `received_datetime`. Every cycle-2026 figure on prod (donor list, committee profiles, race totals, the cycle table) is understated by about that much until the matviews are rebuilt and `refresh-analytics` runs again.
