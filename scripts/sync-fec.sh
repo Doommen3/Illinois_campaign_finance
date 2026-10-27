@@ -65,11 +65,15 @@ LOG_FILE="${LOG_DIR}/sync-fec-$(date '+%Y%m%d-%H%M%S').log"
 log "Starting FEC sync (cycle=$CYCLE, max_calls=$MAX_CALLS, python=$PYTHON). Log: $LOG_FILE"
 
 # --- Step 1: Sync FEC data ---------------------------------------------------
+# --refresh-cache is required: without it the sync replays the legacy payload cache
+# (api_calls_made=0) and refreshes nothing — the prod timer ran that way from Feb to Oct 2026
+# and Schedule A sat at 2026-07-01 (see CLAUDE.md, "FEC silent no-op").
 log "Step 1/3: sync-fec-il-federal"
 "$PYTHON" run.py sync-fec-il-federal \
     --cycle "$CYCLE" \
     --contributor-state IL \
     --max-calls "$MAX_CALLS" \
+    --refresh-cache \
     >> "$LOG_FILE" 2>&1
 
 # --- Step 2: Rebuild donor identities ----------------------------------------
