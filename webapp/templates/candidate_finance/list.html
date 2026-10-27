@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Candidate Finance - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -30,7 +31,7 @@
     <p>Run <code>python run.py sunshine-import --bulk-dir Bulk_download</code> followed by <code>python scripts/swap_bulk_to_isbe.py</code> to build this page's data.</p>
 </div>
 {% else %}
-<p class="subtitle">{{ total }} total candidate-committee aggregate rows</p>
+<p class="subtitle">{{ total }} total candidate-committee aggregate rows {{ scope_tag() }}</p>
 
 <form class="search-form" method="get" action="{{ url_for('candidate_finance.list_candidate_finance') }}">
     <input type="text" name="q" value="{{ query }}" placeholder="Search candidate, committee, or office">
@@ -100,8 +101,8 @@
             {% for row in rows %}
             <tr>
             <td>
-                {% if itemized_available and row.candidate_id is not none and row.committee_id_sbe is not none and row.candidate_full_name %}
-                <a href="{{ url_for('candidate_finance.candidate_committee_itemized', candidate_id=row.candidate_id, committee_id=row.committee_id_sbe) }}">
+                {% if row.candidate_id and row.candidate_full_name %}
+                <a href="{{ url_for('candidates.candidate_detail', candidate_id=row.candidate_id, **scope_query) }}">
                     {{ row.candidate_full_name }}
                 </a>
                 {% else %}

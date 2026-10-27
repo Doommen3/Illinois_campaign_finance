@@ -241,6 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_committee
     ON analytics_donor_committee_agg(source, committee_name);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_source_donor
     ON analytics_donor_committee_agg(source, donor_key);
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_agg_source_committee ON analytics_donor_committee_agg (source, committee_id);
 
 CREATE TABLE IF NOT EXISTS analytics_committee_monthly_totals (
     source TEXT NOT NULL, -- bulk_receipts, contributions
@@ -318,6 +319,29 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
     ON analytics_donor_summary(source, donor_name);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_city_state
     ON analytics_donor_summary(donor_state, donor_city);
+
+-- One row per donor per election cycle (cycle = year + year % 2 of received_date), rebuilt by
+-- refresh_analytics_materialized with the live /donors/ list predicate (receipts_filter_sql,
+-- J-S2). /donors/ reads it when the window is exactly one cycle and the cycle has rows (J-S16).
+CREATE TABLE IF NOT EXISTS analytics_donor_cycle_summary (
+    source TEXT NOT NULL, -- bulk_receipts
+    election_cycle INTEGER NOT NULL,
+    donor_key TEXT NOT NULL,
+    donor_name TEXT NOT NULL,
+    donor_address TEXT,
+    donor_city TEXT,
+    donor_state TEXT,
+    occupation TEXT,
+    employer TEXT,
+    total_amount DOUBLE PRECISION NOT NULL, -- not REAL: float4 drops cents above ~$16.7M
+    contribution_count INTEGER NOT NULL,
+    committee_count INTEGER NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, election_cycle, donor_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_cycle_summary_total
+    ON analytics_donor_cycle_summary(source, election_cycle, total_amount DESC);
 
 -- Personal-information removal requests (Judicial Privacy Act etc.). Request
 -- rows are inserted on prod, never committed to the repo. Applied by
@@ -1544,3 +1568,27 @@ CREATE TABLE IF NOT EXISTS comptroller_scrape_runs (
     error_count INTEGER DEFAULT 0,
     notes TEXT
 );
+
+-- Committee families: reviewable groupings of serial committee re-registrations
+-- (group, never merge). Seeded by database/committee_families.py; only ACCEPTED
+-- families show on public pages. Design: docs/committee_families_design.md.
+CREATE TABLE IF NOT EXISTS committee_family (
+    id            BIGSERIAL PRIMARY KEY,
+    label         TEXT NOT NULL,                 -- seed: name of the most recently active member
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected')),
+    evidence      JSONB NOT NULL DEFAULT '{}',   -- same_name, similar_name, shared_officer, same_address, shared_candidates
+    member_hash   TEXT NOT NULL UNIQUE,          -- sha1 of the sorted member ids: idempotent re-seeding
+    notes         TEXT,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at   TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS committee_family_member (
+    family_id     BIGINT NOT NULL REFERENCES committee_family(id) ON DELETE CASCADE,
+    committee_id  INTEGER NOT NULL,              -- isbe_committees.id; no FK because the ETL drops and reloads isbe_*
+    evidence      JSONB NOT NULL DEFAULT '{}',
+    PRIMARY KEY (family_id, committee_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_committee_family_member_committee
+    ON committee_family_member (committee_id);

@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 
-from flask import Blueprint, abort, current_app, render_template, request, url_for
+from flask import Blueprint, abort, current_app, redirect, render_template, request, url_for
 
 from database.analytics import (
     build_dashboard_full_snapshot,
@@ -26,19 +26,24 @@ from database.analytics import (
     get_reconciliation_outliers,
     get_state_race_analytics,
     get_state_race_detail,
+    get_state_race_details,
     get_state_federal_overlap_graph,
     get_time_series,
     get_vendor_expenditure_network,
     save_dashboard_snapshot,
 )
+import database.analytics as analytics_db
 from database.connection import get_db, close_db
+from database.race_keys import canonical_race_key
 from webapp.cache_backend import RouteCache
 from webapp.utils.data_through import latest_data_date
-from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_params
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_cycles, scope_params
 
 analytics_bp = Blueprint("analytics", __name__)
 
 FULL_SNAPSHOT_TTL_SECONDS = 900
+# TTL when app.config has no analytics cache key (config.py ships 21600 = 6 h).
+ANALYTICS_CACHE_TTL_FALLBACK_SECONDS = 21600
 _snapshot_executor = ThreadPoolExecutor(max_workers=1)
 _snapshot_lock = threading.Lock()
 _running_snapshot_keys: set[str] = set()
@@ -51,6 +56,15 @@ _networks_cache = RouteCache("analytics_networks")
 _overview_cache = RouteCache("analytics_overview")
 _risk_cache = RouteCache("analytics_risk")
 _state_race_detail_cache = RouteCache("analytics_state_race_detail")
+# Every race of one cycle: the overview shows its first 12 rows, /analytics/state-races/ all.
+_state_races_cache = RouteCache("analytics_state_races")
+# Graphs whose builders take no dates (plan B3 / J-S15): the relationships co-giving, similarity
+# and competition graphs and the networks overlap graph. One build serves every window: keyed
+# by the builder's name and its own arguments, never the window, so ?period=all reuses the
+# build a default request (or the prewarm) made.
+_window_free_graphs_cache = RouteCache("analytics_window_free_graphs")
+# Fixed arguments of the networks overlap graph (the route and the prewarm build one key).
+_OVERLAP_GRAPH_KWARGS = {"donor_limit": 100, "edge_limit": 600}
 _geo_drilldown_cache: dict[str, dict] = {}
 _geo_drilldown_cache_lock = threading.Lock()
 
@@ -443,6 +457,151 @@ def _safe_optional_graph(graph_key: str, callback, fallback: dict) -> dict:
     }
 
 
+def _window_free_key(func, kwargs: dict) -> tuple:
+    """Cache key of a graph builder that takes no dates: its name and its arguments, no window."""
+    return (func.__name__, tuple(sorted(kwargs.items())))
+
+
+def _graph_failed(graph: dict) -> bool:
+    """True for the empty, error-flagged graph _compute_graph_with_own_conn returns for a failed build."""
+    return bool((graph.get("summary") or {}).get("error"))
+
+
+def _window_free_graph(conn, func, kwargs: dict, *, cache_enabled: bool, refresh: bool, ttl_seconds: int) -> dict:
+    """``func(conn, **kwargs)`` for a builder that takes no dates, built once for every window."""
+    cache_key = _window_free_key(func, kwargs)
+    if cache_enabled and not refresh:
+        graph = _window_free_graphs_cache.get(cache_key)
+        if graph is not None:
+            return graph
+    graph = func(conn, **kwargs)
+    if cache_enabled:
+        _window_free_graphs_cache.set(cache_key, graph, ttl_seconds)
+    return graph
+
+
+def _networks_graphs(*, db_target: str, time_period_key: str, date_from: str, date_to: str,
+                     min_edge_amount: float, network_limit: int, network_from_snapshot: dict | None,
+                     cache_enabled: bool, refresh: bool, ttl_seconds: int) -> dict:
+    """The five /analytics/networks graphs; the route and warm_analytics_caches share these keys.
+
+    The analytics, vendor, lobbying and 527 graphs take the window and are cached per window;
+    the state-federal overlap graph takes no dates and is cached once for every window, except
+    a failed build. Missing graphs build in parallel, each with its own DB connection.
+    """
+    empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
+    use_cache = cache_enabled and not refresh
+    cache_key = (time_period_key, date_from, date_to, min_edge_amount, network_limit)
+    windowed = _networks_cache.get(cache_key) if use_cache else None
+    overlap_key = _window_free_key(get_state_federal_overlap_graph, _OVERLAP_GRAPH_KWARGS)
+    overlap_graph = _window_free_graphs_cache.get(overlap_key) if use_cache else None
+
+    graph_jobs: list[tuple[str, object, tuple, dict, dict]] = []
+    if windowed is None:
+        if network_from_snapshot is None:
+            graph_jobs.append((
+                "network", get_network_graph, (),
+                {"min_edge_amount": min_edge_amount, "limit": network_limit,
+                 "date_from": date_from, "date_to": date_to},
+                _empty_network(),
+            ))
+        graph_jobs.extend([
+            ("vendor_network", get_vendor_expenditure_network, (),
+             {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800,
+              "date_from": date_from, "date_to": date_to}, empty_graph),
+            ("lobbying_graph", get_lobbying_influence_graph, (),
+             {"client_limit": 80, "edge_limit": 600,
+              "date_from": date_from, "date_to": date_to}, empty_graph),
+            ("ecosystem_527", get_irs527_ecosystem_graph, (),
+             {"org_limit": 80, "edge_limit": 600,
+              "date_from": date_from, "date_to": date_to}, empty_graph),
+        ])
+    if overlap_graph is None:
+        graph_jobs.append(("overlap_graph", get_state_federal_overlap_graph, (), dict(_OVERLAP_GRAPH_KWARGS), empty_graph))
+
+    results: dict[str, dict] = {}
+    futures = {
+        _networks_parallel_executor.submit(
+            _compute_graph_with_own_conn, key, func, args, kwargs, fallback, db_target,
+        ): key
+        for key, func, args, kwargs, fallback in graph_jobs
+    }
+    for future in as_completed(futures):
+        key, result = future.result()
+        results[key] = result
+
+    if windowed is None:
+        windowed = {
+            "network": network_from_snapshot or results.get("network", _empty_network()),
+            "vendor_network": results.get("vendor_network", empty_graph),
+            "lobbying_graph": results.get("lobbying_graph", empty_graph),
+            "ecosystem_527": results.get("ecosystem_527", empty_graph),
+        }
+        if cache_enabled:
+            _networks_cache.set(cache_key, windowed, ttl_seconds)
+    if overlap_graph is None:
+        overlap_graph = results.get("overlap_graph", empty_graph)
+        # Shared by every window, so a failed (empty) build is not kept for the TTL.
+        if cache_enabled and not _graph_failed(overlap_graph):
+            _window_free_graphs_cache.set(overlap_key, overlap_graph, ttl_seconds)
+    return {**windowed, "overlap_graph": overlap_graph}
+
+
+def _relationships_graphs(conn, *, time_period_key: str, date_from: str, date_to: str, donor_limit: int,
+                          committee_limit: int, candidate_limit: int, client_limit: int, org_limit: int,
+                          edge_limit: int, min_shared_amount: float, min_shared_targets: int,
+                          min_shared_donors: int, cache_enabled: bool, refresh: bool, ttl_seconds: int) -> dict:
+    """The five /analytics/relationships graphs; the route and warm_analytics_caches share these keys.
+
+    The lobbying and 527 graphs take the window and are cached per window; the co-giving,
+    similarity and competition graphs take no dates and are cached once for every window.
+    """
+    cache_key = (time_period_key, date_from, date_to, client_limit, org_limit, edge_limit)
+    windowed = _relationships_cache.get(cache_key) if cache_enabled and not refresh else None
+    if windowed is None:
+        windowed = {
+            "lobbying_influence": get_lobbying_influence_graph(
+                conn,
+                client_limit=client_limit,
+                edge_limit=edge_limit,
+                date_from=date_from,
+                date_to=date_to,
+            ),
+            "ecosystem_527": get_irs527_ecosystem_graph(
+                conn,
+                org_limit=org_limit,
+                edge_limit=edge_limit,
+                date_from=date_from,
+                date_to=date_to,
+            ),
+        }
+        if cache_enabled:
+            _relationships_cache.set(cache_key, windowed, ttl_seconds)
+
+    window_free = {"cache_enabled": cache_enabled, "refresh": refresh, "ttl_seconds": ttl_seconds}
+    return {
+        "donor_cogiving": _window_free_graph(conn, get_donor_cogiving_network, {
+            "donor_limit": donor_limit,
+            "edge_limit": edge_limit,
+            "min_shared_amount": min_shared_amount,
+            "min_shared_targets": min_shared_targets,
+        }, **window_free),
+        "committee_similarity": _window_free_graph(conn, get_committee_similarity_network, {
+            "committee_limit": committee_limit,
+            "edge_limit": edge_limit,
+            "min_shared_donors": min_shared_donors,
+            "min_shared_amount": min_shared_amount,
+        }, **window_free),
+        "candidate_competition": _window_free_graph(conn, get_candidate_competition_networks, {
+            "candidate_limit": candidate_limit,
+            "edge_limit": edge_limit,
+            "min_shared_donors": min_shared_donors,
+            "min_shared_amount": min_shared_amount,
+        }, **window_free),
+        **windowed,
+    }
+
+
 def _base_context(active_page: str, filters: dict, snapshot_state: dict) -> dict:
     return {
         "active_page": active_page,
@@ -453,26 +612,111 @@ def _base_context(active_page: str, filters: dict, snapshot_state: dict) -> dict
     }
 
 
-@analytics_bp.route("/", endpoint="dashboard")
-@analytics_bp.route("/overview", endpoint="overview")
-def dashboard():
-    """Render the analytics overview page."""
-    conn = current_app.get_database()
-    filters = _parse_filters()
-    snapshot_state = _load_snapshot_state(conn, filters)
-    payload = snapshot_state["payload"] or {}
-    valid_state_race_sorts = {"total_amount", "outside_spending_total", "outside_pressure_ratio"}
-    state_race_sort = (request.args.get("state_race_sort", "total_amount", type=str) or "total_amount").strip().lower()
-    if state_race_sort not in valid_state_race_sorts:
-        state_race_sort = "total_amount"
-    state_race_dir = "asc" if (request.args.get("state_race_dir", "desc", type=str) or "").strip().lower() == "asc" else "desc"
+_STATE_RACE_SORTS = ("total_amount", "outside_spending_total", "outside_pressure_ratio")
+# The relations the race builder reads; it returns no rows when any of them is missing.
+_STATE_RACE_RELATIONS = (
+    "isbe_race_candidacies",
+    "bulk_candidate_committee_finance_agg",
+    "bulk_receipts_clean",
+    "bulk_expenditures_clean",
+)
 
-    # --- TTL cache for overview aggregates ---
-    overview_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 300)))
-    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
-    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
-    election_cycle = request.args.get("election_cycle", type=int)
-    cache_key = (
+
+def _window_cycle(scope) -> int | None:
+    """The one election cycle the window lies in; None for all time or a window spanning cycles."""
+    cycles = scope_cycles(scope)
+    return cycles[0] if cycles and len(cycles) == 1 else None
+
+
+def _state_race_cycle(scope, election_cycle: int | None, today: date | None = None) -> int:
+    """Candidate cycle of the state-race pages (plan J-R4): an explicit ``?election_cycle=``
+    wins, then the window's own cycle, else the current cycle by date."""
+    if election_cycle is not None:
+        return int(election_cycle)
+    return _window_cycle(scope) or analytics_db.current_election_cycle(today)
+
+
+def _state_races_cache_key(scope, election_cycle: int | None, sort_by: str, sort_dir: str,
+                           today: date | None = None) -> tuple:
+    """Key of the shared full race list: the window, the RESOLVED cycle and the sort.
+
+    The cycle is resolved, never None: ``period=all`` has the same window all year, so only
+    the cycle keeps a list built before a cycle rollover from being served after it.
+    """
+    return (scope_cache_key(scope), _state_race_cycle(scope, election_cycle, today), sort_by, sort_dir)
+
+
+def _state_race_sort_args(sort_param: str, dir_param: str) -> tuple[str, str]:
+    """(sort field, direction) from the query string; unknown values fall back to total_amount, desc."""
+    sort_by = (request.args.get(sort_param, "total_amount", type=str) or "total_amount").strip().lower()
+    if sort_by not in _STATE_RACE_SORTS:
+        sort_by = "total_amount"
+    sort_dir = "asc" if (request.args.get(dir_param, "desc", type=str) or "").strip().lower() == "asc" else "desc"
+    return sort_by, sort_dir
+
+
+def _state_race_tables_available(conn) -> bool:
+    return all(_table_exists(conn, table_name) for table_name in _STATE_RACE_RELATIONS)
+
+
+def _get_state_race_rows(conn, scope, election_cycle, sort_by, sort_dir, *, cache_enabled, refresh,
+                         ttl_seconds) -> list[dict]:
+    """Every race of the resolved cycle, sorted: the one cached build behind the overview's
+    Top State Races (its first 12 rows) and /analytics/state-races/ (all rows)."""
+    cycle = _state_race_cycle(scope, election_cycle)
+    cache_key = _state_races_cache_key(scope, cycle, sort_by, sort_dir)
+    if cache_enabled and not refresh:
+        rows = _state_races_cache.get(cache_key)
+        if rows is not None:
+            return rows
+    rows = get_state_race_analytics(
+        conn,
+        limit=100_000,  # no cap: the largest cycle has 1,761 races (local ilcf, 2026-10-26)
+        date_from=_iso_or_empty(scope.start),
+        date_to=_iso_or_empty(scope.end),
+        election_cycle=cycle,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    if cache_enabled:
+        _state_races_cache.set(cache_key, rows, ttl_seconds)
+    return rows
+
+
+def _state_race_detail_cache_key(race_key: str, scope, election_cycle: int | None) -> tuple:
+    """Key of one race's detail payload: (race key, window, resolved cycle)."""
+    return (race_key, scope_cache_key(scope), _state_race_cycle(scope, election_cycle))
+
+
+def _get_state_race_detail_cached(conn, race_key, scope, election_cycle, *, cache_enabled, refresh,
+                                  ttl_seconds) -> dict | None:
+    """One race's detail payload, cached under _state_race_detail_cache_key.
+
+    get_state_race_detail is a targeted lookup, but still seconds for the largest races.
+    warm_analytics_caches fills the overview's twelve races under the same key, so a
+    prewarmed entry is exactly the one a request reads.
+    """
+    cycle = _state_race_cycle(scope, election_cycle)
+    cache_key = _state_race_detail_cache_key(race_key, scope, cycle)
+    if cache_enabled and not refresh:
+        detail = _state_race_detail_cache.get(cache_key)
+        if detail is not None:
+            return detail
+    detail = get_state_race_detail(
+        conn,
+        race_key=race_key,
+        date_from=_iso_or_empty(scope.start),
+        date_to=_iso_or_empty(scope.end),
+        election_cycle=cycle,
+    )
+    if detail and cache_enabled:
+        _state_race_detail_cache.set(cache_key, detail, ttl_seconds)
+    return detail
+
+
+def _overview_cache_key(filters: dict, state_race_cycle: int, state_race_sort: str, state_race_dir: str) -> tuple:
+    """Key of the /analytics/ payload; warm_analytics_caches builds a bare request's key with it."""
+    return (
         filters["time_period_key"],
         filters["date_from"],
         filters["date_to"],
@@ -482,10 +726,29 @@ def dashboard():
         filters["concentration_limit"],
         filters["months"],
         filters["nlp_limit"],
-        election_cycle,
+        state_race_cycle,
         state_race_sort,
         state_race_dir,
     )
+
+
+@analytics_bp.route("/", endpoint="dashboard")
+@analytics_bp.route("/overview", endpoint="overview")
+def dashboard():
+    """Render the analytics overview page."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    snapshot_state = _load_snapshot_state(conn, filters)
+    payload = snapshot_state["payload"] or {}
+    state_race_sort, state_race_dir = _state_race_sort_args("state_race_sort", "state_race_dir")
+
+    # --- TTL cache for overview aggregates ---
+    overview_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS)))
+    cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
+    refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
+    election_cycle = request.args.get("election_cycle", type=int)
+    state_race_cycle = _state_race_cycle(filters["time_scope"], election_cycle)
+    cache_key = _overview_cache_key(filters, state_race_cycle, state_race_sort, state_race_dir)
     now = time.monotonic()
 
     cached_payload = None
@@ -501,6 +764,7 @@ def dashboard():
         nlp_summary = cached_payload["nlp_summary"]
         reconciliation = cached_payload["reconciliation"]
         state_race_analytics = cached_payload["state_race_analytics"]
+        state_race_total = cached_payload["state_race_total"]
         state_race_table_available = cached_payload["state_race_table_available"]
         state_race_nonzero_below_visible = cached_payload.get("state_race_nonzero_below_visible", False)
         snapshot_state["heavy_sections_loaded"] = True
@@ -552,23 +816,20 @@ def dashboard():
             )
             snapshot_state["heavy_sections_loaded"] = True
 
-        state_race_table_available = all(
-            _table_exists(conn, table_name)
-            for table_name in (
-                "bulk_candidate_committee_finance_agg",
-                "bulk_receipts_clean",
-                "bulk_expenditures_clean",
-            )
-        )
-        state_race_all_rows = get_state_race_analytics(
+        # One cached build of every race, shared with /analytics/state-races/; the
+        # overview shows its first 12 rows.
+        state_race_all_rows = _get_state_race_rows(
             conn,
-            limit=5000,
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-            election_cycle=election_cycle,
-            sort_by=state_race_sort,
-            sort_dir=state_race_dir,
+            filters["time_scope"],
+            state_race_cycle,
+            state_race_sort,
+            state_race_dir,
+            cache_enabled=cache_enabled,
+            refresh=refresh_requested,
+            ttl_seconds=overview_cache_ttl,
         )
+        state_race_table_available = bool(state_race_all_rows) or _state_race_tables_available(conn)
+        state_race_total = len(state_race_all_rows)
         state_race_analytics = state_race_all_rows[:12]
         visible_rows = state_race_analytics
         hidden_rows = state_race_all_rows[12:]
@@ -591,6 +852,7 @@ def dashboard():
                     "nlp_summary": nlp_summary,
                     "reconciliation": reconciliation,
                     "state_race_analytics": state_race_analytics,
+                    "state_race_total": state_race_total,
                     "state_race_table_available": state_race_table_available,
                     "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
                 },
@@ -612,6 +874,9 @@ def dashboard():
         latest_time_point=latest_time_point,
         state_race_table_available=state_race_table_available,
         state_race_analytics=state_race_analytics,
+        state_race_total=state_race_total,
+        state_race_cycle=state_race_cycle,
+        show_state_race_cycle=state_race_cycle != _window_cycle(filters["time_scope"]),
         state_race_sort=state_race_sort,
         state_race_dir=state_race_dir,
         state_race_nonzero_below_visible=state_race_nonzero_below_visible,
@@ -619,43 +884,79 @@ def dashboard():
     )
 
 
+@analytics_bp.route("/state-races/", endpoint="state_races")
+def state_races():
+    """Render every state race of the resolved cycle; races with activity in the window link to their detail."""
+    conn = current_app.get_database()
+    filters = _parse_filters()
+    scope = filters["time_scope"]
+    sort_by, sort_dir = _state_race_sort_args("sort", "dir")
+    election_cycle = request.args.get("election_cycle", type=int)
+    state_race_cycle = _state_race_cycle(scope, election_cycle)
+    rows = _get_state_race_rows(
+        conn,
+        scope,
+        state_race_cycle,
+        sort_by,
+        sort_dir,
+        cache_enabled=bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False))),
+        refresh=request.args.get("refresh_cache", 0, type=int) == 1,
+        ttl_seconds=max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+    )
+    # Activity (plan J-R2) = receipts or Part-9 outside spending in the window. D-2 totals
+    # are not windowed, so a race with only a D-2 total stays unlinked.
+    race_rows = [
+        (row, float(row["total_amount"] or 0.0) > 0.0 or float(row["outside_spending_total"] or 0.0) > 0.0)
+        for row in rows
+    ]
+    return render_template(
+        "analytics/state_races.html",
+        active_page="overview",
+        time_scope=scope,
+        scope_default_key=filters["scope_default_key"],
+        time_scope_source_label=filters["time_scope_source_label"],
+        scope_query=filters["scope_query"],
+        subnav_persist_params=filters["subnav_persist_params"],
+        election_cycle=election_cycle,
+        state_race_cycle=state_race_cycle,
+        show_state_race_cycle=state_race_cycle != _window_cycle(scope),
+        state_race_table_available=bool(rows) or _state_race_tables_available(conn),
+        race_rows=race_rows,
+        active_count=sum(1 for _row, active in race_rows if active),
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+
+
 @analytics_bp.route("/state-races/<race_key>")
 def state_race_detail(race_key: str):
     """Render a state race detail page."""
+    # Keys minted before 2026-10 ended in a sha1 digest; send bookmarks to the
+    # current key with the query string untouched.
+    canonical_key = canonical_race_key(race_key)
+    if canonical_key != race_key:
+        target = url_for("analytics.state_race_detail", race_key=canonical_key)
+        query = request.query_string.decode()
+        return redirect(f"{target}?{query}" if query else target, code=301)
+
     conn = current_app.get_database()
     filters = _parse_filters()
     election_cycle = request.args.get("election_cycle", type=int)
+    state_race_cycle = _state_race_cycle(filters["time_scope"], election_cycle)
 
-    # `get_state_race_detail` rebuilds the full state-race rowset (every race in
-    # the cycle) just to filter for one race_key. With `?period=all` that's a
-    # 25–30 s response on prod. Cache the per-race detail payload so warm hits
-    # are sub-second. TTL piggybacks on the overview cache TTL — same data
-    # domain, same refresh cadence.
-    state_race_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 300)))
+    # TTL piggybacks on the overview cache TTL: same data domain, same refresh cadence.
+    state_race_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
-    cache_key = (
+    race_detail = _get_state_race_detail_cached(
+        conn,
         race_key,
-        filters["date_from"],
-        filters["date_to"],
-        election_cycle,
+        filters["time_scope"],
+        state_race_cycle,
+        cache_enabled=cache_enabled,
+        refresh=refresh_requested,
+        ttl_seconds=state_race_cache_ttl,
     )
-
-    race_detail = None
-    if cache_enabled and not refresh_requested:
-        race_detail = _state_race_detail_cache.get(cache_key)
-
-    if race_detail is None:
-        race_detail = get_state_race_detail(
-            conn,
-            race_key=race_key,
-            date_from=filters["date_from"],
-            date_to=filters["date_to"],
-            election_cycle=election_cycle,
-        )
-        if race_detail and cache_enabled:
-            _state_race_detail_cache.set(cache_key, race_detail, state_race_cache_ttl)
-
     if not race_detail:
         abort(404)
 
@@ -671,6 +972,8 @@ def state_race_detail(race_key: str):
         scope_query=filters["scope_query"],
         subnav_persist_params=filters["subnav_persist_params"],
         election_cycle=election_cycle,
+        state_race_cycle=state_race_cycle,
+        show_state_race_cycle=state_race_cycle != _window_cycle(filters["time_scope"]),
         race_detail=race_detail,
     )
 
@@ -683,102 +986,38 @@ def networks():
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
-    empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
-
-    # --- TTL cache for all 5 network graphs ---
-    networks_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", 300)))
+    # --- TTL caches: windowed graphs per window, the overlap graph once (_networks_graphs) ---
+    networks_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
-    cache_key = (
-        filters["time_period_key"],
-        filters["date_from"],
-        filters["date_to"],
-        filters["min_edge_amount"],
-        filters["network_limit"],
+
+    # Use snapshot data for network if available, otherwise compute it with the other graphs.
+    network_from_snapshot = None
+    if snapshot_state["heavy_sections_loaded"]:
+        network_from_snapshot = payload.get("network", _empty_network())
+
+    graphs = _networks_graphs(
+        db_target=current_app.config.get("DATABASE_TARGET", ""),
+        time_period_key=filters["time_period_key"],
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        min_edge_amount=filters["min_edge_amount"],
+        network_limit=filters["network_limit"],
+        network_from_snapshot=network_from_snapshot,
+        cache_enabled=cache_enabled,
+        refresh=refresh_requested,
+        ttl_seconds=networks_cache_ttl,
     )
-    now = time.monotonic()
-
-    cached_payload = None
-    if cache_enabled and not refresh_requested:
-        cached_payload = _networks_cache.get(cache_key)
-
-    if cached_payload is not None:
-        network = cached_payload["network"]
-        vendor_network = cached_payload["vendor_network"]
-        overlap_graph = cached_payload["overlap_graph"]
-        lobbying_graph = cached_payload["lobbying_graph"]
-        ecosystem_527 = cached_payload["ecosystem_527"]
-        snapshot_state["heavy_sections_loaded"] = True
-    else:
-        # Use snapshot data for network if available, otherwise compute it as
-        # part of the parallel batch below.
-        network_from_snapshot = None
-        if snapshot_state["heavy_sections_loaded"]:
-            network_from_snapshot = payload.get("network", _empty_network())
-
-        # Run all 5 (or 4, if network came from snapshot) graph functions in
-        # parallel, each with its own DB connection.
-        db_target = current_app.config.get("DATABASE_TARGET", "")
-        graph_jobs: list[tuple[str, object, tuple, dict, dict]] = []
-        if network_from_snapshot is None:
-            graph_jobs.append((
-                "network", get_network_graph, (),
-                {"min_edge_amount": filters["min_edge_amount"], "limit": filters["network_limit"],
-                 "date_from": filters["date_from"], "date_to": filters["date_to"]},
-                _empty_network(),
-            ))
-        graph_jobs.extend([
-            ("vendor_network", get_vendor_expenditure_network, (),
-             {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
-            ("overlap_graph", get_state_federal_overlap_graph, (),
-             {"donor_limit": 100, "edge_limit": 600}, empty_graph),
-            ("lobbying_graph", get_lobbying_influence_graph, (),
-             {"client_limit": 80, "edge_limit": 600,
-              "date_from": filters["date_from"], "date_to": filters["date_to"]}, empty_graph),
-            ("ecosystem_527", get_irs527_ecosystem_graph, (),
-             {"org_limit": 80, "edge_limit": 600,
-              "date_from": filters["date_from"], "date_to": filters["date_to"]}, empty_graph),
-        ])
-
-        results: dict[str, dict] = {}
-        futures = {
-            _networks_parallel_executor.submit(
-                _compute_graph_with_own_conn, key, func, args, kwargs, fallback, db_target,
-            ): key
-            for key, func, args, kwargs, fallback in graph_jobs
-        }
-        for future in as_completed(futures):
-            key, result = future.result()
-            results[key] = result
-
-        network = network_from_snapshot or results.get("network", _empty_network())
-        vendor_network = results.get("vendor_network", empty_graph)
-        overlap_graph = results.get("overlap_graph", empty_graph)
-        lobbying_graph = results.get("lobbying_graph", empty_graph)
-        ecosystem_527 = results.get("ecosystem_527", empty_graph)
-        snapshot_state["heavy_sections_loaded"] = True
-
-        if cache_enabled:
-            _networks_cache.set(
-                cache_key,
-                {
-                    "network": network,
-                    "vendor_network": vendor_network,
-                    "overlap_graph": overlap_graph,
-                    "lobbying_graph": lobbying_graph,
-                    "ecosystem_527": ecosystem_527,
-                },
-                networks_cache_ttl,
-            )
+    snapshot_state["heavy_sections_loaded"] = True
 
     return render_template(
         "analytics/networks.html",
         **_base_context("networks", filters, snapshot_state),
-        network=network,
-        vendor_network=vendor_network,
-        overlap_graph=overlap_graph,
-        lobbying_graph=lobbying_graph,
-        ecosystem_527=ecosystem_527,
+        network=graphs["network"],
+        vendor_network=graphs["vendor_network"],
+        overlap_graph=graphs["overlap_graph"],
+        lobbying_graph=graphs["lobbying_graph"],
+        ecosystem_527=graphs["ecosystem_527"],
     )
 
 
@@ -786,12 +1025,12 @@ def networks():
 def risk():
     """Render anomaly and reconciliation analytics page."""
     conn = current_app.get_database()
-    filters = _parse_filters(axis="filed")
+    filters = _parse_filters()  # get_anomaly_flags windows the contribution receipt date
     snapshot_state = _load_snapshot_state(conn, filters)
     payload = snapshot_state["payload"] or {}
 
     # --- TTL cache for risk aggregates ---
-    risk_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", 300)))
+    risk_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
     cache_key = (
@@ -1006,69 +1245,27 @@ def relationships():
     min_shared_amount = max(request.args.get("min_shared_amount", 5000.0, type=float) or 5000.0, 0.0)
     min_shared_targets = max(request.args.get("min_shared_targets", 2, type=int) or 2, 1)
     min_shared_donors = max(request.args.get("min_shared_donors", 2, type=int) or 2, 1)
-    relationships_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 300)))
+    relationships_cache_ttl = max(15, int(current_app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS)))
     cache_enabled = bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False)))
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
-    cache_key = (
-        filters["time_period_key"],
-        filters["date_from"],
-        filters["date_to"],
-        donor_limit,
-        committee_limit,
-        candidate_limit,
-        client_limit,
-        org_limit,
-        edge_limit,
-        round(min_shared_amount, 2),
-        min_shared_targets,
-        min_shared_donors,
+    payload = _relationships_graphs(
+        conn,
+        time_period_key=filters["time_period_key"],
+        date_from=filters["date_from"],
+        date_to=filters["date_to"],
+        donor_limit=donor_limit,
+        committee_limit=committee_limit,
+        candidate_limit=candidate_limit,
+        client_limit=client_limit,
+        org_limit=org_limit,
+        edge_limit=edge_limit,
+        min_shared_amount=min_shared_amount,
+        min_shared_targets=min_shared_targets,
+        min_shared_donors=min_shared_donors,
+        cache_enabled=cache_enabled,
+        refresh=refresh_requested,
+        ttl_seconds=relationships_cache_ttl,
     )
-    now = time.monotonic()
-
-    payload = None
-    if cache_enabled and not refresh_requested:
-        payload = _relationships_cache.get(cache_key)
-
-    if payload is None:
-        payload = {
-            "donor_cogiving": get_donor_cogiving_network(
-                conn,
-                donor_limit=donor_limit,
-                edge_limit=edge_limit,
-                min_shared_amount=min_shared_amount,
-                min_shared_targets=min_shared_targets,
-            ),
-            "committee_similarity": get_committee_similarity_network(
-                conn,
-                committee_limit=committee_limit,
-                edge_limit=edge_limit,
-                min_shared_donors=min_shared_donors,
-                min_shared_amount=min_shared_amount,
-            ),
-            "candidate_competition": get_candidate_competition_networks(
-                conn,
-                candidate_limit=candidate_limit,
-                edge_limit=edge_limit,
-                min_shared_donors=min_shared_donors,
-                min_shared_amount=min_shared_amount,
-            ),
-            "lobbying_influence": get_lobbying_influence_graph(
-                conn,
-                client_limit=client_limit,
-                edge_limit=edge_limit,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-            "ecosystem_527": get_irs527_ecosystem_graph(
-                conn,
-                org_limit=org_limit,
-                edge_limit=edge_limit,
-                date_from=filters["date_from"],
-                date_to=filters["date_to"],
-            ),
-        }
-        if cache_enabled:
-            _relationships_cache.set(cache_key, payload, relationships_cache_ttl)
 
     return render_template(
         "analytics/relationships.html",
@@ -1100,10 +1297,10 @@ def relationships():
 
 def warm_analytics_caches(
     db_target: str,
-    networks_ttl: int = 1800,
-    relationships_ttl: int = 1800,
-    risk_ttl: int = 1800,
-    overview_ttl: int = 1800,
+    networks_ttl: int = ANALYTICS_CACHE_TTL_FALLBACK_SECONDS,
+    relationships_ttl: int = ANALYTICS_CACHE_TTL_FALLBACK_SECONDS,
+    risk_ttl: int = ANALYTICS_CACHE_TTL_FALLBACK_SECONDS,
+    overview_ttl: int = ANALYTICS_CACHE_TTL_FALLBACK_SECONDS,
 ) -> None:
     """Pre-populate heavy analytics route caches in the current worker process.
 
@@ -1116,11 +1313,10 @@ def warm_analytics_caches(
     logger = logging.getLogger(__name__)
 
     # Resolve the default scope exactly as _parse_filters() does for a request with
-    # no query args (args={} so no request context is needed). The risk page keys on
-    # the "filed" axis, every other page on "received".
+    # no query args (args={} so no request context is needed). Every prewarmed page,
+    # risk included, keys on the "received" axis.
     default_scope = resolve_time_scope(default="cycle:current", axis="received", args={})
     default_period_key = scope_cache_key(default_scope)
-    risk_period_key = scope_cache_key(resolve_time_scope(default="cycle:current", axis="filed", args={}))
     default_date_from, default_date_to = _iso_or_empty(default_scope.start), _iso_or_empty(default_scope.end)
 
     # Default filter values matching _parse_filters() with no query params
@@ -1160,7 +1356,7 @@ def warm_analytics_caches(
         )
         now = time.monotonic()
         cache_key = (
-            risk_period_key, default_date_from, default_date_to,
+            default_period_key, default_date_from, default_date_to,
             default_anomaly_limit, default_recon_limit, default_recon_min_abs_diff,
         )
         _risk_cache.set(
@@ -1173,84 +1369,46 @@ def warm_analytics_caches(
     except Exception:
         logger.exception("Analytics prewarm: risk cache failed")
 
-    # --- Networks cache ---
+    # --- Networks caches: the default window's graphs + the window-free overlap graph ---
     try:
-        empty_graph = {"nodes": [], "edges": [], "centrality": [], "summary": {"node_count": 0, "edge_count": 0}}
-        graph_jobs = [
-            ("network", get_network_graph, (),
-             {"min_edge_amount": default_min_edge_amount, "limit": default_network_limit,
-              "date_from": default_date_from, "date_to": default_date_to},
-             _empty_network()),
-            ("vendor_network", get_vendor_expenditure_network, (),
-             {"committee_limit": 60, "vendor_limit": 100, "edge_limit": 800}, empty_graph),
-            ("overlap_graph", get_state_federal_overlap_graph, (),
-             {"donor_limit": 100, "edge_limit": 600}, empty_graph),
-            ("lobbying_graph", get_lobbying_influence_graph, (),
-             {"client_limit": 80, "edge_limit": 600,
-              "date_from": default_date_from, "date_to": default_date_to}, empty_graph),
-            ("ecosystem_527", get_irs527_ecosystem_graph, (),
-             {"org_limit": 80, "edge_limit": 600,
-              "date_from": default_date_from, "date_to": default_date_to}, empty_graph),
-        ]
-        results: dict[str, dict] = {}
-        futures = {
-            _networks_parallel_executor.submit(
-                _compute_graph_with_own_conn, key, func, args, kwargs, fallback, db_target,
-            ): key
-            for key, func, args, kwargs, fallback in graph_jobs
-        }
-        for future in as_completed(futures):
-            key, result = future.result()
-            results[key] = result
-
-        now = time.monotonic()
-        cache_key = (
-            default_period_key, default_date_from, default_date_to,
-            default_min_edge_amount, default_network_limit,
-        )
-        _networks_cache.set(
-            cache_key,
-            {
-                "network": results.get("network", _empty_network()),
-                "vendor_network": results.get("vendor_network", empty_graph),
-                "overlap_graph": results.get("overlap_graph", empty_graph),
-                "lobbying_graph": results.get("lobbying_graph", empty_graph),
-                "ecosystem_527": results.get("ecosystem_527", empty_graph),
-            },
-            networks_ttl,
+        _networks_graphs(
+            db_target=db_target,
+            time_period_key=default_period_key,
+            date_from=default_date_from,
+            date_to=default_date_to,
+            min_edge_amount=default_min_edge_amount,
+            network_limit=default_network_limit,
+            network_from_snapshot=None,
+            cache_enabled=True,
+            refresh=False,
+            ttl_seconds=networks_ttl,
         )
         logger.info("Analytics prewarm: networks cache populated")
     except Exception:
         logger.exception("Analytics prewarm: networks cache failed")
 
-    # --- Relationships cache ---
+    # --- Relationships caches: the default window's graphs + the three window-free graphs ---
+    # Window-free graphs serve every window, so ?period=all only builds lobbying and 527.
     try:
         conn = get_db(db_target)
-        rel_payload = {
-            "donor_cogiving": get_donor_cogiving_network(
-                conn, donor_limit=default_donor_limit, edge_limit=default_edge_limit,
-                min_shared_amount=default_min_shared_amount, min_shared_targets=default_min_shared_targets),
-            "committee_similarity": get_committee_similarity_network(
-                conn, committee_limit=default_committee_limit, edge_limit=default_edge_limit,
-                min_shared_donors=default_min_shared_donors, min_shared_amount=default_min_shared_amount),
-            "candidate_competition": get_candidate_competition_networks(
-                conn, candidate_limit=default_candidate_limit, edge_limit=default_edge_limit,
-                min_shared_donors=default_min_shared_donors, min_shared_amount=default_min_shared_amount),
-            "lobbying_influence": get_lobbying_influence_graph(
-                conn, client_limit=default_client_limit, edge_limit=default_edge_limit,
-                date_from=default_date_from, date_to=default_date_to),
-            "ecosystem_527": get_irs527_ecosystem_graph(
-                conn, org_limit=default_org_limit, edge_limit=default_edge_limit,
-                date_from=default_date_from, date_to=default_date_to),
-        }
-        now = time.monotonic()
-        cache_key = (
-            default_period_key, default_date_from, default_date_to,
-            default_donor_limit, default_committee_limit, default_candidate_limit,
-            default_client_limit, default_org_limit, default_edge_limit,
-            default_min_shared_amount, default_min_shared_targets, default_min_shared_donors,
+        _relationships_graphs(
+            conn,
+            time_period_key=default_period_key,
+            date_from=default_date_from,
+            date_to=default_date_to,
+            donor_limit=default_donor_limit,
+            committee_limit=default_committee_limit,
+            candidate_limit=default_candidate_limit,
+            client_limit=default_client_limit,
+            org_limit=default_org_limit,
+            edge_limit=default_edge_limit,
+            min_shared_amount=default_min_shared_amount,
+            min_shared_targets=default_min_shared_targets,
+            min_shared_donors=default_min_shared_donors,
+            cache_enabled=True,
+            refresh=False,
+            ttl_seconds=relationships_ttl,
         )
-        _relationships_cache.set(cache_key, rel_payload, relationships_ttl)
         logger.info("Analytics prewarm: relationships cache populated")
         close_db(conn)
     except Exception:
@@ -1291,23 +1449,18 @@ def warm_analytics_caches(
             min_abs_diff=default_recon_min_abs_diff,
         )
 
-        state_race_table_available = all(
-            _table_exists(conn, table_name)
-            for table_name in (
-                "bulk_candidate_committee_finance_agg",
-                "bulk_receipts_clean",
-                "bulk_expenditures_clean",
-            )
-        )
-        state_race_all_rows = get_state_race_analytics(
+        # Builds (and caches) the shared race list that /analytics/state-races/ reads too.
+        state_race_all_rows = _get_state_race_rows(
             conn,
-            limit=5000,
-            date_from=default_date_from,
-            date_to=default_date_to,
-            election_cycle=default_election_cycle,
-            sort_by=default_state_race_sort,
-            sort_dir=default_state_race_dir,
+            default_scope,
+            default_election_cycle,
+            default_state_race_sort,
+            default_state_race_dir,
+            cache_enabled=True,
+            refresh=False,
+            ttl_seconds=overview_ttl,
         )
+        state_race_table_available = bool(state_race_all_rows) or _state_race_tables_available(conn)
         state_race_analytics = state_race_all_rows[:12]
         visible_has_nonzero_outside = any(
             float(row.get("outside_spending_total") or 0.0) > 0.0
@@ -1324,19 +1477,21 @@ def warm_analytics_caches(
         )
 
         now = time.monotonic()
-        # MUST match the cache_key tuple constructed at lines ~427-440 of this
-        # module (dashboard() route). If you change one, change both.
-        cache_key = (
-            default_period_key,
-            default_date_from,
-            default_date_to,
-            default_min_edge_amount,
-            default_network_limit,
-            default_anomaly_limit,
-            default_concentration_limit,
-            default_months,
-            default_nlp_limit,
-            default_election_cycle,
+        # Same key as a bare GET /analytics/: dashboard() builds it with _overview_cache_key too.
+        default_filters = {
+            "time_period_key": default_period_key,
+            "date_from": default_date_from,
+            "date_to": default_date_to,
+            "min_edge_amount": default_min_edge_amount,
+            "network_limit": default_network_limit,
+            "anomaly_limit": default_anomaly_limit,
+            "concentration_limit": default_concentration_limit,
+            "months": default_months,
+            "nlp_limit": default_nlp_limit,
+        }
+        cache_key = _overview_cache_key(
+            default_filters,
+            _state_race_cycle(default_scope, default_election_cycle),
             default_state_race_sort,
             default_state_race_dir,
         )
@@ -1351,6 +1506,7 @@ def warm_analytics_caches(
                 "nlp_summary": nlp_summary,
                 "reconciliation": reconciliation,
                 "state_race_analytics": state_race_analytics,
+                "state_race_total": len(state_race_all_rows),
                 "state_race_table_available": state_race_table_available,
                 "state_race_nonzero_below_visible": state_race_nonzero_below_visible,
             },
@@ -1360,3 +1516,40 @@ def warm_analytics_caches(
         close_db(conn)
     except Exception:
         logger.exception("Analytics prewarm: overview cache failed")
+
+    # --- State race details: the overview's twelve races ---
+    # Each overview row links to a detail page whose cold build takes seconds for the
+    # largest races. One full build with supporting rows fills all twelve (cheaper than
+    # twelve targeted builds). Runs after the overview so the landing page is warm first;
+    # the race list is a cache hit here unless the overview block failed before building it.
+    try:
+        conn = get_db(db_target)
+        state_race_rows = _get_state_race_rows(
+            conn,
+            default_scope,
+            default_election_cycle,
+            default_state_race_sort,
+            default_state_race_dir,
+            cache_enabled=True,
+            refresh=False,
+            ttl_seconds=overview_ttl,
+        )
+        top_race_keys = [row["race_key"] for row in state_race_rows[:12]]
+        if top_race_keys:
+            details = get_state_race_details(
+                conn,
+                date_from=default_date_from,
+                date_to=default_date_to,
+                election_cycle=_state_race_cycle(default_scope, default_election_cycle),
+            )
+            for race_key in top_race_keys:
+                if details.get(race_key):
+                    _state_race_detail_cache.set(
+                        _state_race_detail_cache_key(race_key, default_scope, default_election_cycle),
+                        details[race_key],
+                        overview_ttl,
+                    )
+        logger.info("Analytics prewarm: top-12 state race details populated")
+        close_db(conn)
+    except Exception:
+        logger.exception("Analytics prewarm: state race details failed")

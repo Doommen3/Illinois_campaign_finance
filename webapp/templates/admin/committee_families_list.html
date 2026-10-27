@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Committee Families - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Committee Families</h1>
+<p class="subtitle">{{ total }} {{ status }} families. A family groups committees that look like one political actor; committee ids and totals are never merged, and only accepted families show on public pages.</p>
+
+<div class="filter-controls">
+    <span>Status:</span>
+    {% for key, title in (('pending', 'Pending'), ('accepted', 'Accepted'), ('rejected', 'Rejected')) %}
+    <a href="{{ url_for('admin.committee_family_queue', status=key) }}"
+       class="{% if status == key %}active{% endif %}">
+        {{ title }} ({{ status_counts[key] }})
+    </a>{% if not loop.last %} |{% endif %}
+    {% endfor %}
+</div>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Family</th>
+            <th>Committees</th>
+            <th>Active now</th>
+            <th>Evidence</th>
+            <th>Review Status</th>
+            <th>Reviewed</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for family in families %}
+        <tr>
+            <td><a href="{{ url_for('admin.committee_family_detail', family_id=family.id) }}">{{ family.label }}</a></td>
+            <td>{{ family.member_count }}</td>
+            <td>{{ family.active_count }}</td>
+            <td>{% for badge in family.badges %}<span class="badge badge-not_needed">{{ badge }}</span> {% endfor %}</td>
+            <td><span class="badge badge-{{ 'approved' if family.status == 'accepted' else family.status }}">{{ family.status }}</span></td>
+            <td>{{ family.reviewed_at.strftime('%Y-%m-%d') if family.reviewed_at else '&mdash;'|safe }}</td>
+            <td><a class="btn btn-small" href="{{ url_for('admin.committee_family_detail', family_id=family.id) }}">Review</a></td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="7">No {{ status }} families.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('admin.committee_family_queue', status=status, page=page-1) }}">&laquo; Previous</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('admin.committee_family_queue', status=status, page=page+1) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

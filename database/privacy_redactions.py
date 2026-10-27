@@ -32,7 +32,10 @@ _RECEIPT_TARGETS = {
         "address_line_2 = NULL, city = NULL, state = NULL, postal_code = NULL, redaction_requested = 1",
     ),
 }
-_TARGETS = (*_RECEIPT_TARGETS, "donors", "analytics_donor_summary")
+# Derived donor tables that carry the address: the request's rows are deleted and come back
+# redacted on the next refresh-analytics.
+_DERIVED_DONOR_TABLES = ("analytics_donor_summary", "analytics_donor_cycle_summary", "analytics_donor_committee_agg")
+_TARGETS = (*_RECEIPT_TARGETS, "donors", *_DERIVED_DONOR_TABLES)
 
 
 def add_privacy_redaction(
@@ -128,12 +131,13 @@ def apply_privacy_redactions(conn) -> dict[str, int]:
                 f"WHERE lower(name) {name_sql} AND address ILIKE ?",
                 (REDACTED_ADDRESS, name_param, zip_pattern),
             ).rowcount
-        if "analytics_donor_summary" in present:
-            counts["analytics_donor_summary"] += conn.execute(
-                "DELETE FROM analytics_donor_summary "
-                f"WHERE lower(donor_name) {name_sql} AND donor_address ILIKE ?",
-                (name_param, zip_pattern),
-            ).rowcount
+        for table in _DERIVED_DONOR_TABLES:
+            if table in present:
+                counts[table] += conn.execute(
+                    f"DELETE FROM {table} "
+                    f"WHERE lower(donor_name) {name_sql} AND donor_address ILIKE ?",
+                    (name_param, zip_pattern),
+                ).rowcount
 
     conn.execute("UPDATE privacy_redactions SET last_applied_at = CURRENT_TIMESTAMP")
     return counts

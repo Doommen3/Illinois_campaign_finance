@@ -1,16 +1,22 @@
 """Route-level cache abstraction with Redis backend + in-process fallback.
 
 The platform's 9 route-level caches (analytics overview, networks, risk,
-relationships, geo-drilldown, federal geo-drilldown, dashboard insights,
-search results, dark-money stats) all follow the same shape: a tuple cache
-key, a JSON-serializable payload, and a TTL. Originally each cache was an
-in-process dict — per-worker, which meant a 3-worker gunicorn deployment
-paid 3× the cold-load cost on every restart.
+relationships and state_race_detail; irs527 dark_money_stats; main
+dashboard_insights, candidate_stats and top_donors) all follow the same
+shape: a tuple cache key, a JSON-serializable payload, and a TTL. (The
+geo-drilldown and federal geo-drilldown caches are plain per-worker dicts
+and the search-results cache is its own OrderedDict; none of them use this
+class.) Originally each cache was an in-process dict — per-worker, which
+meant a 3-worker gunicorn deployment paid 3× the cold-load cost on every
+restart.
 
 This module wraps that dict pattern behind a `RouteCache` class that uses
-Redis when `REDIS_URL` is set in the environment, and falls back to the
-original in-process dict when it isn't (dev machines, CI). The cache key /
-TTL semantics are identical; only the storage layer changes.
+Redis when `REDIS_URL` is set in the environment, and falls back to an
+in-process store when it isn't (dev machines, CI): a 32-entry
+least-recently-used cache per RouteCache instance, each entry with its own
+TTL. The fallback keys entries by the raw cache key, so keys must be
+hashable. The cache key / TTL semantics are identical; only the storage
+layer changes.
 
 Cache keys are hashed (SHA1 of `repr(cache_key)`) so they fit comfortably
 within Redis' key-length limits and are safe to log.
@@ -30,9 +36,14 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Capacity of each RouteCache instance's in-process LRU (the no-Redis fallback,
+# and the local mirror of Redis writes).
+_LOCAL_MAX_ENTRIES = 32
 
 # Module-level Redis client, lazily initialized on first access. None when
 # REDIS_URL is unset or the connection fails — both cases trigger fallback
@@ -82,14 +93,16 @@ def _get_redis_client():
 class RouteCache:
     """Shared cache for route-level computed payloads.
 
-    Behaves like a dict with `payload` / `key` / `expires_at` fields, but
-    backed by Redis when available. Thread-safe.
+    Backed by Redis when available; otherwise (and as a local mirror of Redis
+    writes) by a per-instance LRU of `_LOCAL_MAX_ENTRIES` entries, each stored
+    as `(payload, expires_at)`. Thread-safe.
     """
 
     def __init__(self, name: str):
         self.name = name
         self._lock = threading.Lock()
-        self._local: dict = {"payload": None, "key": None, "expires_at": 0.0}
+        # cache_key -> (payload, expires_at), least recently used first.
+        self._local: OrderedDict = OrderedDict()
 
     def _redis_key(self, cache_key: Any) -> str:
         # Hash the cache_key (typically a tuple of strings + numbers) so the
@@ -112,13 +125,23 @@ class RouteCache:
                 logger.exception(f"RouteCache[{self.name}].get: Redis read failed; falling back to local")
 
         with self._lock:
-            if (
-                self._local["payload"] is not None
-                and self._local["key"] == cache_key
-                and float(self._local["expires_at"]) > time.monotonic()
-            ):
-                return self._local["payload"]
-            return None
+            entry = self._local.get(cache_key)
+            if entry is None:
+                return None
+            payload, expires_at = entry
+            if expires_at <= time.monotonic():
+                del self._local[cache_key]
+                return None
+            self._local.move_to_end(cache_key)
+            return payload
+
+    def _store_local(self, cache_key: Any, payload: Any, ttl_seconds: float) -> None:
+        """Insert/refresh one entry in the local LRU, evicting the least recently used when full."""
+        with self._lock:
+            self._local[cache_key] = (payload, time.monotonic() + float(ttl_seconds))
+            self._local.move_to_end(cache_key)
+            if len(self._local) > _LOCAL_MAX_ENTRIES:
+                self._local.popitem(last=False)
 
     def set(self, cache_key: Any, payload: Any, ttl_seconds: float) -> None:
         """Store `payload` under `cache_key` for `ttl_seconds`."""
@@ -133,18 +156,12 @@ class RouteCache:
                 )
                 # Keep the local mirror too so single-worker dev/test paths
                 # don't depend on a Redis round-trip per request.
-                with self._lock:
-                    self._local["payload"] = payload
-                    self._local["key"] = cache_key
-                    self._local["expires_at"] = time.monotonic() + float(ttl_seconds)
+                self._store_local(cache_key, payload, ttl_seconds)
                 return
             except Exception:
                 logger.exception(f"RouteCache[{self.name}].set: Redis write failed; using local only")
 
-        with self._lock:
-            self._local["payload"] = payload
-            self._local["key"] = cache_key
-            self._local["expires_at"] = time.monotonic() + float(ttl_seconds)
+        self._store_local(cache_key, payload, ttl_seconds)
 
     def invalidate(self, cache_key: Optional[Any] = None) -> None:
         """Drop a specific cache_key, or the entire cache if `cache_key` is None."""
@@ -152,7 +169,7 @@ class RouteCache:
         if cache_key is None:
             # Drop both local and all Redis keys under this cache's namespace
             with self._lock:
-                self._local = {"payload": None, "key": None, "expires_at": 0.0}
+                self._local.clear()
             if client is not None:
                 try:
                     # Use SCAN to find keys to delete; KEYS would block for large sets
@@ -169,8 +186,7 @@ class RouteCache:
             return
 
         with self._lock:
-            if self._local.get("key") == cache_key:
-                self._local = {"payload": None, "key": None, "expires_at": 0.0}
+            self._local.pop(cache_key, None)
         if client is not None:
             try:
                 client.delete(self._redis_key(cache_key))

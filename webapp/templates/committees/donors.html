@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}Donors - {{ committee_name }}{% endblock %}
+
+{% block content %}
+{% macro sort_link(key, label) -%}
+{%- set next_dir = ('asc' if sort_dir == 'desc' else 'desc') if sort_by == key else list_sorts[key] -%}
+<a href="{{ url_for('committees.committee_donors', committee_id=committee_id, sort=key, dir=next_dir, q=q or None, **scope_query) }}">{{ label }}{% if sort_by == key %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a>
+{%- endmacro %}
+<h1>{{ committee_name }}</h1>
+<p class="subtitle">SBE Committee ID: {{ committee_id }} | <a href="{{ url_for('committees.committee_detail', committee_id=committee_id, **scope_query) }}">Committee profile</a></p>
+{% include "_partials/time_scope_bar.html" %}
+
+<h2>Donors {{ scope_tag() }}</h2>
+<p class="subtitle">{{ '{:,}'.format(count) }} unique donor{{ 's' if count != 1 }}, {{ format_currency(total) }} | This cycle: {{ format_currency(cycle_total) }}</p>
+<p class="help-text">One row per donor as filed (name and address); itemized contributions only, amended (archived) and non-positive rows left out.</p>
+
+<form action="{{ url_for('committees.committee_donors', committee_id=committee_id) }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Filter by donor name..." value="{{ q }}">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <button type="submit">Filter</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>{{ sort_link('name', 'Donor') }}</th>
+            <th>Location</th>
+            <th>{{ sort_link('total', 'Total') }}</th>
+            <th>{{ sort_link('count', 'Contributions') }}</th>
+            <th>First</th>
+            <th>{{ sort_link('last', 'Last') }}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=row.donor_key, source='bulk_receipts', **scope_query) }}">{{ row.donor_name }}</a></td>
+            <td>{{ row.city }}{% if row.city and row.state %}, {% endif %}{{ row.state }}</td>
+            <td>{{ format_currency(row.total_amount) }}</td>
+            <td>{{ row.contribution_count }}</td>
+            <td>{{ row.first_date or '-' }}</td>
+            <td>{{ row.last_date or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No donors{% if q %} matching "{{ q }}"{% endif %} in this window.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('committees.committee_donors', committee_id=committee_id, page=page-1, sort=sort_by, dir=sort_dir, q=q or None, **scope_query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('committees.committee_donors', committee_id=committee_id, page=page+1, sort=sort_by, dir=sort_dir, q=q or None, **scope_query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

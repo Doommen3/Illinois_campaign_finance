@@ -46,6 +46,10 @@
                 <td><a href="{{ url_for('admin.donor_merge_queue') }}">Donor Merge Review</a></td>
                 <td>Review algorithmically proposed donor entity merges. Approve or reject groupings of donor records that appear to represent the same person.</td>
             </tr>
+            <tr>
+                <td><a href="{{ url_for('admin.committee_family_queue') }}">Committee Families</a></td>
+                <td>Review proposed groupings of committees that look like one political actor (serial re-registrations, name variants). Accepted families group committees on public pages; no totals are merged.</td>
+            </tr>
         </tbody>
     </table>
 </div>

@@ -59,7 +59,7 @@
 
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Trend Months</h3>
+        <h3>Trend Months {{ scope_tag() }}</h3>
         <div class="stat-value">{{ time_series|length }}</div>
         <p class="stat-detail">
             {% if latest_time_point %}
@@ -70,17 +70,17 @@
         </p>
     </div>
     <div class="stat-card">
-        <h3>NLP Categories</h3>
+        <h3>NLP Categories {{ scope_tag('All time') }}</h3>
         <div class="stat-value">{{ nlp_summary|length }}</div>
         <p class="stat-detail">Top categories in spending descriptions.</p>
     </div>
     <div class="stat-card">
-        <h3>Reconciliation Outliers</h3>
+        <h3>Reconciliation Outliers {{ scope_tag('All time') }}</h3>
         <div class="stat-value">{{ reconciliation|length }}</div>
         <p class="stat-detail">Rows over the active abs-diff threshold.</p>
     </div>
     <div class="stat-card">
-        <h3>Network Nodes / Edges</h3>
+        <h3>Network Nodes / Edges {{ scope_tag() }}</h3>
         <div class="stat-value">{{ network.summary.node_count }} / {{ network.summary.edge_count }}</div>
         <p class="stat-detail">
             {% if heavy_sections_loaded %}
@@ -94,6 +94,9 @@
 
 <div class="status-section">
     <h2>Top State Races {{ scope_tag() }}</h2>
+    {% if show_state_race_cycle %}
+    <p class="help-text">Candidates: {{ state_race_cycle }} cycle; the money columns follow the selected window.</p>
+    {% endif %}
     {% if state_race_nonzero_below_visible %}
     <p class="help-text">Outside spending exists in lower-ranked races; sort by Outside Spending to view.</p>
     {% endif %}
@@ -104,13 +107,13 @@
         <thead>
             <tr>
                 <th>Race</th>
-                <th>Candidates</th>
+                <th>Candidates (cycle)</th>
                 <th>Donors</th>
                 <th>Contributions</th>
                 <th>Total Amount</th>
                 <th>Outside Spending (E)</th>
                 <th>Outside Pressure Ratio</th>
-                <th>Top Candidate Share</th>
+                <th>Top Candidate Share (cycle)</th>
             </tr>
         </thead>
         <tbody>
@@ -134,6 +137,13 @@
             {% endfor %}
         </tbody>
     </table>
+    {% if state_race_total %}
+    <p>
+        <a href="{{ url_for('analytics.state_races', election_cycle=election_cycle if election_cycle is not none else None, sort=state_race_sort if state_race_sort != 'total_amount' else None, dir=state_race_dir if state_race_dir == 'asc' else None, **scope_query) }}">
+            See all {{ state_race_total }} state races &rarr;
+        </a>
+    </p>
+    {% endif %}
     {% endif %}
 </div>
 

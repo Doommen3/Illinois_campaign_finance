@@ -5,6 +5,7 @@ import time
 from flask import Blueprint, jsonify, render_template, request, current_app, abort
 from webapp.cache_backend import RouteCache
 from webapp.utils.search_normalize import normalize_search_query
+from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
 from webapp.utils.time_scope import (
     TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_cache_key, scope_params,
 )
@@ -55,39 +56,109 @@ def _scope_context(scope: TimeScope) -> dict:
     }
 
 
-def _text_date_window_clause(
-    column: str,
-    *,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    prefix: str = "AND",
-) -> tuple[str, list[object]]:
-    start_iso = (date_from or "").strip()[:10]
-    end_iso = (date_to or "").strip()[:10]
-    if not start_iso and not end_iso:
-        return "", []
+# ---------------------------------------------------------------------------------------------
+# An org's contributors / expenditure recipients (plan C4, decision J-P1). One builder, two
+# consumers: the detail page's Top-10 tables are the head of /527/<ein>/contributors and
+# /527/<ein>/recipients. One row per exact name, NULL and blank names left out; the window is the
+# page's, on the text ``date`` column (ISO or compact, see _text_date_window_clause).
+# ---------------------------------------------------------------------------------------------
 
-    iso_parts: list[str] = []
-    iso_params: list[object] = []
-    compact_parts: list[str] = []
-    compact_params: list[object] = []
+_LEDGER_PAGE_SIZE = 50
+_LEDGER_SORTS = {"total": "desc", "count": "desc", "name": "asc", "last": "desc"}  # sort -> direction it opens with
+_LEDGERS = {"contributors": ("irs527_contributions", "contributor_name"),
+            "recipients": ("irs527_expenditures", "recipient_name")}
 
-    if start_iso:
-        iso_parts.append(f"{column} >= ?")
-        iso_params.append(start_iso)
-        compact_parts.append(f"{column} >= ?")
-        compact_params.append(start_iso.replace("-", ""))
-    if end_iso:
-        iso_parts.append(f"{column} <= ?")
-        iso_params.append(end_iso)
-        compact_parts.append(f"{column} <= ?")
-        compact_params.append(end_iso.replace("-", ""))
 
-    if not iso_parts:
-        return "", []
+def _ledger_source(conn, ein: str, kind: str, scope: TimeScope, q: str | None):
+    """(grouped SELECT, params) for ``org_ledger``; None when the table is missing. ``q`` is a bound,
+    case-insensitive literal substring of the name (``%`` and ``_`` are not wildcards)."""
+    table, name = _LEDGERS[kind]
+    if not _table_exists(conn, table):
+        return None
+    window, params = _text_date_window_clause(
+        "date",
+        date_from=scope.start.isoformat() if scope.start else None,
+        date_to=scope.end.isoformat() if scope.end else None,
+    )
+    needle = (q or "").strip()
+    match = f" AND STRPOS(LOWER({name}), LOWER(?)) > 0" if needle else ""
+    return f"""
+        SELECT {name} AS name, COALESCE(SUM(amount), 0) AS total_amount, COUNT(*) AS record_count,
+               MIN(date) AS first_date, MAX(date) AS last_date
+        FROM {table}
+        WHERE ein = ? AND {name} IS NOT NULL AND TRIM({name}) != ''{window}{match}
+        GROUP BY {name}
+    """, [ein, *params, *([needle] if needle else [])]
 
-    clause = f" {prefix} (({' AND '.join(iso_parts)}) OR ({' AND '.join(compact_parts)}))"
-    return clause, iso_params + compact_params
+
+def _display_day(value) -> str:
+    """A text date shown as YYYY-MM-DD (the IRS files carry compact YYYYMMDD dates as well as ISO ones)."""
+    text = str(value or "").strip()
+    return f"{text[:4]}-{text[4:6]}-{text[6:]}" if len(text) == 8 and text.isdigit() else text[:10]
+
+
+def org_ledger(conn, ein: str, kind: str, scope: TimeScope, *, limit: int = 50, offset: int = 0,
+               sort_by: str = "total", sort_dir: str = "desc", q: str | None = None) -> list[dict]:
+    """One page of the org's contributors (``kind="contributors"``) or expenditure recipients
+    (``"recipients"``) in ``scope``: name, total_amount, record_count, first_date, last_date.
+    ``sort_by`` in total | count | name | last (anything else: total); ties break on total, then
+    name, so pages never overlap or skip."""
+    source = _ledger_source(conn, ein, kind, scope, q)
+    if source is None:
+        return []
+    sql, params = source
+    order = {"total": "total_amount", "count": "record_count", "name": "LOWER(name)", "last": "last_date"}.get(
+        sort_by, "total_amount"
+    )
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    rows = conn.execute(
+        f"SELECT * FROM ({sql}) ledger "
+        f"ORDER BY {order} {direction} NULLS LAST, total_amount DESC, name ASC LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    ).fetchall()
+    return [
+        {
+            "name": row["name"],
+            "total_amount": float(row["total_amount"] or 0.0),
+            "record_count": int(row["record_count"] or 0),
+            "first_date": _display_day(row["first_date"]),
+            "last_date": _display_day(row["last_date"]),
+        }
+        for row in rows
+    ]
+
+
+def org_ledger_summary(conn, ein: str, kind: str, scope: TimeScope, *, q: str | None = None) -> tuple[int, float]:
+    """(unique names, summed total) of what ``org_ledger`` pages through for the same arguments."""
+    source = _ledger_source(conn, ein, kind, scope, q)
+    if source is None:
+        return 0, 0.0
+    sql, params = source
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n, COALESCE(SUM(total_amount), 0) AS total FROM ({sql}) ledger", tuple(params)
+    ).fetchone()
+    return (int(row["n"] or 0), float(row["total"] or 0.0)) if row else (0, 0.0)
+
+
+def _latest_org(conn, ein: str):
+    """The org's most recent registration row (highest form_id_seq), or None."""
+    if not _table_exists(conn, "irs527_organizations"):
+        return None
+    return conn.execute(
+        """
+        SELECT ein, org_name, address_1, address_2, city, state, zip,
+               email, purpose, formation_date, custodian_name, contact_name
+        FROM irs527_organizations
+        WHERE ein = ?
+        ORDER BY
+            COALESCE(form_id_seq, 0) DESC,
+            COALESCE(material_change_date, '') DESC,
+            COALESCE(insert_datetime, '') DESC,
+            COALESCE(form_id, 0) DESC
+        LIMIT 1
+        """,
+        (ein,),
+    ).fetchone()
 
 
 def _get_dark_money_contribution_stats(
@@ -354,30 +425,19 @@ def org_detail(ein):
     date_from = scope.start.isoformat() if scope.start else None
     date_to = scope.end.isoformat() if scope.end else None
 
-    if not _table_exists(conn, "irs527_organizations"):
-        abort(404)
-
-    org = conn.execute(
-        """
-        SELECT ein, org_name, address_1, address_2, city, state, zip,
-               email, purpose, formation_date, custodian_name, contact_name
-        FROM irs527_organizations
-        WHERE ein = ?
-        ORDER BY
-            COALESCE(form_id_seq, 0) DESC,
-            COALESCE(material_change_date, '') DESC,
-            COALESCE(insert_datetime, '') DESC,
-            COALESCE(form_id, 0) DESC
-        LIMIT 1
-        """,
-        (ein,),
-    ).fetchone()
+    org = _latest_org(conn, ein)
     if not org:
         abort(404)
 
-    # Financial summary from reports
+    # Financial summary from reports: "Reports Filed" counts the reports whose period ends in the
+    # window (undated ones only when unbounded); Filing History below keeps every report.
+    report_window_clause, report_window_params = _text_date_window_clause(
+        "period_end",
+        date_from=date_from,
+        date_to=date_to,
+    )
     financial_row = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) AS report_count,
             COALESCE(SUM(total_contributions), 0) AS total_contributions,
@@ -385,9 +445,9 @@ def org_detail(ein):
             MIN(period_start) AS earliest_period,
             MAX(period_end) AS latest_period
         FROM irs527_reports
-        WHERE ein = ?
+        WHERE ein = ?{report_window_clause}
         """,
-        (ein,),
+        (ein, *report_window_params),
     ).fetchone()
     financial = {
         "report_count": int(financial_row["report_count"] or 0) if financial_row else 0,
@@ -557,7 +617,6 @@ def org_detail(ein):
     contributions = []
     contribution_total = 0.0
     contribution_count = 0
-    top_contributors = []
     contrib_search = request.args.get("contrib_q", "").strip()
     if _table_exists(conn, "irs527_contributions"):
         contrib_search_clause = ""
@@ -592,20 +651,10 @@ def org_detail(ein):
         contribution_total = float(agg_row["total"] or 0) if agg_row else 0.0
         contribution_count = int(agg_row["cnt"] or 0) if agg_row else 0
 
-        top_contributors = conn.execute(
-            f"""
-            SELECT contributor_name,
-                   COALESCE(SUM(amount), 0) AS total_amount,
-                   COUNT(*) AS contribution_count
-            FROM irs527_contributions
-            WHERE ein = ? AND contributor_name IS NOT NULL AND TRIM(contributor_name) != ''
-              {contrib_date_clause}
-            GROUP BY contributor_name
-            ORDER BY total_amount DESC
-            LIMIT 10
-            """,
-            tuple(contrib_date_params),
-        ).fetchall()
+    # Top-10 tables = the head of /contributors and /recipients; "See all N" counts the names in the window.
+    top_contributors = org_ledger(conn, ein, "contributors", scope, limit=10)
+    contributor_count = (len(top_contributors) if len(top_contributors) < 10
+                         else org_ledger_summary(conn, ein, "contributors", scope)[0])
 
     # Current-cycle subtotal shown beside the (default all-time) contributions total
     cycle_start, cycle_end = cycle_window(current_cycle())
@@ -629,7 +678,6 @@ def org_detail(ein):
         ))
 
     # Top expenditure recipients
-    top_recipients = []
     expenditure_count = 0
     if _table_exists(conn, "irs527_expenditures"):
         exp_agg_row = conn.execute(
@@ -643,20 +691,9 @@ def org_detail(ein):
         ).fetchone()
         expenditure_count = int(exp_agg_row["cnt"] or 0) if exp_agg_row else 0
 
-        top_recipients = conn.execute(
-            f"""
-            SELECT recipient_name,
-                   COALESCE(SUM(amount), 0) AS total_amount,
-                   COUNT(*) AS expenditure_count
-            FROM irs527_expenditures
-            WHERE ein = ? AND recipient_name IS NOT NULL AND TRIM(recipient_name) != ''
-              {exp_date_clause}
-            GROUP BY recipient_name
-            ORDER BY total_amount DESC
-            LIMIT 10
-            """,
-            tuple(exp_date_params),
-        ).fetchall()
+    top_recipients = org_ledger(conn, ein, "recipients", scope, limit=10)
+    recipient_count = (len(top_recipients) if len(top_recipients) < 10
+                       else org_ledger_summary(conn, ein, "recipients", scope)[0])
 
     return render_template('irs527/detail.html',
                            org=org, financial=financial,
@@ -666,7 +703,9 @@ def org_detail(ein):
                            contribution_total=contribution_total,
                            contribution_count=contribution_count,
                            top_contributors=top_contributors,
+                           contributor_count=contributor_count,
                            top_recipients=top_recipients,
+                           recipient_count=recipient_count,
                            expenditure_count=expenditure_count,
                            contrib_search=contrib_search,
                            committee_matches=committee_matches,
@@ -676,7 +715,57 @@ def org_detail(ein):
                            time_scope=scope,
                            scope_default_key="all",
                            time_scope_source_label="IRS",
+                           scope_query=scope_params(scope),
                            cycle_total=cycle_total)
+
+
+@irs527_bp.route('/<path:ein>/contributors')
+def org_contributors(ein):
+    """Every contributor of the org in the page window (one row per contributor name)."""
+    return _ledger_page(ein, "contributors")
+
+
+@irs527_bp.route('/<path:ein>/recipients')
+def org_recipients(ein):
+    """Every expenditure recipient of the org in the page window (one row per recipient name)."""
+    return _ledger_page(ein, "recipients")
+
+
+def _ledger_page(ein: str, kind: str):
+    conn = current_app.get_database()
+    org = _latest_org(conn, ein)
+    if not org:
+        abort(404)
+    scope = resolve_time_scope(default="all", axis="transaction")
+    q = request.args.get("q", "").strip()
+    sort_by = request.args.get("sort", "total")
+    if sort_by not in _LEDGER_SORTS:
+        sort_by = "total"
+    sort_dir = request.args.get("dir", "")
+    if sort_dir not in ("asc", "desc"):
+        sort_dir = _LEDGER_SORTS[sort_by]
+    count, total = org_ledger_summary(conn, ein, kind, scope, q=q)
+    total_pages = max(1, (count + _LEDGER_PAGE_SIZE - 1) // _LEDGER_PAGE_SIZE)
+    page = min(max(request.args.get("page", 1, type=int), 1), total_pages)
+    rows = org_ledger(conn, ein, kind, scope, limit=_LEDGER_PAGE_SIZE, offset=(page - 1) * _LEDGER_PAGE_SIZE,
+                      sort_by=sort_by, sort_dir=sort_dir, q=q)
+    return render_template(
+        f"irs527/{kind}.html",
+        org=org,
+        rows=rows,
+        count=count,
+        total=total,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        ledger_sorts=_LEDGER_SORTS,
+        page=page,
+        total_pages=total_pages,
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="IRS",
+        scope_query=scope_params(scope),
+    )
 
 
 @irs527_bp.route('/dark-money')

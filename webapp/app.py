@@ -416,8 +416,11 @@ def create_app(config=None):
     from webapp.routes.openbook import openbook_bp
     from webapp.routes.experimental import experimental_bp
     from webapp.routes.viz_lab import viz_lab_bp
+    from webapp.routes.candidates import candidates_bp
+    from webapp.routes import viz_lab as viz_lab_routes
 
     app.register_blueprint(main_bp)
+    app.register_blueprint(candidates_bp, url_prefix='/candidates')
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(committees_bp, url_prefix='/committees')
     app.register_blueprint(donors_bp, url_prefix='/donors')
@@ -477,14 +480,14 @@ def create_app(config=None):
 
         def _prewarm_analytics_caches() -> None:
             try:
-                from webapp.routes.analytics import warm_analytics_caches
+                from webapp.routes.analytics import ANALYTICS_CACHE_TTL_FALLBACK_SECONDS, warm_analytics_caches
 
                 warm_analytics_caches(
                     app.config['DATABASE_TARGET'],
-                    networks_ttl=max(15, int(app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", 1800))),
-                    relationships_ttl=max(15, int(app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", 1800))),
-                    risk_ttl=max(15, int(app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", 1800))),
-                    overview_ttl=max(15, int(app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", 1800))),
+                    networks_ttl=max(15, int(app.config.get("ANALYTICS_NETWORKS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+                    relationships_ttl=max(15, int(app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+                    risk_ttl=max(15, int(app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+                    overview_ttl=max(15, int(app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
                 )
             except Exception:
                 return
@@ -536,6 +539,12 @@ def create_app(config=None):
 
         data_status = get_global_data_status()
 
+        # Viz Lab nav link: shown only when the feature flag is on AND graph.json exists under
+        # viz_lab._artifact_root() (the artifacts aren't deployed to prod, where it would dead-end in a 404).
+        viz_lab_nav_enabled = _as_bool(app.config.get("EXPERIMENTAL_VIZ_LAB_ENABLED", False)) and (
+            viz_lab_routes._artifact_root() / "graph.json"
+        ).exists()
+
         return dict(
             format_currency=format_currency,
             confidence_label=confidence_label,
@@ -546,7 +555,7 @@ def create_app(config=None):
             scope_url=scope_url,
             scope_form_hidden=scope_form_hidden,
             scope_presets=scope_presets,
-            experimental_viz_lab_enabled=_as_bool(app.config.get("EXPERIMENTAL_VIZ_LAB_ENABLED", False)),
+            experimental_viz_lab_enabled=viz_lab_nav_enabled,
         )
 
     return app

@@ -10,6 +10,9 @@ import re
 import sqlite3
 from typing import Optional
 
+from database.models import Donor, _normalized_date_sql, receipts_filter_sql
+from database.race_keys import race_key as build_race_key
+
 try:
     import networkx as nx
 except Exception:  # pragma: no cover - optional dependency fallback
@@ -2478,28 +2481,15 @@ def get_reconciliation_outliers(
     ]
 
 
-def _race_slug_token(value: str | None) -> str:
-    token = re.sub(r"[^a-z0-9]+", "-", _normalize_name(value))
-    token = token.strip("-")
-    return token or "na"
+def current_election_cycle(today: date | None = None) -> int:
+    """Election cycle containing `today` (default: the real clock): an even year is
+    its own cycle, an odd year folds forward (2025 -> 2026)."""
+    year = (today or date.today()).year
+    return year + year % 2
 
 
 def _state_race_slug(office_sought: str, district_type: str, district: str) -> str:
-    normalized_office = _normalize_name(office_sought) or "unknown-office"
-    normalized_district_type = _normalize_name(district_type) or "unknown-district-type"
-    normalized_district = _normalize_name(district) or "na"
-    stable_key = f"{normalized_office}|{normalized_district_type}|{normalized_district}"
-    digest = hashlib.sha1(stable_key.encode("utf-8")).hexdigest()[:10]
-
-    tokens = [
-        _race_slug_token(office_sought),
-        _race_slug_token(district_type),
-    ]
-    district_token = _race_slug_token(district)
-    if district_token != "na":
-        tokens.append(district_token)
-    slug_prefix = "-".join(tokens)
-    return f"{slug_prefix}-{digest}"
+    return build_race_key(office_sought, district_type, district)
 
 
 def _build_state_race_analytics_rows(
@@ -2509,18 +2499,30 @@ def _build_state_race_analytics_rows(
     date_to: str | None = None,
     election_cycle: int | None = None,
     include_supporting_rows: bool = False,
-    race_filter: tuple[str, str, str] | None = None,
+    race_filter: str | None = None,
+    today: date | None = None,
 ) -> list[dict]:
-    """Build state-race analytics row(s).
+    """Build state-race analytics row(s) for one election cycle.
 
-    When `race_filter` is set (office_sought, district_type, district), the
-    candidate aggregation is constrained at the SQL layer to that single
-    race. The downstream receipt / expenditure / donor scans then only
-    touch committees that actually belong to that race — turning the cold
-    path for `/analytics/state-races/<race_key>` from a ~38s full-cycle
-    rebuild into a sub-second targeted lookup.
+    Cycle: `election_cycle` when given, else the current cycle by `today`.
+    Candidates: the `isbe_race_candidacies` feed for that cycle, one entry per
+    (candidate, committee); a candidate without a committee still counts.  A
+    race is identified by its normalized race key, so spelling variants of one
+    (office, district_type, district) merge into one row.
+    D-2 money (Top Candidate Share): each committee's cycle total from
+    `bulk_candidate_committee_finance_agg`, counted once per race and split 1/n
+    across the n candidates of that race linked to it.
+    Receipts (page window): every part, amount > 0, archived rows excluded;
+    donors = the site donor_key with local entity merges applied.
+    Outside spending: Part-9 rows inside the cycle window, narrowed by the page
+    window, matched to candidates by name.
+
+    `race_filter` (a race key) keeps only that race, and the D-2 / receipt /
+    Part-9 scans then touch only its committees and candidates, so the
+    `/analytics/state-races/<race_key>` cold path stays a targeted lookup.
     """
     required_tables = {
+        "isbe_race_candidacies",
         "bulk_candidate_committee_finance_agg",
         "bulk_receipts_clean",
         "bulk_expenditures_clean",
@@ -2528,66 +2530,24 @@ def _build_state_race_analytics_rows(
     if not all(_table_exists(conn, table_name) for table_name in required_tables):
         return []
 
-    has_cycle = _column_exists(conn, "bulk_candidate_committee_finance_agg", "election_cycle")
-    resolved_cycle = election_cycle
-    if has_cycle and resolved_cycle is None:
-        cycle_row = conn.execute(
-            """
-            SELECT MAX(election_cycle) AS max_cycle
-            FROM bulk_candidate_committee_finance_agg
-            WHERE election_cycle IS NOT NULL
-            """
-        ).fetchone()
-        if cycle_row and cycle_row["max_cycle"] is not None:
-            try:
-                resolved_cycle = int(cycle_row["max_cycle"])
-            except (TypeError, ValueError):
-                resolved_cycle = None
-
-    where_parts: list[str] = []
-    where_params: list[object] = []
-    if has_cycle and resolved_cycle is not None:
-        where_parts.append("CAST(election_cycle AS TEXT) = CAST(? AS TEXT)")
-        where_params.append(int(resolved_cycle))
-    if race_filter is not None:
-        # COALESCE matches the Python-side default ("Unknown Office" / etc.)
-        # so a race whose underlying row has NULL office still resolves.
-        race_office, race_district_type, race_district = race_filter
-        where_parts.append(
-            "TRIM(COALESCE(office_sought, '')) = ? "
-            "AND TRIM(COALESCE(district_type, '')) = ? "
-            "AND TRIM(COALESCE(district, '')) = ?"
-        )
-        where_params.extend([race_office, race_district_type, race_district])
-    candidate_where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    resolved_cycle = int(election_cycle) if election_cycle is not None else current_election_cycle(today)
 
     candidate_rows = conn.execute(
-        f"""
-        SELECT
+        """
+        SELECT DISTINCT
             CAST(candidate_id AS TEXT) AS candidate_id,
             TRIM(COALESCE(candidate_full_name, '')) AS candidate_full_name,
             TRIM(COALESCE(office_sought, '')) AS office_sought,
             TRIM(COALESCE(district_type, '')) AS district_type,
             TRIM(COALESCE(district, '')) AS district,
             CAST(committee_id_sbe AS TEXT) AS committee_id_sbe,
-            TRIM(COALESCE(committee_name, '')) AS committee_name,
-            COALESCE(SUM(CAST(sum_total_receipts AS DOUBLE PRECISION)), 0.0) AS candidate_receipts_total
-        FROM bulk_candidate_committee_finance_agg
-        {candidate_where}
-        GROUP BY
-            candidate_id,
-            candidate_full_name,
-            office_sought,
-            district_type,
-            district,
-            committee_id_sbe,
-            committee_name
+            TRIM(COALESCE(committee_name, '')) AS committee_name
+        FROM isbe_race_candidacies
+        WHERE election_cycle = ?
+        ORDER BY office_sought, district_type, district, candidate_id, committee_id_sbe
         """,
-        where_params,
+        (resolved_cycle,),
     ).fetchall()
-
-    if not candidate_rows:
-        return []
 
     races: dict[str, dict] = {}
     committee_to_races: dict[str, set[str]] = defaultdict(set)
@@ -2597,21 +2557,26 @@ def _build_state_race_analytics_rows(
         office_sought = row["office_sought"] or "Unknown Office"
         district_type = row["district_type"] or "Unknown District Type"
         district = row["district"] or ""
-        race_identity = f"{office_sought}|{district_type}|{district}"
+        race_key_value = _state_race_slug(office_sought, district_type, district)
+        if race_filter is not None and race_key_value != race_filter:
+            continue
+        # The first spelling seen (rows are ordered) names a race whose key merges several.
         race_label = f"{office_sought} - {district_type}{(' ' + district) if district else ''}"
 
         race = races.setdefault(
-            race_identity,
+            race_key_value,
             {
-                "race_key": _state_race_slug(office_sought, district_type, district),
+                "race_key": race_key_value,
                 "race_label": race_label,
                 "office_sought": office_sought,
                 "district_type": district_type,
                 "district": district,
                 "candidate_tokens": set(),
+                "committee_candidates": defaultdict(set),
+                "candidate_links": [],
                 "candidate_receipts": defaultdict(float),
                 "candidate_receipts_total": 0.0,
-                "donor_count": 0,
+                "donor_identities": set(),
                 "contribution_count": 0,
                 "total_amount": 0.0,
                 "outside_spending_total": 0.0,
@@ -2629,128 +2594,157 @@ def _build_state_race_analytics_rows(
         candidate_token = candidate_id or candidate_name.upper() or committee_id
         if candidate_token:
             race["candidate_tokens"].add(candidate_token)
-
-        receipts_total = float(row["candidate_receipts_total"] or 0.0)
-        receipt_bucket_key = candidate_id or candidate_name or candidate_token or "unknown"
-        race["candidate_receipts"][receipt_bucket_key] += receipts_total
-        race["candidate_receipts_total"] += receipts_total
-
         if committee_id:
-            committee_to_races[committee_id].add(race_identity)
-
+            committee_to_races[committee_id].add(race_key_value)
+            race["committee_candidates"][committee_id].add(candidate_token)
         if candidate_name:
-            candidate_name_to_races[candidate_name.upper()].add(race_identity)
+            candidate_name_to_races[candidate_name.upper()].add(race_key_value)
+        race["candidate_links"].append((candidate_id, candidate_name, committee_id, committee_name))
 
+    if not races:
+        return []
+
+    committee_ids = sorted(committee_to_races)
+    committee_id_params = [int(committee_id) for committee_id in committee_ids]
+
+    # D-2 money per committee for the cycle.  The agg view's grain is (candidate,
+    # committee, period_year) and it repeats the committee-level total on every
+    # candidate link, so sum one link's period rows and keep one link per committee.
+    d2_by_committee: dict[str, float] = {}
+    if committee_ids:
+        d2_rows = conn.execute(
+            """
+            SELECT
+                CAST(committee_id_sbe AS TEXT) AS committee_id_sbe,
+                MAX(link_receipts_total) AS d2_receipts_total
+            FROM (
+                SELECT
+                    committee_id_sbe,
+                    candidate_id,
+                    COALESCE(SUM(CAST(sum_total_receipts AS DOUBLE PRECISION)), 0.0) AS link_receipts_total
+                FROM bulk_candidate_committee_finance_agg
+                WHERE election_cycle = ? AND committee_id_sbe = ANY(?)
+                GROUP BY committee_id_sbe, candidate_id
+            ) committee_links
+            GROUP BY committee_id_sbe
+            """,
+            (resolved_cycle, committee_id_params),
+        ).fetchall()
+        d2_by_committee = {row["committee_id_sbe"]: float(row["d2_receipts_total"] or 0.0) for row in d2_rows}
+
+    # A committee counts once per race; one linked to n candidates of the race is
+    # split 1/n between them, so the candidate shares sum to the race total.  A
+    # committee in two races counts fully in each.
+    for race in races.values():
+        for committee_id, candidate_tokens in race["committee_candidates"].items():
+            committee_total = d2_by_committee.get(committee_id, 0.0)
+            race["candidate_receipts_total"] += committee_total
+            for candidate_token in candidate_tokens:
+                race["candidate_receipts"][candidate_token] += committee_total / len(candidate_tokens)
         if include_supporting_rows:
-            race["candidate_rows"].append(
-                {
-                    "candidate_id": candidate_id,
-                    "candidate_name": candidate_name or "Unknown Candidate",
-                    "committee_id_sbe": committee_id,
-                    "committee_name": committee_name or (f"Committee {committee_id}" if committee_id else "Unknown Committee"),
-                    "candidate_receipts_total": round(receipts_total, 2),
-                }
+            for candidate_id, candidate_name, committee_id, committee_name in race["candidate_links"]:
+                linked_candidates = race["committee_candidates"].get(committee_id)
+                attributed_total = (
+                    d2_by_committee.get(committee_id, 0.0) / len(linked_candidates) if linked_candidates else 0.0
+                )
+                race["candidate_rows"].append(
+                    {
+                        "candidate_id": candidate_id,
+                        "candidate_name": candidate_name or "Unknown Candidate",
+                        "committee_id_sbe": committee_id,
+                        "committee_name": committee_name or (f"Committee {committee_id}" if committee_id else "Unknown Committee"),
+                        "candidate_receipts_total": round(attributed_total, 2),
+                    }
+                )
+
+    # Receipts of the race committees in the page window: every part (transfers
+    # are race money), amount > 0, archived (superseded) rows excluded.
+    receipt_where_parts = ["r.committee_id_sbe = ANY(?)", "COALESCE(r.amount, 0) > 0"]
+    receipt_params: list[object] = [committee_id_params]
+    if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
+        receipt_where_parts.append("NOT COALESCE(r.is_archived::boolean, FALSE)")
+    if _column_exists(conn, "bulk_receipts_clean", "received_date"):
+        if date_from:
+            receipt_where_parts.append("r.received_date >= ?")
+            receipt_params.append(date_from)
+        if date_to:
+            receipt_where_parts.append("r.received_date <= ?")
+            receipt_params.append(date_to)
+
+    donor_join_sql = ""
+    if _bulk_receipts_has_donor_key_columns(conn):
+        # The site donor identity (/donors/key/<donor_key>) with local entity merges.
+        donor_key_sql = _bulk_donor_key_sql("r")
+        donor_identity_sql = donor_key_sql
+        if _table_exists(conn, "donor_entity_local_member"):
+            donor_join_sql = (
+                "LEFT JOIN donor_entity_local_member m "
+                f"ON m.source = 'bulk_receipts' AND m.donor_key = {donor_key_sql}"
             )
+            donor_identity_sql = f"COALESCE(m.entity_id, {donor_key_sql})"
+    else:
+        # Receipt shapes without the address columns fall back to a name key.
+        donor_name_candidates: list[str] = []
+        if _column_exists(conn, "bulk_receipts_clean", "contributed_by"):
+            donor_name_candidates.append("NULLIF(TRIM(r.contributed_by), '')")
+        first_name_exists = _column_exists(conn, "bulk_receipts_clean", "first_name")
+        last_name_exists = _column_exists(conn, "bulk_receipts_clean", "last_or_business_name")
+        if first_name_exists and last_name_exists:
+            donor_name_candidates.append(
+                "NULLIF(TRIM(COALESCE(r.first_name, '') || "
+                "CASE WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_or_business_name, '') <> '' THEN ' ' ELSE '' END || "
+                "COALESCE(r.last_or_business_name, '')), '')"
+            )
+        elif last_name_exists:
+            donor_name_candidates.append("NULLIF(TRIM(r.last_or_business_name), '')")
+        elif first_name_exists:
+            donor_name_candidates.append("NULLIF(TRIM(r.first_name), '')")
+        if _column_exists(conn, "bulk_receipts_clean", "bulk_row_id"):
+            donor_name_candidates.append("CAST(r.bulk_row_id AS TEXT)")
+        donor_identity_sql = "COALESCE(" + ", ".join(donor_name_candidates + ["'unknown'"]) + ")"
 
-    receipts_date_column_exists = _column_exists(conn, "bulk_receipts_clean", "received_date")
-    donor_name_candidates: list[str] = []
-    if _column_exists(conn, "bulk_receipts_clean", "contributed_by"):
-        donor_name_candidates.append("NULLIF(TRIM(r.contributed_by), '')")
-    first_name_exists = _column_exists(conn, "bulk_receipts_clean", "first_name")
-    last_name_exists = _column_exists(conn, "bulk_receipts_clean", "last_or_business_name")
-    if first_name_exists and last_name_exists:
-        donor_name_candidates.append(
-            "NULLIF(TRIM(COALESCE(r.first_name, '') || "
-            "CASE WHEN COALESCE(r.first_name, '') <> '' AND COALESCE(r.last_or_business_name, '') <> '' THEN ' ' ELSE '' END || "
-            "COALESCE(r.last_or_business_name, '')), '')"
-        )
-    elif last_name_exists:
-        donor_name_candidates.append("NULLIF(TRIM(r.last_or_business_name), '')")
-    elif first_name_exists:
-        donor_name_candidates.append("NULLIF(TRIM(r.first_name), '')")
-    if _column_exists(conn, "bulk_receipts_clean", "bulk_row_id"):
-        donor_name_candidates.append("CAST(r.bulk_row_id AS TEXT)")
-    donor_key_expr = "COALESCE(" + ", ".join(donor_name_candidates + ["'unknown'"]) + ")"
+    # One scan grouped by (committee, donor identity) feeds both levels: the
+    # per-committee totals / donor counts and the race-level distinct donor set.
+    committee_receipts: dict[str, dict] = {}
+    if committee_ids:
+        receipt_rows = conn.execute(
+            f"""
+            SELECT
+                CAST(r.committee_id_sbe AS TEXT) AS committee_id_sbe,
+                {donor_identity_sql} AS donor_identity,
+                COUNT(*) AS contribution_count,
+                SUM(r.amount) AS total_amount
+            FROM bulk_receipts_clean r
+            {donor_join_sql}
+            WHERE {' AND '.join(receipt_where_parts)}
+            GROUP BY 1, 2
+            """,
+            receipt_params,
+        ).fetchall()
+        for row in receipt_rows:
+            totals = committee_receipts.setdefault(
+                row["committee_id_sbe"],
+                {"contribution_count": 0, "total_amount": 0.0, "donors": set()},
+            )
+            totals["contribution_count"] += int(row["contribution_count"] or 0)
+            totals["total_amount"] += float(row["total_amount"] or 0.0)
+            totals["donors"].add(row["donor_identity"])
 
-    receipt_where_parts = ["r.committee_id_sbe IS NOT NULL"]
-    receipt_params: list[object] = []
-    if receipts_date_column_exists and date_from:
-        receipt_where_parts.append("r.received_date >= ?")
-        receipt_params.append(date_from)
-    if receipts_date_column_exists and date_to:
-        receipt_where_parts.append("r.received_date <= ?")
-        receipt_params.append(date_to)
-    # When narrowed to a race with a small committee set, push an IN-filter
-    # into the receipts scan so we don't read millions of unrelated rows.
-    # Skip the IN-filter once the committee count gets large (e.g. Judge -
-    # Circuit Court Cook with ~58 sub-races) — at that scale the IN-list
-    # picks a worse plan than the full-cycle scan.
-    if race_filter is not None and committee_to_races:
-        race_committee_ids = sorted({cid for cid in committee_to_races.keys() if cid})
-        if 0 < len(race_committee_ids) <= 15:
-            placeholders = ",".join(["?"] * len(race_committee_ids))
-            receipt_where_parts.append(f"CAST(r.committee_id_sbe AS TEXT) IN ({placeholders})")
-            receipt_params.extend(race_committee_ids)
-
-    receipt_rows = conn.execute(
-        f"""
-        SELECT
-            CAST(r.committee_id_sbe AS TEXT) AS committee_id_sbe,
-            COUNT(*) AS contribution_count,
-            COUNT(DISTINCT {donor_key_expr}) AS donor_count,
-            COALESCE(SUM(COALESCE(r.amount, 0.0)), 0.0) AS total_amount
-        FROM bulk_receipts_clean r
-        WHERE {' AND '.join(receipt_where_parts)}
-        GROUP BY r.committee_id_sbe
-        """,
-        receipt_params,
-    ).fetchall()
-
-    for row in receipt_rows:
-        committee_id = (row["committee_id_sbe"] or "").strip()
-        if not committee_id:
-            continue
-        contribution_count = int(row["contribution_count"] or 0)
-        committee_donor_count = int(row["donor_count"] or 0)
-        committee_total_amount = float(row["total_amount"] or 0.0)
-
-        for race_identity in committee_to_races.get(committee_id, set()):
-            race = races.get(race_identity)
-            if not race:
-                continue
-            race["contribution_count"] += contribution_count
-            race["total_amount"] += committee_total_amount
+    for committee_id, totals in committee_receipts.items():
+        for race_key_value in committee_to_races.get(committee_id, set()):
+            race = races[race_key_value]
+            race["contribution_count"] += totals["contribution_count"]
+            race["total_amount"] += totals["total_amount"]
+            race["donor_identities"].update(totals["donors"])
             if include_supporting_rows:
                 race["committee_receipt_rows"].append(
                     {
                         "committee_id_sbe": committee_id,
-                        "contribution_count": contribution_count,
-                        "donor_count": committee_donor_count,
-                        "total_amount": round(committee_total_amount, 2),
+                        "contribution_count": totals["contribution_count"],
+                        "donor_count": len(totals["donors"]),
+                        "total_amount": round(totals["total_amount"], 2),
                     }
                 )
-
-    donor_rows = conn.execute(
-        f"""
-        SELECT
-            CAST(r.committee_id_sbe AS TEXT) AS committee_id_sbe,
-            {donor_key_expr} AS donor_key
-        FROM bulk_receipts_clean r
-        WHERE {' AND '.join(receipt_where_parts)}
-        """,
-        receipt_params,
-    ).fetchall()
-    race_donor_counts: dict[str, int] = defaultdict(int)
-    race_donor_sets: dict[str, set[str]] = defaultdict(set)
-    for row in donor_rows:
-        committee_id = (row["committee_id_sbe"] or "").strip()
-        donor_key = (row["donor_key"] or "").strip()
-        if not committee_id or not donor_key:
-            continue
-        for race_identity in committee_to_races.get(committee_id, set()):
-            race_donor_sets[race_identity].add(donor_key)
-    for race_identity, donors in race_donor_sets.items():
-        race_donor_counts[race_identity] = len(donors)
 
     expenditure_part_exists = _column_exists(conn, "bulk_expenditures_clean", "d2_part_code")
     expenditure_amount_exists = _column_exists(conn, "bulk_expenditures_clean", "amount")
@@ -2762,15 +2756,21 @@ def _build_state_race_analytics_rows(
         exp_params: list[object] = []
         if is_archived_exists:
             exp_where_parts.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
-        if expended_date_exists and date_from:
+        if expended_date_exists:
+            # Outside spending belongs to the race's cycle: the inclusive cycle
+            # window ((cycle-1)-01-01 .. cycle-12-31) narrowed by the page window.
+            outside_from = f"{resolved_cycle - 1}-01-01"
+            outside_to = f"{resolved_cycle}-12-31"
+            if date_from:
+                outside_from = max(outside_from, date_from)
+            if date_to:
+                outside_to = min(outside_to, date_to)
             exp_where_parts.append("e.expended_date >= ?")
-            exp_params.append(date_from)
-        if expended_date_exists and date_to:
+            exp_params.append(outside_from)
             exp_where_parts.append("e.expended_date <= ?")
-            exp_params.append(date_to)
-        # Same threshold idea as the receipts scan above — once the race
-        # spans many candidates, a large IN-list of names underperforms
-        # the full-cycle scan.
+            exp_params.append(outside_to)
+        # Once the race spans many candidates, a large IN-list of names
+        # underperforms the full-cycle scan.
         if race_filter is not None and candidate_name_to_races:
             race_candidate_names = sorted({n for n in candidate_name_to_races.keys() if n})
             if 0 < len(race_candidate_names) <= 15:
@@ -2798,10 +2798,8 @@ def _build_state_race_analytics_rows(
                 continue
             candidate_name = (row["candidate_name"] or "").strip() or candidate_name_key
             outside_amount = float(row["total_amount"] or 0.0)
-            for race_identity in candidate_name_to_races.get(candidate_name_key, set()):
-                race = races.get(race_identity)
-                if not race:
-                    continue
+            for race_key_value in candidate_name_to_races.get(candidate_name_key, set()):
+                race = races[race_key_value]
                 race["outside_spending_total"] += outside_amount
                 if include_supporting_rows:
                     race["outside_spending_rows"].append(
@@ -2812,7 +2810,7 @@ def _build_state_race_analytics_rows(
                     )
 
     output: list[dict] = []
-    for race_identity, race in races.items():
+    for race in races.values():
         total_amount = float(race["total_amount"] or 0.0)
         outside_spending_total = float(race["outside_spending_total"] or 0.0)
         candidate_receipts_total = float(race["candidate_receipts_total"] or 0.0)
@@ -2827,7 +2825,7 @@ def _build_state_race_analytics_rows(
             "district_type": race["district_type"],
             "district": race["district"],
             "candidate_count": len(race["candidate_tokens"]),
-            "donor_count": int(race_donor_counts.get(race_identity, 0)),
+            "donor_count": len(race["donor_identities"]),
             "contribution_count": int(race["contribution_count"] or 0),
             "total_amount": round(total_amount, 2),
             "outside_spending_total": round(outside_spending_total, 2),
@@ -2920,6 +2918,7 @@ def get_state_race_analytics(
     election_cycle: int | None = None,
     sort_by: str = "total_amount",
     sort_dir: str = "desc",
+    today: date | None = None,
 ) -> list[dict]:
     """Return state race-level analytics using bulk ISBE tables when available."""
     rows = _build_state_race_analytics_rows(
@@ -2928,6 +2927,7 @@ def get_state_race_analytics(
         date_to=date_to,
         election_cycle=election_cycle,
         include_supporting_rows=False,
+        today=today,
     )
 
     sort_field = (sort_by or "total_amount").strip().lower()
@@ -2948,26 +2948,17 @@ def get_state_race_detail(
     date_from: str | None = None,
     date_to: str | None = None,
     election_cycle: int | None = None,
+    today: date | None = None,
 ) -> dict | None:
-    """Return detail payload for one race key, or None if missing.
+    """Return the detail payload for one race key in the resolved cycle, or None.
 
-    Two-pass lookup: (1) cheap DISTINCT query enumerates every
-    (office_sought, district_type, district) tuple in the requested
-    cycle and matches the slug back to a race; (2) the full builder
-    runs with `race_filter` set so downstream scans only touch the
-    one race's committees. Avoids the cold-path full-cycle rebuild
-    (~38s) the original Python-side linear scan triggered.
+    The builder runs with `race_filter` set to the key: it reads the cycle's
+    candidacy feed (small), keeps every spelling whose normalized key matches,
+    and narrows the D-2 / receipt / Part-9 scans to that race's committees and
+    candidates instead of rebuilding the whole cycle.
     """
     normalized_race_key = (race_key or "").strip()
     if not normalized_race_key:
-        return None
-
-    race_filter = _resolve_state_race_filter(
-        conn,
-        race_key=normalized_race_key,
-        election_cycle=election_cycle,
-    )
-    if race_filter is None:
         return None
 
     rows = _build_state_race_analytics_rows(
@@ -2976,57 +2967,35 @@ def get_state_race_detail(
         date_to=date_to,
         election_cycle=election_cycle,
         include_supporting_rows=True,
-        race_filter=race_filter,
+        race_filter=normalized_race_key,
+        today=today,
     )
-    for row in rows:
-        if (row.get("race_key") or "").strip() == normalized_race_key:
-            return row
-    return None
+    return rows[0] if rows else None
 
 
-def _resolve_state_race_filter(
+def get_state_race_details(
     conn: sqlite3.Connection,
     *,
-    race_key: str,
-    election_cycle: int | None,
-) -> tuple[str, str, str] | None:
-    """Map a race slug back to (office_sought, district_type, district).
+    date_from: str | None = None,
+    date_to: str | None = None,
+    election_cycle: int | None = None,
+    today: date | None = None,
+) -> dict[str, dict]:
+    """Detail payloads of every race in the resolved cycle, by race key, from ONE full build.
 
-    Cheap DISTINCT scan over the candidate-committee aggregate to recover
-    the canonical race tuple. Returns None when no race matches the slug
-    (typo'd URL, stale bookmark from a previous cycle, etc.).
+    Each payload is what get_state_race_detail returns for that key and window; when many
+    details are wanted at once (the startup prewarm's twelve), one full build with supporting
+    rows is cheaper than a targeted build per race.
     """
-    if not _table_exists(conn, "bulk_candidate_committee_finance_agg"):
-        return None
-    has_cycle = _column_exists(conn, "bulk_candidate_committee_finance_agg", "election_cycle")
-
-    where_parts: list[str] = []
-    where_params: list[object] = []
-    if has_cycle and election_cycle is not None:
-        where_parts.append("CAST(election_cycle AS TEXT) = CAST(? AS TEXT)")
-        where_params.append(int(election_cycle))
-    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-
-    distinct_rows = conn.execute(
-        f"""
-        SELECT DISTINCT
-            TRIM(COALESCE(office_sought, '')) AS office_sought,
-            TRIM(COALESCE(district_type, '')) AS district_type,
-            TRIM(COALESCE(district, '')) AS district
-        FROM bulk_candidate_committee_finance_agg
-        {where_sql}
-        """,
-        where_params,
-    ).fetchall()
-
-    for row in distinct_rows:
-        office = row["office_sought"] or "Unknown Office"
-        district_type = row["district_type"] or "Unknown District Type"
-        district = row["district"] or ""
-        candidate_slug = _state_race_slug(office, district_type, district)
-        if candidate_slug == race_key:
-            return (office, district_type, district)
-    return None
+    rows = _build_state_race_analytics_rows(
+        conn,
+        date_from=date_from,
+        date_to=date_to,
+        election_cycle=election_cycle,
+        include_supporting_rows=True,
+        today=today,
+    )
+    return {row["race_key"]: row for row in rows}
 
 
 def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:
@@ -3044,6 +3013,62 @@ def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:
         "reconciliation_available": has_recon,
         "reconciliation_rows": recon_rows,
     }
+
+
+def _refresh_donor_cycle_summary(conn: sqlite3.Connection) -> int:
+    """Rebuild the bulk_receipts rows of analytics_donor_cycle_summary; return the row count.
+
+    One row per (election cycle, donor_key) for the /donors/ cycle path.  Built exactly as the
+    live /donors/ window is (plan J-S2 / J-S16): bulk_receipts_clean (the compat view over
+    isbe_condensed_receipts on the ISBE path), the donor-list predicate
+    ``receipts_filter_sql(parts="contributions")`` (no D-2 requirement, so A-1 receipts count),
+    the same date parse and donor_key / name / address expressions.  cycle = year + year % 2
+    of received_date; undated receipts get no row.
+    """
+    if not _table_exists(conn, "analytics_donor_cycle_summary"):
+        return 0
+    conn.execute("DELETE FROM analytics_donor_cycle_summary WHERE source = 'bulk_receipts'")
+    if not _bulk_receipts_has_donor_key_columns(conn):
+        return 0
+    return conn.execute(
+        f"""
+        INSERT INTO analytics_donor_cycle_summary (
+            source, election_cycle, donor_key, donor_name, donor_address, donor_city, donor_state,
+            occupation, employer, total_amount, contribution_count, committee_count, updated_at
+        )
+        SELECT
+            'bulk_receipts' AS source,
+            d.receipt_year + d.receipt_year % 2 AS election_cycle,
+            d.donor_key,
+            MAX(d.donor_name) AS donor_name,
+            MAX(d.donor_address) AS donor_address,
+            MAX(d.donor_city) AS donor_city,
+            MAX(d.donor_state) AS donor_state,
+            MAX(d.occupation) AS occupation,
+            MAX(d.employer) AS employer,
+            SUM(d.amount) AS total_amount,
+            COUNT(*) AS contribution_count,
+            COUNT(DISTINCT d.committee_id) AS committee_count,
+            CURRENT_TIMESTAMP
+        FROM (
+            SELECT
+                CAST(EXTRACT(YEAR FROM {_normalized_date_sql("r.received_date")}) AS INTEGER) AS receipt_year,
+                {Donor._bulk_donor_key_sql("r")} AS donor_key,
+                {Donor._bulk_donor_name_sql("r")} AS donor_name,
+                {Donor._bulk_donor_address_sql("r")} AS donor_address,
+                NULLIF(TRIM(r.city), '') AS donor_city,
+                NULLIF(TRIM(r.state), '') AS donor_state,
+                NULLIF(TRIM(r.occupation), '') AS occupation,
+                NULLIF(TRIM(r.employer), '') AS employer,
+                r.committee_id_sbe AS committee_id,
+                r.amount
+            FROM bulk_receipts_clean r
+            WHERE {receipts_filter_sql("r")}
+        ) d
+        WHERE d.receipt_year IS NOT NULL AND d.donor_key <> ''
+        GROUP BY d.receipt_year + d.receipt_year % 2, d.donor_key
+        """
+    ).rowcount
 
 
 def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
@@ -3157,6 +3182,9 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
             """
         ).fetchone()["count"]
     )
+
+    # 2b. Per-cycle donor totals (the /donors/ cycle path)
+    donor_cycle_inserted = _refresh_donor_cycle_summary(conn)
 
     # 3. Committee monthly totals
     conn.execute(
@@ -3280,6 +3308,7 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
         "source_path": "isbe_direct",
         "donor_rows": donor_inserted,
         "donor_summary_rows": donor_summary_inserted,
+        "donor_cycle_rows": donor_cycle_inserted,
         "monthly_rows": monthly_inserted,
         "large_rows": large_inserted,
         "large_threshold": round(float(large_threshold), 2),
@@ -3395,6 +3424,8 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
             """
         ).fetchone()["count"]
     )
+
+    donor_cycle_inserted = _refresh_donor_cycle_summary(conn)
 
     conn.execute(
         f"""
@@ -3516,6 +3547,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
         "source": "bulk_receipts",
         "donor_rows": donor_inserted,
         "donor_summary_rows": donor_summary_inserted,
+        "donor_cycle_rows": donor_cycle_inserted,
         "monthly_rows": monthly_inserted,
         "large_rows": large_inserted,
         "large_threshold": round(float(large_threshold), 2),
@@ -3761,6 +3793,12 @@ def refresh_analytics_materialized(conn: sqlite3.Connection) -> dict:
     else:
         stats = _refresh_materialized_contributions(conn)
     conn.commit()
+    # Every cached route payload now describes the old aggregates. Flush after the
+    # commit, so no request re-caches the old numbers in between (plan B6). Lazy
+    # import: database/ takes no import-time dependency on webapp/.
+    from webapp.cache_backend import flush_all_route_caches
+
+    flush_all_route_caches()
     return stats
 
 
@@ -5629,27 +5667,28 @@ def get_lobbying_influence_graph(
             if resolved_date_to:
                 donor_date_filters += " AND DATE(r.received_date) <= DATE(?)"
                 donor_date_params.append(resolved_date_to)
-            donor_activity_rows = conn.execute(
-                f"""
-                WITH matched_donors AS (
-                    SELECT DISTINCT donor_key
-                    FROM lobbying_donor_matches
-                    WHERE client_id IN ({client_placeholders})
-                )
-                SELECT
-                    {_bulk_donor_key_sql("r")} AS donor_key,
-                    COALESCE(SUM(r.amount), 0) AS total_amount,
-                    COUNT(*) AS txn_count
-                FROM bulk_receipts_clean r
-                JOIN matched_donors md
-                  ON md.donor_key = {_bulk_donor_key_sql("r")}
-                WHERE COALESCE(r.amount, 0) > 0
-                  AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
-                  {donor_date_filters}
-                GROUP BY {_bulk_donor_key_sql("r")}
-                """,
-                [*client_ids, *donor_date_params],
-            ).fetchall()
+            # Only the matches kept above can pass the filter below, so look up exactly their keys.
+            # An IN list is checked once per receipt; the former join on the computed key ran as a
+            # nested loop (159 s for one cycle on the local ilcf).
+            match_keys = sorted({row["donor_key"] for row in donor_match_rows if row["donor_key"]})
+            donor_activity_rows = []
+            if match_keys:
+                key_placeholders = ",".join(["?"] * len(match_keys))
+                donor_activity_rows = conn.execute(
+                    f"""
+                    SELECT
+                        {_bulk_donor_key_sql("r")} AS donor_key,
+                        COALESCE(SUM(r.amount), 0) AS total_amount,
+                        COUNT(*) AS txn_count
+                    FROM bulk_receipts_clean r
+                    WHERE COALESCE(r.amount, 0) > 0
+                      AND {_BULK_DONOR_RECEIPT_FILTER_SQL}
+                      AND {_bulk_donor_key_sql("r")} IN ({key_placeholders})
+                      {donor_date_filters}
+                    GROUP BY {_bulk_donor_key_sql("r")}
+                    """,
+                    [*match_keys, *donor_date_params],
+                ).fetchall()
             active_donor_keys = {
                 (row["donor_key"] or "").strip()
                 for row in donor_activity_rows
@@ -6144,22 +6183,23 @@ def get_irs527_ecosystem_graph(
         active_ein_sql_parts.append(f"SELECT DISTINCT ein FROM irs527_contributions WHERE {' AND '.join(filters)}")
         active_ein_params.extend(params)
     active_ein_sql = " UNION ".join(active_ein_sql_parts)
+    # The window's active EINs, computed once (four queries below filter on them).
+    active_eins: list[str] = []
+    if has_date_window and active_ein_sql:
+        active_eins = [row["ein"] for row in conn.execute(active_ein_sql, active_ein_params).fetchall()]
 
     committee_rows = []
     if has_committee_matches:
         if has_date_window and active_ein_sql:
             committee_rows = conn.execute(
-                f"""
-                WITH active_eins AS (
-                    {active_ein_sql}
-                )
+                """
                 SELECT m.ein, m.org_name, m.committee_id_sbe, m.committee_name, m.score
                 FROM irs527_committee_matches m
-                JOIN active_eins a ON a.ein = m.ein
+                WHERE m.ein = ANY(?)
                 ORDER BY m.score DESC
                 LIMIT ?
                 """,
-                [*active_ein_params, edge_limit * 2],
+                [active_eins, edge_limit * 2],
             ).fetchall()
         elif not has_date_window:
             committee_rows = conn.execute(
@@ -6176,17 +6216,14 @@ def get_irs527_ecosystem_graph(
     if has_recipient_matches:
         if has_date_window and active_ein_sql:
             recipient_rows = conn.execute(
-                f"""
-                WITH active_eins AS (
-                    {active_ein_sql}
-                )
+                """
                 SELECT m.ein, m.org_name, m.recipient_name, m.matched_type, m.matched_id, m.matched_name, m.score
                 FROM irs527_expenditure_recipient_matches m
-                JOIN active_eins a ON a.ein = m.ein
+                WHERE m.ein = ANY(?)
                 ORDER BY m.score DESC
                 LIMIT ?
                 """,
-                [*active_ein_params, edge_limit * 2],
+                [active_eins, edge_limit * 2],
             ).fetchall()
         elif not has_date_window:
             recipient_rows = conn.execute(
@@ -6261,17 +6298,14 @@ def get_irs527_ecosystem_graph(
     if has_director_donor_matches:
         if has_date_window and active_ein_sql:
             director_rows = conn.execute(
-                f"""
-                WITH active_eins AS (
-                    {active_ein_sql}
-                )
+                """
                 SELECT m.ein, m.org_name, m.director_name, m.donor_key, m.donor_name, m.score
                 FROM irs527_director_donor_matches m
-                JOIN active_eins a ON a.ein = m.ein
+                WHERE m.ein = ANY(?)
                 ORDER BY m.score DESC
                 LIMIT ?
                 """,
-                [*active_ein_params, edge_limit * 2],
+                [active_eins, edge_limit * 2],
             ).fetchall()
         elif not has_date_window:
             director_rows = conn.execute(
@@ -6297,18 +6331,15 @@ def get_irs527_ecosystem_graph(
     if not keep_eins:
         if has_date_window and active_ein_sql:
             org_rows = conn.execute(
-                f"""
-                WITH active_eins AS (
-                    {active_ein_sql}
-                )
+                """
                 SELECT o.ein, MAX(o.org_name) AS org_name
                 FROM irs527_organizations o
-                JOIN active_eins a ON a.ein = o.ein
+                WHERE o.ein = ANY(?)
                 GROUP BY o.ein
                 ORDER BY org_name ASC
                 LIMIT ?
                 """,
-                [*active_ein_params, org_limit],
+                [active_eins, org_limit],
             ).fetchall()
         else:
             org_rows = conn.execute(
@@ -6665,12 +6696,28 @@ def get_vendor_expenditure_network(
     vendor_limit: int = 100,
     edge_limit: int = 800,
     min_amount: float = 1000.0,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict:
-    """Build committee->vendor expenditure network from bulk_expenditures_clean."""
+    """Build committee->vendor expenditure network from bulk_expenditures_clean.
+
+    ``date_from`` / ``date_to`` (inclusive) window ``expended_date`` before the committee
+    ranking and the per-edge ``min_amount`` threshold, so every edge is summed over the window.
+    """
     committee_limit = max(10, min(int(committee_limit), 500))
     vendor_limit = max(10, min(int(vendor_limit), 500))
     edge_limit = max(50, min(int(edge_limit), 10000))
     min_amount = max(0.0, float(min_amount))
+    range_start, range_end = _normalize_date_range(date_from, date_to)
+    # expended_date is ISO text (date::text in the compat view), so string bounds are inclusive.
+    date_sql = ""
+    date_params: list[object] = []
+    if range_start:
+        date_sql += " AND expended_date >= ?"
+        date_params.append(range_start.isoformat())
+    if range_end:
+        date_sql += " AND expended_date <= ?"
+        date_params.append(range_end.isoformat())
 
     if not _table_exists(conn, "bulk_expenditures_clean"):
         return _empty_relationship_graph(
@@ -6679,17 +6726,23 @@ def get_vendor_expenditure_network(
 
     has_committees = _table_exists(conn, "bulk_committees_clean")
     has_lobbying_matches = _table_exists(conn, "lobbying_expenditure_matches")
+    # Archived rows were superseded by an amendment; counting them double-counts the spending.
+    archived_sql = (
+        " AND NOT COALESCE(e.is_archived::boolean, FALSE)"
+        if _column_exists(conn, "bulk_expenditures_clean", "is_archived")
+        else ""
+    )
 
     committee_rows = conn.execute(
-        """
+        f"""
         SELECT committee_id_sbe, SUM(amount) AS total_spent, COUNT(*) AS txn_count
-        FROM bulk_expenditures_clean
-        WHERE amount > 0
+        FROM bulk_expenditures_clean e
+        WHERE amount > 0{date_sql}{archived_sql}
         GROUP BY committee_id_sbe
         ORDER BY total_spent DESC
         LIMIT ?
         """,
-        (committee_limit,),
+        (*date_params, committee_limit),
     ).fetchall()
 
     keep_committees = {str(row["committee_id_sbe"]) for row in committee_rows}
@@ -6734,17 +6787,17 @@ def get_vendor_expenditure_network(
         f"""
         SELECT committee_id_sbe, payee_last_or_business_name,
                SUM(amount) AS total_amount, COUNT(*) AS txn_count
-        FROM bulk_expenditures_clean
+        FROM bulk_expenditures_clean e
         WHERE committee_id_sbe IN ({placeholders})
           AND amount > 0
           AND payee_last_or_business_name IS NOT NULL
-          AND TRIM(payee_last_or_business_name) != ''
+          AND TRIM(payee_last_or_business_name) != ''{date_sql}{archived_sql}
         GROUP BY committee_id_sbe, payee_last_or_business_name
         HAVING SUM(amount) >= ?
         ORDER BY total_amount DESC
         LIMIT ?
         """,
-        [*list(keep_committees), min_amount, edge_limit],
+        [*list(keep_committees), *date_params, min_amount, edge_limit],
     ).fetchall()
 
     lobbying_matched_payees: set[str] = set()

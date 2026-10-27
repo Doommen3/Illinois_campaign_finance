@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Federal Geo Drilldown - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -42,7 +43,7 @@
         | Contributions: <strong>{{ drilldown.summary.contribution_count }}</strong>
         | Donors: <strong>{{ drilldown.summary.donor_count }}</strong>
         | Candidates: <strong>{{ drilldown.summary.candidate_count }}</strong>
-        | Detail rows: <strong>{{ drilldown.summary.detail_row_count }}</strong>
+        | Detail rows: <strong>{{ drilldown.summary.detail_row_count }}</strong> {{ scope_tag() }}
     </p>
     <p>
         Page subtotal: <strong>{{ format_currency(drilldown.summary.page_total_amount) }}</strong>

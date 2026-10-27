@@ -58,7 +58,7 @@
                     {% for row in money_destinations.committee_destinations %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id) }}">
+                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id, **scope_query) }}">
                                 {{ row.committee_name }}
                             </a>
                         </td>
@@ -98,8 +98,8 @@
     </div>
 </div>
 
-<h2>Clients ({{ clients|length }}) {{ scope_tag('All time') }}</h2>
-<p class="help-text">These are the companies and organizations that hired this lobbying entity to represent them, sourced from Illinois Secretary of State lobbying registration records. Financial connections are established by fuzzy name-matching clients against campaign contribution donor records.</p>
+<h2>Clients ({{ clients|length }}) {{ scope_tag() }}</h2>
+<p class="help-text">These are the companies and organizations that hired this lobbying entity to represent them, sourced from Illinois Secretary of State lobbying registration records. Registrations are matched to the selected range by registration year. Financial connections are established by fuzzy name-matching clients against campaign contribution donor records.</p>
 <table class="data-table">
     <thead>
         <tr>
@@ -111,7 +111,7 @@
         {% for client in clients %}
         <tr>
             <td>
-                <a href="{{ url_for('lobbying.client_detail', client_id=client.client_id) }}">
+                <a href="{{ url_for('lobbying.client_detail', client_id=client.client_id, **scope_query) }}">
                     {{ client.client_name }}
                 </a>
             </td>
@@ -145,7 +145,7 @@
         <tr>
             <td>
                 {% if m.client_id %}
-                <a href="{{ url_for('lobbying.client_detail', client_id=m.client_id) }}">{{ m.client_name or m.client_id }}</a>
+                <a href="{{ url_for('lobbying.client_detail', client_id=m.client_id, **scope_query) }}">{{ m.client_name or m.client_id }}</a>
                 {% else %}
                 {{ m.client_name or '-' }}
                 {% endif %}
@@ -155,13 +155,13 @@
             <td><span class="badge badge-{{ m.confidence_band }}">{{ m.confidence_band|capitalize }}</span></td>
             <td>{{ m.method or '-' }}</td>
             <td>
-                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts') }}">
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts', **scope_query) }}">
                     Local
                 </a>
             </td>
             <td>
                 {% if m.has_federal_match %}
-                <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=m.federal_donor_entity_key, cycle=2026) }}">
+                <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=m.federal_donor_entity_key, **scope_query) }}">
                     Federal
                 </a>
                 {% else %}
@@ -170,7 +170,7 @@
             </td>
             <td>
                 {% if m.has_federal_match %}
-                <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=m.federal_donor_entity_key, local_donor_key=m.donor_key, cycle=2026, local_source='bulk_receipts') }}">
+                <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=m.federal_donor_entity_key, local_donor_key=m.donor_key, local_source='bulk_receipts', **scope_query) }}">
                     Matched
                 </a>
                 {% else %}

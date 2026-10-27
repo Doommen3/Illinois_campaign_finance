@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}OpenBook Vendors - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -14,15 +15,15 @@
         <p class="stat-value">{{ summary.vendors_matched }}</p>
     </div>
     <div class="stat-card">
-        <h3>Contracts</h3>
+        <h3>Contracts {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ summary.contracts_total }}</p>
     </div>
     <div class="stat-card">
-        <h3>Total Award Amount</h3>
+        <h3>Total Award Amount {{ scope_tag('All time') }}</h3>
         <p class="stat-value">{{ format_currency(summary.award_total) }}</p>
     </div>
     <div class="stat-card">
-        <h3>Contributions</h3>
+        <h3>Contributions {{ scope_tag() }}</h3>
         <p class="stat-value">{{ summary.contributions_total }}</p>
     </div>
 </div>
@@ -41,7 +42,7 @@
             <th>Best Confidence</th>
             <th>Contracts</th>
             <th>Total Awards</th>
-            <th>Contributions</th>
+            <th>Contributions {{ scope_tag() }}</th>
         </tr>
     </thead>
     <tbody>

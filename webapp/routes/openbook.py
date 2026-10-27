@@ -55,6 +55,7 @@ def list_vendors():
             page=1,
             total_pages=1,
             query="",
+            summary={"vendors_matched": 0, "contracts_total": 0, "award_total": 0.0, "contributions_total": 0},
             **scope_ctx,
         )
 

@@ -22,12 +22,12 @@
     <p><strong>Employer:</strong> {{ detail.summary.contributor_employer if detail.summary.contributor_employer else '-' }}</p>
     <p><strong>Occupation:</strong> {{ detail.summary.contributor_occupation if detail.summary.contributor_occupation else '-' }}</p>
     <p><strong>Identity Method:</strong> {{ detail.summary.donor_entity_method_label }}</p>
-    <p><strong>Candidates Donated To:</strong> {{ detail.summary.candidate_count }}</p>
-    <p><strong>Committees:</strong> {{ detail.summary.committee_count }}</p>
-    <p><strong>Total Contributions:</strong> {{ detail.summary.contribution_count }}</p>
-    <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }}</p>
+    <p><strong>Candidates Donated To:</strong> {{ detail.summary.candidate_count }} {{ scope_tag() }}</p>
+    <p><strong>Committees:</strong> {{ detail.summary.committee_count }} {{ scope_tag() }}</p>
+    <p><strong>Total Contributions:</strong> {{ detail.summary.contribution_count }} {{ scope_tag() }}</p>
+    <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }} {{ scope_tag() }}</p>
     <p><strong>This cycle:</strong> {{ format_currency(cycle_total) }}</p>
-    <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }}</p>
+    <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }} {{ scope_tag() }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', **scope_query) }}">Back to Federal Finance</a></p>
 </div>
 

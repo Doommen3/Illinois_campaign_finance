@@ -55,10 +55,10 @@
     <p><strong>Party:</strong> {{ detail.summary.party if detail.summary.party else '-' }}</p>
     <p><strong>Cycle:</strong> {{ detail.summary.cycle }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
     <p><strong>Match Status:</strong> {{ detail.summary.match_status }}{% if detail.summary.match_score is not none %} ({{ detail.summary.match_score }}){% endif %}</p>
-    <p><strong>Committees:</strong> {{ detail.summary.committee_count }}</p>
-    <p><strong>Contributions:</strong> {{ detail.summary.contribution_count }}</p>
-    <p><strong>Donors:</strong> {{ detail.summary.donor_count }}</p>
-    <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }}</p>
+    <p><strong>Committees:</strong> {{ detail.summary.committee_count }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
+    <p><strong>Contributions:</strong> {{ detail.summary.contribution_count }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
+    <p><strong>Donors:</strong> {{ detail.summary.donor_count }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
+    <p><strong>Total Amount:</strong> {{ format_currency(detail.summary.total_amount) }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
     {% if detail.summary.uses_reported_total_receipts %}
     <p><strong>Total Source:</strong> FEC candidate totals endpoint (reported receipts) {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
     <p><strong>Latest FEC Report Coverage:</strong> {{ detail.summary.transaction_coverage_date if detail.summary.transaction_coverage_date else (detail.summary.coverage_end_date if detail.summary.coverage_end_date else '-') }}</p>
@@ -79,9 +79,9 @@
         {% endif %}
     </p>
     {% endif %}
-    <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }}</p>
-    <p><strong>Schedule B Date Range:</strong> {{ detail.summary.earliest_disbursement_date if detail.summary.earliest_disbursement_date else '-' }} to {{ detail.summary.latest_disbursement_date if detail.summary.latest_disbursement_date else '-' }}</p>
-    <p><strong>Schedule E Date Range:</strong> {{ detail.summary.earliest_expenditure_date if detail.summary.earliest_expenditure_date else '-' }} to {{ detail.summary.latest_expenditure_date if detail.summary.latest_expenditure_date else '-' }}</p>
+    <p><strong>Date Range:</strong> {{ detail.summary.earliest_contribution_date if detail.summary.earliest_contribution_date else '-' }} to {{ detail.summary.latest_contribution_date if detail.summary.latest_contribution_date else '-' }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
+    <p><strong>Schedule B Date Range:</strong> {{ detail.summary.earliest_disbursement_date if detail.summary.earliest_disbursement_date else '-' }} to {{ detail.summary.latest_disbursement_date if detail.summary.latest_disbursement_date else '-' }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
+    <p><strong>Schedule E Date Range:</strong> {{ detail.summary.earliest_expenditure_date if detail.summary.earliest_expenditure_date else '-' }} to {{ detail.summary.latest_expenditure_date if detail.summary.latest_expenditure_date else '-' }} {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</p>
     <p><a href="{{ url_for('federal_finance.list_federal_finance', **scope_query) }}">Back to Federal Finance</a></p>
 </div>
 
@@ -122,17 +122,17 @@
 
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Money In (A)</h3>
+        <h3>Money In (A) {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</h3>
         <div class="stat-value">{{ format_currency(detail.summary.money_in_total) }}</div>
         <div class="stat-detail">Source: {{ detail.summary.money_in_source }}</div>
     </div>
     <div class="stat-card">
-        <h3>Money Out (B)</h3>
+        <h3>Money Out (B) {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</h3>
         <div class="stat-value">{{ format_currency(detail.summary.money_out_total) }}</div>
         <div class="stat-detail">Source: {{ detail.summary.money_out_source }}</div>
     </div>
     <div class="stat-card">
-        <h3>Outside Spending (E)</h3>
+        <h3>Outside Spending (E) {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</h3>
         <div class="stat-value">{{ format_currency(detail.summary.outside_spending_total) }}</div>
         <div class="stat-detail">
             {% if detail.summary.outside_pressure_ratio is not none %}
@@ -143,7 +143,7 @@
         </div>
     </div>
     <div class="stat-card">
-        <h3>Net Flow</h3>
+        <h3>Net Flow {{ scope_tag(detail.summary.cycle ~ ' Cycle') }}</h3>
         <div class="stat-value">{{ format_currency(detail.summary.net_money_flow) }}</div>
         <div class="stat-detail">Money in minus money out</div>
     </div>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}527 Organizations - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -22,9 +23,9 @@
             <th>Organization Name</th>
             <th>City</th>
             <th>State</th>
-            <th>Total Contributions</th>
-            <th>Total Expenditures</th>
-            <th>Contributions Received (A)</th>
+            <th>Total Contributions {{ scope_tag() }}</th>
+            <th>Total Expenditures {{ scope_tag() }}</th>
+            <th>Contributions Received (A) {{ scope_tag() }}</th>
             <th>Committee Match</th>
         </tr>
     </thead>

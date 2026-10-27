@@ -8,15 +8,6 @@
 <p class="subtitle">EIN: {{ org.ein }}</p>
 {% include "_partials/time_scope_bar.html" %}
 
-<section class="status-section">
-    <h2>Organization Details {{ scope_tag('All time') }}</h2>
-    <p><strong>Address:</strong> {{ org.address_1 or '' }} {{ org.address_2 or '' }}, {{ org.city or '' }}, {{ org.state or '' }} {{ org.zip or '' }}</p>
-    {% if org.purpose %}<p><strong>Purpose:</strong> {{ org.purpose }}</p>{% endif %}
-    {% if org.formation_date %}<p><strong>Formation Date:</strong> {{ org.formation_date }}</p>{% endif %}
-    {% if org.custodian_name %}<p><strong>Custodian:</strong> {{ org.custodian_name }}</p>{% endif %}
-    {% if org.contact_name %}<p><strong>Contact:</strong> {{ org.contact_name }}</p>{% endif %}
-</section>
-
 {% if financial %}
 <section class="status-section">
     <h2>Financial Summary {{ scope_tag() }}</h2>
@@ -31,40 +22,66 @@
 </section>
 {% endif %}
 
-{% if reports %}
+{% if top_contributors %}
 <section class="status-section">
-    <h2>Filing History ({{ reports|length }} Reports) {{ scope_tag('All time') }}</h2>
-    <p class="help-text">Individual IRS Form 8872 periodic reports filed by this organization, showing reporting period and schedule totals.</p>
-    <div class="table-scroll">
+    <h2>Top Contributors ({{ contribution_count }} records, {{ format_currency(contribution_total) }} total) {{ scope_tag() }}</h2>
+    <p class="help-text">Top 10 contributors to this 527 organization by total amount.</p>
     <table class="data-table">
         <thead>
             <tr>
-                <th>Form ID</th>
-                <th>Period Start</th>
-                <th>Period End</th>
-                <th>Schedule A (Contributions)</th>
-                <th>Schedule B (Expenditures)</th>
-                <th>Quarter</th>
-                <th>Filed</th>
+                <th>Contributor</th>
+                <th>Total Amount</th>
+                <th>Records</th>
             </tr>
         </thead>
         <tbody>
-            {% for r in reports %}
+            {% for c in top_contributors %}
             <tr>
-                <td>{{ r.form_id or '-' }}</td>
-                <td>{{ r.period_start or '-' }}</td>
-                <td>{{ r.period_end or '-' }}</td>
-                <td>{{ format_currency(r.total_contributions) }}</td>
-                <td>{{ format_currency(r.total_expenditures) }}</td>
-                <td>{{ r.qtr_indicator or '-' }}</td>
-                <td>{{ r.insert_datetime[:10] if r.insert_datetime else '-' }}</td>
+                <td>{{ c.name }}</td>
+                <td>{{ format_currency(c.total_amount) }}</td>
+                <td>{{ c.record_count }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    </div>
+    <p class="help-text"><a href="{{ url_for('irs527.org_contributors', ein=org.ein, **scope_query) }}">See all {{ '{:,}'.format(contributor_count) }} contributor{{ 's' if contributor_count != 1 }} &rarr;</a></p>
 </section>
 {% endif %}
+
+{% if top_recipients %}
+<section class="status-section">
+    <h2>Top Expenditure Recipients ({{ expenditure_count }} records, {{ format_currency(financial.total_expenditures) }} total) {{ scope_tag() }}</h2>
+    <p class="help-text">Top 10 recipients of expenditures from this 527 organization.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Recipient</th>
+                <th>Total Amount</th>
+                <th>Records</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in top_recipients %}
+            <tr>
+                <td>{{ r.name }}</td>
+                <td>{{ format_currency(r.total_amount) }}</td>
+                <td>{{ r.record_count }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="help-text"><a href="{{ url_for('irs527.org_recipients', ein=org.ein, **scope_query) }}">See all {{ '{:,}'.format(recipient_count) }} recipient{{ 's' if recipient_count != 1 }} &rarr;</a></p>
+</section>
+{% endif %}
+
+<section class="status-section">
+    <h2>Organization Details {{ scope_tag('All time') }}</h2>
+    <p><strong>Address:</strong> {{ org.address_1 or '' }} {{ org.address_2 or '' }}, {{ org.city or '' }}, {{ org.state or '' }} {{ org.zip or '' }}</p>
+    {% if org.purpose %}<p><strong>Purpose:</strong> {{ org.purpose }}</p>{% endif %}
+    {% if org.formation_date %}<p><strong>Formation Date:</strong> {{ org.formation_date }}</p>{% endif %}
+    {% if org.custodian_name %}<p><strong>Custodian:</strong> {{ org.custodian_name }}</p>{% endif %}
+    {% if org.contact_name %}<p><strong>Contact:</strong> {{ org.contact_name }}</p>{% endif %}
+</section>
 
 {% if committee_matches %}
 <h2>Matched IL Committees {{ scope_tag('All time') }}</h2>
@@ -159,31 +176,6 @@
 </table>
 {% endif %}
 
-{% if top_contributors %}
-<section class="status-section">
-    <h2>Top Contributors ({{ contribution_count }} records, {{ format_currency(contribution_total) }} total) {{ scope_tag() }}</h2>
-    <p class="help-text">Top 10 contributors to this 527 organization by total amount.</p>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Contributor</th>
-                <th>Total Amount</th>
-                <th>Records</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for c in top_contributors %}
-            <tr>
-                <td>{{ c.contributor_name }}</td>
-                <td>{{ format_currency(c.total_amount) }}</td>
-                <td>{{ c.contribution_count }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</section>
-{% endif %}
-
 {% if contributions or contrib_search %}
 <section class="status-section">
     <h2>Contributions To This Organization{% if not contrib_search %} (Top {{ contributions|length }}){% endif %} {{ scope_tag() }}</h2>
@@ -226,31 +218,6 @@
 </section>
 {% endif %}
 
-{% if top_recipients %}
-<section class="status-section">
-    <h2>Top Expenditure Recipients ({{ expenditure_count }} records, {{ format_currency(financial.total_expenditures) }} total) {{ scope_tag() }}</h2>
-    <p class="help-text">Top 10 recipients of expenditures from this 527 organization.</p>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Recipient</th>
-                <th>Total Amount</th>
-                <th>Records</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for r in top_recipients %}
-            <tr>
-                <td>{{ r.recipient_name }}</td>
-                <td>{{ format_currency(r.total_amount) }}</td>
-                <td>{{ r.expenditure_count }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</section>
-{% endif %}
-
 {% if expenditures %}
 <h2>Expenditures (Top {{ expenditures|length }}) {{ scope_tag() }}</h2>
 <table class="data-table">
@@ -277,5 +244,40 @@
         {% endfor %}
     </tbody>
 </table>
+{% endif %}
+
+{% if reports %}
+<section class="status-section">
+    <h2>Filing History ({{ reports|length }} Reports) {{ scope_tag('All time') }}</h2>
+    <p class="help-text">Individual IRS Form 8872 periodic reports filed by this organization, showing reporting period and schedule totals.</p>
+    <div class="table-scroll">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Form ID</th>
+                <th>Period Start</th>
+                <th>Period End</th>
+                <th>Schedule A (Contributions)</th>
+                <th>Schedule B (Expenditures)</th>
+                <th>Quarter</th>
+                <th>Filed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in reports %}
+            <tr>
+                <td>{{ r.form_id or '-' }}</td>
+                <td>{{ r.period_start or '-' }}</td>
+                <td>{{ r.period_end or '-' }}</td>
+                <td>{{ format_currency(r.total_contributions) }}</td>
+                <td>{{ format_currency(r.total_expenditures) }}</td>
+                <td>{{ r.qtr_indicator or '-' }}</td>
+                <td>{{ r.insert_datetime[:10] if r.insert_datetime else '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
 {% endif %}
 {% endblock %}

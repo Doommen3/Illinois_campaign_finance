@@ -337,6 +337,39 @@ def test_analytics_donor_summary_matching_rows_deleted(tmp_path):
     }
 
 
+def test_cycle_summary_and_committee_agg_matching_rows_deleted(tmp_path):
+    """The /donors/ cycle list table and the donor-committee table carry the address too: the request's rows go,
+    the other-zip / other-last-name / other-first-name controls stay (fictional people, as everywhere here)."""
+    conn = _setup(tmp_path)
+    for cycle, key, name, address in (
+        (2026, KEY_WALTER_ZIP4, "Walter Brinkerhoff", "100 Test Ave, Unit 2, Champaign, IL 61820-4455"),  # delete
+        (2024, KEY_WALTER_ZIP5, "WALTER BRINKERHOFF", "100 TEST AVE, CHAMPAIGN, IL 61820"),               # delete
+        (2026, KEY_WALTER_OTHER_ZIP, "Walter Brinkerhoff", "9 Elm St, Urbana, IL 61821"),                 # keep
+        (2026, KEY_BRINKERHOFFER, "Walter Brinkerhoffer", "12 Oak Ave, Champaign, IL 61820"),             # keep
+        (2026, KEY_EDITH, "Edith Brinkerhoff", "100 Test Ave, Unit 2, Champaign, IL 61820-4455"),         # keep
+    ):
+        conn.execute(
+            "INSERT INTO analytics_donor_cycle_summary (source, election_cycle, donor_key, donor_name, donor_address,"
+            " total_amount, contribution_count, committee_count) VALUES ('bulk_receipts', ?, ?, ?, ?, 100.0, 1, 1)",
+            (cycle, key, name, address),
+        )
+        conn.execute(
+            "INSERT INTO analytics_donor_committee_agg (source, donor_key, donor_name, donor_address, committee_id,"
+            " committee_name, total_amount, contribution_count)"
+            " VALUES ('bulk_receipts', ?, ?, ?, '7', 'Fixture Committee', 100.0, 1)",
+            (key, name, address),
+        )
+    add_privacy_redaction(conn, **WALTER_REQUEST)
+    conn.commit()
+
+    result = apply_privacy_redactions(conn)
+
+    for table in ("analytics_donor_cycle_summary", "analytics_donor_committee_agg"):
+        assert result[table] == 2, table
+        remaining = {row["donor_key"] for row in conn.execute(f"SELECT donor_key FROM {table}").fetchall()}
+        assert remaining == {KEY_WALTER_OTHER_ZIP, KEY_BRINKERHOFFER, KEY_EDITH}, table
+
+
 # --- 5. donors ---------------------------------------------------------------
 
 def test_donors_rows_scrubbed(tmp_path):

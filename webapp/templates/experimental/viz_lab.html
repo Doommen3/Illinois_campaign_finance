@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Visualization Lab - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -69,7 +70,7 @@
     data-prototype-card="{{ prototype.key }}"
     data-endpoint="{{ prototype.endpoint }}"
 >
-    <h2>{{ prototype.title }} <span class="period-badge">Experimental</span></h2>
+    <h2>{{ prototype.title }} <span class="period-badge">Experimental</span> {{ scope_tag('All time' if prototype.key == 'entity_resolution' else None) }}</h2>
     <p class="help-text">{{ prototype.description }}</p>
     <p class="help-text"><strong>Question:</strong> {{ prototype.question }}</p>
     <p class="help-text"><strong>Data source:</strong> <code>{{ prototype.data_source }}</code></p>

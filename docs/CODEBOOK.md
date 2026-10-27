@@ -253,6 +253,11 @@ python3 scripts/validate_geometry_keys.py
 
 PostgreSQL 16 database (`ilcf`). Schema defined in `database/schema.sql`.
 
+> **Shapes, grains and join keys are maintained in `.claude/data-dictionary.md`** (verified
+> counts and key-uniqueness checks, as-of dated). The column lists below are narrative and have
+> drifted from the DDL in places (the dictionary's last section lists the known mismatches); when
+> they disagree, the DDL and the dictionary win.
+
 ### 4.1 ISBE State Tables
 
 | Table | Description | Key Columns |
@@ -646,9 +651,9 @@ Built by `python run.py refresh-analytics --with-snapshot`:
 
 ### Caching Architecture
 
-- **In-process TTL caching** on heavy routes (configurable per-route, default 1800s for analytics).
+- **Route caching** on heavy routes via `RouteCache` (Redis when `REDIS_URL` is set, otherwise a 32-entry in-process LRU; configurable per-route, default 21600s for analytics).
 - **Startup prewarm**: Background thread per gunicorn worker populates caches on boot.
-- **Per-worker isolation**: Each gunicorn worker has its own cache dict. Prewarm ensures all workers start warm.
+- **Per-worker isolation**: Route caches live in Redis when `REDIS_URL` is set (shared by all workers); without Redis each worker keeps a 32-entry LRU per cache. Prewarm ensures all workers start warm.
 - **Cache bust**: Append `?refresh_cache=1` to any cached route.
 
 ---
@@ -672,12 +677,12 @@ All settings in `config.py`, overridable via environment variables.
 |---------|---------|-------------|
 | `ROUTE_PERF_CACHE_ENABLED` | `true` | Enable route-level caching |
 | `DASHBOARD_PREWARM_ENABLED` | `true` | Prewarm caches on startup |
-| `ANALYTICS_NETWORKS_CACHE_TTL_SECONDS` | `1800` | Networks page cache TTL |
-| `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS` | `1800` | Relationships cache TTL |
-| `ANALYTICS_RISK_CACHE_TTL_SECONDS` | `1800` | Risk page cache TTL |
-| `ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS` | `1800` | Overview cache TTL |
-| `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS` | `300` | Geo drilldown cache TTL |
-| `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS` | `300` | Dark money stats cache TTL |
+| `ANALYTICS_NETWORKS_CACHE_TTL_SECONDS` | `21600` | Networks page cache TTL |
+| `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS` | `21600` | Relationships cache TTL |
+| `ANALYTICS_RISK_CACHE_TTL_SECONDS` | `21600` | Risk page cache TTL |
+| `ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS` | `21600` | Overview cache TTL |
+| `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS` | `180` | Geo drilldown cache TTL |
+| `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS` | `180` | Dark money stats cache TTL |
 | `SEARCH_RESULTS_CACHE_TTL_SECONDS` | `120` | Search result cache TTL |
 | `SEARCH_RESULTS_CACHE_MAX_ENTRIES` | `256` | Max cached search results |
 
@@ -937,7 +942,7 @@ Always run in this order after any data import:
 | **Gini Coefficient** | Inequality measure (0=equal, 1=concentrated) |
 | **PageRank** | Google's algorithm adapted for influence scoring in donor networks |
 | **Materialized View** | Pre-computed query result stored as a table for fast access |
-| **TTL Cache** | Time-to-live in-process cache (Python dict with expiry) |
+| **TTL Cache** | Time-to-live route cache (Redis-backed; in-process LRU fallback without Redis) |
 | **Prewarm** | Populating caches at startup before user requests arrive |
 | **Cross-Matching** | Linking entities across different datasets by name/address similarity |
 | **Entity Resolution** | Merging duplicate records representing the same real-world entity |

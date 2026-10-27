@@ -1722,6 +1722,12 @@
             focus_type: explicitType || selectedType,
             min_edge_amount: customSankeyMinAmount?.value || "0",
         });
+        // Forward the page's time scope so the endpoint resolves the window the page shows.
+        const pageArgs = new URLSearchParams(window.location.search);
+        for (const key of ["period", "cycle", "year", "date_from", "date_to"]) {
+            const value = pageArgs.get(key);
+            if (value) params.set(key, value);
+        }
         try {
             const response = await fetch("/api/analytics/network/focus-sankey?" + params.toString());
             const data = await response.json();

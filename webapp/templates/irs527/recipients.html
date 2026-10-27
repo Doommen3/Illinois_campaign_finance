@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}Expenditure Recipients - {{ org.org_name or 'Unknown Organization' }} - 527 Organization{% endblock %}
+
+{% block content %}
+{% macro sort_link(key, label) -%}
+{%- set next_dir = ('asc' if sort_dir == 'desc' else 'desc') if sort_by == key else ledger_sorts[key] -%}
+<a href="{{ url_for('irs527.org_recipients', ein=org.ein, sort=key, dir=next_dir, q=q or None, **scope_query) }}">{{ label }}{% if sort_by == key %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a>
+{%- endmacro %}
+<h1>{{ org.org_name or 'Unknown Organization' }}</h1>
+<p class="subtitle">EIN: {{ org.ein }} | <a href="{{ url_for('irs527.org_detail', ein=org.ein, **scope_query) }}">Organization profile</a></p>
+{% include "_partials/time_scope_bar.html" %}
+
+<h2>Expenditure Recipients {{ scope_tag() }}</h2>
+<p class="subtitle">{{ '{:,}'.format(count) }} unique recipient{{ 's' if count != 1 }}, {{ format_currency(total) }}</p>
+<p class="help-text">Schedule B expenditures (IRS Form 8872), one row per recipient name as filed.</p>
+
+<form action="{{ url_for('irs527.org_recipients', ein=org.ein) }}" method="get" class="search-form">
+    <input type="text" name="q" placeholder="Filter by recipient name..." value="{{ q }}">
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <button type="submit">Filter</button>
+</form>
+
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>{{ sort_link('name', 'Recipient') }}</th>
+            <th>{{ sort_link('total', 'Total Amount') }}</th>
+            <th>{{ sort_link('count', 'Records') }}</th>
+            <th>First</th>
+            <th>{{ sort_link('last', 'Last') }}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ format_currency(row.total_amount) }}</td>
+            <td>{{ row.record_count }}</td>
+            <td>{{ row.first_date or '-' }}</td>
+            <td>{{ row.last_date or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No recipients{% if q %} matching "{{ q }}"{% endif %} in this window.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('irs527.org_recipients', ein=org.ein, page=page-1, sort=sort_by, dir=sort_dir, q=q or None, **scope_query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('irs527.org_recipients', ein=org.ein, page=page+1, sort=sort_by, dir=sort_dir, q=q or None, **scope_query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

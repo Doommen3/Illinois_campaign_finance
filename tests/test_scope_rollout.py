@@ -210,12 +210,28 @@ class TestListScope:
         assert "$12,345.00" in html                       # all time keeps the report totals
 
     def test_openbook_list_carries_scope_and_narrows(self, openbook_app):
-        html = _get(openbook_app, "/openbook/?period=all")
+        # E7 (plan profiles-races-dated-widgets): the list renders contribution COUNTS only -- the "Contributions" stat card and
+        # the vendor row's last cell -- never amounts, so the old `"$5,000.00" not in html` could not fail. The fixture holds
+        # one contribution in the 2026 cycle (2026-03-15, $5,000) and one in the 2024 cycle (2023-02-01, $100).
+        def contribution_counts(query):
+            html = _get(openbook_app, f"/openbook/?{query}")
+            card = re.search(r'<h3>Contributions(?:\s*<span class="scope-tag[^"]*">[^<]*</span>)?</h3>\s*<p class="stat-value">(\d+)</p>', html)
+            cells = re.findall(r"<td>(\d+)</td>", html[html.index("<tbody>"):])  # seed links, contracts, contributions
+            assert card and cells, query
+            return html, card.group(1), cells[-1]
+
+        html, card, cell = contribution_counts("period=all")
         assert "CONTRIB VENDOR" in html
         assert _hidden_scope_input(html, "period", "all")
-        html = _get(openbook_app, "/openbook/?period=cycle:2024")
+        assert (card, cell) == ("2", "2")      # both contributions
+        html, card, cell = contribution_counts("period=cycle:2024")
         assert 'data-scope-key="cycle:2024"' in html
-        assert "$5,000.00" not in html
+        assert (card, cell) == ("1", "1")      # only the 2023 one; an ignored window shows "2"
+        html, card, cell = contribution_counts("period=cycle:2026")
+        assert (card, cell) == ("1", "1")      # only the 2026 one
+        html, card, cell = contribution_counts("period=cycle:2022")
+        assert "CONTRIB VENDOR" in html        # the vendor still lists ...
+        assert (card, cell) == ("0", "0")      # ... with none: a page stuck on any one cycle would still show "1" or "2"
 
     def test_lobbying_list_filters_by_registration_year(self, lobbying_list_app):
         html = _get(lobbying_list_app, "/lobbying/")

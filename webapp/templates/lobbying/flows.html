@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Lobbying Money Flows - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Lobbying Money Flows</h1>
 {% include "_partials/time_scope_bar.html" %}
-<p class="subtitle">Matched lobbying clients to Illinois committees via donor overlaps.</p>
+<p class="subtitle">Matched lobbying clients to Illinois committees via donor overlaps. {{ scope_tag() }}</p>
 <p class="help-text">This diagram attributes a matched donor's committee giving to the lobbying clients they match (score >= 0.80). Use the filter to focus on a single client name.</p>
 
 <form id="flow-filter" class="search-form">

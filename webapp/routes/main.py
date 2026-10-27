@@ -10,8 +10,9 @@ import time
 
 from flask import Blueprint, Response, render_template, request, current_app
 
-from database.models import Committee, Report, Donor, Contribution
+from database.models import Committee, Report, Donor, Contribution, receipts_filter_sql
 from webapp.cache_backend import RouteCache
+from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
 
 main_bp = Blueprint('main', __name__)
 
@@ -138,41 +139,6 @@ def _apply_date_window_clauses(
     if end:
         where_clauses.append(f"{date_expr} <= DATE(?)")
         params.append(end[:10])
-
-
-def _text_date_window_clause(
-    column: str,
-    *,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    prefix: str = "AND",
-) -> tuple[str, list[object]]:
-    start_iso = (date_from or "").strip()[:10]
-    end_iso = (date_to or "").strip()[:10]
-    if not start_iso and not end_iso:
-        return "", []
-
-    iso_parts: list[str] = []
-    iso_params: list[object] = []
-    compact_parts: list[str] = []
-    compact_params: list[object] = []
-
-    if start_iso:
-        iso_parts.append(f"{column} >= ?")
-        iso_params.append(start_iso)
-        compact_parts.append(f"{column} >= ?")
-        compact_params.append(start_iso.replace("-", ""))
-    if end_iso:
-        iso_parts.append(f"{column} <= ?")
-        iso_params.append(end_iso)
-        compact_parts.append(f"{column} <= ?")
-        compact_params.append(end_iso.replace("-", ""))
-
-    if not iso_parts:
-        return "", []
-
-    clause = f" {prefix} (({' AND '.join(iso_parts)}) OR ({' AND '.join(compact_parts)}))"
-    return clause, iso_params + compact_params
 
 
 def _scalar(conn, sql: str, params=(), default=0):
@@ -454,9 +420,18 @@ def _get_candidate_stats(conn, scope=None):
 
     If scope (a TimeScope) is provided, date-bearing queries are filtered to its window.
     """
-    from webapp.utils.time_scope import scope_cycles, scope_where
+    from webapp.utils.time_scope import cycle_window, scope_cycles, scope_where
 
     federal_cycles = scope_cycles(scope) if scope is not None else None
+    # A window of whole cycles (a cycle preset, or the same dates typed in) keeps the FEC
+    # cards on whole cycles, reported cycle totals included; any other bounded window dates
+    # the Schedule A/B/E rows themselves. Decided by the window, not the preset key, because
+    # the stats cache is keyed by the window.
+    fec_by_date = scope is not None and bool(scope.start or scope.end) and not (
+        federal_cycles
+        and scope.start == cycle_window(federal_cycles[0])[0]
+        and scope.end == cycle_window(federal_cycles[-1])[1]
+    )
 
     def _cycle_clause(date_column: str) -> tuple[str, list[object]]:
         if federal_cycles is None:
@@ -466,6 +441,12 @@ def _get_candidate_stats(conn, scope=None):
         placeholders = ",".join(["?"] * len(federal_cycles))
         return f" AND {date_column} IN ({placeholders})", [int(cycle) for cycle in federal_cycles]
 
+    def _fec_clause(date_column: str) -> tuple[str, list[object]]:
+        if fec_by_date:
+            clause, plist = scope_where(scope, date_column, style="qmark")
+            return clause, list(plist)
+        return _cycle_clause("cycle")
+
     stats = {
         'local_candidate_rows': 0,
         'local_candidates': 0,
@@ -474,6 +455,7 @@ def _get_candidate_stats(conn, scope=None):
         'local_total_expenditures': 0.0,
         'local_archived_filings': 0,
         'federal_candidates': 0,
+        'federal_candidates_scope': "All time",
         'federal_contributions': 0,
         'federal_total_amount': 0.0,
         'federal_disbursements': 0,
@@ -547,15 +529,25 @@ def _get_candidate_stats(conn, scope=None):
             )
         )
     elif _table_exists(conn, "isbe_d2_reports"):
-        # Fallback: query ISBE D2 reports directly
+        # Fallback: query ISBE D2 reports directly, windowed like the compat path by the filed
+        # doc's reporting_period_end (inner join: a D-2 row with no dated doc is outside a bound).
+        fallback_join = ""
+        fallback_clause = ""
+        fallback_params = ()
+        if scope is not None:
+            fallback_clause, fallback_plist = scope_where(scope, "fd.reporting_period_end", style="qmark")
+            if fallback_clause:
+                fallback_join = " JOIN isbe_filed_docs fd ON fd.id = d2.filed_doc_id"
+                fallback_params = tuple(fallback_plist)
         totals_row = conn.execute(
-            """
+            f"""
             SELECT
-                COALESCE(SUM(total_receipts), 0) AS total_receipts,
-                COALESCE(SUM(total_expenditures), 0) AS total_expenditures
-            FROM isbe_d2_reports
-            WHERE archived = FALSE
-            """
+                COALESCE(SUM(d2.total_receipts), 0) AS total_receipts,
+                COALESCE(SUM(d2.total_expenditures), 0) AS total_expenditures
+            FROM isbe_d2_reports d2{fallback_join}
+            WHERE d2.archived = FALSE{fallback_clause}
+            """,
+            fallback_params,
         ).fetchone()
         if totals_row:
             stats['local_total_receipts'] = float(totals_row["total_receipts"] or 0.0)
@@ -583,19 +575,28 @@ def _get_candidate_stats(conn, scope=None):
             )
         )
 
+    # fec_candidate_match has a cycle and no date: the candidates card counts whole cycles and names them.
+    if federal_cycles:
+        first, last = federal_cycles[0], federal_cycles[-1]
+        stats['federal_candidates_scope'] = f"{first} Cycle" if first == last else f"{first}–{last} Cycles"
+    elif federal_cycles is not None:
+        stats['federal_candidates_scope'] = "No cycle"
+
     fec_cycle_clause, fec_cycle_params = _cycle_clause("cycle")
+    fec_a_clause, fec_a_params = _fec_clause("contribution_receipt_date")
     if _table_exists(conn, "fec_schedule_a_contributions"):
-        fec_a_where = "WHERE 1=1" + fec_cycle_clause
+        fec_a_where = "WHERE 1=1" + fec_a_clause
         stats['federal_contributions'] = int(
             _scalar(
                 conn,
                 f"SELECT COUNT(*) AS count FROM fec_schedule_a_contributions {fec_a_where}",
-                params=tuple(fec_cycle_params),
+                params=tuple(fec_a_params),
                 default=0,
             )
         )
     if _table_exists(conn, "fec_schedule_b_disbursements"):
-        fec_b_where = "WHERE 1=1" + fec_cycle_clause
+        fec_b_clause, fec_b_params = _fec_clause("disbursement_date")
+        fec_b_where = "WHERE 1=1" + fec_b_clause
         row = conn.execute(
             f"""
             SELECT
@@ -603,13 +604,14 @@ def _get_candidate_stats(conn, scope=None):
                 COALESCE(SUM(disbursement_amount), 0) AS total
             FROM fec_schedule_b_disbursements {fec_b_where}
             """,
-            tuple(fec_cycle_params),
+            tuple(fec_b_params),
         ).fetchone()
         if row:
             stats['federal_disbursements'] = int(row["count"] or 0)
             stats['federal_disbursement_total'] = float(row["total"] or 0.0)
     if _table_exists(conn, "fec_schedule_e_independent_expenditures"):
-        fec_e_where = "WHERE 1=1" + fec_cycle_clause
+        fec_e_clause, fec_e_params = _fec_clause("expenditure_date")
+        fec_e_where = "WHERE 1=1" + fec_e_clause
         row = conn.execute(
             f"""
             SELECT
@@ -617,12 +619,13 @@ def _get_candidate_stats(conn, scope=None):
                 COALESCE(SUM(expenditure_amount), 0) AS total
             FROM fec_schedule_e_independent_expenditures {fec_e_where}
             """,
-            tuple(fec_cycle_params),
+            tuple(fec_e_params),
         ).fetchone()
         if row:
             stats['federal_independent_expenditures'] = int(row["count"] or 0)
             stats['federal_independent_expenditure_total'] = float(row["total"] or 0.0)
-    if _table_exists(conn, "fec_candidate_cycle_totals"):
+    # Reported cycle totals describe whole cycles only; a dated window sums the Schedule A rows.
+    if _table_exists(conn, "fec_candidate_cycle_totals") and not fec_by_date:
         totals_where = "WHERE 1=1" + fec_cycle_clause
         totals_rows = int(
             _scalar(
@@ -646,7 +649,7 @@ def _get_candidate_stats(conn, scope=None):
                 _scalar(
                     conn,
                     f"SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions {fec_a_where}",
-                    params=tuple(fec_cycle_params),
+                    params=tuple(fec_a_params),
                     default=0.0,
                 )
             )
@@ -655,7 +658,7 @@ def _get_candidate_stats(conn, scope=None):
             _scalar(
                 conn,
                 f"SELECT COALESCE(SUM(contribution_receipt_amount), 0) AS total FROM fec_schedule_a_contributions {fec_a_where}",
-                params=tuple(fec_cycle_params),
+                params=tuple(fec_a_params),
                 default=0.0,
             )
         )
@@ -849,14 +852,8 @@ def _normalize_month_key(value: str | None) -> str | None:
 
 
 def _bulk_receipts_base_filter(conn, alias: str = "r") -> str:
-    clauses = [f"COALESCE({alias}.amount, 0) > 0"]
-    if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-        clauses.append(f"NOT COALESCE({alias}.is_archived::boolean, FALSE)")
-    if _column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
-        clauses.append(
-            f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"
-        )
-    return " AND ".join(clauses)
+    """The shared contributions predicate (``database.models.receipts_filter_sql``); ``conn`` kept for callers."""
+    return receipts_filter_sql(alias)
 
 
 def _bulk_donor_key_sql(alias: str = "r") -> str:
@@ -2861,6 +2858,15 @@ def search():
 
     is_short_query = bool(query) and len(query) < min_query_len and not query.isdigit()
 
+    # Committees / Donors read all-time directories (isbe_committees by name, analytics_donor_summary),
+    # so beside them the legacy fallback rows stay all-time too and both sections are tagged "All time".
+    # Only without the directory table does the legacy fallback serve the section, windowed by
+    # contribution date and tagged with the window (plan J-S14 / J-S23).
+    all_time_sections = {
+        'committees': _table_exists(conn, "isbe_committees"),
+        'donors': _table_exists(conn, "analytics_donor_summary"),
+    }
+
     search_meta = {
         'query_was_normalized': query_was_normalized,
         'min_query_length': min_query_len,
@@ -2889,6 +2895,7 @@ def search():
         'scope_default_key': f"cycle:{current_cycle()}",
         'time_scope_source_label': 'ISBE',
         'scope_query': scope_params(scope),
+        'all_time_sections': all_time_sections,
     }
 
     search_start = time.perf_counter()
@@ -2957,8 +2964,8 @@ def search():
                     conn,
                     query,
                     limit=committee_limit,
-                    transaction_date_from=date_from,
-                    transaction_date_to=date_to,
+                    transaction_date_from=None if all_time_sections['committees'] else date_from,
+                    transaction_date_to=None if all_time_sections['committees'] else date_to,
                 ),
             )
 
@@ -2969,8 +2976,8 @@ def search():
                     conn,
                     query,
                     limit=donor_limit,
-                    transaction_date_from=date_from,
-                    transaction_date_to=date_to,
+                    transaction_date_from=None if all_time_sections['donors'] else date_from,
+                    transaction_date_to=None if all_time_sections['donors'] else date_to,
                 ),
             )
 

@@ -1,0 +1,116 @@
+# Data dictionary — Illinois campaign finance (`ilcf` PostgreSQL)
+
+Contract file for shapes, grains and join keys (global rule §11). Totals/ground truth live in
+`.claude/data-rubric.md` where present; narrative docs in `docs/CODEBOOK.md` (§4 lists column names
+only and has drifted — this file wins where they disagree; drift examples at the bottom). Structural
+facts only. Counts are local `ilcf` as of **2026-10-26** (entries added or re-checked on 2026-10-27 say so; ISBE data through 2026-09-30; prod is the
+same schema with data through 2026-10-21).
+
+Conventions that apply to every ISBE money table:
+- **Archived rows are superseded by an amendment.** Every aggregate excludes them: ETL tables
+  `archived = FALSE`; compat views `NOT COALESCE(is_archived::boolean, FALSE)` (`is_archived` is an
+  integer 0/1 there). Rule and worked example in `CLAUDE.md` ("ISBE `Archived` flag").
+- **`d2_part` / `d2_part_code`** on receipts: `1A` itemized contributions (2.56M non-archived condensed
+  rows), `2A` transfers in (542K), `3A` loans, `4A` other receipts, `5A` in-kind; a handful of junk
+  values. "Contribution" predicates keep blank or `1%` only; "all receipts" predicates keep every part.
+  Canonical helper: `receipts_filter_sql(alias, parts=…)` in `database/models.py` (plan S-PA).
+- **Donor identity** = `donor_key = LOWER(TRIM(first|last|addr1|addr2|city|state|zip))` joined by `|`
+  (`Donor._bulk_donor_key_sql`, `database/models.py:787`); merges in `donor_entity_local_member`.
+
+## isbe_committees
+- **Where:** table, loaded by `scripts/isbe_sunshine_etl.py` from `Committees.txt` (dropped + reloaded every `sunshine-import`)
+- **Rows:** 34,157 (4,526 `active`) · **Grain:** one row per ISBE committee id
+- **Columns:** `id` int PK, `type`, `state_committee`, `local_committee`, `refer_name`, `name`, `address1..3`, `city`, `state`, `zipcode`, `active` bool, `status_date`, `creation_date`, `creation_amount`, `disp_funds_*`, `candidate_position`, `policy_position`, `party`, `purpose`
+- **Natural key:** `id` (ISBE id) — unique Y (2026-10-26)
+- **Joins:** `isbe_candidate_committees.committee_id` (1:N), `isbe_officer_committees.committee_id`, `isbe_receipts/expenditures/filed_docs/d2_reports.committee_id`, matviews by `committee_id`
+- **Quirks:** the same actor re-registers under a new id each cycle (806 exact-normalized-name groups, 1,779 committees; see suggestions C8 / `committee_family`). Ids 1–348 collide with the legacy scraper table `committees` (fixed by A7: ISBE wins).
+
+## isbe_candidates
+- **Rows:** 32,558 · **Grain:** one row per ISBE candidate id
+- **Columns:** `id` int PK, `last_name`, `first_name`, `address1`, `address2`, `city`, `state`, `zipcode`, `office`, `district_type`, `district` (text), `residence_county`, `party`, `redaction_requested` bool
+- **Natural key:** `id` — unique Y
+- **Joins:** `isbe_candidacies.candidate_id` (1:N), `isbe_candidate_committees.candidate_id` (1:N)
+- **Quirks:** `office/district_type/district` are the candidate's **current** office, not per candidacy — a candidate who changed office is raced under the new one for all years. Race identity = `(office, district_type, district)`.
+
+## isbe_candidacies
+- **Rows:** ~66.7K · **Grain:** one row per (candidate, election) filing
+- **Columns:** `id` int PK, `candidate_id`, `election_type` (Consolidated Election / General Primary / General Election / Consolidated Primary / Nonpartisan Election / Special Election), `election_year` int, `race_type` enum (incumbent / open seat / challenger / retired / blank), `outcome` enum (won / lost / blank), `fair_campaign`, `limits_off`, `limits_off_reason`
+- **Natural key:** `id`; `(candidate_id, election_type, election_year)` is NOT unique (11 duplicate groups, 2026-10-26)
+- **Joins:** `isbe_candidates.id`; election cycle = `election_year + election_year % 2` (odd-year consolidated elections fold into the next even cycle, matching `cycle:2026` = 2025-01-01..2026-12-31)
+- **Quirks:** enums need `::text` to compare as strings; no office columns (see isbe_candidates). 2027 rows already exist (178), so "MAX(year)" is never a safe default cycle — use the current cycle by date.
+
+## isbe_candidate_committees
+- **Grain:** one row per committee ↔ candidate link (N:M)
+- **Columns:** `committee_id`, `candidate_id`
+- **Natural key:** `(committee_id, candidate_id)` — unique Y (2026-10-26)
+- **Quirks:** 4,765 committees link to more than one candidate (slates); 24 of them to 2026 candidates in more than one race — race totals must count a committee once per race (plan J-S3). 9,262 committees have no link (parties, PACs, referendum committees).
+
+## isbe_officers / isbe_officer_committees
+- **Rows:** 73,439 / 63,833 · **Grain:** officer row (with `committee_id`, `current` flag, `resign_date`) / officer ↔ committee link (`id`, `committee_id`, `officer_id`)
+- **Columns (officers):** `id`, `committee_id`, `last_name`, `first_name`, `address1`, `address2`, `city`, `state`, `zipcode`, `title`, `phone`, `resign_date`, `redaction_requested`, `current`
+- **Joins:** both to `isbe_committees.id`; evidence source for committee families (shared treasurer/officer)
+
+## isbe_filed_docs
+- **Rows:** 956,760 · **Grain:** one row per filed document (D-2 quarterly, A-1, B-1, Statement of Organization, …)
+- **Columns:** `id` int PK, `committee_id`, `filed_doc_type`, `doc_name`, `amended` bool, `election_type`, `election_year`, `reporting_period_begin` date, `reporting_period_end` date, `received_at` date, `received_datetime` timestamp, signer/submitter name + address fields, `archived` bool, `clarification`, `redaction_requested`
+- **Natural key:** `id` — unique Y
+- **Joins:** `isbe_receipts/expenditures/d2_reports.filed_doc_id` (1:N / 1:1)
+- **Quirks:** `received_datetime` NULL in 61,367 rows (6.4 %), `reporting_period_end` NULL in 125,356 — any `ORDER BY received_datetime DESC` picker needs `NULLS LAST` (fixed 2026-10-26 in all three matview pickers; before that NULL-dated A-1 docs beat the real quarterly and whole quarters vanished from the condensed views). Freshness signal for `validate-freshness` is `MAX(received_datetime)`.
+
+## isbe_d2_reports
+- **Rows:** 541,123 · **Grain:** one row per D-2 summary (one per filed doc)
+- **Columns:** `id`, `committee_id`, `filed_doc_id`, `beginning_funds_avail`, `individual_itemized`, `individual_non_itemized`, `transfer_in`, `loan_received`, `other_receipts`, `total_receipts`, `inkind_*`, `expenditures_*`, `independent_expenditures_*`, `total_expenditures`, `debts_*`, `total_debts`, `total_investments`, `end_funds_available`, `archived` bool
+- **Natural key:** `filed_doc_id` — unique Y (2026-10-26); `id` PK
+- **Quirks:** open bug (memory `isbe_etl_open_bugs`): `transfer_in` / `loan_received` / `other_receipts` carry the NON-itemized halves of the raw I/NI pairs. Sworn totals (`total_receipts`) are the reconciliation ground truth for a committee's quarter.
+
+## isbe_receipts
+- **Rows:** 6,526,500 · **Grain:** one row per itemized receipt line as filed (amendments add new rows; the superseded ones are `archived = TRUE`)
+- **Columns:** `id` int PK, `committee_id`, `filed_doc_id` (never NULL), `etrans_id`, `last_name`, `first_name`, `received_date` date (NULL in 2 rows), `amount`, `aggregate_amount`, `loan_amount`, `occupation`, `employer`, `address1`, `address2`, `city`, `state`, `zipcode`, `d2_part`, `description`, `vendor_*` (7), `archived` bool, `country`, `redaction_requested`
+- **Natural key:** `id` — unique Y
+- **Joins:** `isbe_committees.id`, `isbe_filed_docs.id`; donor identity via `donor_key` (above)
+- **Quirks:** `last_name` holds the business name for organizations. Raw table counts every amendment: for current values read `isbe_condensed_receipts` (or `archived = FALSE` here — verified equal to sworn totals in the 24058 check).
+
+## isbe_expenditures
+- **Rows:** 4,849,280 · **Grain:** one row per itemized expenditure line as filed
+- **Columns:** `id` PK, `committee_id`, `filed_doc_id`, `etrans_id`, `last_name`, `first_name` (payee), `expended_date` date (never NULL), `amount`, `aggregate_amount`, `address1`, `address2`, `city`, `state`, `zipcode`, `d2_part`, `purpose`, `candidate_name`, `office`, `supporting` bool, `opposing` bool, `archived` bool, `country`, `redaction_requested`
+- **Quirks:** `d2_part LIKE '9%'` = independent expenditures (Part 9): 16,841 non-archived rows, `candidate_name` free text, `office` free text ("Governor 0", "ALDERMAN CHICAGO WARD 30") — never match office strings against `isbe_candidates.office`; match by name within the election cycle (plan J-S4).
+
+## isbe_investments
+- **Rows:** 24,600 · **Grain:** one row per investment line · **Columns:** `id`, `committee_id`, `filed_doc_id`, `description`, `purchase_date`, `purchase_shares`, `purchase_price`, `current_value`, `liquid_value`, `liquid_date`, holder name/address, `archived`, `country`
+
+## Materialized views (rebuilt by the ETL after every import; DDL `scripts/isbe_sunshine_etl.py` MATVIEW_DDL)
+- **isbe_most_recent_filings** — 34,157 rows, unique `committee_id`; the latest non-A-1/B-1/SoO filing per committee with its D-2 totals. Picker `ORDER BY committee_id, reporting_period_end DESC, received_datetime DESC NULLS LAST`.
+- **isbe_condensed_receipts** — 4,025,900 rows (272,771 archived), unique `id`, same columns as `isbe_receipts`. = receipts after the most recent filing's period end UNION receipts of the one doc picked per `(reporting_period_begin, reporting_period_end, committee_id)` by latest `received_datetime` (`NULLS LAST` since 2026-10-26; before: 3,673,429 rows and 3,510 committees understated by >1 %, after: 741). Indexes: `id`, `filed_doc_id`, `committee_id`, `received_date`, partial `(committee_id, received_date) WHERE archived = FALSE AND d2_part LIKE '1%' AND amount > 0`.
+- **isbe_condensed_expenditures** — 3,525,824 rows (178,708 archived), unique `id`; indexes `id` and `(committee_id, expended_date)` (added 2026-10-26; before it every committee page seq-scanned 3M rows).
+- **isbe_committee_money** — 34,157 rows, unique `committee_id`: most-recent-filing funds + receipts since; `last_receipt_date`.
+- **isbe_candidate_money** — 37,100 rows (candidate × committee): `candidate_id`, `committee_id`, `total`, `last_receipt_date`.
+
+## Compat views (recreated by `scripts/swap_bulk_to_isbe.py` after every import; routes written for the old `bulk_*_clean` tables read these)
+- **bulk_receipts_clean** → `isbe_bulk_receipts_clean_compat` → `isbe_condensed_receipts`. Renamed columns: `bulk_row_id`/`receipt_record_id` (= `id`), `committee_id_sbe`, `last_or_business_name`, `address_line_1/2`, `postal_code`, `d2_part_code`, `is_archived` **int 0/1**, `received_date` **text** (ISO), `received_datetime_raw`, plus `source_file`/`source_row_number` NULL placeholders. No `contributed_by` column.
+- **bulk_expenditures_clean** → `isbe_condensed_expenditures`: `payee_last_or_business_name`, `payee_first_name`, `expended_date` text, `d2_part_code`, `is_supporting`/`is_opposing`/`is_archived` int, `candidate_name`, `office`.
+- **bulk_candidate_committee_finance_agg** — 112,013 rows; **grain (candidate, committee, period_year)**, so `(candidate_id, committee_id_sbe, election_cycle)` is NOT unique (26,290 duplicate groups): always `SUM(sum_total_receipts)` over the group. `election_cycle` is derived from receipt dates per filed doc (`period_year` rounded up to even), not from candidacies — a committee with no receipts in a cycle has no row for it. Columns: `candidate_id`, `candidate_full_name`, `office_sought`, `district_type`, `district`, `candidate_party_affiliation`, `committee_id_sbe`, `committee_name`, `committee_type`, `committee_party_affiliation`, `period_year`, `election_cycle`, `filing_count`, `sum_total_receipts`, `sum_total_expenditures`, `max_ending_funds_available`, `archived_filing_count`, `period_start_date`, `period_end_date`.
+- **isbe_race_candidacies** — **live** (plan S-RA, 2026-10-26): plain view created by `scripts/swap_bulk_to_isbe.py` (`RACE_CANDIDACIES_VIEW_SQL`), dropped and recreated on every import and every run of the script — `--skip-compat-swap` skips it and Top State Races then shows "not available". **Rows:** 86,484 locally (66,735 candidacies; 871 rows have no linked committee). **Grain:** one row per (candidacy, linked committee); a candidate with no committee has one row with NULL committee columns. **Natural key:** `(candidacy_id, committee_id_sbe)` — unique Y (2026-10-27). `election_cycle = election_year + election_year % 2` (25 distinct cycles locally, 1980–2028); the race builder returns 1,465 races for cycle 2026 (1,012 with receipts in the 2026 window) because the 2025 consolidated elections fold into 2026. Office and district come from the candidate row (ISBE publishes none per candidacy). It is the race builder's candidate set; D-2 money still joins `bulk_candidate_committee_finance_agg` per (committee, cycle). Columns: `candidacy_id`, `candidate_id`, `election_year`, `election_cycle`, `election_type`, `race_type`, `outcome`, `candidate_full_name`, `office_sought`, `district_type`, `district`, `candidate_party_affiliation`, `committee_id_sbe` (nullable), `committee_name`.
+
+## Donor analytics tables (rebuilt by `refresh-analytics` → `refresh_analytics_materialized`, `database/analytics.py`)
+- **analytics_donor_summary** — 1,024,371 rows, PK `(source, donor_key)`; `source` is always `'bulk_receipts'` today. Columns: `local_donor_id`, `donor_name`, `donor_address`, `donor_city`, `donor_state`, `occupation`, `employer`, `total_amount`, `contribution_count`, `committee_count`, `updated_at`. All-time only (no cycle/year column) — windowed donor lists go live to `bulk_receipts_clean`, except an exact one-cycle window, which reads `analytics_donor_cycle_summary` (below).
+- **analytics_donor_committee_agg** — 1,187,617 rows, PK `(source, donor_key, committee_id)`; **`committee_id` is TEXT** (compare with a string). Indexes: `(source, total_amount DESC)`, `(source, committee_name)`, `(source, donor_key)` and, since B2 (2026-10-26), `idx_analytics_donor_committee_agg_source_committee (source, committee_id)` — in `database/schema.sql`, so `init-db` creates it (prod needs one `init-db` run). The committee profile lookup is an index scan (warm 5–55 ms; it was a 1.6–1.9 s seq scan).
+- **analytics_donor_cycle_summary** (plan S-S2 / B4, 2026-10-27) — 1,625,516 rows locally (cycle 2026: 82,193 donors; 2024: 100,331). **Grain:** one row per donor per election cycle; PK `(source, election_cycle, donor_key)`, `source` always `'bulk_receipts'`. Columns (13): `source`, `election_cycle` int, `donor_key`, `donor_name`, `donor_address`, `donor_city`, `donor_state`, `occupation`, `employer`, `total_amount` DOUBLE PRECISION (not REAL: float4 drops cents above ~$16.7M), `contribution_count`, `committee_count`, `updated_at`; secondary index `(source, election_cycle, total_amount DESC)`. **Predicate:** the live `/donors/` list's — `receipts_filter_sql(parts="contributions")` over `bulk_receipts_clean` (amount > 0, not archived, `d2_part` blank or `1%`; no `isbe_d2_reports` requirement, unlike `analytics_donor_summary`); `election_cycle = year + year % 2` of `received_date`; undated receipts and blank donor keys get no row. Donors, receipts and totals equal the live path for cycles 2024 and 2026. **Refresh:** deleted and rebuilt by `refresh_analytics_materialized` (`_refresh_donor_cycle_summary`; 57.6 s locally); it reads the compat view `bulk_receipts_clean`, so the table stays empty after `--skip-compat-swap`. **Read rule:** `Donor.get_all_with_totals` / `count` use it only when the window is exactly one cycle ((cycle − 1)-01-01..cycle-12-31) and that cycle has rows; any other window keeps the live GROUP BY. Privacy redactions delete the redacted donor's rows here (`_DERIVED_DONOR_TABLES`).
+- **donor_entity_local** — 246,900 rows, key `entity_id` text; `source`, `canonical_name`, `display_name`, `member_count`, `total_amount`, `confidence_score`, `peak_confidence_score`, `confidence_tier` (high/medium/low), `merge_action` (auto_merge/review/singleton), `method_version`.
+- **donor_entity_local_member** — 499,856 rows, PK `(source, donor_key)` → `entity_id`; `review_status` (pending/approved/rejected/not_needed), `reasons_json`, per-member totals. Reviewed at `/admin/donor-merges`. Writer: `database/local_donor_entities.py`.
+
+## Committee families (plan S-C8; DDL `database/schema.sql`, logic `database/committee_families.py`)
+Group, never merge: committee ids, pages and per-committee totals are unchanged. Design `docs/committee_families_design.md`.
+- **committee_family** — 753 rows locally, all `pending` (none accepted or rejected yet, 2026-10-27). **Grain:** one row per proposed or reviewed grouping of ISBE committees that look like one political actor. **Columns:** `id` BIGSERIAL PK, `label` text (as-filed name of the most recently registered active member), `status` text CHECK `pending` / `accepted` / `rejected` (default `pending`), `evidence` jsonb (only the flags that hold: `same_name`, `similar_name` score, `shared_officer`, `same_address`, `shared_candidates` ids), `member_hash` text UNIQUE (sha1 of the sorted member ids), `notes`, `created_at`, `reviewed_at`. **Natural key:** `member_hash` — unique by constraint. **Refresh:** `python3 scripts/committee_families.py seed` (evidence rule: shared linked candidate AND same normalized name / trigram ≥ 0.8 / shared officer name / same non-blank street + zip) inserts only member sets not seen before and never touches existing rows; reviewed at `/admin/committee-families`. **Quirks:** only `accepted` rows may reach public pages (committee banner, candidate-profile grouping, `/committees/?by=family`); a committee may sit in at most one accepted family (checked in the admin decision handler, not the schema); removing a member rewrites `member_hash`, so a later `seed` proposes the original set again as a new pending family; families whose members vanish from `isbe_committees` after a reload are reported by `seed`, never deleted.
+- **committee_family_member** — 1,624 rows locally (2–6 members per family). **Grain:** one row per (family, committee). **Columns:** `family_id` bigint FK → `committee_family(id)` ON DELETE CASCADE, `committee_id` int (= `isbe_committees.id`; **no FK** because the ETL drops and reloads `isbe_*`), `evidence` jsonb (per-member flags). **Natural key:** `(family_id, committee_id)` PK; secondary index on `committee_id`. At seed time every committee is in exactly one family (families are connected components).
+
+## Legacy scraper tables (pre-ETL; still present on prod and local)
+- **committees** 344 rows (`id` 1–348, `name`, `detail_url`, `source_identifier`, `committee_id_sbe`), **reports** 650, **contributions** 766 (`transaction_date` text). Every legacy `id` also exists in `isbe_committees` — `/committees/<id>` must prefer ISBE (A7). Not refreshed.
+
+## Other families (counts only; shapes in `database/schema.sql`, narrative in `docs/CODEBOOK.md` §4)
+- **FEC:** `fec_schedule_a_contributions` 89,789 (max `contribution_receipt_date` 2026-07-01), `fec_schedule_b_disbursements` 13,477 (`disbursement_date`), `fec_schedule_e_independent_expenditures` (`expenditure_date`), `fec_candidate_match` cycle-keyed (no dates). Dates are real dates; `cycle` is the FEC two-year cycle.
+- **IRS 527:** `irs527_organizations` 2,343, `irs527_reports` 1,739 (`period_start`/`period_end`), `irs527_contributions` 8,974,461 (`contributor_name`, `amount`, `date` **text**), `irs527_expenditures` 35,914 (`recipient_name`, `amount`, `date` **text**). Text dates: use `text_date_window_clause` (`webapp/utils/text_dates.py`; `routes/irs527.py` and `routes/main.py` import it as `_text_date_window_clause`). **Warning (A11): `irs527_contributions.date` holds amounts, not dates, for 8,972,064 of the 8,974,461 local rows** (finding of 2026-10-26; a re-check on 2026-10-27 found no row matching a valid `YYYYMMDD` or ISO date — 709 blank, 61 non-numeric, the rest digit-only strings, 934,577 of them equal to the row's `amount`). Every windowed 527 contribution view and Top Contributors date range is unreliable until the type-A parser in `database/irs527_loader.py` is fixed and `import-irs527` reloaded. Prod unchecked.
+- **Lobbying:** `lobbying_entities` 1,822, `lobbying_clients` 3,312, `lobbying_lobbyist_registrations` 40,794; year granularity via `reg_year`.
+- **OpenBook / Chicago:** see `database/schema.sql` (`openbook_contracts_raw.fiscal_year` is the only date-like column on contracts).
+
+## Known CODEBOOK §4 drift (2026-10-26 spot check; the DDL is right, the CODEBOOK names are not)
+`lobbying_entities` (`entity_id`, `entity_name`, `postal_code`, not `id`/`name`/`postal`); `lobbying_clients` (`client_id`, `client_name`, `status`); `lobbying_lobbyists` (`lobbyist_id`); `lobbying_lobbyist_registrations` (`reg_year`); `fec_candidate_cycle_totals` (`receipts`, `disbursements`, `last_cash_on_hand_end_period`); `irs527_contribution_rollup` (`total_amount`); `isbe_d2_reports` has no period columns (they are on `isbe_filed_docs`); `isbe_filed_docs` has `received_at`/`received_datetime`, not `filed_date`; `isbe_committees` has `type`/`zipcode`, not `type_desc`/`zip`.

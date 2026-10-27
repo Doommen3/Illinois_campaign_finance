@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}{{ candidate.name }} - Candidate Profile{% endblock %}
+
+{% block content %}
+<h1>{{ candidate.name }}</h1>
+{% if candidate.facts %}
+<p class="subtitle">
+    {% for label, value in candidate.facts %}{{ label }}: <strong>{{ value }}</strong>{% if not loop.last %} | {% endif %}{% endfor %}
+</p>
+{% endif %}
+{% include "_partials/time_scope_bar.html" %}
+
+<div class="status-section">
+    <h2>Committees {{ scope_tag() }}</h2>
+    {% if committees %}
+    <p class="subtitle">
+        Total raised: <strong>{{ format_currency(totals.raised) }}</strong> |
+        This cycle: <strong>{{ format_currency(totals.cycle_raised) }}</strong>
+    </p>
+    <p class="subtitle">
+        Total spent: <strong>{{ format_currency(totals.spent) }}</strong> |
+        This cycle: <strong>{{ format_currency(totals.cycle_spent) }}</strong>
+    </p>
+    <p class="subtitle">Most recently active first. Last activity looks at all time; Raised and Spent follow the window above.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Committee</th>
+                <th>Status</th>
+                <th>Last activity</th>
+                <th>Last filing</th>
+                <th>Raised</th>
+                <th>Spent</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for block in committee_blocks %}
+            {% if block.label %}
+            <tr class="family-group">
+                <td colspan="6"><h3 class="family-heading">{{ block.label }} <small>{{ block.rows|length }} committees in one family</small></h3></td>
+            </tr>
+            {% endif %}
+            {% for row in block.rows %}
+            <tr{% if row.idle %} class="row-muted"{% endif %}>
+                <td><a href="{{ url_for('committees.committee_detail', committee_id=row.id, **scope_query) }}">{{ row.name }}</a></td>
+                <td>{% if row.active is none %}&mdash;{% else %}{{ 'Active' if row.active else 'Inactive' }}{% endif %}</td>
+                <td>{% if row.last_date %}{{ row.last_date.isoformat() }} {{ row.last_kind }}{% if row.recent %} <span class="badge badge-approved">Recently active</span>{% endif %}{% else %}&mdash;{% endif %}</td>
+                <td>{{ row.last_filing_name or '—' }}</td>
+                <td>{{ format_currency(row.raised) }}</td>
+                <td>{{ format_currency(row.spent) }}</td>
+            </tr>
+            {% endfor %}
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="subtitle">No committees are linked to this candidate in the ISBE data.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Candidacies {{ scope_tag('All time') }}</h2>
+    {% if candidacies %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Election year</th><th>Election type</th><th>Race type</th><th>Outcome</th></tr>
+        </thead>
+        <tbody>
+            {% for row in candidacies %}
+            <tr>
+                <td>{{ row.election_year if row.election_year is not none else '' }}</td>
+                <td>{{ row.election_type }}</td>
+                <td>{{ row.race_type }}</td>
+                <td>{{ row.outcome }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="subtitle">No candidacies recorded.</p>
+    {% endif %}
+</div>
+
+{% if cycles %}
+<div class="status-section">
+    <h2>Money raised {{ scope_tag('By election cycle') }}</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>Election cycle</th><th>Raised</th></tr>
+        </thead>
+        <tbody>
+            {% for row in cycles %}
+            <tr>
+                <td>{{ row.cycle }}</td>
+                <td>{{ format_currency(row.raised) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<style>
+.data-table tr.row-muted td { color: #718096; }
+.data-table tr.family-group td { background: #edf2f7; }
+.family-heading { margin: 0; font-size: 1rem; }
+.family-heading small { font-weight: normal; color: #718096; }
+</style>
+{% endblock %}

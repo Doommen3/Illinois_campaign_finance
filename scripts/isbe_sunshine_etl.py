@@ -479,7 +479,7 @@ CREATE MATERIALIZED VIEW isbe_most_recent_filings AS (
       FROM isbe_filed_docs
       WHERE doc_name NOT IN ('A-1', 'Statement of Organization',
                              'Letter/Correspondence', 'B-1', 'Nonparticipation')
-      ORDER BY committee_id, reporting_period_end DESC, received_datetime DESC
+      ORDER BY committee_id, reporting_period_end DESC, received_datetime DESC NULLS LAST
     ) AS f
     ORDER BY f.committee_id, f.reporting_period_end DESC
   ) AS fd ON fd.committee_id = cm.id
@@ -500,7 +500,7 @@ CREATE MATERIALIZED VIEW isbe_condensed_receipts AS (
         id AS filed_doc_id
       FROM isbe_filed_docs
       WHERE doc_name != 'Pre-election'
-      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC
+      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC NULLS LAST
     ) AS f USING(filed_doc_id)
   )
 );
@@ -524,11 +524,12 @@ CREATE MATERIALIZED VIEW isbe_condensed_expenditures AS (
         id AS filed_doc_id
       FROM isbe_filed_docs
       WHERE doc_name != 'Pre-election'
-      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC
+      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC NULLS LAST
     ) AS f USING(filed_doc_id)
   )
 );
 CREATE UNIQUE INDEX ON isbe_condensed_expenditures (id);
+CREATE INDEX idx_isbe_condensed_expenditures_committee_date ON isbe_condensed_expenditures (committee_id, expended_date);
 
 -- Committee money totals
 CREATE MATERIALIZED VIEW isbe_committee_money AS (
@@ -1964,6 +1965,12 @@ def main():
             create_materialized_views(conn)
             create_compat_views(conn)
             conn.autocommit = False
+
+        # Every cached route payload now describes the old tables: flush them (plan B6).
+        # The repo root is on sys.path (apply_privacy_redactions_post_load put it there).
+        from webapp.cache_backend import flush_all_route_caches
+
+        flush_all_route_caches()
 
         # Summary
         print_summary(conn)

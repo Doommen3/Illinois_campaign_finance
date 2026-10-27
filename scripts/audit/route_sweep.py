@@ -395,6 +395,23 @@ def make_request(url: str) -> tuple[int | None, float, bytes, str, str, bool, st
         return None, elapsed, b"", f"net-error: {e}", "", False, ""
 
 
+def has_data_rows(text: str) -> bool:
+    """True when some <tbody> row of the lower-cased page `text` is real data.
+
+    An empty-state placeholder is not data: a row whose only cell spans the
+    table (`<td colspan=...>`), or whose text contains an EMPTY_MARKERS phrase.
+    """
+    for tbody in re.findall(r"<tbody\b[^>]*>(.*?)</tbody>", text, re.DOTALL):
+        for row in re.split(r"<tr\b[^>]*>", tbody)[1:]:
+            cells = re.findall(r"<t[dh]\b[^>]*>", row)
+            if len(cells) == 1 and "colspan" in cells[0]:
+                continue
+            row_text = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", row))
+            if not any(marker in row_text for marker in EMPTY_MARKERS):
+                return True
+    return False
+
+
 def scan_markers(body: bytes) -> tuple[list[str], list[str]]:
     text = body.decode("utf-8", errors="ignore").lower()
     # Strip whitespace-only differences for tbody check
@@ -405,6 +422,9 @@ def scan_markers(body: bytes) -> tuple[list[str], list[str]]:
             empty.append(marker)
         elif marker.replace("\n", "").replace(" ", "") in text_compact:
             empty.append(marker)
+    # A marker beside real table rows (a status line, one empty section) does not make the page empty.
+    if empty and has_data_rows(text):
+        empty = []
     # Also detect bare empty JSON
     stripped = text.strip()
     if stripped in ("[]", "{}", '{"data":[]}', '{"results":[]}'):

@@ -10,11 +10,11 @@
 {% include "_partials/time_scope_bar.html" %}
 
 <div class="status-section">
-    <p><strong>Local feed latest date:</strong> {{ local_latest_date if local_latest_date else 'No rows synced' }}</p>
-    <p><strong>Federal feed latest date:</strong> {{ federal_latest_date if federal_latest_date else 'No rows synced' }}</p>
-    <p><strong>Federal Schedule B latest date:</strong> {{ federal_schedule_b_latest_date if federal_schedule_b_latest_date else 'No rows synced' }}</p>
-    <p><strong>Federal Schedule E latest date:</strong> {{ federal_schedule_e_latest_date if federal_schedule_e_latest_date else 'No rows synced' }}</p>
-    <p><strong>Federal latest report coverage:</strong> {{ federal_latest_coverage_date if federal_latest_coverage_date else 'Not available' }}</p>
+    <p><strong>Local feed latest date:</strong> {{ local_latest_date if local_latest_date else 'No rows synced' }} {{ scope_tag() }}</p>
+    <p><strong>Federal feed latest date:</strong> {{ federal_latest_date if federal_latest_date else 'No rows synced' }} {{ scope_tag() }}</p>
+    <p><strong>Federal Schedule B latest date:</strong> {{ federal_schedule_b_latest_date if federal_schedule_b_latest_date else 'No rows synced' }} {{ scope_tag() }}</p>
+    <p><strong>Federal Schedule E latest date:</strong> {{ federal_schedule_e_latest_date if federal_schedule_e_latest_date else 'No rows synced' }} {{ scope_tag() }}</p>
+    <p><strong>Federal latest report coverage:</strong> {{ federal_latest_coverage_date if federal_latest_coverage_date else 'Not available' }} {{ scope_tag('All time') }}</p>
     <p class="stat-detail">Federal receipt rows can lag coverage windows when filings are quarterly; candidate detail totals use FEC reported receipts.</p>
     <p class="stat-detail">Adjust limits via query params: <code>?local_limit=100&federal_limit=100&schedule_b_limit=100&schedule_e_limit=100</code>.</p>
 </div>

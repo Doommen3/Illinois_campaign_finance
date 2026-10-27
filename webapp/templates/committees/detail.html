@@ -12,31 +12,32 @@
 </div>
 
 <h2>Reports {{ scope_tag() }}</h2>
+<p class="subtitle">Reports in the selected range, by filing date.</p>
 <table class="data-table">
     <thead>
         <tr>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='report_type', report_dir='asc' if report_sort != 'report_type' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort='report_type', report_dir='asc' if report_sort != 'report_type' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">
                     Type{% if report_sort == 'report_type' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='reporting_period', report_dir='asc' if report_sort != 'reporting_period' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort='reporting_period', report_dir='asc' if report_sort != 'reporting_period' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">
                     Period{% if report_sort == 'reporting_period' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='filed_date', report_dir='asc' if report_sort != 'filed_date' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort='filed_date', report_dir='asc' if report_sort != 'filed_date' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">
                     Filed{% if report_sort == 'filed_date' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='pages', report_dir='asc' if report_sort != 'pages' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort='pages', report_dir='asc' if report_sort != 'pages' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">
                     Pages{% if report_sort == 'pages' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort='status', report_dir='asc' if report_sort != 'status' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort='status', report_dir='asc' if report_sort != 'status' or report_dir == 'desc' else 'desc', contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">
                     Status{% if report_sort == 'status' %} {{ '↑' if report_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
@@ -71,11 +72,11 @@
 {% if total_pages > 1 %}
 <nav class="pagination">
     {% if page > 1 %}
-    <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, page=page-1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">&laquo; Previous</a>
+    <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, page=page-1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">&laquo; Previous</a>
     {% endif %}
     <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
     {% if page < total_pages %}
-    <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, page=page+1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir) }}">Next &raquo;</a>
+    <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, page=page+1, report_sort=report_sort, report_dir=report_dir, contrib_sort=contrib_sort, contrib_dir=contrib_dir, **scope_query) }}">Next &raquo;</a>
     {% endif %}
 </nav>
 {% endif %}
@@ -85,22 +86,22 @@
     <thead>
         <tr>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='donor', contrib_dir='asc' if contrib_sort != 'donor' or contrib_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='donor', contrib_dir='asc' if contrib_sort != 'donor' or contrib_dir == 'desc' else 'desc', **scope_query) }}">
                     Donor{% if contrib_sort == 'donor' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='amount', contrib_dir='asc' if contrib_sort != 'amount' or contrib_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='amount', contrib_dir='asc' if contrib_sort != 'amount' or contrib_dir == 'desc' else 'desc', **scope_query) }}">
                     Amount{% if contrib_sort == 'amount' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='transaction_date', contrib_dir='asc' if contrib_sort != 'transaction_date' or contrib_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='transaction_date', contrib_dir='asc' if contrib_sort != 'transaction_date' or contrib_dir == 'desc' else 'desc', **scope_query) }}">
                     Date{% if contrib_sort in ['transaction_date', 'filed_date'] %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>
             <th>
-                <a href="{{ url_for('committees.committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='description', contrib_dir='asc' if contrib_sort != 'description' or contrib_dir == 'desc' else 'desc') }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id, report_sort=report_sort, report_dir=report_dir, contrib_sort='description', contrib_dir='asc' if contrib_sort != 'description' or contrib_dir == 'desc' else 'desc', **scope_query) }}">
                     Description{% if contrib_sort == 'description' %} {{ '↑' if contrib_dir == 'asc' else '↓' }}{% endif %}
                 </a>
             </th>

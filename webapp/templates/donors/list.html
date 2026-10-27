@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Donors - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>Donors</h1>
 {% include "_partials/time_scope_bar.html" %}
-<p class="subtitle">{{ total }} total donors</p>
+<p class="subtitle">{{ total }} total donors {{ scope_tag() }}</p>
 <p class="subtitle">Data source: {{ donor_source }}</p>
 <p class="help-text">Aggregated donor profiles built from ISBE receipt records. Donors are matched across committees using name normalization and entity resolution to show total giving patterns.</p>
 

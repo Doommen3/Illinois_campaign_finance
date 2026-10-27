@@ -63,6 +63,40 @@ def _seed_state_race_tables(conn) -> None:
         (11, "Candidate One", "State Senate", "Senate", "12", 9001, "Committee 9001", 2026, 75000.0, 2),
     )
 
+    # Candidacy feed (a VIEW in production): the same candidate, committee and cycle.
+    conn.execute("DROP TABLE IF EXISTS isbe_race_candidacies")
+    conn.execute(
+        """
+        CREATE TABLE isbe_race_candidacies (
+            candidacy_id INTEGER,
+            candidate_id INTEGER,
+            election_year INTEGER,
+            election_cycle INTEGER,
+            election_type TEXT,
+            race_type TEXT,
+            outcome TEXT,
+            candidate_full_name TEXT,
+            office_sought TEXT,
+            district_type TEXT,
+            district TEXT,
+            candidate_party_affiliation TEXT,
+            committee_id_sbe INTEGER,
+            committee_name TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO isbe_race_candidacies (
+            candidacy_id, candidate_id, election_year, election_cycle, election_type,
+            candidate_full_name, office_sought, district_type, district,
+            candidate_party_affiliation, committee_id_sbe, committee_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (9011, 11, 2026, 2026, "General Election", "Candidate One", "State Senate", "Senate", "12",
+         None, 9001, "Committee 9001"),
+    )
+
     conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
     conn.execute(
         """
@@ -157,7 +191,19 @@ def _seed_state_race_tables(conn) -> None:
 
 
 @pytest.fixture
-def app(tmp_path: Path):
+def app(tmp_path: Path, monkeypatch):
+    # The seeded race is a cycle-2026 candidacy: pin the race builder's default
+    # cycle so the race prototypes keep data after 2026-12-31.
+    monkeypatch.setattr("database.analytics.current_election_cycle", lambda today=None: 2026)
+    # ... and the time-scope resolver's clock, so "this cycle" stays 2026 too (as tests/test_candidate_profile.py).
+    from datetime import date
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 26)
+
+    monkeypatch.setattr("webapp.utils.time_scope.date", _FrozenDate)
     db_path = str(tmp_path / "test_viz_lab.db")
     init_db(db_path)
     conn = get_db(db_path)

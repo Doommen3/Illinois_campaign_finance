@@ -24,6 +24,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from database.race_keys import race_key as build_race_key
+
 
 PARSER_VERSION = "fec_sync_v1"
 
@@ -5191,12 +5193,16 @@ def get_federal_candidate_detail(
         candidate_id=candidate_id,
         limit=50,
         min_total_amount=0.0,
+        date_from=date_from,
+        date_to=date_to,
     )
     transfer_chains = _get_candidate_schedule_b_transfer_chains(
         conn,
         candidate_id=candidate_id,
         cycle=cycle,
         limit=50,
+        date_from=date_from,
+        date_to=date_to,
     )
 
     return {
@@ -5590,16 +5596,23 @@ def get_federal_race_analytics(
     limit: int = 100,
     date_from: str | None = None,
     date_to: str | None = None,
+    candidate_cycle: int | None = None,
+    active_only: bool = False,
 ) -> list[dict]:
     """Aggregate race-level federal analytics for Illinois candidates.
 
     `date_from` / `date_to` filter Schedule A on `contribution_receipt_date`
-    and Schedule E on `expenditure_date`.
+    and Schedule E on `expenditure_date`. `cycle` filters both schedules and,
+    unless `candidate_cycle` is given, the candidate set (fec_candidate_match
+    cycle): `candidate_cycle` picks the races' candidates by cycle while the
+    money follows `cycle` and the dates. `active_only` drops races with no
+    Schedule A or E row under those filters (before `limit`).
     """
     _ensure_missing_donor_identities(conn, cycle=cycle)
 
     office_filter = _canonical_office_code(office_code)
     district_filter = _normalize_district_filter(office_filter, district_code) if office_filter else ""
+    member_cycle = cycle if candidate_cycle is None else candidate_cycle
 
     candidate_rows = conn.execute(
         """
@@ -5616,7 +5629,7 @@ def get_federal_race_analytics(
         WHERE m.fec_candidate_id IS NOT NULL
           AND (? IS NULL OR m.cycle = ?)
         """,
-        (cycle, cycle),
+        (member_cycle, member_cycle),
     ).fetchall()
 
     races: dict[str, dict[str, Any]] = {}
@@ -5756,6 +5769,8 @@ def get_federal_race_analytics(
 
     output: list[dict] = []
     for race in races.values():
+        if active_only and not race["contribution_count"] and not race["outside_expenditure_count"]:
+            continue
         candidate_totals = [
             (
                 candidate_id,
@@ -5779,6 +5794,7 @@ def get_federal_race_analytics(
         output.append(
             {
                 "race_id": race["race_id"],
+                "race_key": build_race_key(race["office_code"], race["district_code"]),
                 "office_code": race["office_code"],
                 "district_code": race["district_code"],
                 "race_office": race["race_office"],
@@ -6666,6 +6682,8 @@ def _get_candidate_schedule_b_transfer_chains(
     candidate_id: str,
     cycle: int | None = None,
     limit: int = 50,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
     if not _table_exists(conn, "fec_schedule_b_disbursements"):
         return []
@@ -6675,6 +6693,12 @@ def _get_candidate_schedule_b_transfer_chains(
     if cycle is not None:
         where_sql += " AND cycle = ?"
         params.append(int(cycle))
+    if date_from:
+        where_sql += " AND disbursement_date >= ?"
+        params.append(date_from)
+    if date_to:
+        where_sql += " AND disbursement_date <= ?"
+        params.append(date_to)
 
     candidate_lookup_rows = conn.execute(
         """

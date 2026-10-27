@@ -2261,11 +2261,11 @@ class TestWebApp:
         assert b"Testname Donor" in resp.data
         assert b"Candidates" in resp.data
         assert b"Testname Candidate" in resp.data
-        # Step 1.4: windowed sections carry the page scope; candidate search is all-time and says so.
-        from webapp.utils.time_scope import current_cycle
+        # Committees / Donors (isbe_committees, analytics_donor_summary; S-W6b, J-S14) and candidate search
+        # are all-time directories and say so.
         html = resp.get_data(as_text=True)
-        assert f'<h2>Committees (1) <span class="scope-tag">{current_cycle()} Cycle</span></h2>' in html
-        assert f'<h2>Donors (1) <span class="scope-tag">{current_cycle()} Cycle</span></h2>' in html
+        assert '<h2>Committees (1) <span class="scope-tag scope-tag-fixed">All time</span></h2>' in html
+        assert '<h2>Donors (1) <span class="scope-tag scope-tag-fixed">All time</span></h2>' in html
         assert '<h2>Candidates (1) <span class="scope-tag scope-tag-fixed">All time</span></h2>' in html
 
     def test_search_is_case_insensitive(self, app, client):

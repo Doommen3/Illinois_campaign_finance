@@ -5,6 +5,8 @@ This script:
 1. Recreates compat views with correct column names
 2. Renames old bulk_*_clean tables to *_legacy
 3. Creates views with the old names pointing to isbe_* data
+4. Recreates the state race builder inputs: bulk_candidate_committee_finance_agg
+   and the isbe_race_candidacies candidacy feed
 
 Safe to run multiple times (idempotent).
 Requires isbe_* tables to be populated first (run isbe_sunshine_etl.py).
@@ -96,6 +98,33 @@ GROUP BY
         WHEN fp.period_year % 2 = 0 THEN fp.period_year
         ELSE fp.period_year + 1
     END
+"""
+
+# The candidacy feed for the state race builder: one row per candidacy x linked
+# committee (committee columns NULL when the candidate has no committee).  The
+# cycle folds odd election years forward (2025 -> 2026).  Office and district come
+# from the candidate row; ISBE publishes none per candidacy.
+RACE_CANDIDACIES_VIEW_SQL = """
+CREATE VIEW isbe_race_candidacies AS
+SELECT
+    cy.id AS candidacy_id,
+    cy.candidate_id,
+    cy.election_year,
+    cy.election_year + cy.election_year % 2 AS election_cycle,
+    cy.election_type,
+    cy.race_type::text AS race_type,
+    cy.outcome::text AS outcome,
+    TRIM(COALESCE(ca.first_name, '') || ' ' || COALESCE(ca.last_name, '')) AS candidate_full_name,
+    ca.office AS office_sought,
+    ca.district_type,
+    ca.district,
+    ca.party AS candidate_party_affiliation,
+    cc.committee_id AS committee_id_sbe,
+    c.name AS committee_name
+FROM isbe_candidacies cy
+JOIN isbe_candidates ca ON ca.id = cy.candidate_id
+LEFT JOIN isbe_candidate_committees cc ON cc.candidate_id = cy.candidate_id
+LEFT JOIN isbe_committees c ON c.id = cc.committee_id
 """
 
 
@@ -209,9 +238,18 @@ def main():
             cur.execute(CANDIDATE_FINANCE_AGG_VIEW_SQL)
             print("  Created ISBE view ✓")
 
-    # Step 5: Verify
+    # Step 5: Candidacy feed for the state race builder
+    print("\nRecreating isbe_race_candidacies VIEW...")
+    if args.dry_run:
+        print("  [DRY RUN] Would recreate view")
+    else:
+        cur.execute("DROP VIEW IF EXISTS isbe_race_candidacies CASCADE")
+        cur.execute(RACE_CANDIDACIES_VIEW_SQL)
+        print("  Recreated isbe_race_candidacies view ✓")
+
+    # Step 6: Verify
     print("\nVerification:")
-    all_tables = [name for name, _ in SWAP_PAIRS] + ["bulk_candidate_committee_finance_agg"]
+    all_tables = [name for name, _ in SWAP_PAIRS] + ["bulk_candidate_committee_finance_agg", "isbe_race_candidacies"]
     for tbl_name in all_tables:
         cur.execute("""
             SELECT table_type FROM information_schema.tables

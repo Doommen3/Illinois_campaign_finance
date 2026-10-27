@@ -11,7 +11,7 @@ from flask import Blueprint, Response, current_app, render_template, request, ur
 
 from database.models import Donor
 from webapp.utils.data_through import latest_data_date
-from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_params
+from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cycles, scope_params
 from database.federal_fec import (
     count_federal_candidates,
     federal_data_available,
@@ -315,6 +315,10 @@ def federal_overview():
     date_from = window['date_from'] or None
     date_to = window['date_to'] or None
     table_available = federal_data_available(conn)
+    # Top Federal Races (plan J-S22): the candidates are the window's own cycle, else the current
+    # cycle (the state races' rule, J-R4); the money follows the window.
+    window_cycles = scope_cycles(window['scope'])
+    race_cycle = window_cycles[0] if window_cycles and len(window_cycles) == 1 else current_cycle()
 
     overview = {
         'candidate_count': 0,
@@ -341,7 +345,8 @@ def federal_overview():
             'analysis_district': analysis_district or '',
             'date_from': window['date_from'],
             'date_to': window['date_to'],
-            'version': 3,
+            'race_cycle': race_cycle,
+            'version': 4,
         }
         if _federal_cache_enabled() and not _federal_cache_refresh_requested():
             cache_status = get_federal_view_snapshot(
@@ -363,6 +368,8 @@ def federal_overview():
                 limit=12,
                 date_from=date_from,
                 date_to=date_to,
+                candidate_cycle=race_cycle,
+                active_only=True,
             )
             overview['race_count'] = len(race_analytics)
 
@@ -429,6 +436,7 @@ def federal_overview():
         **_base_context('overview', table_available, cycle, analysis_office, analysis_district, window=window),
         overview=overview,
         race_analytics=race_analytics,
+        race_cycle=race_cycle,
         geographic=geographic,
         top_donors=top_donors,
         top_candidates=top_candidates,

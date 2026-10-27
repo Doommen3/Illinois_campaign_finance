@@ -117,7 +117,7 @@ PostgreSQL only. Always write PostgreSQL-compatible SQL — never SQLite-specifi
 | `scripts/validate_geometry_keys.py` | Validate geometry join keys for CD/SLDL/SLDU outputs |
 | `scraper/openbook_scraper.py` | OpenBook Comptroller scraper + smart search |
 | `scraper/comptroller_contracts.py` | Comptroller State Contracts DataTables scraper |
-| `webapp/routes/` | 16 Flask route modules |
+| `webapp/routes/` | 19 Flask route modules (newest: `webapp/routes/candidates.py`, the ISBE candidate profile `/candidates/<id>`) |
 | `webapp/routes/experimental.py` | Local-only `/experimental/viz-lab` + cached prototype APIs |
 | `webapp/templates/` | 50+ Jinja2 templates |
 | `docs/` | Runbooks and planning docs |
@@ -129,7 +129,7 @@ PostgreSQL only. Always write PostgreSQL-compatible SQL — never SQLite-specifi
 1. **ISBE** (state) — Committees, candidates, receipts, expenditures, D-2 reports, filed docs, candidacies, officers, investments
    - Primary ETL: `scripts/isbe_sunshine_etl.py` → `isbe_*` tables with FK constraints + materialized views (`isbe_condensed_receipts`, `isbe_condensed_expenditures`, `isbe_committee_money`, `isbe_candidate_money`)
    - CLI: `python run.py sunshine-import [--download] [--bulk-dir Bulk_download] [--skip-compat-swap]`
-   - Auto-runs `swap_bulk_to_isbe.py` after import to (re)create `bulk_*` compat views for legacy routes. `--skip-compat-swap` disables; `/candidate-finance/` then uses ISBE fallback mode.
+   - Auto-runs `swap_bulk_to_isbe.py` after import to (re)create `bulk_*` compat views for legacy routes. `--skip-compat-swap` disables; `/candidate-finance/` then uses ISBE fallback mode, and committee Top Donors/Payees, the `/committees/<id>/donors` + `/payees` pages and Top State Races (the swap script also creates `isbe_race_candidacies`) come up empty or "not available".
    - Legacy loader: `python run.py import-bulk-download` → `bulk_*_clean` tables (works, but `isbe_*` is preferred)
 2. **FEC** (federal) — IL candidates + Schedule A/B/E
    - CLI: `python run.py sync-fec-il-federal --refresh-cache` (needs `FEC_API_KEY`; `--refresh-cache` forces a live pull — see "FEC silent no-op" under Data Refresh Schedule). Backfills: `backfill-fec-schedule-{a,b,e}`. Donor matching: `refresh-fec-local-donor-matches` (runs automatically after `sync-fec-il-federal`).
@@ -192,16 +192,16 @@ All name matching uses Jaccard similarity with sparse inverted-index candidate g
 
 ## Performance & Caching
 
-Heavy routes use in-process TTL caching (per-worker dict). Architecture details, dated bug recaps, and the Viz Lab network contract are in **`docs/runbooks/route_perf_caching.md`** — load on demand. Top-level invariants:
+Heavy routes cache through `RouteCache` (`webapp/cache_backend.py`): Redis when `REDIS_URL` is set (shared by every worker), else a 32-entry per-instance in-process LRU. Analytics TTLs default to 21600 s (`ANALYTICS_CACHE_TTL_FALLBACK_SECONDS` in `webapp/routes/analytics.py`); `refresh-analytics` and `sunshine-import` flush the Redis route caches when they finish (a service restart clears the per-worker fallbacks). Architecture details, dated bug recaps, and the Viz Lab network contract are in **`docs/runbooks/route_perf_caching.md`** — load on demand. Top-level invariants:
 
 - Heavy routes: `/`, `/analytics/*`, `/federal-finance/geo-drilldown`, `/527/dark-money`, `/experimental/viz-lab/data/*`
 - Append `?refresh_cache=1` to force a miss
 - TTLs are in `config.py` — grep `_CACHE_TTL_SECONDS` for the current list
 - Caches respect `ROUTE_PERF_CACHE_ENABLED` + `TESTING` flags
-- `warm_analytics_caches()` runs per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`) — pre-populates risk/networks/relationships caches; ~2-3 min per worker
+- `warm_analytics_caches()` runs per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`) — pre-populates the risk/networks/relationships/overview caches plus the overview's top-12 state-race details; ~2-3 min per worker
 - Cache keys must include the resolved time scope (`scope_cache_key(scope)` = `axis:start:end`) + filter identity + (for Viz Lab) all advanced params, to prevent metric cross-talk; prewarm derives the same default key with `resolve_time_scope(default="cycle:current", args={})`
 - Time-filter semantics: report-driven queries → `filed_date`; contribution-driven → `transaction_date` (or `received_date` for bulk receipts)
-- Time scope (no global period, no nav dropdown): every page resolves its own window from the URL via `webapp/utils/time_scope.py` (`resolve_time_scope`; precedence `date_from`/`date_to` > `year` > `cycle` > `period` > the page's default; legacy keys like `2026cycle`/`1y`/`2y` still resolve). Lists, dashboards and search default to the current cycle (`cycle:2026` = 2025-01-01..2026-12-31); entity profiles default to all time with a "This cycle" subtotal; lobbying lists snap to registration years. `_partials/time_scope_bar.html` renders the window (include it after the `<h1>`, pass `time_scope`/`scope_default_key`/`time_scope_source_label`/`scope_query`); in-section links end with `**scope_query`, forms carry it as hidden inputs, top-nav links carry nothing. Tag windowed `<h2>`s with `{{ scope_tag() }}` and all-time ones with `{{ scope_tag('All time') }}`.
+- Time scope (no global period, no nav dropdown): every page resolves its own window from the URL via `webapp/utils/time_scope.py` (`resolve_time_scope`; precedence `date_from`/`date_to` > `year` > `cycle` > `period` > the page's default; legacy keys like `2026cycle`/`1y`/`2y` still resolve). Lists, dashboards and search default to the current cycle (`cycle:2026` = 2025-01-01..2026-12-31); entity profiles default to all time with a "This cycle" subtotal; lobbying lists snap to registration years. `_partials/time_scope_bar.html` renders the window (include it after the `<h1>`, pass `time_scope`/`scope_default_key`/`time_scope_source_label`/`scope_query`); in-section links end with `**scope_query`, forms carry it as hidden inputs, top-nav links carry nothing. Tag windowed `<h2>`s with `{{ scope_tag() }}` and all-time ones with `{{ scope_tag('All time') }}`. **Registry rule:** a new windowed widget needs a `Widget` row in `tests/scope_widgets_registry.py` (`test_every_windowed_tag_site_is_registered` fails on an unregistered windowed `scope_tag(`) and, for a `window` row, a probe in `tests/test_scope_widgets.py` (or a real page test named in `covered_by`); CI runs both.
 
 ## Testing
 
@@ -301,7 +301,7 @@ Do **NOT** run autonomously via Claude. Provide the user the exact command to ru
 
 ### Deploy steps
 
-1. Run local tests: `pytest -q`
+1. Run local tests: `pytest -q`, `pytest -q tests/test_scope_widgets.py`, and the scope-bar sweep `python3 scripts/audit/route_sweep.py --check-scope-bar --host http://127.0.0.1:5000` (needs a local server on :5000; stop it afterwards — see "Pre-deploy checks" in `docs/runbooks/deployment.md`)
 2. Push to main: `git push origin main`
 3. SSH + pull (deploy key, no PAT):
    ```bash
@@ -385,6 +385,10 @@ python run.py apply-privacy-redactions   # re-apply after sync-prod-db; sunshine
 - All IRS 527 tables prefixed `irs527_`.
 - OpenBook tables: `openbook_vendor_seed` (candidate names), `openbook_vendor_match` (autosuggest matches; `UNIQUE(seed_id, openbook_vendor_key)`; `search_term_used` tracks which smart-search term produced each match), `openbook_contracts_raw` / `openbook_contract_warrants` / `openbook_contract_detail_status` (scraped contract data), `openbook_contributions_raw`, `openbook_scrape_runs`.
 - OpenBook routes: `/openbook/` (resolved vendor directory) and `/openbook/<vendor_key>` (vendor detail with seed provenance). Cross-matching uses `openbook_vendor_seed → openbook_vendor_match` as canonical linkage to source datasets.
+- `isbe_race_candidacies` — view created by `scripts/swap_bulk_to_isbe.py` (candidacy × candidate × linked committee; `election_cycle = election_year + election_year % 2`). Feeds the state races (Top State Races on `/analytics/`, `/analytics/state-races/`); without it they show "not available".
+- `committee_family` / `committee_family_member` — reviewable groupings of serial committee re-registrations (group, never merge). Seeded as pending by `python3 scripts/committee_families.py seed` (`report --limit 30` is the read-only dry run) and reviewed at `/admin/committee-families`; public pages (committee banner, candidate profile grouping, `/committees/?by=family`) use accepted families only. Design: `docs/committee_families_design.md`.
+- `analytics_donor_cycle_summary` — one row per donor per election cycle, filled by `refresh-analytics`; `/donors/` reads it when the window is exactly one cycle (other windows stay live); scrubbed by privacy redactions.
+- Table shapes, grain, keys and quirks are in `.claude/data-dictionary.md` — check it before profiling a dataset (it wins over `docs/CODEBOOK.md` §4 where they disagree).
 
 ## Privacy redactions (removal requests)
 
@@ -392,8 +396,9 @@ python run.py apply-privacy-redactions   # re-apply after sync-prod-db; sunshine
 (last name + zip5, first name optional). `database/privacy_redactions.py`
 scrubs matching rows in `isbe_receipts`, any real `bulk_receipts_clean*` table
 and `donors` to ISBE's own format (`address1 = 'Redaction Requested'`, other
-address fields NULL, `redaction_requested = TRUE`) and deletes the donor's
-`analytics_donor_summary` rows (rebuilt redacted on the next `refresh-analytics`).
+address fields NULL, `redaction_requested = TRUE`) and deletes the donor's rows from
+`analytics_donor_summary`, `analytics_donor_cycle_summary` and `analytics_donor_committee_agg`
+(rebuilt redacted on the next `refresh-analytics`).
 Contribution rows are never deleted. Because `sunshine-import` drops and
 reloads every `isbe_*` table, the ETL re-applies all requests before building
 matviews (`apply_privacy_redactions_post_load` in `scripts/isbe_sunshine_etl.py`).

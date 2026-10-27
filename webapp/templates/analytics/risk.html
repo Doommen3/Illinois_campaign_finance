@@ -126,7 +126,7 @@
             {% endif %}
         </tbody>
     </table>
-    <p><a href="{{ url_for('api.analytics_anomalies', limit=anomaly_limit, date_from=date_from, date_to=date_to) }}">JSON endpoint</a></p>
+    <p><a href="{{ url_for('api.analytics_anomalies', limit=anomaly_limit, **scope_query) }}">JSON endpoint</a></p>
 </div>
 
 <div class="status-section">

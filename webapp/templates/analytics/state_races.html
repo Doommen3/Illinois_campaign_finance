@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}All State Races - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>All State Races</h1>
+<p class="subtitle">Every state race of the election cycle, with the Top State Races columns. Races with receipts or outside spending in the selected window link to their detail page.</p>
+
+{% include "analytics/_subnav.html" %}
+
+<p>
+    <a href="{{ url_for('analytics.dashboard', election_cycle=election_cycle if election_cycle is not none else None, **scope_query) }}">
+        Back to Top State Races
+    </a>
+</p>
+
+<form class="search-form analytics-form" method="get" action="{{ url_for('analytics.state_races') }}">
+    {% for name, value in scope_query.items() %}
+    <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    {% if election_cycle is not none %}
+    <input type="hidden" name="election_cycle" value="{{ election_cycle }}">
+    {% endif %}
+    <label>
+        Sort
+        <select name="sort">
+            <option value="total_amount" {% if sort_by == 'total_amount' %}selected{% endif %}>Total Amount</option>
+            <option value="outside_spending_total" {% if sort_by == 'outside_spending_total' %}selected{% endif %}>Outside Spending (E)</option>
+            <option value="outside_pressure_ratio" {% if sort_by == 'outside_pressure_ratio' %}selected{% endif %}>Outside Pressure Ratio</option>
+        </select>
+    </label>
+    <label>
+        Direction
+        <select name="dir">
+            <option value="desc" {% if sort_dir != 'asc' %}selected{% endif %}>Descending</option>
+            <option value="asc" {% if sort_dir == 'asc' %}selected{% endif %}>Ascending</option>
+        </select>
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+<div class="status-section">
+    <h2>State Races {{ scope_tag() }}</h2>
+    {% if show_state_race_cycle %}
+    <p class="help-text">Candidates: {{ state_race_cycle }} cycle; the money columns follow the selected window.</p>
+    {% endif %}
+    {% if not state_race_table_available %}
+    <p>State race bulk tables are not available yet.</p>
+    {% else %}
+    <p class="help-text">{{ active_count }} of {{ race_rows|length }} races have activity (receipts or outside spending) in the selected window. Races without activity are greyed out and not linked.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Race</th>
+                <th>Candidates (cycle)</th>
+                <th>Donors</th>
+                <th>Contributions</th>
+                <th>Total Amount</th>
+                <th>Outside Spending (E)</th>
+                <th>Outside Pressure Ratio</th>
+                <th>Top Candidate Share (cycle)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row, active in race_rows %}
+            <tr{% if not active %} class="row-muted"{% endif %}>
+                <td>
+                    {% if active %}
+                    <a href="{{ url_for('analytics.state_race_detail', race_key=row.race_key, election_cycle=election_cycle if election_cycle is not none else None, **scope_query) }}">
+                        {{ row.race_label }}
+                    </a>
+                    {% else %}
+                    {{ row.race_label }}
+                    {% endif %}
+                </td>
+                <td>{{ row.candidate_count }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ format_currency(row.outside_spending_total) }}</td>
+                <td>{{ (row.outside_pressure_ratio * 100)|round(2) }}%</td>
+                <td>{{ (row.top_candidate_share * 100)|round(2) }}%</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">No state races found for this cycle.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<style>
+.data-table tr.row-muted td { color: #718096; }
+</style>
+{% endblock %}

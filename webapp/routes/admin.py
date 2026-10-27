@@ -5,6 +5,7 @@ from database.federal_fec import (
     get_federal_disbursement_mismatch_flags,
     get_federal_receipt_mismatch_flags,
 )
+from database import committee_families as families_db
 from database.models import Donor
 from webapp.auth import login_required
 
@@ -223,6 +224,124 @@ def donor_merge_decision(entity_id):
         flash(f"Updated {updated_count} {label} to {decision}.", "success")
 
     return redirect(url_for("admin.donor_merge_detail", entity_id=entity_id, source=source))
+
+
+def _evidence_badges(evidence: dict) -> list[str]:
+    """Badge text for the evidence flags that hold ("same address"; similar name carries its score)."""
+    badges = []
+    if evidence.get("same_name"):
+        badges.append("same name")
+    if evidence.get("similar_name"):
+        badges.append(f"similar name {float(evidence['similar_name']):.2f}")
+    if evidence.get("shared_officer"):
+        badges.append("shared officer")
+    if evidence.get("same_address"):
+        badges.append("same address")
+    return badges
+
+
+@admin_bp.route("/committee-families")
+@login_required
+def committee_family_queue():
+    """List proposed committee families by review status."""
+    conn = current_app.get_database()
+
+    status = (request.args.get("status") or "").strip().lower()
+    if status not in families_db.STATUSES:
+        status = "pending"
+
+    page = request.args.get("page", 1, type=int)
+    if page < 1:
+        page = 1
+    per_page = 50
+
+    status_counts = families_db.status_counts(conn)
+    total = status_counts[status]
+    total_pages = (total + per_page - 1) // per_page if total else 0
+    rows = families_db.list_families(conn, status=status, limit=per_page, offset=(page - 1) * per_page)
+    for row in rows:
+        row["badges"] = _evidence_badges(row["evidence"])
+
+    return render_template(
+        "admin/committee_families_list.html",
+        families=rows,
+        status=status,
+        status_counts=status_counts,
+        page=page,
+        total=total,
+        total_pages=total_pages,
+    )
+
+
+@admin_bp.route("/committee-families/<int:family_id>")
+@login_required
+def committee_family_detail(family_id):
+    """Show one proposed family: its evidence, members and review actions."""
+    conn = current_app.get_database()
+
+    family = families_db.get_family(conn, family_id)
+    if not family:
+        abort(404)
+
+    members = families_db.family_members(conn, family_id)
+    for member in members:
+        member["badges"] = _evidence_badges(member["evidence"])
+    candidate_names = {c["id"]: c["name"] for m in members for c in m["candidates"]}
+    return render_template(
+        "admin/committee_family_detail.html",
+        family=family,
+        badges=_evidence_badges(family["evidence"]),
+        shared_candidates=[
+            (cid, candidate_names.get(cid, f"Candidate {cid}"))
+            for cid in family["evidence"].get("shared_candidates", [])
+        ],
+        members=members,
+    )
+
+
+@admin_bp.route("/committee-families/<int:family_id>/decision", methods=["POST"])
+@login_required
+def committee_family_decision(family_id):
+    """Accept or reject a family, or remove one committee from it."""
+    conn = current_app.get_database()
+
+    family = families_db.get_family(conn, family_id)
+    if not family:
+        abort(404)
+
+    decision = (request.form.get("decision") or "").strip().lower()
+    detail = redirect(url_for("admin.committee_family_detail", family_id=family_id))
+
+    if decision == "remove_member":
+        committee_id = request.form.get("committee_id", type=int)
+        if committee_id is None:
+            flash("Choose a committee to remove.", "error")
+            return detail
+        refusal = families_db.remove_member(conn, family_id, committee_id)
+        if refusal:
+            flash(refusal, "error")
+        else:
+            conn.commit()
+            flash(f"Removed committee {committee_id} from the family.", "success")
+        return detail
+
+    if decision not in {"accepted", "rejected"}:
+        flash("Invalid review decision.", "error")
+        return detail
+
+    if decision == "accepted":
+        conflicts = families_db.accept_conflicts(conn, family_id)
+        if conflicts:
+            clashes = "; ".join(
+                f"committee {c['committee_id']} is already in the accepted family \"{c['label']}\"" for c in conflicts
+            )
+            flash(f"Cannot accept: {clashes}. A committee can belong to only one accepted family.", "error")
+            return detail
+
+    families_db.set_status(conn, family_id, decision)
+    conn.commit()
+    flash(f"Family marked {decision}.", "success")
+    return detail
 
 
 def _clean_text(value: str | None) -> str:

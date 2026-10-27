@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Lobbying Entities - Illinois Campaign Finance Tracker{% endblock %}
 
 {% block content %}
 <h1>IL Lobbying Entities</h1>
 {% include "_partials/time_scope_bar.html" %}
-<p class="subtitle">{{ total }} lobbying entities registered with IL Secretary of State</p>
+<p class="subtitle">{{ total }} lobbying entities registered with IL Secretary of State {{ scope_tag() }}</p>
 <p class="help-text">Active lobbying entities registered with the Illinois Secretary of State and their client relationships. Cross-matched against campaign donors and expenditure payees to surface lobbying-campaign finance connections.</p>
 
 <form action="{{ url_for('lobbying.list_entities') }}" method="get" class="search-form">
@@ -25,7 +26,7 @@
             <th>Entity ID</th>
             <th>Entity Name</th>
             <th>Reg Year</th>
-            <th>Clients</th>
+            <th>Clients {{ scope_tag() }}</th>
         </tr>
     </thead>
     <tbody>

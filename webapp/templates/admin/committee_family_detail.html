@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Committee Family - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Committee Family</h1>
+<p class="subtitle">
+    <a href="{{ url_for('admin.committee_family_queue', status=family.status) }}">&laquo; Back to committee families</a>
+</p>
+
+<div class="donor-summary">
+    <p><strong>Label:</strong> {{ family.label }}</p>
+    <p><strong>Review Status:</strong> <span class="badge badge-{{ 'approved' if family.status == 'accepted' else family.status }}">{{ family.status }}</span>{% if family.reviewed_at %} on {{ family.reviewed_at.strftime('%Y-%m-%d') }}{% endif %}</p>
+    <p><strong>Committees:</strong> {{ members|length }}</p>
+    <p><strong>Evidence:</strong>
+        {% for badge in badges %}<span class="badge badge-not_needed">{{ badge }}</span> {% else %}none recorded{% endfor %}
+    </p>
+    <p><strong>Shared candidates:</strong>
+        {% for candidate_id, name in shared_candidates %}<a href="{{ url_for('candidates.candidate_detail', candidate_id=candidate_id) }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% else %}none recorded{% endfor %}
+    </p>
+    {% if family.notes %}<p><strong>Notes:</strong> {{ family.notes }}</p>{% endif %}
+</div>
+
+<div class="entry-form">
+    <h2>Review Decision</h2>
+    {% if family.status != 'accepted' %}
+    <form class="inline-form" method="post" action="{{ url_for('admin.committee_family_decision', family_id=family.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="decision" value="accepted">
+        <button type="submit" class="btn btn-success">Accept Family</button>
+    </form>
+    {% endif %}
+    {% if family.status != 'rejected' %}
+    <form class="inline-form" method="post" action="{{ url_for('admin.committee_family_decision', family_id=family.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="decision" value="rejected">
+        <button type="submit" class="btn btn-danger" onclick="return confirm('Reject this family?');">Reject Family</button>
+    </form>
+    {% endif %}
+</div>
+
+<h2>Committees</h2>
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Candidates</th>
+            <th>Linked by</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for member in members %}
+        <tr>
+            <td>{{ member.id }}</td>
+            <td>
+                {% if member.name is none %}<em>not in ISBE data</em>{% else %}<a href="{{ url_for('committees.committee_detail', committee_id=member.id) }}">{{ member.name }}</a>{% endif %}
+            </td>
+            <td>{{ member.type or '—' }}</td>
+            <td>{% if member.active is none %}&mdash;{% else %}{{ 'Active' if member.active else 'Inactive' }}{% endif %}</td>
+            <td>{{ member.creation_date or '—' }}</td>
+            <td>
+                {% for candidate in member.candidates %}<a href="{{ url_for('candidates.candidate_detail', candidate_id=candidate.id) }}">{{ candidate.name }}</a>{% if not loop.last %}, {% endif %}{% else %}&mdash;{% endfor %}
+            </td>
+            <td>{% for badge in member.badges %}<span class="badge badge-not_needed">{{ badge }}</span> {% else %}&mdash;{% endfor %}</td>
+            <td>
+                <form class="inline-form" method="post" action="{{ url_for('admin.committee_family_decision', family_id=family.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="decision" value="remove_member">
+                    <input type="hidden" name="committee_id" value="{{ member.id }}">
+                    <button type="submit" class="btn btn-small btn-danger" onclick="return confirm('Remove this committee from the family?');">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="8">No committees in this family.</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -35,7 +35,7 @@ def _parse_int(value: str) -> int | None:
 def list_d2_receipts_recon():
     """List D2 rows with itemized receipt reconciliation metrics."""
     conn = current_app.get_database()
-    scope = resolve_time_scope(default="cycle:current", axis="filed", data_through=latest_data_date("isbe"))
+    scope = resolve_time_scope(default="cycle:current", axis="report_period", data_through=latest_data_date("isbe"))
     period_start = scope.start.isoformat() if scope.start else None
     period_end = scope.end.isoformat() if scope.end else None
 

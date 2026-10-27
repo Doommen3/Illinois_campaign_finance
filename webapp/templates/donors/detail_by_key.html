@@ -17,10 +17,10 @@
     <p><strong>State:</strong> {{ donor.donor_state if donor.donor_state else 'Not available' }}</p>
     <p><strong>Occupation:</strong> {{ donor.occupation if donor.occupation else 'Not available' }}</p>
     <p><strong>Employer:</strong> {{ donor.employer if donor.employer else 'Not available' }}</p>
-    <p><strong>Total Contributed:</strong> {{ format_currency(total_amount) }}</p>
+    <p><strong>Total Contributed:</strong> {{ format_currency(total_amount) }} {{ scope_tag() }}</p>
     <p><strong>This cycle:</strong> {{ format_currency(cycle_total) }}</p>
-    <p><strong>Number of Contributions:</strong> {{ contribution_count }}</p>
-    <p><strong>Committees Supported:</strong> {{ committee_count }}</p>
+    <p><strong>Number of Contributions:</strong> {{ contribution_count }} {{ scope_tag() }}</p>
+    <p><strong>Committees Supported:</strong> {{ committee_count }} {{ scope_tag() }}</p>
 </div>
 
 <h2>Who They Donated To {{ scope_tag() }}</h2>

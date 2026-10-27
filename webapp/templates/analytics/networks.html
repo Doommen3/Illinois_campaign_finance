@@ -214,7 +214,7 @@
         </div>
 
         <div class="tab-panel panel-overlap">
-            <p class="help-text">Donors giving to both state (green, left) and federal (blue, right) committees. Lines connect donors to the committees they contribute to, revealing cross-level giving patterns.</p>
+            <p class="help-text">Donors giving to both state (green, left) and federal (blue, right) committees. Lines connect donors to the committees they contribute to, revealing cross-level giving patterns. {{ scope_tag('All time') }}</p>
             <div class="network-svg-wrap">
                 <svg id="overlap-svg" viewBox="0 0 1200 700" role="img" aria-label="State-federal donor overlap"></svg>
             </div>
@@ -333,6 +333,6 @@
         </tbody>
     </table>
 
-    <p><a href="{{ url_for('api.analytics_network', min_edge_amount=min_edge_amount, limit=network_limit) }}">JSON endpoint</a></p>
+    <p><a href="{{ url_for('api.analytics_network', min_edge_amount=min_edge_amount, limit=network_limit, **scope_query) }}">JSON endpoint</a></p>
 </div>
 {% endblock %}

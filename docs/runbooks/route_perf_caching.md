@@ -1,13 +1,14 @@
 # Route Performance Caching — Reference
 
-Detailed reference for the in-process TTL cache layer used by heavy routes. The top-level invariants live in `CLAUDE.md`; this file captures the architecture details, dated bug recaps, and contract-level requirements that don't need to be in every conversation context.
+Detailed reference for the `RouteCache` layer used by heavy routes (`webapp/cache_backend.py`): Redis when `REDIS_URL` is set, else a 32-entry per-instance in-process LRU. The top-level invariants live in `CLAUDE.md`; this file captures the architecture details, dated bug recaps, and contract-level requirements that don't need to be in every conversation context.
 
 ## Cached routes
 
-In-process TTL caches are applied to:
+`RouteCache` TTL caches are applied to:
 
 - `/` — homepage candidate stats, top donors, dashboard insights
 - `/analytics/` — overview (all 7 aggregates + state race analytics)
+- `/analytics/state-races/` and `/analytics/state-races/<race_key>` — the full race list (the same cached rows the overview slices its Top 12 from) and one race's detail
 - `/analytics/networks`
 - `/analytics/risk` — anomalies + reconciliation
 - `/analytics/relationships`
@@ -17,30 +18,59 @@ In-process TTL caches are applied to:
 - `/527/dark-money` — summary stats
 - `/experimental/viz-lab/data/*` — prototype gallery endpoints
 
-All caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags. Append `?refresh_cache=1` to force a miss. TTL constants live in `config.py` under names matching `*_CACHE_TTL_SECONDS` — `grep _CACHE_TTL_SECONDS config.py` for the current list.
+All caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags; the startup prewarm is the exception — it is gated only by `DASHBOARD_PREWARM_ENABLED` (and skipped under `TESTING`) and never reads `ROUTE_PERF_CACHE_ENABLED`. Append `?refresh_cache=1` to force a miss. TTL constants live in `config.py` under names matching `*_CACHE_TTL_SECONDS` — `grep _CACHE_TTL_SECONDS config.py` for the current list.
 
 ## Performance baselines
 
 | Route | TTL | Cold | Warm (median) | After time-scope overhaul (local M3 Pro, 2026-10-22; cold / warm median of 2) |
 |---|---|---|---|---|
-| `/analytics/networks` | 1800s | ~104s | ~420ms | 92.5s / 116ms |
-| `/analytics/` | 1800s | ~27s | ~14ms | 32.0s / 49ms |
-| `/analytics/risk` | 1800s | ~18s | ~400ms | 10.9s / 30ms |
-| `/analytics/relationships` | 1800s | ~110s | ~400ms | 107.3s / 24ms |
+| `/analytics/networks` | 21600s | ~104s | ~420ms | 92.5s / 116ms |
+| `/analytics/` | 21600s | ~27s | ~14ms | 32.0s / 49ms |
+| `/analytics/risk` | 21600s | ~18s | ~400ms | 10.9s / 30ms |
+| `/analytics/relationships` | 21600s | ~110s | ~400ms | 107.3s / 24ms |
 | `/candidate-finance/` | 180s | — | — | — |
+
+Prod re-measure after deploy of `23c6cc7` (2026-10-26, through Cloudflare): forced cold misses (`?refresh_cache=1`) took networks 125 s → Cloudflare 524, overview 53 s, risk 20 s, relationships 125 s → 524; warm passes once every worker had prewarmed: networks 0.75–1.1 s, overview 0.22–0.75 s, risk 0.27–0.61 s, relationships 0.43–1.1 s. The cold path for networks/relationships exceeds Cloudflare's 100 s origin timeout, so only prewarmed keys (the default cycle) are safe to serve cold; `?period=all` on the analytics pages is an unwarmed miss (the sweep's 30 s probe timed out on overview, risk and donors).
 
 The first Cold/Warm columns are the pre-overhaul prod measurements; the last column was taken on the local prod-sized `ilcf` after cache keys moved to the resolved scope (`scope_cache_key`), so the default window is the whole current cycle (`2025-01-01..2026-12-31`) rather than cycle-start..today. Cold cost is the same order of magnitude; warm hits are unchanged in kind (in-process cache). Not directly comparable machine-to-machine — re-measure on prod after deploy.
 
 `bulk_candidate_committee_finance_agg` is a **view**, not a table — it joins/aggregates 6.4M receipt rows on each access.
 
-## Per-worker cache + startup prewarm
+### 2026-10-27 release baselines (local, before → after)
 
-`warm_analytics_caches()` runs in a background thread per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`). It pre-populates risk, networks, and relationships caches with default filter values (the current election cycle resolved by `resolve_time_scope(default="cycle:current", args={})`, default limits; the risk cache keys on the `filed` axis, the others on `received`).
+Local M3 Pro, prod-sized `ilcf` (ISBE data through 2026-09-30), figures as recorded per step in `.claude/plans/profiles-races-dated-widgets.STATE.md`; "before" is the state at the start of that step. Not directly comparable to the prod rows above.
 
-- **Why prewarm**: gunicorn `--workers 3` means 3 separate Python processes, each with its own in-process dict cache. Without prewarm, ~33% of requests hit a warm worker. Prewarm warms all workers on startup.
+| Page / query | Before | After | What changed (plan step) |
+|---|---|---|---|
+| `/donors/?cycle=2026`, warm | 5.62 s | 0.05 s | `analytics_donor_cycle_summary` serves exact-cycle windows (B4, S-S2) |
+| `/analytics/relationships`, cold, default window | 212.7 s | 17.4 s | window-free graphs built once, cheaper lobbying graph (B3, S-S2) |
+| `/analytics/relationships`, cold, `cycle:2024` | 248 s | 6.9 s | same |
+| `/analytics/relationships`, cold, all-time | 10.1 s | 2.0 s | same |
+| lobbying graph, windowed | 161.6 s | 4.55 s | IN-list of the kept match keys instead of a join on the computed `donor_key` (S-S2) |
+| 527 graph, windowed | 14.7 s | 4.34 s | S-S2 |
+| `/analytics/networks`, cold | not recorded | 8.5 s | S-S2 |
+| `/analytics/` overview, cold | 21.9 s | 9.3 s | race builder fed by `isbe_race_candidacies`, archived receipts excluded (S-RA) |
+| `/analytics/` overview, all-time window | 40 s | 8.3 s | S-RA |
+| Governor race detail | 22 s | 3.1 s | S-RA |
+| `/analytics/state-races/` | new page | cold 7.9 s; warm 20–46 ms (1,465 races, 1,016 active, 725 KB) | S-RB |
+| `/committees/1126`, all-time window | 415 ms | 262 ms after S-PA; 392 ms after S-PB's two see-all count queries; ~307 ms after `COUNT(*) OVER ()` (S-C2) | rollup helpers, `COLLATE "C"` grouping (S-PA, S-PB, S-C2) |
+| `/candidates/<id>`, warm | new page | 10–34 ms (7 queries per page) | S-C1 |
+| committee Top Payees (expenditures lookup) | 660–1,117 ms | 0.6–21 ms | `(committee_id, expended_date)` index on `isbe_condensed_expenditures` (B1, step 0.1) |
+| committee `analytics_donor_committee_agg` lookup | 1.6–1.9 s (seq scan) | 5–55 ms (index scan, 8.8 MB) | `(source, committee_id)` index (B2, S-S1a) |
+| top-12 race-detail prewarm | 16.4 s | 5.0 s | one full build instead of per-race builds (S-S2); a warm-cache re-run on 2026-10-27 gave 10.5 s → 1.8 s with identical payloads |
+
+Prod after the 2026-10-27 deploy: not yet re-measured; add the numbers here after the post-deploy sweep (`docs/runbooks/deployment.md`, Release 2026-10-27).
+
+## Route cache + startup prewarm
+
+`warm_analytics_caches()` runs in a background thread per gunicorn worker on startup (gated by `DASHBOARD_PREWARM_ENABLED`). It pre-populates the risk, networks, relationships, and overview caches, plus the twelve state-race details the overview links to, with default filter values (the current election cycle resolved by `resolve_time_scope(default="cycle:current", args={})`, default limits; every prewarmed page, risk included, keys on the `received` (receipt-date) axis).
+
+- **Why prewarm**: where `REDIS_URL` is set (production), `RouteCache` entries live in Redis and are shared by every worker. Without Redis (dev, CI) each of the 3 gunicorn `--workers` processes falls back to its own per-instance 32-entry LRU, so without prewarm only ~33% of requests hit a warm worker. Prewarm populates the default-scope keys at startup either way.
 - **Cache key alignment**: prewarm keys must exactly match `_parse_filters()` defaults — otherwise prewarm results won't be hit. Both sides derive the key from the resolved scope (`scope_cache_key(scope)` = `axis:start:end`), so a cycle preset's key is stable across days; only `last12m` and custom windows roll.
-- **TTL choice**: 1800s (30 min) ensures caches survive between typical user sessions. Data only changes on import, so long TTL is safe.
+- **TTL choice**: the analytics caches default to 21600s (6 h; `ANALYTICS_*_CACHE_TTL_SECONDS` in `config.py`), which ensures they survive between typical user sessions. Data only changes on import, so long TTL is safe.
 - **Cost**: ~2-3 min per worker for prewarm to complete.
+- **Window-free graphs**: builders that take no dates (relationships: donor co-giving, committee similarity, candidate competition; networks: state–federal overlap) are cached once under `(builder name, arguments)` in the `analytics_window_free_graphs` cache and serve every window, so `?period=all` on relationships only builds the lobbying and 527 graphs. Prewarm fills them; a failed build is not cached (B3, J-S15).
+- **Invalidation**: `refresh-analytics` (after its commit) and `sunshine-import` (after the matviews and compat views) call `flush_all_route_caches()`, which deletes the Redis `ilcf:cache:*` keys. The per-instance LRUs live in each gunicorn worker and clear only on a service restart, so restart after a refresh (the weekly chain does).
 
 ## Viz Lab network advanced metrics contract
 
@@ -80,6 +110,7 @@ Created automatically by `isbe_sunshine_etl.py` matview/schema DDL and `database
 - `isbe_d2_reports`: `active_filed_doc` (partial: `(filed_doc_id) WHERE archived = FALSE`)
 - 527 perf: `idx_irs527_contributions_name_amount`, `idx_irs527_contributions_date_amount`, `idx_irs527_expenditures_date_amount`
 - Analytics graphs: `idx_irs527_orgs_ein`, `idx_irs527_committee_matches_ein`, `idx_irs527_exp_recipient_matches_ein`, `idx_irs527_director_donor_matches_ein` (EIN lookups for 527 ecosystem graph); `idx_lobbying_donor_matches_client_id`, `idx_lobbying_exp_matches_source` (lobbying influence graph); `idx_isbe_condensed_exp_committee_id` (vendor network)
+- Committee profile and see-all lists: `idx_isbe_condensed_expenditures_committee_date (committee_id, expended_date)` (matview DDL; prod needs the one-time `CREATE INDEX IF NOT EXISTS` from `deployment.md`) and `idx_analytics_donor_committee_agg_source_committee (source, committee_id)` (`database/schema.sql`); the per-cycle `/donors/` list reads `analytics_donor_cycle_summary` (`idx_analytics_donor_cycle_summary_total`)
 
 ## Snapshot build compatibility
 

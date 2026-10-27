@@ -61,6 +61,18 @@ def _scope_context(scope) -> dict:
     }
 
 
+def _reg_year_clause(scope, column: str) -> tuple[str, list[int]]:
+    """`` AND column >= ? AND column <= ?`` over the years the scope's window touches; ("", []) when unbounded."""
+    sql, params = "", []
+    if scope.start:
+        sql += f" AND {column} >= ?"
+        params.append(scope.start.year)
+    if scope.end:
+        sql += f" AND {column} <= ?"
+        params.append(scope.end.year)
+    return sql, params
+
+
 def _bulk_donor_key_sql(alias: str = "r") -> str:
     return (
         f"LOWER(TRIM("
@@ -701,6 +713,8 @@ def list_entities():
     )
     total_pages = max(1, (total + per_page - 1) // per_page)
 
+    # Clients count once each, over their registrations in the scope's years.
+    client_year_sql, client_year_params = _reg_year_clause(scope, "ec.reg_year")
     entities = conn.execute(
         f"""
         SELECT
@@ -709,13 +723,13 @@ def list_entities():
             e.reg_year,
             COUNT(DISTINCT ec.client_id) AS client_count
         FROM lobbying_entities e
-        LEFT JOIN lobbying_entity_clients ec ON ec.entity_id = e.entity_id
+        LEFT JOIN lobbying_entity_clients ec ON ec.entity_id = e.entity_id{client_year_sql}
         {where_clause}
         GROUP BY e.entity_id, e.entity_name, e.reg_year
         ORDER BY client_count DESC, e.entity_name ASC
         LIMIT ? OFFSET ?
         """,
-        params + [per_page, offset],
+        client_year_params + params + [per_page, offset],
     ).fetchall()
 
     return render_template('lobbying/list.html',
@@ -784,15 +798,17 @@ def entity_detail(entity_id):
     if not entity:
         abort(404)
 
+    # Registrations in the years the window touches (the window snapped to whole years).
+    client_year_sql, client_year_params = _reg_year_clause(scope, "ec.reg_year")
     clients = conn.execute(
-        """
+        f"""
         SELECT c.client_id, c.client_name, ec.reg_year
         FROM lobbying_entity_clients ec
         JOIN lobbying_clients c ON c.client_id = ec.client_id
-        WHERE ec.entity_id = ?
+        WHERE ec.entity_id = ?{client_year_sql}
         ORDER BY c.client_name
         """,
-        (entity_id,),
+        (entity_id, *client_year_params),
     ).fetchall()
 
     donor_matches = []
@@ -859,6 +875,7 @@ def entity_detail(entity_id):
                            time_scope=scope,
                            scope_default_key="all",
                            time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope),
                            cycle_total=cycle_total)
 
 
@@ -962,6 +979,7 @@ def client_detail(client_id):
                            time_scope=scope,
                            scope_default_key="all",
                            time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope),
                            cycle_total=cycle_total)
 
 

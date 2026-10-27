@@ -23,6 +23,7 @@ Follow The Money IL aggregates, normalizes, and analyzes Illinois campaign-finan
 - **Entity resolution & cross-matching** — Jaccard-similarity matching across state and federal records, plus a cross-matching engine that links lobbying entities, 527 directors and organizations, donors, committees, and candidates.
 - **Analytics** — Network/graph analysis, anomaly detection (large-contribution and monthly-spike flags), concentration metrics (HHI, Gini, top-N donor share), time-series aggregation, geographic donor rollups, and per-flag risk explainability.
 - **Interactive web app** — Flask UI with sortable/filterable tables, a per-page time-scope bar (current/previous cycle, last 12 months, all time, custom range; the scope follows drill-down links), candidate/committee drilldowns, side-by-side compare mode, money-flow and network visualizations, a dark-money tracker, and unified cross-dataset person search, with CSV/JSON export throughout.
+- **Profiles, full lists and races** — A candidate profile (`/candidates/<id>`: all of a candidate's committees, most recently active first); full donor and payee lists per committee (`/committees/<id>/donors`, `/committees/<id>/payees`) and contributor / recipient lists per 527 organization (`/527/<ein>/contributors`, `/527/<ein>/recipients`), linked from each profile's top-N tables; every state race of a cycle (`/analytics/state-races/`); and an opt-in roll-up of serial committee re-registrations (`/committees/?by=family`) driven by admin-reviewed committee families (`/admin/committee-families`).
 - **Production-ready API surface** — Optional API-key auth, per-key rate limiting, and Redis-backed route caching for heavy aggregate views.
 
 ## Tech stack
@@ -108,7 +109,7 @@ python run.py refresh-analytics
 python run.py runserver --port 5000
 ```
 
-In production the app is served via Gunicorn against the WSGI entry point (`wsgi.py`). Run `python run.py --help` to see the full set of ingestion, scraping, and maintenance commands.
+In production the app is served via Gunicorn against the WSGI entry point (`wsgi.py`). Run `python run.py --help` to see the full set of ingestion, scraping, and maintenance commands. Table shapes, join keys, and data quirks are documented in `.claude/data-dictionary.md`.
 
 ### Privacy and removal requests
 
@@ -125,11 +126,24 @@ python run.py apply-privacy-redactions   # re-apply after sync-prod-db; sunshine
 
 Runbook: `docs/runbooks/privacy_takedown_response.md`.
 
+### Committee families
+
+Serial re-registrations of one political actor are grouped (never merged) into reviewable families; only accepted families appear on public pages.
+
+```bash
+python3 scripts/committee_families.py report --limit 30   # read-only dry run: proposed families and weak pairs
+python3 scripts/committee_families.py seed                # store new proposals as pending (idempotent); review at /admin/committee-families
+```
+
+Design: `docs/committee_families_design.md`.
+
 ### Tests
 
 ```bash
 pytest -q
 ```
+
+A new windowed widget needs a row in `tests/scope_widgets_registry.py` and a probe in `tests/test_scope_widgets.py`; CI runs both.
 
 ## Author
 

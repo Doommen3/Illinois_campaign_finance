@@ -10,7 +10,7 @@
         <tr>
             <th>Committee:</th>
             <td>
-                <a href="{{ url_for('committees.committee_detail', committee_id=report.committee_id) }}">
+                <a href="{{ url_for('committees.legacy_committee_detail', committee_id=report.committee_id) }}">
                     {{ report.committee_name }}
                 </a>
             </td>

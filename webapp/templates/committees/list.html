@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
 
 {% block title %}Committees - Illinois Campaign Finance Tracker{% endblock %}
 
@@ -15,6 +16,15 @@
     <button type="submit">Search</button>
 </form>
 
+{% if use_isbe %}
+{% if scope_query.get('by') == 'family' %}
+{% set plain_scope_query = dict(scope_query.items() | rejectattr(0, 'eq', 'by') | list) %}
+<p class="help-text"><a href="{{ url_for('committees.list_committees', q=query, sort=sort_by, dir=sort_dir, **plain_scope_query) }}">One row per committee</a></p>
+{% else %}
+<p class="help-text"><a href="{{ url_for('committees.list_committees', by='family', q=query, sort=sort_by, dir=sort_dir, **scope_query) }}">Group by family</a></p>
+{% endif %}
+{% endif %}
+
 <table class="data-table">
     <thead>
         <tr>
@@ -28,9 +38,7 @@
             <th>Party</th>
             {% endif %}
             <th>
-                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc', q=query, **scope_query) }}">
-                    Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}
-                </a>
+                <a href="{{ url_for('committees.list_committees', sort='total_contributions', dir='asc' if sort_by != 'total_contributions' or sort_dir == 'desc' else 'desc', q=query, **scope_query) }}">Total Contributions{% if sort_by == 'total_contributions' %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a> {{ scope_tag() }}
             </th>
         </tr>
     </thead>

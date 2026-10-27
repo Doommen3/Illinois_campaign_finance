@@ -6,6 +6,7 @@ Starts with the ISBE committee profile (1.3a); later lanes add donors, federal
 candidate/donor, 527, lobbying and OpenBook profiles to this file.
 """
 import re
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
@@ -280,8 +281,19 @@ def _seed_federal(conn) -> None:
 
 
 @pytest.fixture
-def federal_app(tmp_path: Path):
+def federal_app(tmp_path: Path, monkeypatch):
     from database.federal_fec import _ensure_missing_donor_identities
+
+    # Freeze the scope clock (2026-10-26) so period=all / current-cycle expectations
+    # in this file, test_scope_widgets.py and test_scope_windows_part_b.py do not
+    # age out on 2027-01-01 (same idiom as tests/test_candidate_profile.py).
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 26)
+
+    monkeypatch.setattr("webapp.utils.time_scope.date", _FrozenDate)
+    monkeypatch.setattr("database.analytics.current_election_cycle", lambda today=None: 2026)
 
     db_path = str(tmp_path / "federal_scope.db")
     init_db(db_path)
@@ -461,7 +473,7 @@ class TestLobbyingProfileScope:
         assert "$1,200.00" in html                              # matched donor dollars, all time
         assert "This cycle" in html
         assert '<h2>Money Destinations <span class="scope-tag">All time</span></h2>' in html
-        assert '<h2>Clients (1) <span class="scope-tag scope-tag-fixed">All time</span></h2>' in html
+        assert '<h2>Clients (1) <span class="scope-tag">All time</span></h2>' in html
 
     def test_client_cycle_preset_narrows(self, lobbying_app):
         html = lobbying_app.test_client().get("/lobbying/client/1?period=cycle:2026").get_data(as_text=True)

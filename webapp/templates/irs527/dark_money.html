@@ -6,7 +6,7 @@
 {% block content %}
 <h1>Dark Money Tracker</h1>
 {% include "_partials/time_scope_bar.html" %}
-<p class="subtitle">527 organization expenditures matched to IL committees and candidates ({{ total }} matches)</p>
+<p class="subtitle">527 organization expenditures matched to IL committees and candidates ({{ total }} matches) {{ scope_tag() }}</p>
 
 {% if contribution_stats and contribution_stats.row_count > 0 %}
 <section class="status-section">

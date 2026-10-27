@@ -3,7 +3,8 @@ from dataclasses import replace
 
 from flask import Blueprint, render_template, request, current_app, abort, redirect, url_for, jsonify
 
-from database.models import Committee, Report, Contribution
+from database.committee_families import accepted_family_map, family_members
+from database.models import Committee, Report, Contribution, Donor, receipts_filter_sql
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import (
     TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_params, scope_where,
@@ -26,6 +27,215 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
         return False
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return any(row["name"] == column_name for row in rows)
+
+
+def _has_columns(conn, table_name: str, columns: tuple[str, ...]) -> bool:
+    """``table_name`` exists and has every one of ``columns`` (one catalog read for all of them)."""
+    if not _table_exists(conn, table_name):
+        return False
+    present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    return set(columns) <= present
+
+
+def _in_isbe_committees(conn, committee_id: int) -> bool:
+    """True when ``isbe_committees`` has this id: its ISBE profile then wins over a legacy page (J-S8)."""
+    if not _table_exists(conn, "isbe_committees"):
+        return False
+    return conn.execute(
+        "SELECT 1 FROM isbe_committees WHERE id = ? LIMIT 1", (committee_id,)
+    ).fetchone() is not None
+
+
+def _isbe_committee_name(conn, committee_id_sbe: int) -> str | None:
+    """Name of the ISBE committee with this id (``isbe_committees``, else the bulk loader's
+    ``bulk_committees_clean``); None when neither has it. The legacy scraped ``committees`` table is
+    never read, so a legacy row sharing the id cannot shadow the ISBE committee (J-S8)."""
+    for table, id_column, name_column in (("isbe_committees", "id", "name"),
+                                          ("bulk_committees_clean", "committee_id_sbe", "committee_name")):
+        if _table_exists(conn, table):
+            row = conn.execute(
+                f"SELECT {name_column} AS name FROM {table} WHERE {id_column} = ? LIMIT 1", (committee_id_sbe,)
+            ).fetchone()
+            if row:
+                return (row["name"] or "").strip() or f"Committee {committee_id_sbe}"
+    return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Committee donor / payee rollups (plan P1; decisions J-P3, J-P4, J-S2). One feeder, two
+# consumers: the profile's Top-20 tables are the head (limit=20) of the full lists.
+# Both read the bulk_*_clean compat views, filter on committee_id_sbe first (the matviews'
+# committee indexes), and return []/0 when the view or a column they read is missing.
+# Group keys are COLLATE "C": the same groups (the default collation is deterministic) but a
+# byte-order sort, 242 -> 149 ms (donors) and 93 -> 62 ms (payees) warm for committee 1126 all
+# time locally, where the row estimate is far too low and the planner sorts the keys.
+# ---------------------------------------------------------------------------------------------
+
+_DONOR_ROLLUP_COLUMNS = (
+    "committee_id_sbe", "received_date", "amount", "is_archived", "d2_part_code",
+    "first_name", "last_or_business_name", "address_line_1", "address_line_2", "city", "state", "postal_code",
+)
+_PAYEE_ROLLUP_COLUMNS = (
+    "committee_id_sbe", "expended_date", "amount", "is_archived", "payee_first_name", "payee_last_or_business_name",
+)
+_PAYEE_NAME_SQL = (
+    "TRIM(COALESCE(NULLIF(TRIM(e.payee_first_name), ''), '')"
+    " || CASE WHEN COALESCE(NULLIF(TRIM(e.payee_first_name), ''), '') != ''"
+    " AND COALESCE(NULLIF(TRIM(e.payee_last_or_business_name), ''), '') != '' THEN ' ' ELSE '' END"
+    " || COALESCE(NULLIF(TRIM(e.payee_last_or_business_name), ''), ''))"
+)
+
+
+def _donor_rollup_source(conn, committee_id_sbe: int, scope: TimeScope):
+    """(grouped SELECT, params): the committee's donors in ``scope``, one row per site ``donor_key``."""
+    if not _has_columns(conn, "bulk_receipts_clean", _DONOR_ROLLUP_COLUMNS):
+        return None
+    window, window_params = scope_where(scope, "DATE(r.received_date)")
+    return f"""
+        SELECT {Donor._bulk_donor_key_sql("r")} COLLATE "C" AS donor_key,
+               MODE() WITHIN GROUP (ORDER BY {Donor._bulk_donor_name_sql("r")}) AS donor_name,
+               MODE() WITHIN GROUP (ORDER BY NULLIF(TRIM(r.city), '')) AS city,
+               MODE() WITHIN GROUP (ORDER BY NULLIF(TRIM(r.state), '')) AS state,
+               SUM(r.amount) AS total_amount,
+               COUNT(*) AS contribution_count,
+               MIN(DATE(r.received_date)) AS first_date,
+               MAX(DATE(r.received_date)) AS last_date
+        FROM bulk_receipts_clean r
+        WHERE r.committee_id_sbe = ? AND {receipts_filter_sql("r")}{window}
+        GROUP BY donor_key
+    """, [committee_id_sbe, *window_params]
+
+
+def _payee_rollup_source(conn, committee_id_sbe: int, scope: TimeScope):
+    """(grouped SELECT, params): the committee's payees in ``scope``, one row per normalized name."""
+    if not _has_columns(conn, "bulk_expenditures_clean", _PAYEE_ROLLUP_COLUMNS):
+        return None
+    window, window_params = scope_where(scope, "DATE(e.expended_date)")
+    return f"""
+        SELECT TRIM(REGEXP_REPLACE(LOWER({_PAYEE_NAME_SQL}), '[^[:alnum:]]+', ' ', 'g')) COLLATE "C" AS payee_key,
+               MODE() WITHIN GROUP (ORDER BY {_PAYEE_NAME_SQL}) AS payee_name,
+               SUM(e.amount) AS total_amount,
+               COUNT(*) AS transaction_count,
+               MIN(DATE(e.expended_date)) AS first_date,
+               MAX(DATE(e.expended_date)) AS last_date
+        FROM bulk_expenditures_clean e
+        WHERE e.committee_id_sbe = ?
+          AND COALESCE(e.amount, 0) > 0 AND NOT COALESCE(e.is_archived::boolean, FALSE){window}
+        GROUP BY payee_key
+    """, [committee_id_sbe, *window_params]
+
+
+def _rollup_from(source, name: str, q: str | None):
+    """FROM clause over the grouped rows, with ``q`` as a bound case-insensitive substring of ``name``."""
+    sql, params = source
+    needle = (q or "").strip()
+    if not needle:
+        return f"({sql}) rolled", list(params)
+    return f"({sql}) rolled WHERE STRPOS(LOWER(rolled.{name}), LOWER(?)) > 0", [*params, needle]
+
+
+def _rollup_page(conn, source, *, key, name, count, limit, offset, sort_by, sort_dir, q):
+    """One page of grouped rows. ``sort_by``/``sort_dir`` only pick from a fixed vocabulary (never SQL).
+
+    Every row carries ``total_rows``: how many grouped rows ``q`` keeps before LIMIT/OFFSET
+    (``COUNT(*) OVER ()``), so a caller that needs N reads it here instead of running a count query.
+    """
+    order = {"total": "total_amount", "count": count, "name": f"LOWER({name})", "last": "last_date"}.get(
+        sort_by, "total_amount"
+    )
+    direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
+    from_sql, params = _rollup_from(source, name, q)
+    return conn.execute(
+        f"SELECT *, COUNT(*) OVER () AS total_rows FROM {from_sql} "
+        f"ORDER BY {order} {direction} NULLS LAST, total_amount DESC, {key} ASC LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    ).fetchall()
+
+
+def _rollup_count(conn, source, name: str, q: str | None) -> int:
+    if source is None:
+        return 0
+    from_sql, params = _rollup_from(source, name, q)
+    row = conn.execute(f"SELECT COUNT(*) AS n FROM {from_sql}", tuple(params)).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+
+def _rollup_summary(conn, source, name: str, q: str | None) -> tuple[int, float]:
+    """(row count, sum of total_amount) of the grouped rows ``q`` keeps: the full-list pages' summary line."""
+    if source is None:
+        return 0, 0.0
+    from_sql, params = _rollup_from(source, name, q)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n, COALESCE(SUM(total_amount), 0) AS total FROM {from_sql}", tuple(params)
+    ).fetchone()
+    return (int(row["n"] or 0), float(row["total"] or 0.0)) if row else (0, 0.0)
+
+
+def committee_donor_rollup(conn, committee_id_sbe: int, scope: TimeScope, *, limit: int = 50, offset: int = 0,
+                           sort_by: str = "total", sort_dir: str = "desc", q: str | None = None) -> list[dict]:
+    """The committee's donors in ``scope``, one row per ``donor_key`` (J-P3), sorted and paged.
+
+    ``donor_key`` is ``Donor._bulk_donor_key_sql`` verbatim and the predicate is
+    ``receipts_filter_sql(parts="contributions")``, so ``/donors/key/<donor_key>?source=bulk_receipts``
+    resolves and its windowed total equals ``total_amount``. donor_name / city / state are the most
+    common filed spelling. ``sort_by`` in total | count | name | last (anything else: total);
+    ``q`` filters on donor_name before paging. Each row also carries ``total_rows``, the number of rows
+    the whole list holds for this scope and ``q`` (what ``committee_donor_rollup_count`` returns).
+    """
+    source = _donor_rollup_source(conn, committee_id_sbe, scope)
+    if source is None:
+        return []
+    rows = _rollup_page(conn, source, key="donor_key", name="donor_name", count="contribution_count",
+                        limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir, q=q)
+    return [
+        {
+            "donor_key": row["donor_key"],
+            "donor_name": (row["donor_name"] or "").strip() or "Unknown Donor",
+            "city": row["city"] or "",
+            "state": row["state"] or "",
+            "total_amount": float(row["total_amount"] or 0.0),
+            "contribution_count": int(row["contribution_count"] or 0),
+            "first_date": row["first_date"],
+            "last_date": row["last_date"],
+            "total_rows": int(row["total_rows"]),
+        }
+        for row in rows
+    ]
+
+
+def committee_donor_rollup_count(conn, committee_id_sbe: int, scope: TimeScope, *, q: str | None = None) -> int:
+    """Number of rows ``committee_donor_rollup`` pages through for the same scope and ``q``."""
+    return _rollup_count(conn, _donor_rollup_source(conn, committee_id_sbe, scope), "donor_name", q)
+
+
+def committee_payee_rollup(conn, committee_id_sbe: int, scope: TimeScope, *, limit: int = 50, offset: int = 0,
+                           sort_by: str = "total", sort_dir: str = "desc", q: str | None = None) -> list[dict]:
+    """The committee's payees in ``scope``, one row per normalized name (J-P4: lower case, runs of
+    whitespace/punctuation collapsed), displayed as the most common filed spelling; not archived,
+    amount > 0, any D-2 part. Same sort vocabulary, paging, ``q`` (on payee_name) and ``total_rows`` as the
+    donor rollup.
+    """
+    source = _payee_rollup_source(conn, committee_id_sbe, scope)
+    if source is None:
+        return []
+    rows = _rollup_page(conn, source, key="payee_key", name="payee_name", count="transaction_count",
+                        limit=limit, offset=offset, sort_by=sort_by, sort_dir=sort_dir, q=q)
+    return [
+        {
+            "payee_name": (row["payee_name"] or "").strip() or "Unknown Payee",
+            "total_amount": float(row["total_amount"] or 0.0),
+            "transaction_count": int(row["transaction_count"] or 0),
+            "first_date": row["first_date"],
+            "last_date": row["last_date"],
+            "total_rows": int(row["total_rows"]),
+        }
+        for row in rows
+    ]
+
+
+def committee_payee_rollup_count(conn, committee_id_sbe: int, scope: TimeScope, *, q: str | None = None) -> int:
+    """Number of rows ``committee_payee_rollup`` pages through for the same scope and ``q``."""
+    return _rollup_count(conn, _payee_rollup_source(conn, committee_id_sbe, scope), "payee_name", q)
 
 
 def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> dict | None:
@@ -105,30 +315,28 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
             committee_name = (row["committee_name"] or "").strip()
 
     # --- Receipts query ---
-    # Determine table, committee column, and last-name column based on source.
+    # Determine table and committee column based on source.
     if use_isbe_receipts:
         rcpt_table = "isbe_condensed_receipts"
         rcpt_cmte_col = "committee_id"
-        rcpt_last_col = "last_name"
     elif has_bulk_receipts:
         rcpt_table = "bulk_receipts_clean"
         rcpt_cmte_col = "committee_id_sbe"
-        rcpt_last_col = "last_or_business_name"
     else:
         rcpt_table = None
         rcpt_cmte_col = None
-        rcpt_last_col = None
 
     receipts_filter = ""
     receipts_params: list = []
     if rcpt_table:
         receipts_filter = f"WHERE {rcpt_cmte_col} = ?"
         receipts_params = [committee_id_sbe]
-        # Archived-row exclusion
+        # Archived-row exclusion; the compat view takes the shared all-parts predicate (J-S20:
+        # amount > 0, not archived), qualified by the table name since these queries are unaliased.
         if use_isbe_receipts:
             receipts_filter += " AND archived = FALSE"
-        elif _column_exists(conn, rcpt_table, "is_archived"):
-            receipts_filter += " AND NOT COALESCE(is_archived::boolean, FALSE)"
+        else:
+            receipts_filter += f" AND {receipts_filter_sql(rcpt_table, parts='all')}"
         cycle_clause, cycle_plist = scope_where(cycle_scope, "DATE(received_date)")
         receipts_cycle_filter = receipts_filter + cycle_clause
         receipts_cycle_params = receipts_params + cycle_plist
@@ -144,7 +352,6 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         "last_date": None,
         "cycle_total": 0.0,
     }
-    top_donors: list[dict] = []
     if rcpt_table:
         row = conn.execute(
             f"""
@@ -178,53 +385,20 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         if cycle_row:
             receipts_summary["cycle_total"] = float(cycle_row["cycle_total"] or 0.0)
 
-        top_donor_rows = conn.execute(
-            f"""
-            SELECT
-                TRIM(
-                    COALESCE(NULLIF(TRIM(first_name), ''), '')
-                    || CASE
-                        WHEN COALESCE(NULLIF(TRIM(first_name), ''), '') != ''
-                         AND COALESCE(NULLIF(TRIM({rcpt_last_col}), ''), '') != '' THEN ' '
-                        ELSE ''
-                      END
-                    || COALESCE(NULLIF(TRIM({rcpt_last_col}), ''), '')
-                ) AS donor_name,
-                COALESCE(SUM(amount), 0.0) AS total_amount,
-                COUNT(*) AS contribution_count
-            FROM {rcpt_table}
-            {receipts_filter}
-            GROUP BY donor_name
-            ORDER BY total_amount DESC, contribution_count DESC, donor_name ASC
-            LIMIT 20
-            """,
-            tuple(receipts_params),
-        ).fetchall()
-        top_donors = [
-            {
-                "donor_name": (row["donor_name"] or "").strip() or "Unknown Donor",
-                "total_amount": float(row["total_amount"] or 0.0),
-                "contribution_count": int(row["contribution_count"] or 0),
-            }
-            for row in top_donor_rows
-        ]
+    top_donors = committee_donor_rollup(conn, committee_id_sbe, scope, limit=20)
+    # "See all N donors" (P2): N rides on the Top-20 query (COUNT(*) OVER ()), no second count query.
+    donor_count = top_donors[0]["total_rows"] if top_donors else 0
 
     # --- Expenditures query ---
     if use_isbe_expenditures:
         exp_table = "isbe_condensed_expenditures"
         exp_cmte_col = "committee_id"
-        exp_last_col = "last_name"
-        exp_first_col = "first_name"
     elif has_bulk_expenditures:
         exp_table = "bulk_expenditures_clean"
         exp_cmte_col = "committee_id_sbe"
-        exp_last_col = "payee_last_or_business_name"
-        exp_first_col = "payee_first_name"
     else:
         exp_table = None
         exp_cmte_col = None
-        exp_last_col = None
-        exp_first_col = None
 
     expenditures_filter = ""
     expenditures_params: list = []
@@ -250,7 +424,6 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         "last_date": None,
         "cycle_total": 0.0,
     }
-    top_payees: list[dict] = []
     if exp_table:
         row = conn.execute(
             f"""
@@ -284,36 +457,8 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         if cycle_row:
             expenditures_summary["cycle_total"] = float(cycle_row["cycle_total"] or 0.0)
 
-        top_payee_rows = conn.execute(
-            f"""
-            SELECT
-                TRIM(
-                    COALESCE(NULLIF(TRIM({exp_first_col}), ''), '')
-                    || CASE
-                        WHEN COALESCE(NULLIF(TRIM({exp_first_col}), ''), '') != ''
-                         AND COALESCE(NULLIF(TRIM({exp_last_col}), ''), '') != '' THEN ' '
-                        ELSE ''
-                      END
-                    || COALESCE(NULLIF(TRIM({exp_last_col}), ''), '')
-                ) AS payee_name,
-                COALESCE(SUM(amount), 0.0) AS total_amount,
-                COUNT(*) AS transaction_count
-            FROM {exp_table}
-            {expenditures_filter}
-            GROUP BY payee_name
-            ORDER BY total_amount DESC, transaction_count DESC, payee_name ASC
-            LIMIT 20
-            """,
-            tuple(expenditures_params),
-        ).fetchall()
-        top_payees = [
-            {
-                "payee_name": (row["payee_name"] or "").strip() or "Unknown Payee",
-                "total_amount": float(row["total_amount"] or 0.0),
-                "transaction_count": int(row["transaction_count"] or 0),
-            }
-            for row in top_payee_rows
-        ]
+    top_payees = committee_payee_rollup(conn, committee_id_sbe, scope, limit=20)
+    payee_count = top_payees[0]["total_rows"] if top_payees else 0
 
     candidate_links: list[dict] = []
     # Try bulk_committee_candidate_links first, then ISBE compat link table
@@ -486,6 +631,8 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         "filing_history": filing_history,
         "top_donors": top_donors,
         "top_payees": top_payees,
+        "donor_count": donor_count,
+        "payee_count": payee_count,
     }
 
 
@@ -512,6 +659,91 @@ def _windowed_receipts_cte(conn, scope: TimeScope):
         f"WITH windowed AS (SELECT {cmte_col} AS committee_id, SUM(amount) AS total "
         f"FROM {table} WHERE {archived}{clause} GROUP BY {cmte_col})"
     ), params
+
+
+# ---------------------------------------------------------------------------------------------
+# Committee families on public pages (S-C8 part 2, J-S9 / J-S18): ACCEPTED families only; pending
+# and rejected proposals never show. Group, never merge: per-committee pages and numbers stay.
+# ---------------------------------------------------------------------------------------------
+
+def _accepted_family(conn, committee_id: int) -> dict | None:
+    """Profile banner data: label, size, active count and sibling committees of the accepted family
+    this committee belongs to; None when it is in none."""
+    if not _table_exists(conn, "committee_family_member"):
+        return None
+    found = accepted_family_map(conn, [committee_id]).get(committee_id)
+    if not found:
+        return None
+    members = family_members(conn, found[0])
+    return {
+        "label": found[1],
+        "size": len(members),
+        "active": sum(1 for member in members if member["active"]),
+        "siblings": [member for member in members if member["id"] != committee_id],
+    }
+
+
+def _committee_rows_by_family(conn, scope: TimeScope, query: str, sort_by: str, direction: str,
+                              limit: int, offset: int) -> tuple[list[dict], int]:
+    """``/committees/?by=family``: the members of an accepted family collapse into one row with the
+    family label, the member count and the members' summed totals (windowed like the default list);
+    other committees keep their own row. A family row links to its active (else newest) member and
+    matches ``q`` when the label or any member name does. Returns (one page of rows, row count)."""
+    bounded = bool(scope.start or scope.end)
+    windowed = _windowed_receipts_cte(conn, scope) if bounded else None
+    params: list = []
+    if windowed:
+        with_sql, params = windowed[0] + ",", list(windowed[1])
+        money_join, money = "LEFT JOIN windowed w ON w.committee_id = c.id", "COALESCE(w.total, 0)"
+    elif not bounded and _table_exists(conn, "isbe_committee_money"):
+        with_sql, money_join, money = "WITH", "LEFT JOIN isbe_committee_money w ON w.committee_id = c.id", "COALESCE(w.total, 0)"
+    else:
+        with_sql, money_join, money = "WITH", "", "0"
+    having = ""
+    if query:
+        having = "HAVING BOOL_OR(c.name LIKE ?) OR MIN(fam.label) LIKE ?"
+        params += [f"%{query}%", f"%{query}%"]
+    grouped = f"""
+        {with_sql} fam AS (
+            SELECT DISTINCT ON (m.committee_id) m.committee_id, f.id AS family_id, f.label
+            FROM committee_family_member m
+            JOIN committee_family f ON f.id = m.family_id
+            WHERE f.status = 'accepted'
+            ORDER BY m.committee_id, f.id
+        ),
+        grouped AS (
+            SELECT (ARRAY_AGG(c.id ORDER BY c.active DESC NULLS LAST, c.id DESC))[1] AS id,
+                   COALESCE(MIN(fam.label), MIN(c.name)) AS name,
+                   MIN(c.type) AS type,
+                   CASE WHEN MIN(c.party) = MAX(c.party) THEN MIN(c.party) END AS party,
+                   BOOL_OR(c.active) AS active,
+                   MIN(fam.family_id) AS family_id,
+                   COUNT(*) AS member_count,
+                   SUM({money}) AS total_contributions
+            FROM isbe_committees c
+            LEFT JOIN fam ON fam.committee_id = c.id
+            {money_join}
+            GROUP BY fam.family_id, CASE WHEN fam.family_id IS NULL THEN c.id END
+            {having}
+        )
+    """
+    count_row = conn.execute(f"{grouped} SELECT COUNT(*) AS n FROM grouped", tuple(params)).fetchone()
+    order = "total_contributions" if sort_by == "total_contributions" else "name"
+    rows = conn.execute(
+        f"{grouped} SELECT * FROM grouped ORDER BY {order} {direction}, id ASC LIMIT ? OFFSET ?",
+        tuple(params + [limit, offset]),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "type": f"Committee family ({row['member_count']} committees)" if row["family_id"] else row["type"],
+            "party": row["party"],
+            "active": row["active"],
+            "total_contributions": row["total_contributions"],
+        }
+        for row in rows
+    ], int(count_row["n"] or 0) if count_row else 0
 
 
 @committees_bp.route('/')
@@ -545,8 +777,13 @@ def list_committees():
 
     has_isbe = _table_exists(conn, "isbe_committees")
     has_money = has_isbe and _table_exists(conn, "isbe_committee_money")
+    by_family = has_isbe and request.args.get('by') == 'family' and _table_exists(conn, "committee_family_member")
 
-    if has_isbe:
+    if by_family:
+        # committees/list.html builds its search form, sort and pager links from scope_query: carry the opt-in there.
+        scope_context["scope_query"] = {**scope_context["scope_query"], "by": "family"}
+        rows, total = _committee_rows_by_family(conn, scope, query, sort_by, direction, per_page, offset)
+    elif has_isbe:
         where_clause = ""
         params: list = []
         if query:
@@ -680,26 +917,50 @@ def suggest_committees():
 
 @committees_bp.route('/<int:committee_id>')
 def committee_detail(committee_id):
-    """Committee detail page."""
+    """Committee detail page: the ISBE profile whenever ``isbe_committees`` has the id (J-S8);
+    the legacy scraped-committee page only for ids ISBE lacks (its own URL: /committees/legacy/<id>)."""
     conn = current_app.get_database()
     data_through = latest_data_date("isbe")
 
+    committee = None if _in_isbe_committees(conn, committee_id) else Committee.get_by_id(conn, committee_id)
+    if not committee:
+        # Treat committee_id as an ISBE SBE committee ID
+        return _isbe_profile_page(conn, committee_id, data_through)
+
+    return _legacy_committee_page(conn, committee, data_through)
+
+
+def _isbe_profile_page(conn, committee_id_sbe: int, data_through):
+    """The ISBE committee profile (``committees/detail_sbe.html``); 404 when nothing is known about the id."""
+    scope = resolve_time_scope(default="all", axis="received", data_through=data_through)
+    profile = _bulk_committee_profile(conn, committee_id_sbe, scope)
+    if not profile:
+        abort(404)
+    return render_template(
+        'committees/detail_sbe.html',
+        committee_id_sbe=committee_id_sbe,
+        profile=profile,
+        family=_accepted_family(conn, committee_id_sbe),
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
+    )
+
+
+@committees_bp.route('/legacy/<int:committee_id>')
+def legacy_committee_detail(committee_id):
+    """Legacy scraped-committee page (``committees`` table) at its own URL, since ISBE ids win
+    /committees/<id> (J-S19); links built from legacy ids point here."""
+    conn = current_app.get_database()
     committee = Committee.get_by_id(conn, committee_id)
     if not committee:
-        # Fallback: treat committee_id as an ISBE SBE committee ID
-        scope = resolve_time_scope(default="all", axis="received", data_through=data_through)
-        profile = _bulk_committee_profile(conn, committee_id, scope)
-        if profile:
-            return render_template(
-                'committees/detail_sbe.html',
-                committee_id_sbe=committee_id,
-                profile=profile,
-                time_scope=scope,
-                scope_default_key="all",
-                time_scope_source_label="ISBE",
-            )
         abort(404)
+    return _legacy_committee_page(conn, committee, latest_data_date("isbe"))
 
+
+def _legacy_committee_page(conn, committee, data_through):
+    committee_id = committee.id
     scope = resolve_time_scope(default="all", axis="transaction", data_through=data_through)
     date_from = scope.start.isoformat() if scope.start else None
     date_to = scope.end.isoformat() if scope.end else None
@@ -766,30 +1027,96 @@ def committee_detail(committee_id):
                            contrib_dir=contrib_dir,
                            time_scope=scope,
                            scope_default_key="all",
-                           time_scope_source_label="ISBE")
+                           time_scope_source_label="ISBE",
+                           scope_query=scope_params(scope))
 
 
 @committees_bp.route('/sbe/<int:committee_id_sbe>')
 def committee_detail_by_sbe(committee_id_sbe):
-    """Redirect from SBE committee ID to the canonical internal-ID route."""
+    """ISBE-id entry: the ISBE profile whenever ``isbe_committees`` has the id (J-S8); otherwise a
+    legacy committee carrying this SBE id redirects to its legacy page (J-S19)."""
     conn = current_app.get_database()
-    committee = Committee.get_by_sbe_id(conn, committee_id_sbe)
+    committee = None if _in_isbe_committees(conn, committee_id_sbe) else Committee.get_by_sbe_id(conn, committee_id_sbe)
     if not committee:
-        scope = resolve_time_scope(default="all", axis="received", data_through=latest_data_date("isbe"))
-        profile = _bulk_committee_profile(conn, committee_id_sbe, scope)
-        if not profile:
-            abort(404)
-        return render_template(
-            'committees/detail_sbe.html',
-            committee_id_sbe=committee_id_sbe,
-            profile=profile,
-            time_scope=scope,
-            scope_default_key="all",
-            time_scope_source_label="ISBE",
-        )
-    target = url_for('committees.committee_detail', committee_id=committee.id)
+        return _isbe_profile_page(conn, committee_id_sbe, latest_data_date("isbe"))
+    target = url_for('committees.legacy_committee_detail', committee_id=committee.id)
     query = request.query_string.decode()
     return redirect(f"{target}?{query}" if query else target)
+
+
+# ---------------------------------------------------------------------------------------------
+# Full donor / payee lists (plan P3, decision J-P6): every rollup row of the ISBE committee in the
+# page window, 50 per page; the profile's Top Donors / Top Payees are the head of these lists.
+# ---------------------------------------------------------------------------------------------
+
+_LIST_PAGE_SIZE = 50
+_LIST_SORTS = {"total": "desc", "count": "desc", "name": "asc", "last": "desc"}  # sort -> direction it opens with
+_FULL_LISTS = {  # kind -> (rows, grouped source, name column, bar axis)
+    "donors": (committee_donor_rollup, _donor_rollup_source, "donor_name", "received"),
+    "payees": (committee_payee_rollup, _payee_rollup_source, "payee_name", "transaction"),
+}
+
+
+@committees_bp.route('/<int:committee_id>/donors')
+def committee_donors(committee_id):
+    """Every donor of the ISBE committee in the page window (one row per donor_key)."""
+    return _full_list_page(committee_id, "donors")
+
+
+@committees_bp.route('/<int:committee_id>/payees')
+def committee_payees(committee_id):
+    """Every payee of the ISBE committee in the page window (one row per normalized name)."""
+    return _full_list_page(committee_id, "payees")
+
+
+def _full_list_page(committee_id: int, kind: str):
+    conn = current_app.get_database()
+    committee_name = _isbe_committee_name(conn, committee_id)
+    if committee_name is None:
+        abort(404)
+    rollup, source_for, name_column, axis = _FULL_LISTS[kind]
+    scope = resolve_time_scope(default="all", axis=axis, data_through=latest_data_date("isbe"))
+    q = request.args.get("q", "").strip()
+    sort_by = request.args.get("sort", "total")
+    if sort_by not in _LIST_SORTS:
+        sort_by = "total"
+    sort_dir = request.args.get("dir", "")
+    if sort_dir not in ("asc", "desc"):
+        sort_dir = _LIST_SORTS[sort_by]
+
+    count, total = _rollup_summary(conn, source_for(conn, committee_id, scope), name_column, q)
+    total_pages = max(1, (count + _LIST_PAGE_SIZE - 1) // _LIST_PAGE_SIZE)
+    page = min(max(request.args.get("page", 1, type=int), 1), total_pages)
+    rows = rollup(conn, committee_id, scope, limit=_LIST_PAGE_SIZE, offset=(page - 1) * _LIST_PAGE_SIZE,
+                  sort_by=sort_by, sort_dir=sort_dir, q=q)
+
+    # "This cycle" beside the window total, as on the profile: the same rows over the current cycle.
+    cycle_start, cycle_end = cycle_window(current_cycle())
+    if (scope.start, scope.end) == (cycle_start, cycle_end):
+        cycle_total = total
+    else:
+        cycle_scope = replace(scope, start=cycle_start, end=cycle_end)
+        cycle_total = _rollup_summary(conn, source_for(conn, committee_id, cycle_scope), name_column, q)[1]
+
+    return render_template(
+        f"committees/{kind}.html",
+        committee_id=committee_id,
+        committee_name=committee_name,
+        rows=rows,
+        count=count,
+        total=total,
+        cycle_total=cycle_total,
+        q=q,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        list_sorts=_LIST_SORTS,
+        page=page,
+        total_pages=total_pages,
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
+    )
 
 
 @committees_bp.route('/filing/<int:filed_doc_id>')

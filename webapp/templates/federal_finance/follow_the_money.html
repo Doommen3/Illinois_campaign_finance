@@ -26,7 +26,7 @@
             {{ d.donor_name }} ({{ d.donor_state }}) — ${{ '{:,.0f}'.format(d.total_amount) }}
         </option>
         {% endfor %}
-    </select>
+    </select> {{ scope_tag() }}
     <input type="text" name="follow_max_hops" value="{{ follow_max_hops }}" placeholder="Max hops (1-8)">
     <input type="text" name="follow_min_edge_amount" value="{{ follow_min_edge_amount }}" placeholder="Min edge amount">
     <button type="submit">Trace</button>
@@ -45,7 +45,7 @@
         <strong>{{ follow_money.summary.edge_count }}</strong> edges |
         Candidates: <strong>{{ follow_money.summary.candidate_count }}</strong> |
         Committees: <strong>{{ follow_money.summary.committee_count }}</strong> |
-        Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong>
+        Donors: <strong>{{ follow_money.summary.connected_donor_count }}</strong> {{ scope_tag() }}
     </p>
     <div class="ftm-controls" id="ftm-controls">
         <div class="ftm-controls-row">

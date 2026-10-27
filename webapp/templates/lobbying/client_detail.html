@@ -57,7 +57,7 @@
                     {% for row in money_destinations.committee_destinations %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id) }}">
+                            <a href="{{ url_for('committees.committee_detail_by_sbe', committee_id_sbe=row.committee_id, **scope_query) }}">
                                 {{ row.committee_name }}
                             </a>
                         </td>
@@ -109,7 +109,7 @@
         {% for e in entities %}
         <tr>
             <td>
-                <a href="{{ url_for('lobbying.entity_detail', entity_id=e.entity_id) }}">
+                <a href="{{ url_for('lobbying.entity_detail', entity_id=e.entity_id, **scope_query) }}">
                     {{ e.entity_name }}
                 </a>
             </td>
@@ -146,13 +146,13 @@
             <td><span class="badge badge-{{ m.confidence_band }}">{{ m.confidence_band|capitalize }}</span></td>
             <td>{{ m.method or '-' }}</td>
             <td>
-                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts') }}">
+                <a href="{{ url_for('donors.donor_detail_by_key', donor_key=m.donor_key, source='bulk_receipts', **scope_query) }}">
                     Local
                 </a>
             </td>
             <td>
                 {% if m.has_federal_match %}
-                <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=m.federal_donor_entity_key, cycle=2026) }}">
+                <a href="{{ url_for('federal_finance.federal_donor_detail', donor_entity_key=m.federal_donor_entity_key, **scope_query) }}">
                     Federal
                 </a>
                 {% else %}
@@ -161,7 +161,7 @@
             </td>
             <td>
                 {% if m.has_federal_match %}
-                <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=m.federal_donor_entity_key, local_donor_key=m.donor_key, cycle=2026, local_source='bulk_receipts') }}">
+                <a href="{{ url_for('federal_finance.federal_matched_donor_profile', federal_donor_entity_key=m.federal_donor_entity_key, local_donor_key=m.donor_key, local_source='bulk_receipts', **scope_query) }}">
                     Matched
                 </a>
                 {% else %}
@@ -210,7 +210,7 @@
         {% for m in org_527_matches %}
         <tr>
             <td>
-                <a href="{{ url_for('irs527.org_detail', ein=m.ein) }}">
+                <a href="{{ url_for('irs527.org_detail', ein=m.ein, **scope_query) }}">
                     {{ m.org_name }}
                 </a>
             </td>

@@ -647,8 +647,8 @@ def analytics_network_focus_sankey():
     focus_node_id = (request.args.get('focus_node_id', '') or '').strip()
     focus_label = (request.args.get('focus_label', '') or '').strip()
     focus_type = (request.args.get('focus_type', 'auto') or 'auto').strip().lower()
-    date_from = (request.args.get('date_from', '') or '').strip() or None
-    date_to = (request.args.get('date_to', '') or '').strip() or None
+    # Resolved like the analytics pages (period / cycle / year / date_from / date_to, default current cycle).
+    date_from, date_to = _resolved_date_window()
     min_edge_amount = max(request.args.get('min_edge_amount', 0, type=float), 0)
     committee_limit = min(request.args.get('committee_limit', 20, type=int), 100)
     candidate_limit = min(request.args.get('candidate_limit', 15, type=int), 100)
@@ -1294,7 +1294,12 @@ def federal_network_focus_sankey():
     focus_node_id = (request.args.get('focus_node_id', '') or '').strip()
     focus_label = (request.args.get('focus_label', '') or '').strip()
     focus_type = (request.args.get('focus_type', 'auto') or 'auto').strip().lower()
-    cycle = request.args.get('cycle', None, type=int)
+    # As on the federal pages: a cycle scope filters the cycle column, any other bounded scope
+    # dates each row; no scope = all time (the federal networks page sends only ``cycle``).
+    scope = resolve_time_scope(default='all', axis='transaction')
+    cycle = int(scope.key[6:]) if scope.key.startswith('cycle:') else None
+    date_from = scope.start.isoformat() if scope.start and cycle is None else None
+    date_to = scope.end.isoformat() if scope.end and cycle is None else None
     min_edge_amount = max(request.args.get('min_edge_amount', 0, type=float), 0)
     committee_limit = min(request.args.get('committee_limit', 20, type=int), 100)
     candidate_limit = min(request.args.get('candidate_limit', 15, type=int), 100)
@@ -1357,10 +1362,17 @@ def federal_network_focus_sankey():
                 "weight": float(weight), "edge_type": etype, "count": count,
             })
 
-    def _cycle_clause(col="cycle", prefix="AND"):
+    def _cycle_clause(col="cycle", prefix="AND", date_col=None):
         if cycle:
             return f" {prefix} {col} = ?", [cycle]
-        return "", []
+        sql, params = "", []
+        if date_col and date_from:
+            sql += f" {prefix} {date_col} >= ?"
+            params.append(date_from)
+        if date_col and date_to:
+            sql += f" {prefix} {date_col} <= ?"
+            params.append(date_to)
+        return sql, params
 
     has_sched_a = _table_exists(conn, 'fec_schedule_a_contributions')
     has_sched_b = _table_exists(conn, 'fec_schedule_b_disbursements')
@@ -1383,7 +1395,7 @@ def federal_network_focus_sankey():
                     focus_lbl = r["contributor_name"]
 
             if focus_lbl:
-                cycle_sql, cycle_params = _cycle_clause()
+                cycle_sql, cycle_params = _cycle_clause(date_col="contribution_receipt_date")
                 rows = conn.execute(
                     f"SELECT candidate_id, candidate_name, committee_id, committee_name, "
                     f"SUM(contribution_receipt_amount) AS total, COUNT(*) AS cnt "
@@ -1414,7 +1426,7 @@ def federal_network_focus_sankey():
                     # Committee -> vendor edges from Schedule B
                     if committee_ids and has_sched_b:
                         placeholders = ','.join(['?'] * len(committee_ids))
-                        cycle_sql_v, cycle_params_v = _cycle_clause()
+                        cycle_sql_v, cycle_params_v = _cycle_clause(date_col="disbursement_date")
                         vend_rows = conn.execute(
                             f"SELECT committee_id, recipient_name, "
                             f"SUM(disbursement_amount) AS total, COUNT(*) AS cnt "
@@ -1458,7 +1470,7 @@ def federal_network_focus_sankey():
                 where_col = "candidate_id" if cand_key else "candidate_name"
                 where_op = "=" if cand_key else "ILIKE"
                 where_val = cand_key or focus_lbl
-                cycle_sql, cycle_params = _cycle_clause()
+                cycle_sql, cycle_params = _cycle_clause(date_col="contribution_receipt_date")
                 donor_rows = conn.execute(
                     f"SELECT contributor_name, donor_entity_key, "
                     f"SUM(contribution_receipt_amount) AS total, COUNT(*) AS cnt "
@@ -1490,7 +1502,7 @@ def federal_network_focus_sankey():
 
                     # Committee -> vendor from Schedule B
                     if has_sched_b:
-                        cycle_sql_v, cycle_params_v = _cycle_clause()
+                        cycle_sql_v, cycle_params_v = _cycle_clause(date_col="disbursement_date")
                         vend_rows = conn.execute(
                             f"SELECT recipient_name, SUM(disbursement_amount) AS total, COUNT(*) AS cnt "
                             f"FROM fec_schedule_b_disbursements "
@@ -1526,7 +1538,7 @@ def federal_network_focus_sankey():
 
         # Inbound donors from Schedule A
         if cmte_key and has_sched_a:
-            cycle_sql, cycle_params = _cycle_clause()
+            cycle_sql, cycle_params = _cycle_clause(date_col="contribution_receipt_date")
             donor_rows = conn.execute(
                 f"SELECT contributor_name, donor_entity_key, "
                 f"SUM(contribution_receipt_amount) AS total, COUNT(*) AS cnt "
@@ -1567,7 +1579,7 @@ def federal_network_focus_sankey():
 
         # Outbound vendors from Schedule B
         if cmte_key and has_sched_b:
-            cycle_sql_v, cycle_params_v = _cycle_clause()
+            cycle_sql_v, cycle_params_v = _cycle_clause(date_col="disbursement_date")
             vend_rows = conn.execute(
                 f"SELECT recipient_name, SUM(disbursement_amount) AS total, COUNT(*) AS cnt "
                 f"FROM fec_schedule_b_disbursements "
@@ -1589,7 +1601,7 @@ def federal_network_focus_sankey():
         focus_lbl = focus_label
 
         if has_sched_b and focus_lbl:
-            cycle_sql, cycle_params = _cycle_clause()
+            cycle_sql, cycle_params = _cycle_clause(date_col="disbursement_date")
             rows = conn.execute(
                 f"SELECT committee_id, committee_name, "
                 f"SUM(disbursement_amount) AS total, COUNT(*) AS cnt "
@@ -1636,7 +1648,7 @@ def federal_network_focus_sankey():
                 # Inbound donors
                 if committee_ids and has_sched_a:
                     placeholders = ','.join(['?'] * len(committee_ids))
-                    cycle_sql_d, cycle_params_d = _cycle_clause()
+                    cycle_sql_d, cycle_params_d = _cycle_clause(date_col="contribution_receipt_date")
                     donor_rows = conn.execute(
                         f"SELECT contributor_name, donor_entity_key, committee_id, "
                         f"SUM(contribution_receipt_amount) AS total, COUNT(*) AS cnt "

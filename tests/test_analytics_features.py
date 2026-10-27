@@ -193,6 +193,44 @@ def _seed_analytics_dataset(conn):
         ),
     )
 
+    # Candidacy feed (a VIEW in production): the same candidates, committees and cycle.
+    conn.execute("DROP TABLE IF EXISTS isbe_race_candidacies")
+    conn.execute(
+        """
+        CREATE TABLE isbe_race_candidacies (
+            candidacy_id INTEGER,
+            candidate_id INTEGER,
+            election_year INTEGER,
+            election_cycle INTEGER,
+            election_type TEXT,
+            race_type TEXT,
+            outcome TEXT,
+            candidate_full_name TEXT,
+            office_sought TEXT,
+            district_type TEXT,
+            district TEXT,
+            candidate_party_affiliation TEXT,
+            committee_id_sbe INTEGER,
+            committee_name TEXT
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT INTO isbe_race_candidacies (
+            candidacy_id, candidate_id, election_year, election_cycle, election_type,
+            candidate_full_name, office_sought, district_type, district,
+            candidate_party_affiliation, committee_id_sbe, committee_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (9901, 901, 2026, 2026, "General Election", "Candidate Alpha", "Governor", "Statewide", "At-Large",
+             "Independent", 1001, "Committee One"),
+            (9902, 902, 2026, 2026, "General Election", "Candidate Beta", "Governor", "Statewide", "At-Large",
+             "Independent", 1002, "Committee Two"),
+        ],
+    )
+
     conn.execute("DROP TABLE IF EXISTS bulk_receipts_clean")
     conn.execute(
         """
@@ -395,6 +433,20 @@ def _seed_top_state_races_zero_outside_high_totals(db_path: str, *, race_count: 
                     "2026-02-01 12:00:00",
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO isbe_race_candidacies (
+                    candidacy_id, candidate_id, election_year, election_cycle, election_type,
+                    candidate_full_name, office_sought, district_type, district,
+                    candidate_party_affiliation, committee_id_sbe, committee_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    9000 + idx, candidate_id, 2026, 2026, "General Election",
+                    f"Candidate Zero {idx}", f"Office {idx}", "District", str(idx),
+                    "Independent", committee_id, f"Committee Zero {idx}",
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -411,7 +463,19 @@ def analytics_conn(tmp_path: Path):
 
 
 @pytest.fixture
-def analytics_app(tmp_path: Path):
+def analytics_app(tmp_path: Path, monkeypatch):
+    # The seeded races are cycle-2026 candidacies: pin the race builder's default
+    # cycle so the state-race tests keep working after 2026-12-31.
+    monkeypatch.setattr("database.analytics.current_election_cycle", lambda today=None: 2026)
+    # ... and the time-scope resolver's clock, so "this cycle" stays 2026 too (as tests/test_candidate_profile.py).
+    from datetime import date
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 26)
+
+    monkeypatch.setattr("webapp.utils.time_scope.date", _FrozenDate)
     db_path = str(tmp_path / "analytics_web.db")
     init_db(db_path)
     conn = get_db(db_path)
@@ -1194,7 +1258,10 @@ def test_state_race_detail_period_propagation_changes_output(analytics_client):
     all_detail = analytics_client.get(all_href)
     assert all_detail.status_code == 200
     assert b"$14,000.00" in all_detail.data
-    assert b"$2,100.00" in all_detail.data
+    # A5 / J-S4: Part-9 outside spending is constrained to the race's election-cycle window even
+    # under an all-time page scope, so the 2024-07-15 fixture row ($600) no longer attaches to a 2026 race.
+    assert b"$1,500.00" in all_detail.data
+    assert b"$2,100.00" not in all_detail.data
 
 
 def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):

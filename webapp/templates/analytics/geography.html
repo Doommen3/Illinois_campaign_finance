@@ -85,7 +85,7 @@
             {% endfor %}
         </tbody>
     </table>
-    <p><a href="{{ url_for('api.analytics_time_series', months=months, date_from=date_from, date_to=date_to) }}">JSON endpoint</a></p>
+    <p><a href="{{ url_for('api.analytics_time_series', months=months, **scope_query) }}">JSON endpoint</a></p>
 </div>
 
 <div class="two-column">
@@ -182,5 +182,5 @@
         </table>
     </div>
 </div>
-<p><a href="{{ url_for('api.analytics_geo', state_limit=geo_state_limit, city_limit=geo_city_limit, date_from=date_from, date_to=date_to) }}">Geo JSON endpoint</a></p>
+<p><a href="{{ url_for('api.analytics_geo', state_limit=geo_state_limit, city_limit=geo_city_limit, **scope_query) }}">Geo JSON endpoint</a></p>
 {% endblock %}

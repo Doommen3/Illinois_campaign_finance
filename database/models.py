@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 import json
 from typing import Optional, List, ClassVar
 import sqlite3
@@ -60,6 +60,37 @@ def _append_date_range_filters(
     if end:
         clauses.append(f"{date_expr} <= DATE(?)")
         params.append(end[:10])
+
+
+def receipts_filter_sql(alias: str, parts: str = "contributions") -> str:
+    """The shared WHERE predicate for ``bulk_receipts_clean`` rows aliased ``alias`` (decision J-S2).
+
+    Columns read: ``amount``, ``is_archived`` (NULL counts as current), ``d2_part_code``.
+
+    * ``parts="contributions"``: amount > 0, not archived, D-2 part blank/NULL or ``1%`` (itemized
+      contributions; transfers in are 2A). Who gave: ``Donor._bulk_receipts_base_filter_sql`` and
+      ``webapp/routes/main.py::_bulk_receipts_base_filter`` return this exact text, and the committee
+      donor rollup / Top Donors (``webapp/routes/committees.py``) use it, so a committee's donor rows
+      reconcile with ``/donors/key/<donor_key>``.
+    * ``parts="all"``: amount > 0, not archived, every part (2A transfers, loans and other receipts are
+      money in). The committee Receipts Summary and its cycle subtotal use it (J-S20); the state-race
+      receipt totals in ``database/analytics.py`` state the same ``all`` clauses inline.
+
+    Exception, not built from this helper: the analytics donor constants
+    ``_BULK_DONOR_RECEIPT_FILTER_SQL`` / ``_ISBE_DONOR_RECEIPT_FILTER_SQL`` (``database/analytics.py``)
+    keep their extra ``EXISTS`` on a non-archived D-2 report (and require part ``1%``, blank excluded).
+    """
+    if parts not in ("contributions", "all"):
+        raise ValueError(f"parts must be 'contributions' or 'all', not {parts!r}")
+    clauses = [
+        f"COALESCE({alias}.amount, 0) > 0",
+        f"NOT COALESCE({alias}.is_archived::boolean, FALSE)",
+    ]
+    if parts == "contributions":
+        clauses.append(
+            f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"
+        )
+    return " AND ".join(clauses)
 
 
 @dataclass
@@ -767,6 +798,20 @@ class Donor:
     merge_action: Optional[str] = None
     entity_confidence_score: Optional[float] = None
     BULK_RECEIPTS_MATERIALIZATION_VERSION: ClassVar[int] = 2
+    # ?sort= -> column of a windowed bulk donor row (live GROUP BY and analytics_donor_cycle_summary).
+    _BULK_DONOR_SORT_COLUMNS: ClassVar[dict] = {
+        "source": "source",
+        "name": "donor_name",
+        "address": "donor_address",
+        "occupation": "occupation",
+        "employer": "employer",
+        "total_amount": "total_amount",
+        "contribution_count": "contribution_count",
+        "committee_count": "committee_count",
+        "city": "donor_city",
+        "state": "donor_state",
+        "created_at": "total_amount",
+    }
 
     @classmethod
     def _table_exists(cls, conn: sqlite3.Connection, table_name: str) -> bool:
@@ -845,14 +890,8 @@ class Donor:
 
     @classmethod
     def _bulk_receipts_base_filter_sql(cls, conn: sqlite3.Connection, alias: str = "r") -> str:
-        clauses = [f"COALESCE({alias}.amount, 0) > 0"]
-        if cls._column_exists(conn, "bulk_receipts_clean", "is_archived"):
-            clauses.append(f"NOT COALESCE({alias}.is_archived::boolean, FALSE)")
-        if cls._column_exists(conn, "bulk_receipts_clean", "d2_part_code"):
-            clauses.append(
-                f"(COALESCE({alias}.d2_part_code, '') = '' OR COALESCE({alias}.d2_part_code, '') LIKE '1%')"
-            )
-        return " AND ".join(clauses)
+        """``receipts_filter_sql(alias)`` (contributions), the shared predicate; ``conn`` kept for callers."""
+        return receipts_filter_sql(alias)
 
     @classmethod
     def _bulk_materialization_is_current(cls, conn: sqlite3.Connection) -> bool:
@@ -915,6 +954,60 @@ class Donor:
             (source,),
         ).fetchone()
         return row is not None
+
+    @classmethod
+    def _donor_cycle_summary_cycle(
+        cls,
+        conn: sqlite3.Connection,
+        source: Optional[str],
+        transaction_date_from: Optional[str],
+        transaction_date_to: Optional[str],
+    ) -> Optional[int]:
+        """The cycle to read from analytics_donor_cycle_summary, or None for the live path.
+
+        Only a window that is exactly one election cycle, (cycle - 1)-01-01 .. cycle-12-31
+        (``webapp.utils.time_scope.cycle_window``), qualifies, and only once a refresh has
+        written rows for that source and cycle (plan S-S2 / J-S16).
+        """
+        if source != "bulk_receipts":
+            return None
+        try:
+            start = date.fromisoformat((transaction_date_from or "").strip()[:10])
+            end = date.fromisoformat((transaction_date_to or "").strip()[:10])
+        except ValueError:
+            return None
+        cycle = end.year
+        if cycle % 2 or (start, end) != (date(cycle - 1, 1, 1), date(cycle, 12, 31)):
+            return None
+        if not cls._table_exists(conn, "analytics_donor_cycle_summary"):
+            return None
+        row = conn.execute(
+            "SELECT 1 FROM analytics_donor_cycle_summary WHERE source = ? AND election_cycle = ? LIMIT 1",
+            (source, cycle),
+        ).fetchone()
+        return cycle if row else None
+
+    @classmethod
+    def _from_bulk_donor_row(cls, row) -> "Donor":
+        """A windowed bulk_receipts donor row (live GROUP BY or cycle summary) as a Donor."""
+        donor = cls(
+            id=None,
+            name=row["donor_name"] or "Unknown Donor",
+            address=row["donor_address"] or None,
+            occupation=row["occupation"] or None,
+            employer=row["employer"] or None,
+            normalized_name="",
+            normalized_address=None,
+            created_at=None,
+        )
+        donor.total_amount = float(row["total_amount"] or 0.0)
+        donor.contribution_count = int(row["contribution_count"] or 0)
+        donor.committee_count = int(row["committee_count"] or 0)
+        donor.donor_key = row["donor_key"] or None
+        donor.donor_city = row["donor_city"] or None
+        donor.donor_state = row["donor_state"] or None
+        donor.source = "bulk_receipts"
+        return donor
 
     @classmethod
     def get_directory_source(cls, conn: sqlite3.Connection) -> Optional[str]:
@@ -1052,6 +1145,23 @@ class Donor:
         direction = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
 
         if has_date_window:
+            summary_cycle = cls._donor_cycle_summary_cycle(conn, source, transaction_date_from, transaction_date_to)
+            if summary_cycle is not None:
+                # Exactly one cycle: the refreshed per-cycle totals, one row per donor_key.
+                order_by = cls._BULK_DONOR_SORT_COLUMNS.get(sort_by, "total_amount")
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        source, donor_key, donor_name, donor_address, donor_city, donor_state,
+                        occupation, employer, total_amount, contribution_count, committee_count
+                    FROM analytics_donor_cycle_summary
+                    WHERE source = ? AND election_cycle = ?
+                    ORDER BY {order_by} {direction}, donor_name ASC, donor_key ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (source, summary_cycle, limit, offset),
+                ).fetchall()
+                return [cls._from_bulk_donor_row(row) for row in rows]
             if (
                 source == "bulk_receipts"
                 and cls._bulk_receipts_has_donor_key_columns(conn)
@@ -1059,20 +1169,7 @@ class Donor:
                 donor_key_expr = cls._bulk_donor_key_sql("r")
                 donor_name_expr = cls._bulk_donor_name_sql("r")
                 donor_address_expr = cls._bulk_donor_address_sql("r")
-                sort_map = {
-                    "source": "source",
-                    "name": "donor_name",
-                    "address": "donor_address",
-                    "occupation": "occupation",
-                    "employer": "employer",
-                    "total_amount": "total_amount",
-                    "contribution_count": "contribution_count",
-                    "committee_count": "committee_count",
-                    "city": "donor_city",
-                    "state": "donor_state",
-                    "created_at": "total_amount",
-                }
-                order_by = sort_map.get(sort_by, "total_amount")
+                order_by = cls._BULK_DONOR_SORT_COLUMNS.get(sort_by, "total_amount")
                 where_clauses: List[str] = [
                     cls._bulk_receipts_base_filter_sql(conn, "r"),
                     f"{donor_key_expr} <> ''",
@@ -1111,27 +1208,7 @@ class Donor:
                     params,
                 ).fetchall()
 
-                donors = []
-                for row in rows:
-                    donor = cls(
-                        id=None,
-                        name=row["donor_name"] or "Unknown Donor",
-                        address=row["donor_address"] or None,
-                        occupation=row["occupation"] or None,
-                        employer=row["employer"] or None,
-                        normalized_name="",
-                        normalized_address=None,
-                        created_at=None,
-                    )
-                    donor.total_amount = float(row["total_amount"] or 0.0)
-                    donor.contribution_count = int(row["contribution_count"] or 0)
-                    donor.committee_count = int(row["committee_count"] or 0)
-                    donor.donor_key = row["donor_key"] or None
-                    donor.donor_city = row["donor_city"] or None
-                    donor.donor_state = row["donor_state"] or None
-                    donor.source = "bulk_receipts"
-                    donors.append(donor)
-                return donors
+                return [cls._from_bulk_donor_row(row) for row in rows]
 
             if source != "bulk_receipts":
                 sort_map = {
@@ -1469,6 +1546,13 @@ class Donor:
         has_date_window = bool((transaction_date_from or "").strip() or (transaction_date_to or "").strip())
 
         if has_date_window:
+            summary_cycle = cls._donor_cycle_summary_cycle(conn, source, transaction_date_from, transaction_date_to)
+            if summary_cycle is not None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM analytics_donor_cycle_summary WHERE source = ? AND election_cycle = ?",
+                    (source, summary_cycle),
+                ).fetchone()
+                return int(row["count"] or 0) if row else 0
             if (
                 source == "bulk_receipts"
                 and cls._bulk_receipts_has_donor_key_columns(conn)
@@ -1635,26 +1719,42 @@ class Donor:
                 date_from=date_from,
                 date_to=date_to,
             )
+            # Totals cover every row of the key (J-S13); name/address/occupation/employer come from
+            # the variant with the largest total, so case or occupation variants no longer split it.
             row = conn.execute(
                 f"""
+                WITH matched AS (
+                    SELECT
+                        r.amount,
+                        r.committee_id_sbe,
+                        {donor_name_expr} AS donor_name,
+                        {donor_address_expr} AS donor_address,
+                        COALESCE(NULLIF(TRIM(r.city), ''), NULL) AS donor_city,
+                        COALESCE(NULLIF(TRIM(r.state), ''), NULL) AS donor_state,
+                        COALESCE(NULLIF(TRIM(r.occupation), ''), NULL) AS occupation,
+                        COALESCE(NULLIF(TRIM(r.employer), ''), NULL) AS employer
+                    FROM bulk_receipts_clean r
+                    WHERE {' AND '.join(where_clauses)}
+                ),
+                top_variant AS (
+                    SELECT donor_name, donor_address, donor_city, donor_state, occupation, employer
+                    FROM matched
+                    GROUP BY donor_name, donor_address, donor_city, donor_state, occupation, employer
+                    ORDER BY SUM(amount) DESC
+                    LIMIT 1
+                )
                 SELECT
                     'bulk_receipts' AS source,
-                    {donor_key_expr} AS donor_key,
-                    NULL AS local_donor_id,
-                    {donor_name_expr} AS donor_name,
-                    {donor_address_expr} AS donor_address,
-                    COALESCE(NULLIF(TRIM(r.city), ''), NULL) AS donor_city,
-                    COALESCE(NULLIF(TRIM(r.state), ''), NULL) AS donor_state,
-                    COALESCE(NULLIF(TRIM(r.occupation), ''), NULL) AS occupation,
-                    COALESCE(NULLIF(TRIM(r.employer), ''), NULL) AS employer,
-                    COALESCE(SUM(r.amount), 0) AS total_amount,
-                    COUNT(*) AS contribution_count,
-                    COUNT(DISTINCT r.committee_id_sbe) AS committee_count
-                FROM bulk_receipts_clean r
-                WHERE {' AND '.join(where_clauses)}
-                GROUP BY donor_key, donor_name, donor_address, donor_city, donor_state, occupation, employer
-                ORDER BY total_amount DESC
-                LIMIT 1
+                    t.donor_name, t.donor_address, t.donor_city, t.donor_state, t.occupation, t.employer,
+                    k.total_amount, k.contribution_count, k.committee_count
+                FROM top_variant t
+                CROSS JOIN (
+                    SELECT
+                        COALESCE(SUM(amount), 0) AS total_amount,
+                        COUNT(*) AS contribution_count,
+                        COUNT(DISTINCT committee_id_sbe) AS committee_count
+                    FROM matched
+                ) k
                 """,
                 params,
             ).fetchone()
@@ -1672,7 +1772,7 @@ class Donor:
                 donor.total_amount = float(row["total_amount"] or 0.0)
                 donor.contribution_count = int(row["contribution_count"] or 0)
                 donor.committee_count = int(row["committee_count"] or 0)
-                donor.donor_key = row["donor_key"]
+                donor.donor_key = donor_key    # every matched row has exactly this key (WHERE key = ?)
                 donor.donor_city = row["donor_city"]
                 donor.donor_state = row["donor_state"]
                 donor.source = row["source"]

@@ -33,10 +33,10 @@
 
 <div class="status-section">
     <p><strong>Race:</strong> {{ race.race_label if race and race.race_label else (office_code ~ ' / ' ~ district_code) }}</p>
-    <p><strong>Candidates:</strong> {{ race.candidate_count if race else 0 }}</p>
-    <p><strong>Total Schedule E Amount:</strong> {{ format_currency(race.total_amount if race else 0.0) }}</p>
-    <p><strong>Transaction Count:</strong> {{ race.transaction_count if race else 0 }}</p>
-    <p><strong>Latest Expenditure Date:</strong> {{ race.latest_expenditure_date if race and race.latest_expenditure_date else '-' }}</p>
+    <p><strong>Candidates:</strong> {{ race.candidate_count if race else 0 }} {{ scope_tag(cycle ~ ' Cycle') }}</p>
+    <p><strong>Total Schedule E Amount:</strong> {{ format_currency(race.total_amount if race else 0.0) }} {{ scope_tag(race_tag) }}</p>
+    <p><strong>Transaction Count:</strong> {{ race.transaction_count if race else 0 }} {{ scope_tag(race_tag) }}</p>
+    <p><strong>Latest Expenditure Date:</strong> {{ race.latest_expenditure_date if race and race.latest_expenditure_date else '-' }} {{ scope_tag(race_tag) }}</p>
 </div>
 
 <form class="search-form" method="get" action="{{ url_for('federal_finance.federal_race_outside_spending', office_code=office_code, district_code=district_code) }}">

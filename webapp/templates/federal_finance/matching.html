@@ -34,25 +34,26 @@
 {% else %}
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Federal Donors Considered</h3>
+        <h3>Federal Donors Considered {{ scope_tag() }}</h3>
         <div class="stat-value">{{ local_matches.federal_donors_considered }}</div>
     </div>
     <div class="stat-card">
-        <h3>Local Donors Considered</h3>
+        <h3>Local Donors Considered {{ scope_tag('All time') }}</h3>
         <div class="stat-value">{{ local_matches.local_donors_considered }}</div>
     </div>
     <div class="stat-card">
-        <h3>Federal Donors Matched</h3>
+        <h3>Federal Donors Matched {{ scope_tag() }}</h3>
         <div class="stat-value">{{ local_matches.federal_donors_matched }}</div>
     </div>
     <div class="stat-card">
-        <h3>Match Rate</h3>
+        <h3>Match Rate {{ scope_tag() }}</h3>
         <div class="stat-value">{{ (local_matches.match_rate * 100)|round(2) }}%</div>
     </div>
 </div>
 
 <div class="status-section">
     <h2>Match Method Tiers {{ scope_tag() }}</h2>
+    <p class="subtitle">Federal donors follow the selected range; the local donor pool and local totals are {{ scope_tag('All time') }}</p>
     <p class="subtitle">
         {% for tier, count in local_matches.tier_counts.items() %}
         <strong>{{ tier }}</strong>: {{ count }}{% if not loop.last %} | {% endif %}
@@ -71,6 +72,7 @@
 
 <div class="status-section">
     <h2>Local vs Federal Overlap Bubble View {{ scope_tag() }}</h2>
+    <p class="subtitle">Federal donors follow the selected range; the local donor pool and local totals are {{ scope_tag('All time') }}</p>
     <p class="subtitle">Bridge view: x = local amount, y = federal amount, bubble size = combined amount.</p>
     <div class="graph-controls">
         <label>Color mode
@@ -92,6 +94,7 @@
 
 <div class="status-section">
     <h2>Matched Donor Rows {{ scope_tag() }}</h2>
+    <p class="subtitle">Federal donors follow the selected range; the local donor pool and local totals are {{ scope_tag('All time') }}</p>
     <table class="data-table">
         <thead>
             <tr>

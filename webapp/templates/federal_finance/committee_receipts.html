@@ -24,15 +24,14 @@
         Receipts: <strong>{{ detail.summary.receipt_count }}</strong> |
         Unique donors: <strong>{{ detail.summary.donor_count }}</strong> |
         Total receipts: <strong>{{ format_currency(detail.summary.total_amount) }}</strong> |
-        Date range: <strong>{{ detail.summary.coverage_start if detail.summary.coverage_start else '-' }}</strong> to
-        <strong>{{ detail.summary.coverage_end if detail.summary.coverage_end else '-' }}</strong>
+        Date range: <strong>{{ detail.summary.coverage_start if detail.summary.coverage_start else '-' }}</strong> to <strong>{{ detail.summary.coverage_end if detail.summary.coverage_end else '-' }}</strong> {{ scope_tag() }}
     </p>
 
     {% if detail.transfer_meta %}
     <p class="help-text">
         Transfer-source stats: {{ detail.transfer_meta.transfer_count }} Schedule B transfer rows totaling {{ format_currency(detail.transfer_meta.transfer_total_amount) }}.
         Recipient candidates: {{ detail.transfer_meta.recipient_candidate_count }}.
-        Recipient committees: {{ detail.transfer_meta.recipient_committee_count }}.
+        Recipient committees: {{ detail.transfer_meta.recipient_committee_count }}. {{ scope_tag(detail.transfer_meta.cycle ~ ' Cycle') }}
     </p>
     {% endif %}
 
