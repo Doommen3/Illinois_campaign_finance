@@ -107,6 +107,8 @@ Each step emits `STEP_N_START` / `STEP_N_END` markers to the log; failures emit 
 
 Total runtime: ~60–120 min. Detach tmux during cross-matching with `Ctrl-b d`; reattach later with `tmux attach -t refresh`.
 
+**Prod 2026-10-27 notes.** (1) `sunshine-import`'s auto-swap ran into the lock conflict described under "Release 2026-10-27" step 5 while `ilcf-web` was serving; the day's wrapper (`shared/isbe_fec_refresh_20261027.sh`) fell back to stopping the service and re-running the import, so the site was down about 20 minutes. Until the swap takes its locks up front (suggestion A12), schedule the ISBE import for a quiet window or stop the service around the swap deliberately. (2) The chain can be checked without a server login at `https://www.followthemoneyil.com` (the apex `followthemoneyil.com` answers 308 to www through Cloudflare): the homepage "Data Status" strip shows the local receipts date, the FEC candidate-totals update time and the Schedule A/B/E row-level dates, and the search page's donor rows show the `analytics_donor_summary` sync timestamp, which only `refresh-analytics` rewrites. Measured on prod 2026-10-27 (`shared/logs/isbe_fec_refresh_20261027.log`): the first `sunshine-import --download` attempt occupied 15:29–16:00Z (download, then the deadlock at the ETL's DROP block), the retry's load took 20 min with the service stopped, then FEC sync with `--refresh-cache` 6 m 49 s, `run-cross-matching --only all --workers 2` 5 m 02 s, `refresh-analytics --with-snapshot` 4 m 43 s, restart 49 s — the ISBE download and load are the long steps; everything after them takes about 17 minutes.
+
 ## Pre-deploy checks
 
 Run locally before pushing (CLAUDE.md "Deploy steps", step 1):
