@@ -1753,3 +1753,6 @@ def test_race_detail_page_carries_the_subnav_with_overview_active(race_parent_cl
         assert window_of(link) == expected, anchors[0]["href"]
         if "election_cycle" in args:
             assert link.get("election_cycle") == args["election_cycle"], anchors[0]["href"]
+    # N17 (Devin, 2026-10-28): race pages show only the entity tab bar; the global analytics tabs are gone
+    # (the scope bar, which that partial used to include, stays).
+    assert 'class="analytics-subnav' not in page.markup, "the global analytics tab bar must not render on race pages (N17)"
