@@ -232,6 +232,7 @@ def candidate_detail(candidate_id):
     }
     return render_template(
         "candidates/detail.html",
+        candidate_id=candidate_id,
         candidate=candidate,
         committees=committees,
         committee_blocks=_family_blocks(conn, committees),

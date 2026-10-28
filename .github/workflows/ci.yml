@@ -1,15 +1,21 @@
 name: CI
 
+# Retired 2026-10-28 (Devin): GitHub-hosted CI is no longer run automatically — tests run locally before every
+# merge and deploy (see docs/runbooks/deployment.md "Pre-deploy checks"). The workflow is also disabled in the
+# repository settings (`gh workflow disable ci.yml`); this manual-only trigger is the code-level backstop.
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    # Two shards (2026-10-28): the per-entity analytics suites build a schema per test case and pushed the
+    # single job past its 20-minute cap. "core" is the rest of the suite; "entity" is the three entity suites.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, entity]
 
     services:
       postgres:
@@ -46,7 +52,13 @@ jobs:
           pip install ruff
 
       - name: Lint (critical rules)
+        if: matrix.shard == 'core'
         run: ruff check . --select E9,F63,F7,F82
 
-      - name: Run tests
-        run: pytest -q -m "not integration"
+      - name: Run tests (core)
+        if: matrix.shard == 'core'
+        run: pytest -q -m "not integration" --ignore=tests/test_entity_analytics_routes.py --ignore=tests/test_entity_analytics.py --ignore=tests/test_entity_network.py
+
+      - name: Run tests (entity)
+        if: matrix.shard == 'entity'
+        run: pytest -q -m "not integration" tests/test_entity_analytics_routes.py tests/test_entity_analytics.py tests/test_entity_network.py

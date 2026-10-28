@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+{% from "entity/_macros.html" import donor_link %}
+
+{% block title %}{{ entity.label }} — Risk{% endblock %}
+
+{% block content %}
+<h1>{{ entity.label }} — Risk</h1>
+<p class="subtitle">Large contributions, monthly spikes, donor concentration and D-2 reconciliation gaps, computed from this {{ entity.kind }}'s committees only.</p>
+{% include "_partials/time_scope_bar.html" %}
+{% include "entity/_subnav.html" %}
+
+{% set flag_labels = {
+    'large_single_contribution': 'Large single contribution',
+    'monthly_spike': 'Monthly spike',
+    'high_donor_concentration': 'High donor concentration',
+} %}
+<div class="status-section">
+    <h2>Risk flags {{ scope_tag() }}</h2>
+    <p class="help-text">
+        Large single contribution threshold: <strong>{{ format_currency(payload.threshold.large_single) }}</strong>
+        {% if payload.threshold.source == 'site_wide' %}(site-wide: the larger of $5,000 and twice the 95th percentile of every itemized contribution, all time){% else %}(override){% endif %}.
+        Flags: {{ payload.counts.large_single_contribution }} large contributions, {{ payload.counts.monthly_spike }} monthly spikes,
+        {{ payload.counts.high_donor_concentration }} concentrated groups (HHI 4,500 or more with at least three donors).
+    </p>
+    {% if payload.flags %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Flag</th><th>Severity</th><th>Committee / group</th><th>Donor</th><th>Date</th><th>Value</th><th>Baseline</th><th>Threshold</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+        {% for flag in payload.flags %}
+            <tr>
+                <td>{{ flag_labels.get(flag.flag_type, flag.flag_type) }}</td>
+                <td>{{ (flag.severity or '')|capitalize }}</td>
+                <td>{% if flag.committee_id %}<a href="{{ url_for('committees.committee_detail', committee_id=flag.committee_id) }}">{{ flag.committee_name or flag.group_label }}</a>{% else %}{{ flag.group_label or '' }}{% endif %}</td>
+                <td>{% if flag.donor_name %}{{ donor_link(flag) }}{% endif %}</td>
+                <td>{{ flag.event_date or flag.month or '' }}</td>
+                <td>{% if flag.flag_type == 'high_donor_concentration' %}HHI {{ '{:,.0f}'.format(flag.value or 0) }}{% else %}{{ format_currency(flag.value) }}{% endif %}</td>
+                <td>{% if flag.flag_type == 'high_donor_concentration' %}{{ flag.baseline or 0 }} donors{% elif flag.baseline is not none %}{{ format_currency(flag.baseline) }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if flag.threshold is none %}&mdash;{% elif flag.flag_type == 'high_donor_concentration' %}HHI {{ '{:,.0f}'.format(flag.threshold) }}{% else %}{{ format_currency(flag.threshold) }}{% endif %}</td>
+                <td>{{ flag.details or '' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No flags in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>D-2 reconciliation {{ scope_tag('All time') }}</h2>
+    <p class="help-text">Filed D-2 receipt totals against the itemized receipts of the same filing, where they differ by $1,000 or more. The reconciliation table is all-time and ignores the window.</p>
+    {% if not payload.reconciliation_available %}
+    <p class="empty-state">Reconciliation data is not loaded.</p>
+    {% elif payload.reconciliation %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Committee</th><th>Group</th><th>Filed doc</th><th>D-2 total receipts</th><th>Itemized receipts</th><th>Difference</th><th>Receipt dates</th></tr>
+        </thead>
+        <tbody>
+        {% for row in payload.reconciliation %}
+            {% set d2_total = row.get('d2_total_receipts') %}
+            {% set itemized = row.get('receipts_amount_sum') %}
+            <tr>
+                <td><a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id) }}">{{ row.committee_name }}</a></td>
+                <td>{{ row.group_label or '' }}</td>
+                <td>{{ row.get('filed_doc_id') or '' }}</td>
+                <td>{{ format_currency(d2_total) if d2_total is not none else '' }}</td>
+                <td>{{ format_currency(itemized) if itemized is not none else '' }}</td>
+                <td>{{ format_currency(row.diff) }}</td>
+                <td>{{ row.get('first_receipt_date') or '' }}{% if row.get('last_receipt_date') %} &ndash; {{ row.get('last_receipt_date') }}{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No reconciliation outliers for these committees.</p>
+    {% endif %}
+</div>
+{% endblock %}

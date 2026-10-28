@@ -114,6 +114,8 @@ Total runtime: ~60–120 min. Detach tmux during cross-matching with `Ctrl-b d`;
 
 Run locally before pushing (CLAUDE.md "Deploy steps", step 1):
 
+**GitHub CI is retired (Devin, 2026-10-28: "No more github CI, we're doing tests locally").** The `CI` workflow is disabled in the repository settings and its triggers are manual-only; nothing runs on push or PR. The local full suite below IS the merge and deploy gate: run it on the exact commit you are about to merge, and record the counts in the release block. Never re-enable or dispatch the workflow without Devin's explicit ask.
+
 ```bash
 pytest -q
 pytest -q tests/test_scope_widgets.py

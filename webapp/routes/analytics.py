@@ -913,6 +913,7 @@ def state_race_detail(race_key: str):
         election_cycle=election_cycle,
         state_race_cycle=state_race_cycle,
         show_state_race_cycle=state_race_cycle != _window_cycle(filters["time_scope"]),
+        race_key=race_key,
         race_detail=race_detail,
         outside_link_query=outside_link_query,
     )

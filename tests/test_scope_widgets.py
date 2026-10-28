@@ -1501,6 +1501,97 @@ def test_analytics_relationship_graphs_follow_window(w_analytics_app):
 
 
 # ---------------------------------------------------------------------------
+# Entity tabs (plan race-sort-and-entity-networks, step 6): /candidates/<id>/<tab> over the real builders
+# ---------------------------------------------------------------------------
+WINDOW_ENTITY = "date_from=2026-01-01&date_to=2026-12-31"  # the builder suite's own window (calendar 2026)
+
+
+@pytest.fixture
+def w_entity_app(tmp_path):
+    """Candidate 20 "Alice Aldous" of tests/test_entity_analytics._seed_world (committees 100, 101, 150 and the accepted
+    family member 102), read by the real builders. Window: calendar 2026. OUT rows sit one day outside each bound and
+    in other years: Ivy Ingram's 800 to committee 100 on 2025-12-31 and 900 on 2027-01-01 (her entity total 1,840 in
+    the window, 3,540 all time; committee 100's group total 19,595 / 21,295; the entity 35,146 / 36,846, of which
+    individuals 33,296 / 34,996; IL 34,411 / 36,111; Chicago 16,611 / 18,311; her 1A edge to committee 100 1,500 /
+    3,200), Acme Union Local 5's in-kind 333 on 2025-05-06 (its in-kind edge 700 / 1,033), Kay Keller's 100 to Prairie
+    Educators PAC on 2025-06-01 (that committee's shared amount 1,200 / 1,300) and, over all time only, committee 100's
+    January 2026 monthly spike (14,520 against a December 2025 baseline of 800: inside the window January is the first
+    month and is never flagged). The network builder also reads isbe_candidacies and isbe_condensed_expenditures,
+    created empty here from the network suite's DDL."""
+    from database.connection import init_db
+    from tests.test_entity_analytics import _seed_world
+    from tests.test_entity_network import _DDL
+    from webapp.app import create_app
+
+    db_path = str(tmp_path / "entity_tabs.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    try:
+        _seed_world(conn, recon=True)
+        for ddl in _DDL:
+            if "isbe_candidacies" in ddl or "isbe_condensed_expenditures" in ddl:
+                conn.execute(ddl)
+        conn.commit()
+    finally:
+        conn.close()
+    return create_app({"TESTING": True, "DATABASE_PATH": db_path, "DASHBOARD_PREWARM_ENABLED": False,
+                       "ROUTE_PERF_CACHE_ENABLED": False})
+
+
+EN_NETWORK = Page(
+    "entity/network.html", "/candidates/20/network", window=WINDOW_ENTITY, probes=(
+        Probe("Network edges", ins=("Vic Vance", "$13,521.00", "$1,500.00"), outs=("$3,200.00", "$1,033.00")),
+    ),
+)
+EN_RISK = Page(
+    "entity/risk.html", "/candidates/20/risk", window=WINDOW_ENTITY, probes=(
+        Probe("Risk flags", ins=("Vic Vance", "$13,521.00"), outs=("$14,520.00",)),
+    ),
+)
+EN_DONORS = Page(
+    "entity/donors.html", "/candidates/20/donors", window=WINDOW_ENTITY, probes=(
+        Probe("Concentration by group", ins=("$19,595.00", "$35,146.00"), outs=("$21,295.00", "$36,846.00")),
+        Probe("Donor classes", ins=("$33,296.00",), outs=("$34,996.00",)),
+        Probe("Top donors", ins=("Ivy Ingram", "$1,840.00"), outs=("$3,540.00",)),
+        Probe("Shared donors", ins=("Ivy Ingram", "$1,840.00"), outs=("$3,540.00",)),
+    ),
+)
+EN_GEOGRAPHY = Page(
+    "entity/geography.html", "/candidates/20/geography", window=WINDOW_ENTITY, probes=(
+        Probe("States", ins=("IL $34,411.00",), outs=("IL $36,111.00",)),
+        Probe("Cities", ins=("Chicago IL $16,611.00",), outs=("Chicago IL $18,311.00",)),
+        Probe("Monthly contributions", ins=("2026-02",), outs=("2025-12", "2027-01")),
+    ),
+)
+EN_RELATIONSHIPS = Page(
+    "entity/relationships.html", "/candidates/20/relationships", window=WINDOW_ENTITY, probes=(
+        Probe("Co-giving committees", ins=("Prairie Educators PAC", "$1,200.00"), outs=("$1,300.00", "$3,540.00")),
+        Probe("Shared donors", ins=("Ivy Ingram", "$1,840.00"), outs=("$3,540.00",)),
+    ),
+)
+
+
+def test_entity_network_tab_follows_window(w_entity_app):
+    _check_page(w_entity_app, EN_NETWORK)
+
+
+def test_entity_risk_tab_follows_window(w_entity_app):
+    _check_page(w_entity_app, EN_RISK)
+
+
+def test_entity_donors_tab_follows_window(w_entity_app):
+    _check_page(w_entity_app, EN_DONORS)
+
+
+def test_entity_geography_tab_follows_window(w_entity_app):
+    _check_page(w_entity_app, EN_GEOGRAPHY)
+
+
+def test_entity_relationships_tab_follows_window(w_entity_app):
+    _check_page(w_entity_app, EN_RELATIONSHIPS)
+
+
+# ---------------------------------------------------------------------------
 # Accounting: the harness and the registry must agree.
 # ---------------------------------------------------------------------------
 _ALL_PAGES = [value for value in list(globals().values()) if isinstance(value, Page)]

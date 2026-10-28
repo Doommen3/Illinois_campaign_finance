@@ -694,6 +694,75 @@ WIDGETS: tuple[Widget, ...] = (
         covered_by="AF::test_state_race_detail_period_propagation_changes_output",
     ),  # inv #75
 
+    # /candidates/<int:candidate_id>/<tab>  [entity_analytics.candidate_tab]  (plan race-sort-and-entity-networks step 6,
+    # decisions N10-N13). One template set serves both entity kinds: every row is also served at
+    # /analytics/state-races/<race_key>/<tab> [entity_analytics.race_tab] with the race's cycle as the default window.
+    # Probed by tests/test_scope_widgets.py (the EN_* pages) over the real builders.
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/network.html",
+        "Network edges", "table", "window", "received (eff: expended_date for vendor and Part-9 edges)",
+        note="the entity's ego network (N4), one row per edge; also served at /analytics/state-races/<race_key>/network",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/risk.html",
+        "Risk flags", "table", "window", "received",
+        note=(
+            "large contributions and monthly spikes follow the window, concentration flags come from the windowed donor "
+            "base; the large-contribution threshold itself is site-wide and all-time (N15); also served at "
+            "/analytics/state-races/<race_key>/risk"
+        ),
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/risk.html",
+        "D-2 reconciliation", "table", "fixed", "none",
+        note="bulk_d2_receipts_recon is all-time; tagged 'All time'; also served at /analytics/state-races/<race_key>/risk",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/donors.html",
+        "Concentration by group", "table", "window", "received",
+        note="per-group concentration metrics of the Donors page; also served at /analytics/state-races/<race_key>/donors",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/donors.html",
+        "Donor classes", "table", "window", "received",
+        note="also served at /analytics/state-races/<race_key>/donors",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/donors.html",
+        "Top donors", "table", "window", "received",
+        note="also served at /analytics/state-races/<race_key>/donors",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/donors.html",
+        "Shared donors", "table", "window", "received",
+        note="donors in two or more of the entity's groups; also served at /analytics/state-races/<race_key>/donors",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/geography.html",
+        "States", "table", "window", "received",
+        note="redacted donors count in no state; also served at /analytics/state-races/<race_key>/geography",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/geography.html",
+        "Cities", "table", "window", "received",
+        note="also served at /analytics/state-races/<race_key>/geography",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/geography.html",
+        "Monthly contributions", "table", "window", "received",
+        note="months from the first to the last contribution in the window; also served at /analytics/state-races/<race_key>/geography",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/relationships.html",
+        "Co-giving committees", "table", "window", "received",
+        note="committees outside the entity sharing two or more of its donors in the window; also served at /analytics/state-races/<race_key>/relationships",
+    ),
+    Widget(
+        "entity_analytics.candidate_tab", "/candidates/<int:candidate_id>/<tab>", "entity/relationships.html",
+        "Shared donors", "table", "window", "received",
+        note="the Donors tab's shared-donor table; also served at /analytics/state-races/<race_key>/relationships",
+    ),
+
     # /analytics/state-races/  [analytics.state_races]  (plan S-RB; added after the inventory snapshot)
     Widget(
         "analytics.state_races", "/analytics/state-races/", "analytics/state_races.html",

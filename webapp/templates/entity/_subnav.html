@@ -1,0 +1,24 @@
+{# Entity subnav (plan N10): Overview (the parent detail page) + the five per-entity analytics tabs.
+   Context: `subnav` = {kind: 'candidate' | 'race', key: candidate id | race key, active: 'overview' | a tab,
+   election_cycle: the request's election_cycle for races (None when absent)} and `scope_query` (the page's
+   scope params). Every link carries the scope explicitly. No time-scope bar here: the including page renders
+   its own, once, above this partial. #}
+{% set _cycle = subnav.get('election_cycle') %}
+<nav class="analytics-subnav entity-subnav" aria-label="Entity analytics navigation">
+    {% if subnav.kind == 'race' %}
+    <a class="analytics-subnav-link{% if subnav.active == 'overview' %} active{% endif %}"
+       href="{{ url_for('analytics.state_race_detail', race_key=subnav.key, election_cycle=_cycle, **scope_query) }}">Overview</a>
+    {% else %}
+    <a class="analytics-subnav-link{% if subnav.active == 'overview' %} active{% endif %}"
+       href="{{ url_for('candidates.candidate_detail', candidate_id=subnav.key, **scope_query) }}">Overview</a>
+    {% endif %}
+    {% for tab, label in [('network', 'Networks'), ('risk', 'Risk'), ('donors', 'Donors'), ('geography', 'Geography'), ('relationships', 'Relationships')] %}
+    {% if subnav.kind == 'race' %}
+    <a class="analytics-subnav-link{% if subnav.active == tab %} active{% endif %}"
+       href="{{ url_for('entity_analytics.race_tab', race_key=subnav.key, tab=tab, election_cycle=_cycle, **scope_query) }}">{{ label }}</a>
+    {% else %}
+    <a class="analytics-subnav-link{% if subnav.active == tab %} active{% endif %}"
+       href="{{ url_for('entity_analytics.candidate_tab', candidate_id=subnav.key, tab=tab, **scope_query) }}">{{ label }}</a>
+    {% endif %}
+    {% endfor %}
+</nav>

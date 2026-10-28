@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+{% from "entity/_macros.html" import donor_link %}
+
+{% block title %}{{ entity.label }} — Donors{% endblock %}
+
+{% block content %}
+<h1>{{ entity.label }} — Donors</h1>
+<p class="subtitle">Itemized contributions (D-2 part 1A) to this {{ entity.kind }}'s committees: concentration per group, donor classes, the top donors and the donors shared across groups.</p>
+{% include "_partials/time_scope_bar.html" %}
+{% include "entity/_subnav.html" %}
+
+{% macro metrics_cells(row) %}
+    <td>{{ format_currency(row.total_amount) }}</td>
+    <td>{{ row.donor_count }}</td>
+    <td>{{ row.contribution_count }}</td>
+    <td>{{ '%.1f%%'|format((row.top1_share or 0) * 100) }}</td>
+    <td>{{ '%.1f%%'|format((row.top5_share or 0) * 100) }}</td>
+    <td>{{ '%.1f%%'|format((row.top10_share or 0) * 100) }}</td>
+    <td>{{ '{:,.0f}'.format(row.hhi or 0) }}</td>
+    <td>{{ '%.2f'|format(row.gini or 0) }}</td>
+    <td>{{ format_currency(row.individual_amount) }}</td>
+    <td>{{ format_currency(row.organization_amount) }}</td>
+    <td>{{ format_currency(row.in_kind_total) }}</td>
+{% endmacro %}
+
+<div class="status-section">
+    <h2>Concentration by group {{ scope_tag() }}</h2>
+    <p class="help-text">The Donors page's metrics per group of committees: top-1 / 5 / 10 donor shares, Herfindahl index (0&ndash;10,000) and Gini over per-donor totals. In-kind (part 5A) is listed separately and is not in the totals.</p>
+    {% if payload.groups %}
+    <table class="data-table">
+        <thead>
+            <tr><th>Group</th><th>Total</th><th>Donors</th><th>Contributions</th><th>Top 1</th><th>Top 5</th><th>Top 10</th><th>HHI</th><th>Gini</th><th>Individuals</th><th>Organizations</th><th>In-kind</th></tr>
+        </thead>
+        <tbody>
+        {% for group in payload.groups %}
+            <tr>
+                <td>{{ group.label }}</td>
+                {{ metrics_cells(group) }}
+            </tr>
+        {% endfor %}
+        {% if payload.groups|length > 1 %}
+            <tr class="total-row">
+                <td><strong>All committees</strong> (donors de-duplicated)</td>
+                {{ metrics_cells(payload.totals) }}
+            </tr>
+        {% endif %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No itemized contributions in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Donor classes {{ scope_tag() }}</h2>
+    <p class="help-text">Individuals file a first name; organizations (businesses, unions, PACs, parties) file only a business name.</p>
+    {% if payload.class_breakdown %}
+    <table class="data-table">
+        <thead><tr><th>Class</th><th>Total</th><th>Donors</th><th>Share</th></tr></thead>
+        <tbody>
+        {% for row in payload.class_breakdown %}
+            <tr>
+                <td>{{ row.donor_class|capitalize }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ '%.1f%%'|format(row.total_amount / payload.totals.total_amount * 100) if payload.totals.total_amount else '' }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No itemized contributions in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Top donors {{ scope_tag() }}</h2>
+    {% if payload.top_donors %}
+    <table class="data-table">
+        <thead><tr><th>Donor</th><th>Class</th><th>Total</th><th>Contributions</th><th>Committees</th><th>Location</th><th>Groups</th></tr></thead>
+        <tbody>
+        {% for donor in payload.top_donors %}
+            <tr>
+                <td>{{ donor_link(donor) }}</td>
+                <td>{{ donor.donor_class|capitalize }}</td>
+                <td>{{ format_currency(donor.total_amount) }}</td>
+                <td>{{ donor.contribution_count }}</td>
+                <td>{{ donor.committee_count }}</td>
+                <td>{% if donor.redacted %}Redaction requested{% else %}{{ donor.city or '' }}{% if donor.city and donor.state %}, {% endif %}{{ donor.state or '' }}{% endif %}</td>
+                <td>{{ donor.groups|join('; ') }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No donors in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Shared donors {{ scope_tag() }}</h2>
+    <p class="help-text">Donors who gave to committees in more than one group{% if entity.kind == 'race' %} &mdash; for a race, donors giving to several candidates{% endif %}.</p>
+    {% if payload.groups|length < 2 %}
+    <p class="empty-state">This {{ entity.kind }} has a single group of committees, so no donor is shared across groups.</p>
+    {% elif payload.shared_donors %}
+    <table class="data-table">
+        <thead><tr><th>Donor</th><th>Total</th><th>Groups</th><th>Per group</th></tr></thead>
+        <tbody>
+        {% for donor in payload.shared_donors %}
+            <tr>
+                <td>{{ donor_link(donor) }}</td>
+                <td>{{ format_currency(donor.total_amount) }}</td>
+                <td>{{ donor.group_count }}</td>
+                <td>{% for part in donor.groups %}{{ part.label }} {{ format_currency(part.amount) }}{% if not loop.last %}; {% endif %}{% endfor %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No donor gave to more than one group in this window.</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}{{ entity.label }} — Networks{% endblock %}
+
+{% block content %}
+<h1>{{ entity.label }} — Networks</h1>
+<p class="subtitle">The money network around this {{ entity.kind }}'s committees: donors, transfers, vendors, independent spenders and the candidates they raise for (one hop out). Every view is this entity's own network.</p>
+{% include "_partials/time_scope_bar.html" %}
+{% include "entity/_subnav.html" %}
+
+<div class="status-section">
+    <p class="help-text">
+        {{ payload.summary.node_count }} nodes, {{ payload.summary.edge_count }} edges
+        {%- for edge_type, count in payload.summary.edges_by_type.items() %}{{ ';' if loop.first else ',' }}
+        {{ count }} {{ payload.summary.edge_type_definitions.get(edge_type, {}).get('edge_label', edge_type)|lower }}{% endfor %}.
+        {% set dropped = payload.summary.truncated.values()|sum %}
+        {% if dropped %}Top neighbours per class shown; {{ dropped }} smaller ones left out
+        ({% for cls, n in payload.summary.truncated.items() if n %}{{ n }} {{ cls|replace('_', ' ') }}{% if not loop.last %}, {% endif %}{% endfor %}).{% endif %}
+    </p>
+    <div class="view-switch" role="group" aria-label="Network views">
+        <button type="button" class="btn view-switch-button" data-view="money_flow">Money flow</button>
+        <button type="button" class="btn view-switch-button" data-view="vendor_network">Vendor network</button>
+        <button type="button" class="btn view-switch-button" data-view="ego">Ego graph</button>
+    </div>
+    <div id="entity-network-graph" class="entity-network-graph" data-src="{{ network_sources.ego }}"
+         data-src-money-flow="{{ network_sources.money_flow }}" data-src-vendor-network="{{ network_sources.vendor_network }}"
+         data-view="money_flow"><noscript>Enable JavaScript to draw the network; the edge table below lists every edge.</noscript></div>
+</div>
+
+<div class="status-section">
+    <h2>Network edges {{ scope_tag() }}</h2>
+    {% if payload.edges %}
+    <table class="data-table">
+        <thead><tr><th>From</th><th>Edge</th><th>To</th><th>Amount</th><th>Rows</th></tr></thead>
+        <tbody>
+        {% for edge in payload.edges %}
+            {% set source = nodes_by_id.get(edge.source) %}
+            {% set target = nodes_by_id.get(edge.target) %}
+            <tr>
+                <td>{% if node_href.get(edge.source) %}<a href="{{ node_href[edge.source] }}">{{ source.label if source else edge.source }}</a>{% else %}{{ source.label if source else edge.source }}{% endif %}</td>
+                <td>{{ edge.edge_label }}{% if edge.support_oppose is defined %} ({{ 'supporting' if edge.support_oppose == 'S' else 'opposing' }}){% endif %}</td>
+                <td>{% if node_href.get(edge.target) %}<a href="{{ node_href[edge.target] }}">{{ target.label if target else edge.target }}</a>{% else %}{{ target.label if target else edge.target }}{% endif %}</td>
+                <td>{{ format_currency(edge.weight) }}</td>
+                <td>{{ edge.count }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No money in or out of these committees in this window.</p>
+    {% endif %}
+    {% if payload.summary.edge_type_definitions %}
+    <details class="edge-type-legend">
+        <summary>Edge types</summary>
+        <dl>
+        {% for edge_type, definition in payload.summary.edge_type_definitions.items() %}
+            <dt>{{ definition.edge_label }}</dt>
+            <dd>{{ definition.edge_description }} ({{ definition.metric_label }})</dd>
+        {% endfor %}
+        </dl>
+    </details>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/entity_views/money_flow.js', v='20261028-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/vendor_network.js', v='20261028-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261028-1') }}"></script>
+<script>
+(function () {
+    var box = document.getElementById("entity-network-graph");
+    var views = window.EntityViews || {};
+    if (!box || !window.fetch) { return; }
+    var sources = { ego: box.dataset.src, money_flow: box.dataset.srcMoneyFlow, vendor_network: box.dataset.srcVendorNetwork };
+    var buttons = Array.prototype.slice.call(document.querySelectorAll(".view-switch-button"));
+    var loaded = {};
+    function show(view) {
+        var render = views[view];
+        if (!render || !sources[view]) { return; }
+        buttons.forEach(function (button) { button.classList.toggle("btn-primary", button.dataset.view === view); });
+        box.dataset.view = view;
+        if (!loaded[view]) {
+            loaded[view] = fetch(sources[view], { credentials: "same-origin" }).then(function (response) {
+                if (!response.ok) { throw new Error(String(response.status)); }
+                return response.json();
+            });
+        }
+        box.textContent = "Loading\u2026";
+        loaded[view].then(function (data) { if (box.dataset.view === view) { render(box, data); } })
+            .catch(function () { delete loaded[view]; box.textContent = "The network could not be loaded; the edge table below lists every edge."; });
+    }
+    buttons.forEach(function (button) { button.addEventListener("click", function () { show(button.dataset.view); }); });
+    show(box.dataset.view || "money_flow");
+})();
+</script>
+{% endblock %}
