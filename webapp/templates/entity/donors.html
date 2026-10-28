@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_partials/macros.html" import scope_tag with context %}
+{% from "entity/_macros.html" import donor_link %}
 
 {% block title %}{{ entity.label }} — Donors{% endblock %}
 
@@ -108,7 +109,7 @@
         <tbody>
         {% for donor in payload.shared_donors %}
             <tr>
-                <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key) }}">{{ donor.donor_name }}</a></td>
+                <td>{{ donor_link(donor) }}</td>
                 <td>{{ format_currency(donor.total_amount) }}</td>
                 <td>{{ donor.group_count }}</td>
                 <td>{% for part in donor.groups %}{{ part.label }} {{ format_currency(part.amount) }}{% if not loop.last %}; {% endif %}{% endfor %}</td>

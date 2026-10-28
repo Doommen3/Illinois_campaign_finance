@@ -407,6 +407,8 @@ VENDOR_NETWORK_VIEW = "vendor_network"
 EGO_VIEW = "ego"
 CLASS_LABELS = {"individual": "Individual donors", "organization": "Organization donors", "in_kind": "In-kind contributions"}
 OTHER_LABELS = {"vendors": "Other vendors", "transfers": "Other transfers", "spenders": "Other independent spenders"}
+# What the donor-class nodes are called when the donor cap dropped donors: they then hold only the kept donors' dollars.
+TOP_CLASS_LABELS = {"individual": "individual donors", "organization": "organization donors"}
 
 
 def donor_class(node_id: str) -> str:
@@ -428,10 +430,25 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
     the entity's committees and the candidates independent spending names; column 2 = vendors. The top
     ``max_*`` transfer sources, spenders and vendors keep their own node, the rest fold into one "Other" node per
     class (``folded`` counts them). ``committee_candidate`` edges are links of money raised, not flows, and are
-    left out; every other ego edge lands in exactly one link, so ``totals`` per edge type equal the ego's."""
+    left out. So is a ``transfer_in`` or ``independent_expenditure`` edge whose source is one of the entity's own
+    committees: it would join two column-1 nodes and is money moving between the entity's own accounts, so it is
+    counted in ``folded["internal"]`` (rows, dollars) instead. Every other ego edge lands in exactly one link, so
+    ``totals`` per edge type equal the ego's. The ego graph holds only the top donors (``summary.truncated``, passed
+    through as ``truncated``); when donors were dropped the donor-class nodes are labelled "Top N ... donors"."""
     nodes_by_id = {node["id"]: node for node in payload["nodes"]}
     entity_committees = [node["id"] for node in payload["nodes"] if node.get("role") == "entity"]
-    edges = [edge for edge in payload["edges"] if edge["edge_type"] != COMMITTEE_CANDIDATE]
+    own = set(entity_committees)
+    edges, internal_rows, internal_amount = [], 0, 0.0
+    for edge in payload["edges"]:
+        if edge["edge_type"] == COMMITTEE_CANDIDATE:
+            continue
+        if edge["edge_type"] in (TRANSFER_IN, INDEPENDENT_EXPENDITURE) and edge["source"] in own:
+            internal_rows += int(edge["count"])
+            internal_amount += float(edge["weight"])
+            continue
+        edges.append(edge)
+    truncated = dict(payload["summary"]["truncated"])
+    donors_by_class: dict[str, set] = defaultdict(set)
 
     totals: dict[str, dict[str, float]] = {"vendors": defaultdict(float), "transfers": defaultdict(float),
                                            "spenders": defaultdict(float)}
@@ -454,6 +471,7 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
         if edge_type == DONOR_COMMITTEE:
             source, target = f"class:{donor_class(edge['source'])}", edge["target"]
             kinds[source] = "donor_class"
+            donors_by_class[donor_class(edge["source"])].add(edge["source"])
         elif edge_type == IN_KIND_DONOR_COMMITTEE:
             source, target = "class:in_kind", edge["target"]
             kinds[source] = "in_kind"
@@ -490,7 +508,10 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
     nodes = []
     for node_id, kind in kinds.items():
         if node_id.startswith("class:"):
-            label = CLASS_LABELS[node_id.partition(":")[2]]
+            donor_cls = node_id.partition(":")[2]
+            label = CLASS_LABELS[donor_cls]
+            if truncated.get("donors") and donor_cls in TOP_CLASS_LABELS:
+                label = f"Top {len(donors_by_class[donor_cls])} {TOP_CLASS_LABELS[donor_cls]}"
         elif node_id.startswith("other:"):
             label = OTHER_LABELS[node_id.partition(":")[2]]
         else:
@@ -516,7 +537,8 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
         "links": link_list,
         "totals": {**{edge_type: round(value, 2) for edge_type, value in sorted(by_type.items())},
                    "support": round(support, 2), "oppose": round(oppose, 2)},
-        "folded": folded,
+        "folded": {**folded, "internal": {"count": internal_rows, "amount": round(internal_amount, 2)}},
+        "truncated": truncated,
     }
 
 

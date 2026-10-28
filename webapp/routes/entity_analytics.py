@@ -121,12 +121,18 @@ def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None):
         def ego_builder():
             return get_entity_network(conn, entity, **window, caps=dict(zip(NETWORK_CAP_CLASSES, NETWORK_CAPS)))
 
-        if view in PROJECTIONS:
-            ego_key = _entity_cache_key(kind, key, "network:ego", scope, ctx["cycle"], params)
+        ego_key = _entity_cache_key(kind, key, "network:ego", scope, ctx["cycle"], params)
 
+        def cached_ego():
+            return _cached_build(_caches["network"], ego_key, ego_builder, ttl, cache_enabled=enabled, refresh=refresh)
+
+        if view in PROJECTIONS:
             def builder():
-                ego = _cached_build(_caches["network"], ego_key, ego_builder, ttl, cache_enabled=enabled, refresh=refresh)
-                return PROJECTIONS[view](ego)
+                return PROJECTIONS[view](cached_ego())
+        elif view is None:
+            # The HTML tab is its own entry, but reads the ego payload through the JSON route's ``network:ego`` entry,
+            # so a cold page and the ego request it triggers build the graph once.
+            builder = cached_ego
         else:
             builder = ego_builder
     elif tab == "risk":
@@ -192,7 +198,6 @@ def _tab_page(kind: str, key, tab: str):
         "scope_default_key": ctx["scope_default_key"],
         "time_scope_source_label": "ISBE",
         "scope_query": scope_params(ctx["scope"]),
-        "state_race_cycle": ctx["cycle"],
     }
     if tab == "network":
         nodes = {node["id"]: node for node in payload["nodes"]}

@@ -1188,6 +1188,50 @@ def test_network_tab_links_committee_and_donor_nodes(client, fakes):
     assert "/committees/901" in donor_paths, donor_row["links"]
 
 
+IVY_KEY = "ivy|flagged|9 pine rd||peoria|il|61602"
+
+
+def _redacted_donor_rows(tab):
+    """Fake builder for ``tab`` whose payload also lists a donor whose key embeds 'Redaction Requested' (as a redacted
+    receipt's does) and one the builder flags ``redacted`` under an ordinary key, next to the ordinary donors."""
+    build = FULL[BUILDER_OF[tab]]
+
+    def payload(entity, n):
+        result = build(entity, n)
+        hidden = {"donor_key": RAE_KEY, "donor_name": "Rae Hidden", "total_amount": 7000.0}
+        flagged = {"donor_key": IVY_KEY, "donor_name": "Ivy Flagged", "total_amount": 6000.0, "redacted": True}
+        if tab == "risk":
+            template = result["flags"][0]
+            result["flags"] += [dict(template, donor_key=RAE_KEY, donor_name="Rae Hidden"),
+                                dict(template, donor_key=IVY_KEY, donor_name="Ivy Flagged", redacted=True)]
+        else:
+            result["shared_donors"] += [dict(hidden, group_count=2, groups=[]), dict(flagged, group_count=2, groups=[])]
+        if tab == "relationships":
+            result["cogiving"][0]["top_shared_donors"] += [
+                {"donor_key": RAE_KEY, "donor_name": "Rae Hidden", "amount_to_entity": 1.0, "amount_to_committee": 1.0}]
+        return result
+
+    return payload
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("tab, linked", [
+    pytest.param("donors", {PAT_KEY, SAM_KEY}, id="donors"),
+    pytest.param("relationships", {PAT_KEY, SAM_KEY}, id="relationships"),
+    pytest.param("risk", {PAT_KEY}, id="risk"),
+])
+def test_shared_donor_and_risk_flag_rows_do_not_link_a_redacted_donor(client, fakes, kind, tab, linked):
+    """Review F4: a donor row links to /donors/key/<key> unless it is redacted (``redacted`` true, or a key that embeds
+    'Redaction Requested' like a redacted receipt's) -- on the shared-donor rows of Donors and Relationships, the
+    top-shared-donor list and the risk flags, not just the Top donors table. The name stays listed.  Kills: a
+    redacted donor's address-bearing key published as a link; a rule applied to one table only."""
+    fakes.payloads = {**FULL, BUILDER_OF[tab]: _redacted_donor_rows(tab)}
+    page = get(client, url_of(kind, tab))
+    assert page.text.count("Rae Hidden") >= 1 and "Ivy Flagged" in page.text, "the redacted donors are still listed"
+    donor_paths = {page.anchor_path(anchor) for anchor in page.anchors if page.anchor_path(anchor).startswith("/donors/key/")}
+    assert donor_paths == {f"/donors/key/{key}" for key in linked}, donor_paths
+
+
 # ---------------------------------------------------------------------------
 # network.json and the graph placeholder
 # ---------------------------------------------------------------------------
@@ -1239,7 +1283,7 @@ def test_network_tab_graph_placeholder_points_at_the_json_with_the_scope(client,
 
 
 PHASE_A_VIEWS = {
-    "money_flow": {"view", "nodes", "links", "totals", "folded"},
+    "money_flow": {"view", "nodes", "links", "totals", "folded", "truncated"},
     "vendor_network": {"view", "nodes", "edges", "shared_vendors"},
 }
 
@@ -1343,8 +1387,12 @@ def test_the_same_request_twice_builds_once_and_serves_the_stored_payload(cached
     assert _marker(tab, 1) in second.text
     assert _marker(tab, 2) not in second.text
 
-    assert len(cache_calls) == 2
-    first_call = cache_calls[0]
+    # The Network page also reads the ego payload through the ``network:ego`` entry on a miss (review F3); every other
+    # tab touches its own entry only.
+    assert len(cache_calls) == (3 if tab == "network" else 2)
+    own = [call for call in cache_calls if call["key"][3] == tab]
+    assert len(own) == 2
+    first_call = own[0]
     assert first_call["cache"] == CACHE_NAME_OF[tab]
     key = first_call["key"]
     scope = scope_of(kind, "")
@@ -1355,23 +1403,42 @@ def test_the_same_request_twice_builds_once_and_serves_the_stored_payload(cached
     assert key[5] == (None if kind == "candidate" else 2026), "reading I1: the resolved cycle, never the raw argument"
     assert key[4].split(":", 1)[1] == f"{scope.start.isoformat() if scope.start else ''}:{scope.end.isoformat() if scope.end else ''}"
     assert isinstance(key[-1], tuple), "params (the tab's limits) close the key"
-    assert cache_calls[1]["key"] == key, "the same request must map to the same key"
+    assert own[1]["key"] == key, "the same request must map to the same key"
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_network_json_and_the_html_tab_are_separate_entries(cached_client, fakes, cache_calls, kind):
-    """The JSON view is cached under tab ``network:<view>`` in the network cache.  Kills: the JSON served the HTML tab's
-    entry (or the reverse); the JSON cached under the bare ``network`` tab; a JSON route that bypasses the cache."""
+    """The JSON view is cached under tab ``network:<view>`` in the network cache, the HTML tab under ``network``; they
+    are separate entries, but the HTML tab fills its own by reading the ego one (review F3), so the graph is built
+    once.  The second HTML request is served from the ``network`` entry alone (no ego read).  Kills: the JSON served
+    the HTML tab's entry (or the reverse); the JSON cached under the bare ``network`` tab; a JSON route that bypasses
+    the cache; an HTML tab that is not its own entry."""
     assert cached_client.get(url_of(kind, "network")).status_code == 200
     assert cached_client.get(url_of(kind, "network.json")).status_code == 200
-    assert len(fakes.calls["get_entity_network"]) == 2, "html tab and json each build once"
+    assert len(fakes.calls["get_entity_network"]) == 1, "the page and the json share one ego build"
 
     assert cached_client.get(url_of(kind, "network")).status_code == 200
     assert cached_client.get(url_of(kind, "network.json", "view=ego")).status_code == 200
-    assert len(fakes.calls["get_entity_network"]) == 2, "both are served from their own entries afterwards"
+    assert len(fakes.calls["get_entity_network"]) == 1, "both are served from stored entries afterwards"
 
-    assert [(c["cache"], c["key"][3]) for c in cache_calls] == [("entity_network", "network"),
-                                                                ("entity_network", "network:ego")] * 2
+    assert [(c["cache"], c["key"][3]) for c in cache_calls] == [
+        ("entity_network", "network"), ("entity_network", "network:ego"),  # cold page: its miss reads the ego entry
+        ("entity_network", "network:ego"),                                  # json: hit
+        ("entity_network", "network"),                                      # page again: its own entry, no ego read
+        ("entity_network", "network:ego"),
+    ]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_cold_network_page_and_its_ego_json_build_the_graph_once(cached_client, fakes, cache_calls, kind):
+    """Review F3: the HTML tab (entry ``network``) obtains the ego payload through the JSON route's entry
+    (``network:ego``), so the page and the ``?view=ego`` request a browser makes right after it cost one graph build.
+    Kills: a cold Network page that builds the ego graph itself and then builds it again for the JSON."""
+    assert cached_client.get(url_of(kind, "network")).status_code == 200
+    assert len(fakes.calls["get_entity_network"]) == 1
+    assert cached_client.get(url_of(kind, "network.json", "view=ego")).status_code == 200
+    assert len(fakes.calls["get_entity_network"]) == 1, "the JSON must be served from the entry the page filled"
+    assert [call["key"][3] for call in cache_calls] == ["network", "network:ego", "network:ego"]
 
 
 SEPARATE = [
@@ -1473,6 +1540,26 @@ def test_signed_in_refresh_forces_a_rebuild_and_stores_it(cached_app, fakes, kin
     after = get(client, url)
     assert len(fakes.calls[builder]) == 2, "the refreshed entry must serve the next plain request"
     assert _marker(tab, 2) in after.text
+
+
+def test_the_site_wide_risk_threshold_is_computed_once_and_passed_to_every_risk_build(cached_app, cached_client, fakes,
+                                                                                      monkeypatch):
+    """Plan N15: the Risk tab of every entity and every window gets the same ``site_threshold``, and the 2.8M-row
+    statement behind it runs once per process.  Four risk builds (two entities x two windows) call the threshold
+    builder once.  Kills: a threshold recomputed per tab or per window (the ~900 ms the plan removes); a builder that is
+    not handed the cached value (it would run its own statement); a threshold cached per entity or window."""
+    computed = []
+    monkeypatch.setattr(entity_routes, "_site_large_threshold", lambda conn: computed.append(1) or 31415.0)
+    conn = get_db(cached_app.config["DATABASE_PATH"])
+    conn.execute("CREATE TABLE isbe_condensed_receipts (id INTEGER)")  # the route builds it only where the matview exists
+    conn.commit()
+    conn.close()
+    for candidate_id in (1, 2):
+        for query in ("", "period=cycle:2024"):
+            assert cached_client.get(f"/candidates/{candidate_id}/risk" + (f"?{query}" if query else "")).status_code == 200
+    assert len(fakes.calls["get_entity_risk"]) == 4
+    assert [call["site_threshold"] for call in fakes.calls["get_entity_risk"]] == [31415.0] * 4
+    assert len(computed) == 1
 
 
 def test_the_cache_ttl_comes_from_the_entity_analytics_setting(make_app, fakes, cache_calls):

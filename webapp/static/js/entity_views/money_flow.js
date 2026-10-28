@@ -98,9 +98,27 @@
         if (data.totals.support || data.totals.oppose) {
             parts.push("independent spending for " + money(data.totals.support) + " / against " + money(data.totals.oppose) + " (dashed)");
         }
-        var folded = Object.keys(data.folded || {}).filter(function (key) { return data.folded[key]; })
+        var notes = [];
+        var folded = Object.keys(data.folded || {}).filter(function (key) { return key !== "internal" && data.folded[key]; })
             .map(function (key) { return data.folded[key] + " " + key.replace(/_/g, " ") + " grouped as Other"; });
-        legend.textContent = parts.join("; ") + (folded.length ? ". " + folded.join(", ") + "." : ".");
+        if (folded.length) { notes.push(folded.join(", ")); }
+        // The ego graph keeps only the top donors, so the donor-class totals above are partial when donors were dropped;
+        // the class nodes are labelled "Top N ... donors" and N is read back from those labels.
+        var dropped = Number((data.truncated || {}).donors) || 0;
+        if (dropped > 0) {
+            var shown = 0;
+            data.nodes.forEach(function (node) {
+                var match = node.kind === "donor_class" ? /^Top (\d+) /.exec(node.label) : null;
+                if (match) { shown += Number(match[1]); }
+            });
+            notes.push("Top " + shown + " donors shown; " + dropped + " more donor" + (dropped === 1 ? "" : "s") + " not shown");
+        }
+        var internal = (data.folded || {}).internal;
+        if (internal && internal.count > 0) {
+            notes.push(internal.count + " row" + (internal.count === 1 ? "" : "s") + " (" + money(internal.amount)
+                + ") moving money between this entity's own committees not drawn");
+        }
+        legend.textContent = parts.join("; ") + (notes.length ? ". " + notes.join(". ") + "." : ".");
         container.appendChild(legend);
     };
 })();

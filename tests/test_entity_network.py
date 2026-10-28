@@ -1336,7 +1336,7 @@ def test_money_flow_links_regroup_the_race_edges_by_class_and_keep_every_dollar(
     problems = _edge_problems(_link_map(view), RACE_MONEY_FLOW_LINKS)
     assert not problems, "\n".join(problems)
     assert view["view"] == "money_flow"
-    assert set(view) == {"view", "nodes", "links", "totals", "folded"}
+    assert set(view) == {"view", "nodes", "links", "totals", "folded", "truncated"}
 
 
 def test_money_flow_totals_reconcile_to_the_ego_edges_for_every_entity_and_window(world):
@@ -1378,7 +1378,7 @@ def test_money_flow_nodes_sit_in_three_columns_with_labels_and_kinds(world):
     assert by_id[C100]["kind"] == "committee" and by_id[C100]["group_label"] == "Ada Example"
     assert by_id[CAND1]["kind"] == "candidate" and by_id[V_A]["kind"] == "vendor"
     assert by_id[V_A]["label"] == "Prairie Print Co" and by_id[V_A]["amount"] == pytest.approx(1100.0)
-    assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0}
+    assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0, "internal": {"count": 0, "amount": 0.0}}
     columns = [node["column"] for node in view["nodes"]]
     assert columns == sorted(columns), "nodes are listed by column"
 
@@ -1389,7 +1389,7 @@ def test_money_flow_caps_fold_the_smaller_vendors_transfers_and_spenders_into_on
     payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
     view = money_flow(payload, max_vendors=1, max_transfers=1, max_spenders=1)
     links = _link_map(view)
-    assert view["folded"] == {"vendors": 2, "transfers": 2, "spenders": 1}
+    assert view["folded"] == {"vendors": 2, "transfers": 2, "spenders": 1, "internal": {"count": 0, "amount": 0.0}}
     assert links[(C100, V_A, CV, None)] == (600.0, 1)
     assert links[(C101, V_A, CV, None)] == (500.0, 1)
     assert links[(C101, "other:vendors", CV, None)] == (300.0, 1)
@@ -1468,4 +1468,103 @@ def test_projections_of_an_empty_graph_are_empty(world, projection):
     assert view.get("edges", view.get("links")) == []
     if projection is money_flow:
         assert view["totals"] == {"support": 0.0, "oppose": 0.0}
-        assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0}
+        assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0, "internal": {"count": 0, "amount": 0.0}}
+
+
+# ---------------------------------------------------------------------------
+# Review fixes F1 / F2 on money_flow: hand-built ego payloads (no database), so a capped graph and an internal
+# transfer can be set up exactly.
+# ---------------------------------------------------------------------------
+
+NO_TRUNCATION = {"donors": 0, "vendors": 0, "transfers": 0, "ie_spenders": 0}
+
+
+def _ego_node(node_id, node_type, role, label=None):
+    return {"id": node_id, "label": label or node_id, "node_type": node_type, "role": role, "total_amount": 0.0}
+
+
+def _ego_edge(edge_type, source, target, weight, count, support_oppose=None):
+    edge = {"source": source, "target": target, "edge_type": edge_type, "weight": weight, "count": count,
+            "edge_label": edge_type}
+    if support_oppose:
+        edge["support_oppose"] = support_oppose
+    return edge
+
+
+def _ego(nodes, edges, truncated=NO_TRUNCATION):
+    return {"nodes": nodes, "edges": edges, "centrality": [], "summary": {"truncated": dict(truncated)}}
+
+
+def test_money_flow_labels_the_donor_classes_as_top_n_and_passes_truncation_through_when_donors_were_capped():
+    """F1: the ego payload keeps only the top-N donors, so the donor-class source nodes hold only their dollars and
+    must say so. N = the donors of that class actually in the payload; the legend needs ``truncated`` to say how many
+    were left out. An uncapped payload keeps the plain labels (nothing is missing). Kills: class nodes that read as
+    complete totals; a truncation count that is dropped or recomputed; a label counting donors of the other class."""
+    nodes = [_ego_node("committee:901", "committee", "entity")]
+    edges = []
+    for key in ("ada|giver|1 elm st||springfield|il|62701", "bo|giver|2 elm st||springfield|il|62701",
+                "cy|giver|3 elm st||springfield|il|62701"):
+        nodes.append(_ego_node(f"donor:{key}", "donor", "donor"))
+        edges.append(_ego_edge(DC, f"donor:{key}", "committee:901", 100.0, 1))
+    for key in ("|acme corp|9 main st||peoria|il|61602", "|beta llc|8 main st||peoria|il|61602"):
+        nodes.append(_ego_node(f"donor:{key}", "donor", "donor"))
+        edges.append(_ego_edge(DC, f"donor:{key}", "committee:901", 50.0, 1))
+
+    capped = money_flow(_ego(nodes, edges, {**NO_TRUNCATION, "donors": 3}))
+    labels = {node["id"]: node["label"] for node in capped["nodes"]}
+    assert labels[CLASS_INDIVIDUAL] == "Top 3 individual donors"
+    assert labels[CLASS_ORGANIZATION] == "Top 2 organization donors"
+    assert capped["truncated"] == {**NO_TRUNCATION, "donors": 3}
+
+    complete = money_flow(_ego(nodes, edges))
+    labels = {node["id"]: node["label"] for node in complete["nodes"]}
+    assert labels[CLASS_INDIVIDUAL] == "Individual donors" and labels[CLASS_ORGANIZATION] == "Organization donors"
+    assert complete["truncated"] == NO_TRUNCATION
+
+
+def _internal_transfer_ego(with_independent_expenditure):
+    """Two entity committees; 902 receives 1,000 from one donor, 200 from an outside committee and 300 from 901
+    (an internal transfer); optionally 901 also spends 500 (3 rows) supporting candidate 1, next to the outside
+    spender 900's 700."""
+    donor = "donor:ada|giver|1 elm st||springfield|il|62701"
+    nodes = [_ego_node("committee:901", "committee", "entity"), _ego_node("committee:902", "committee", "entity"),
+             _ego_node("committee:400", "committee", "transfer_source"), _ego_node("candidate:1", "candidate", "candidate"),
+             _ego_node("committee:900", "committee", "ie_spender"), _ego_node(donor, "donor", "donor")]
+    edges = [_ego_edge(DC, donor, "committee:902", 1000.0, 4),
+             _ego_edge(TI, "committee:400", "committee:902", 200.0, 1),
+             _ego_edge(TI, "committee:901", "committee:902", 300.0, 1),
+             _ego_edge(IE, "committee:900", "candidate:1", 700.0, 2, "S")]
+    if with_independent_expenditure:
+        edges.append(_ego_edge(IE, "committee:901", "candidate:1", 500.0, 3, "S"))
+    return _ego(nodes, edges)
+
+
+@pytest.mark.parametrize("with_independent_expenditure, internal", [
+    pytest.param(False, {"count": 1, "amount": 300.0}, id="transfer-only"),
+    pytest.param(True, {"count": 4, "amount": 800.0}, id="transfer-and-independent-expenditure"),
+])
+def test_money_flow_leaves_money_between_the_entitys_own_committees_out_of_the_sankey(with_independent_expenditure,
+                                                                                        internal):
+    """F2: a transfer_in (or an independent_expenditure) whose source is one of the entity's own committees would be
+    a column-1 -> column-1 link and an inflow that is only a move between the entity's own accounts. It is no link, no
+    node amount and no total; ``folded.internal`` counts it (rows, dollars). Kills: a backwards link; the transfer
+    counted as an inflow; the internal money silently lost instead of reported."""
+    view = money_flow(_internal_transfer_ego(with_independent_expenditure))
+    column = {node["id"]: node["column"] for node in view["nodes"]}
+    assert all(column[link["source"]] < column[link["target"]] for link in view["links"]), view["links"]
+    links = _link_map(view)
+    assert ("committee:901", "committee:902", TI, None) not in links
+    assert links[("committee:400", "committee:902", TI, None)] == (200.0, 1)
+    assert links[("committee:900", "candidate:1", IE, "S")] == (700.0, 2)
+    assert ("committee:901", "candidate:1", IE, "S") not in links
+    assert view["totals"][TI] == 200.0
+    assert view["totals"]["support"] == 700.0
+    assert view["folded"]["internal"] == internal
+    assert {key: view["folded"][key] for key in ("vendors", "transfers", "spenders")} == {"vendors": 0, "transfers": 0,
+                                                                                         "spenders": 0}
+    incident = defaultdict(float)
+    for link in view["links"]:
+        incident[link["source"]] += link["weight"]
+        incident[link["target"]] += link["weight"]
+    for node in view["nodes"]:
+        assert node["amount"] == pytest.approx(incident[node["id"]], abs=0.005), node

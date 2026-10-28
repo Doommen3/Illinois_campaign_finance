@@ -1,0 +1,9 @@
+{#- donor_link(row): the donor's name, linked to /donors/key/<key> -- except for a redacted donor (``redacted`` true, or a
+    key that embeds "Redaction Requested" as a redacted receipt's does) or a row without a key, which gets the bare name. -#}
+{% macro donor_link(row) -%}
+{%- if row.donor_key and not row.redacted and 'redaction requested' not in row.donor_key|lower -%}
+<a href="{{ url_for('donors.donor_detail_by_key', donor_key=row.donor_key) }}">{{ row.donor_name }}</a>
+{%- else -%}
+{{ row.donor_name }}
+{%- endif -%}
+{%- endmacro %}

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_partials/macros.html" import scope_tag with context %}
+{% from "entity/_macros.html" import donor_link %}
 
 {% block title %}{{ entity.label }} — Risk{% endblock %}
 
@@ -33,7 +34,7 @@
                 <td>{{ flag_labels.get(flag.flag_type, flag.flag_type) }}</td>
                 <td>{{ (flag.severity or '')|capitalize }}</td>
                 <td>{% if flag.committee_id %}<a href="{{ url_for('committees.committee_detail', committee_id=flag.committee_id) }}">{{ flag.committee_name or flag.group_label }}</a>{% else %}{{ flag.group_label or '' }}{% endif %}</td>
-                <td>{% if flag.donor_name %}{% if flag.donor_key %}<a href="{{ url_for('donors.donor_detail_by_key', donor_key=flag.donor_key) }}">{{ flag.donor_name }}</a>{% else %}{{ flag.donor_name }}{% endif %}{% endif %}</td>
+                <td>{% if flag.donor_name %}{{ donor_link(flag) }}{% endif %}</td>
                 <td>{{ flag.event_date or flag.month or '' }}</td>
                 <td>{% if flag.flag_type == 'high_donor_concentration' %}HHI {{ '{:,.0f}'.format(flag.value or 0) }}{% else %}{{ format_currency(flag.value) }}{% endif %}</td>
                 <td>{% if flag.flag_type == 'high_donor_concentration' %}{{ flag.baseline or 0 }} donors{% elif flag.baseline is not none %}{{ format_currency(flag.baseline) }}{% else %}&mdash;{% endif %}</td>
