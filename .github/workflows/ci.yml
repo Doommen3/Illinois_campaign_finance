@@ -1,10 +1,10 @@
 name: CI
 
+# Retired 2026-10-28 (Devin): GitHub-hosted CI is no longer run automatically — tests run locally before every
+# merge and deploy (see docs/runbooks/deployment.md "Pre-deploy checks"). The workflow is also disabled in the
+# repository settings (`gh workflow disable ci.yml`); this manual-only trigger is the code-level backstop.
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   test-and-lint:
