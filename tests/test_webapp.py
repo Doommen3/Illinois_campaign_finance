@@ -113,6 +113,24 @@ class TestWebApp:
         assert b'datamade/illinois-sunshine' in response.data
         assert b'illinoissunshine.org/about/' in response.data
 
+    def test_about_page_explains_filing_basis_and_timing(self, client):
+        """About page states that every figure comes from candidate/committee filings and when those arrive."""
+        response = client.get('/about')
+        assert response.status_code == 200
+        assert b'Where the Data Comes From and When It Arrives' in response.data
+        assert b'filed by candidates and committees' in response.data
+        assert b'Filing deadlines' in response.data
+        assert b'own decision' in response.data
+
+    def test_footer_states_filings_basis_on_every_page(self, client):
+        """The footer disclaimer (base.html) carries the filings-and-deadlines note on every page."""
+        response = client.get('/about')
+        assert response.status_code == 200
+        html = response.data.decode()
+        footer = html[html.index('<footer'):html.index('</footer>')]
+        assert 'filed by candidates and committees' in footer
+        assert 'Filing deadlines' in footer
+
     def test_index_footer_shows_illinois_sunshine_credit(self, client):
         """Footer should include Illinois Sunshine ETL attribution text."""
         response = client.get('/')
