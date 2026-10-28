@@ -25,9 +25,12 @@
     <label>
         Sort
         <select name="sort">
-            <option value="total_amount" {% if sort_by == 'total_amount' %}selected{% endif %}>Total Amount</option>
-            <option value="outside_spending_total" {% if sort_by == 'outside_spending_total' %}selected{% endif %}>Outside Spending (E)</option>
-            <option value="outside_pressure_ratio" {% if sort_by == 'outside_pressure_ratio' %}selected{% endif %}>Outside Pressure Ratio</option>
+            {% for field, label in [('race', 'Race'), ('candidate_count', 'Candidates (cycle)'), ('donor_count', 'Donors'),
+                                    ('contribution_count', 'Contributions'), ('total_amount', 'Total Amount'),
+                                    ('outside_spending_total', 'Outside Spending (E)'), ('outside_pressure_ratio', 'Outside Pressure Ratio'),
+                                    ('top_candidate_share', 'Top Candidate Share (cycle)')] %}
+            <option value="{{ field }}" {% if sort_by == field %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
         </select>
     </label>
     <label>

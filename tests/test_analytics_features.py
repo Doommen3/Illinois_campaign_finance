@@ -1301,8 +1301,10 @@ def test_top_state_races_can_sort_by_outside_spending(analytics_client):
         "/analytics/?period=2026cycle&state_race_sort=outside_spending_total&state_race_dir=desc"
     )
     assert response.status_code == 200
-    assert b'name="state_race_sort"' in response.data
-    assert b'name="state_race_dir"' in response.data
+    # Plan N1 (2026-10-28): header links sort the whole list on the server; the select pair is gone.
+    assert b'<select name="state_race_sort"' not in response.data
+    assert b"data-server-sort" in response.data
+    assert b"state_race_sort=donor_count" in response.data
     assert _extract_first_top_state_race_label(response.data) == "Governor - Statewide At-Large"
     assert b"Outside spending exists in lower-ranked races; sort by Outside Spending to view." not in response.data
 

@@ -3119,10 +3119,15 @@ def _build_state_race_analytics_rows(
     return output
 
 
-_STATE_RACE_SORT_FIELDS = {
+_STATE_RACE_SORT_FIELDS = {  # every Top State Races column (plan race-sort-and-entity-networks, N2)
+    "race",
+    "candidate_count",
+    "donor_count",
+    "contribution_count",
     "total_amount",
     "outside_spending_total",
     "outside_pressure_ratio",
+    "top_candidate_share",
 }
 
 
@@ -3133,6 +3138,16 @@ def _state_race_sort_key(row: dict, sort_field: str) -> tuple:
     outside_pressure_ratio = float(row.get("outside_pressure_ratio") or 0.0)
     contribution_count = int(row.get("contribution_count") or 0)
 
+    if sort_field == "race":
+        return (race_label.casefold(), race_label)
+    if sort_field == "candidate_count":
+        return (int(row.get("candidate_count") or 0), total_amount, contribution_count, race_label)
+    if sort_field == "donor_count":
+        return (int(row.get("donor_count") or 0), total_amount, contribution_count, race_label)
+    if sort_field == "contribution_count":
+        return (contribution_count, total_amount, outside_spending_total, race_label)
+    if sort_field == "top_candidate_share":
+        return (float(row.get("top_candidate_share") or 0.0), total_amount, contribution_count, race_label)
     if sort_field == "outside_spending_total":
         return (
             outside_spending_total,
@@ -3157,6 +3172,17 @@ def _state_race_sort_key(row: dict, sort_field: str) -> tuple:
     )
 
 
+def sort_state_race_rows(rows: list[dict], sort_by: str | None, sort_dir: str | None) -> list[dict]:
+    """A new list of race rows ordered by one preview column (``race`` = the label; an unknown
+    field falls back to total_amount), descending unless ``sort_dir`` is ``asc``. Sorting runs
+    after the cache read (plan N3), so the cached list itself is never reordered."""
+    sort_field = (sort_by or "total_amount").strip().lower()
+    if sort_field not in _STATE_RACE_SORT_FIELDS:
+        sort_field = "total_amount"
+    descending = (sort_dir or "").strip().lower() != "asc"
+    return sorted(rows, key=lambda row: _state_race_sort_key(row, sort_field), reverse=descending)
+
+
 def get_state_race_analytics(
     conn: sqlite3.Connection,
     *,
@@ -3178,15 +3204,7 @@ def get_state_race_analytics(
         today=today,
     )
 
-    sort_field = (sort_by or "total_amount").strip().lower()
-    if sort_field not in _STATE_RACE_SORT_FIELDS:
-        sort_field = "total_amount"
-    sort_direction = "asc" if (sort_dir or "").strip().lower() == "asc" else "desc"
-    rows.sort(
-        key=lambda row: _state_race_sort_key(row, sort_field),
-        reverse=sort_direction == "desc",
-    )
-    return rows[: max(1, int(limit))]
+    return sort_state_race_rows(rows, sort_by, sort_dir)[: max(1, int(limit))]
 
 
 def get_state_race_detail(

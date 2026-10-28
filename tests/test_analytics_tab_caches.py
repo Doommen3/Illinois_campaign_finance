@@ -1054,12 +1054,10 @@ def _overview_filters(**changes) -> dict:
     return filters
 
 
-def _overview_key(cycle: int = 2026, sort_by: str = "total_amount", sort_dir: str = "desc", **changes) -> tuple:
+def _overview_key(cycle: int = 2026, **changes) -> tuple:
     helper = getattr(analytics_routes, "_overview_cache_key", None)
-    assert callable(helper), (
-        "webapp.routes.analytics._overview_cache_key(filters, state_race_cycle, state_race_sort, state_race_dir) is not defined"
-    )
-    return helper(_overview_filters(**changes), cycle, sort_by, sort_dir)
+    assert callable(helper), "webapp.routes.analytics._overview_cache_key(filters, state_race_cycle) is not defined"
+    return helper(_overview_filters(**changes), cycle)
 
 
 # --- unit level: the key function on a hand-built filters dict -------------------------------------------------------------
@@ -1088,9 +1086,9 @@ CARRIED_BEFORE_R4 = [
     pytest.param({"months": 6}, id="months"),
     pytest.param({"nlp_limit": 30}, id="nlp_limit"),
     pytest.param({"cycle": 2024}, id="state_race_cycle"),
-    pytest.param({"sort_by": "outside_spending_total"}, id="state_race_sort"),
-    pytest.param({"sort_dir": "asc"}, id="state_race_dir"),
 ]
+# The race sort LEFT the key on 2026-10-28 (plan race-sort-and-entity-networks, N3): the payload carries the
+# top twelve of every sort order, so one entry serves them all -- see test_overview_sort_variants_share_one_entry.
 
 
 @pytest.mark.parametrize("changes", CARRIED_BEFORE_R4)
@@ -1147,6 +1145,21 @@ def test_overview_key_ignores_the_geo_limits_in_quick_mode(field, other):
 
 
 # --- route level: the real _parse_filters, the real cache, the real builders behind counters -------------------------------
+def test_overview_sort_variants_share_one_entry(client, overview_calls):
+    """Plan N3: ``state_race_sort`` / ``state_race_dir`` pick a pre-sorted twelve out of the cached
+    payload; they do not key it. A bare request, then two sorted ones: nothing is built again.
+
+    Kills: the sort in the overview key (every header click pays the full cold build, 16 x 2
+    entries per window); a sorted request bypassing the cache."""
+    _get(client, OVERVIEW_URL)
+    built = _counts(overview_calls)
+    assert sum(built.values()) > 0, "precondition: a bare request builds the overview"
+
+    for query in ("state_race_sort=outside_spending_total&state_race_dir=asc", "state_race_sort=donor_count"):
+        _get(client, f"{OVERVIEW_URL}?{query}")
+        assert _counts(overview_calls) == built, f"?{query} built something again: the race sort fragments the overview cache"
+
+
 def test_overview_recon_limit_gets_its_own_entry(client, overview_calls):
     """RED today: the second request is a hit on the first one's entry.
 

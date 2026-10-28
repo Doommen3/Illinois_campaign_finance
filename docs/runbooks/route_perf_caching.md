@@ -8,7 +8,7 @@ Detailed reference for the `RouteCache` layer used by heavy routes (`webapp/cach
 
 - `/` — homepage candidate stats, top donors, dashboard insights
 - `/analytics/` — overview (all 7 aggregates + state race analytics)
-- `/analytics/state-races/` and `/analytics/state-races/<race_key>` — the full race list (the same cached rows the overview slices its Top 12 from) and one race's detail
+- `/analytics/state-races/` and `/analytics/state-races/<race_key>` — the full race list and one race's detail. The list is ONE cached, unsorted build per window and cycle (`_state_races_cache_key(scope, election_cycle)`, revision `_STATE_RACE_CACHE_REV` = "os3" since 2026-10-28); every sort order (`sort`/`dir`, the eight Top State Races columns in `_STATE_RACE_SORTS`) is applied after the cache read with `sort_state_race_rows`. The overview's Top State Races stores the first 12 rows of all 16 orders in its payload (`state_race_previews`, ≈68 KB, ≈8 ms per build) and picks the requested one per request, so `state_race_sort`/`state_race_dir` are header links (server sort over the whole list, `data-server-sort`) and never part of the overview key
 - `/analytics/networks`
 - `/analytics/risk` — anomalies + reconciliation
 - `/analytics/relationships`

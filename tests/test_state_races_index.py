@@ -455,7 +455,7 @@ def test_detail_page_resolves_the_same_cycle_as_the_overview(client, race, query
 def _cache_key_function():
     helper = getattr(analytics_routes, "_state_races_cache_key", None)
     assert callable(helper), (
-        "webapp.routes.analytics._state_races_cache_key(scope, election_cycle, sort_by, sort_dir, today=None) "
+        "webapp.routes.analytics._state_races_cache_key(scope, election_cycle, today=None) "
         "-> tuple is not defined (plan C5)"
     )
     return helper
@@ -481,7 +481,7 @@ CACHE_KEY_CASES = [
 def test_state_races_cache_key_carries_the_resolved_cycle(period, election_cycle, today, resolved, absent):
     """Kills: the raw ``election_cycle`` (None) in the key, which is what lets a payload built
     before a cycle rollover outlive it; a hard-coded cycle; a key that ignores ``today``."""
-    key = _cache_key_function()(_scope(period, today), election_cycle, "total_amount", "desc", today=today)
+    key = _cache_key_function()(_scope(period, today), election_cycle, today=today)
 
     assert isinstance(key, tuple)
     assert None not in key
@@ -491,19 +491,21 @@ def test_state_races_cache_key_carries_the_resolved_cycle(period, election_cycle
 
 
 def test_state_races_cache_key_separates_everything_that_changes_the_build():
-    """Kills: a key that drops the scope, the cycle, the sort field or the direction (a cache
-    that serves one sort order, one window or one cycle for another); an unhashable key."""
+    """Kills: a key that drops the scope or the cycle (a cache that serves one window or one
+    cycle for another); an unhashable key; a key that still takes the sort (plan N3: ONE unsorted
+    list per window and cycle, every sort order is applied after the cache read)."""
     helper = _cache_key_function()
-    base = helper(_scope("all"), None, "total_amount", "desc", today=START)
+    assert set(inspect.signature(helper).parameters) == {"scope", "election_cycle", "today"}, (
+        "the race-list key must not take the sort: one cached list serves every sort order"
+    )
+    base = helper(_scope("all"), None, today=START)
 
-    assert hash(base) == hash(helper(_scope("all"), None, "total_amount", "desc", today=START))
-    assert base == helper(_scope("all"), None, "total_amount", "desc", today=START)
+    assert hash(base) == hash(helper(_scope("all"), None, today=START))
+    assert base == helper(_scope("all"), None, today=START)
 
-    assert helper(_scope("cycle:2026"), None, "total_amount", "desc", today=START) != base, "scope"
-    assert helper(_scope("all"), 2024, "total_amount", "desc", today=START) != base, "cycle"
-    assert helper(_scope("all"), None, "outside_spending_total", "desc", today=START) != base, "sort field"
-    assert helper(_scope("all"), None, "total_amount", "asc", today=START) != base, "direction"
-    assert helper(_scope("all", date(2027, 3, 1)), None, "total_amount", "desc", today=date(2027, 3, 1)) != base, "today"
+    assert helper(_scope("cycle:2026"), None, today=START) != base, "scope"
+    assert helper(_scope("all"), 2024, today=START) != base, "cycle"
+    assert helper(_scope("all", date(2027, 3, 1)), None, today=date(2027, 3, 1)) != base, "today"
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +527,7 @@ def _cache_rev() -> str:
 def _overview_cache_key_function():
     helper = getattr(analytics_routes, "_overview_cache_key", None)
     assert callable(helper), (
-        "webapp.routes.analytics._overview_cache_key(filters, state_race_cycle, state_race_sort, state_race_dir) -> tuple "
+        "webapp.routes.analytics._overview_cache_key(filters, state_race_cycle) -> tuple "
         "is not defined"
     )
     return helper
@@ -554,8 +556,8 @@ def _bare_overview_filters() -> dict:
 
 
 RACE_KEYS = {
-    "race-list": lambda: _cache_key_function()(_scope("all"), None, "total_amount", "desc", today=START),
-    "overview": lambda: _overview_cache_key_function()(_bare_overview_filters(), CURRENT_CYCLE, "total_amount", "desc"),
+    "race-list": lambda: _cache_key_function()(_scope("all"), None, today=START),
+    "overview": lambda: _overview_cache_key_function()(_bare_overview_filters(), CURRENT_CYCLE),
 }
 
 
@@ -1147,3 +1149,175 @@ def test_app_prewarm_ttl_lookup_uses_the_constant():
     assert "ANALYTICS_CACHE_TTL_FALLBACK_SECONDS" in source or re.search(r"\b21600\b", source), (
         "webapp/app.py names neither ANALYTICS_CACHE_TTL_FALLBACK_SECONDS nor 21600"
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan race-sort-and-entity-networks (N1-N3, 2026-10-28): a header click sorts the WHOLE list on the
+# server, every preview column is sortable, and every sort order is served from ONE cached build
+# ---------------------------------------------------------------------------
+
+PREVIEW_COLUMNS = {
+    "Race": "race",
+    "Candidates (cycle)": "candidate_count",
+    "Donors": "donor_count",
+    "Contributions": "contribution_count",
+    "Total Amount": "total_amount",
+    "Outside Spending (E)": "outside_spending_total",
+    "Outside Pressure Ratio": "outside_pressure_ratio",
+    "Top Candidate Share (cycle)": "top_candidate_share",
+}
+# Races with no receipt inside the cycle:2026 window: 12 (outside spending only), 13 (D-2 total
+# only), 14 (its receipt is dated 2024-06-01), 15 (nothing). 13, 14 and 15 are NOT in the default
+# twelve, so a donor-count ascending view that shows them proves the sort ran over the whole list.
+ZERO_DONOR_RACES = {12, 13, 14, 15}
+# String order of the fixture labels ("Office 1 - District 1" < "Office 10 - ..." < "Office 2 - ...").
+RACE_ALPHA_ORDER = [1, 10, 11, 12, 13, 14, 15, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+def test_every_preview_column_is_a_server_sort_field():
+    """Kills: a whitelist that still knows only the three money columns (a Donors header link
+    would fall back to total_amount); route and builder whitelists drifting apart."""
+    assert set(PREVIEW_COLUMNS.values()) <= set(analytics_routes._STATE_RACE_SORTS), (
+        f"not every preview column is sortable: {set(PREVIEW_COLUMNS.values()) - set(analytics_routes._STATE_RACE_SORTS)}"
+    )
+    assert set(analytics_routes._STATE_RACE_SORTS) == set(analytics_db._STATE_RACE_SORT_FIELDS)
+
+
+def _sort_row(label: str, **values) -> dict:
+    row = {
+        "race_label": label, "candidate_count": 0, "donor_count": 0, "contribution_count": 0,
+        "total_amount": 0.0, "outside_spending_total": 0.0, "outside_pressure_ratio": 0.0, "top_candidate_share": 0.0,
+    }
+    row.update(values)
+    return row
+
+
+@pytest.mark.parametrize("field", sorted(PREVIEW_COLUMNS.values()))
+def test_sort_state_race_rows_orders_every_field_both_ways(field):
+    """``database.analytics.sort_state_race_rows(rows, sort_by, sort_dir)``: a new list ordered by
+    the field (``race`` = the label), descending unless ``asc``; unknown fields fall back to
+    total_amount; the input is not reordered (it is the cached list).
+
+    Kills: a helper that sorts only the old three fields; one that sorts in place."""
+    helper = getattr(analytics_db, "sort_state_race_rows", None)
+    assert callable(helper), "database.analytics.sort_state_race_rows(rows, sort_by, sort_dir) -> list[dict] is not defined"
+    ranks = {"Mid": 2, "Top": 3, "Low": 1}
+    rows = [_sort_row(label, **({} if field == "race" else {field: ranks[label]})) for label in ("Mid", "Top", "Low")]
+    snapshot = [dict(row) for row in rows]
+
+    ascending = [row["race_label"] for row in helper(rows, field, "asc")]
+    descending = [row["race_label"] for row in helper(rows, field, "desc")]
+    unknown = [row["race_label"] for row in helper(rows, "no_such_field", "desc")]
+
+    assert ascending == ["Low", "Mid", "Top"], field
+    assert descending == ["Top", "Mid", "Low"], field
+    assert unknown == [row["race_label"] for row in helper(rows, "total_amount", "desc")]
+    assert rows == snapshot, "the input list was reordered or edited"
+
+
+def _preview_header(page: _Page) -> dict:
+    """{column label: href} of the Top State Races header row (the row whose cells are the preview columns)."""
+    for row in page.rows:
+        if row["cells"] == list(PREVIEW_COLUMNS):
+            links = {text: href for href, text in row["links"]}
+            return links
+        if [cell.rstrip(" ↑↓") for cell in row["cells"]] == list(PREVIEW_COLUMNS):
+            return {text.rstrip(" ↑↓"): href for href, text in row["links"]}
+    raise AssertionError(f"no header row with cells {list(PREVIEW_COLUMNS)} on the page")
+
+
+def test_preview_headers_are_server_sort_links(client):
+    """Every Top State Races column header is a link back to the overview with
+    ``state_race_sort=<field>`` (numeric columns descend first, Race ascends first, the active
+    column -- Total Amount on a default page -- flips), the page scope, and the
+    ``#top-state-races`` anchor; the table opts out of the DOM sorter with
+    ``data-server-sort``; the old select pair is gone (one mechanism, plan N1).
+
+    Kills: headers the DOM sorter still handles (sorting the twelve rows); links that drop the
+    scope; links that always descend (a Race link that starts at the Zs)."""
+    page = _get(client, f"{OVERVIEW}?period=cycle:2026")
+
+    assert re.search(r"<table[^>]*\bdata-server-sort\b", page.markup), "the preview table does not opt out of the DOM sorter"
+    assert '<select name="state_race_sort"' not in page.markup, "the Top Races Sort select is still rendered"
+    header = _preview_header(page)
+    assert set(header) == set(PREVIEW_COLUMNS), f"headers without a link: {set(PREVIEW_COLUMNS) - set(header)}"
+    for label, field in PREVIEW_COLUMNS.items():
+        parsed = urlparse(header[label])
+        found = parse_qs(parsed.query)
+        assert parsed.path == OVERVIEW, f"{label}: {header[label]}"
+        assert parsed.fragment == "top-state-races", f"{label}: {header[label]}"
+        assert found.get("state_race_sort") == [field], f"{label}: {header[label]}"
+        first_click = "asc" if field == "race" else "desc"
+        expected_dir = "asc" if field == "total_amount" else first_click  # total_amount is the page's active (default) sort
+        assert found.get("state_race_dir") == [expected_dir], f"{label}: {header[label]}"
+        assert found.get("period") == ["cycle:2026"], f"{label} link drops the scope: {header[label]}"
+        assert "refresh_cache" not in found
+
+
+def test_active_header_link_toggles_its_direction(client):
+    """On a page sorted by Donors ascending, the Donors link descends and every other link keeps
+    its first-click direction; the active column shows an arrow."""
+    page = _get(client, f"{OVERVIEW}?period=cycle:2026&state_race_sort=donor_count&state_race_dir=asc")
+
+    header = _preview_header(page)
+    assert parse_qs(urlparse(header["Donors"]).query).get("state_race_dir") == ["desc"]
+    assert parse_qs(urlparse(header["Total Amount"]).query).get("state_race_dir") == ["desc"]
+    assert parse_qs(urlparse(header["Race"]).query).get("state_race_dir") == ["asc"]
+    assert re.search(r"Donors\s*[↑↓]", page.text), "the active column shows no direction arrow"
+
+
+@pytest.mark.parametrize(
+    "query, check",
+    [
+        pytest.param("state_race_sort=donor_count&state_race_dir=asc",
+                     lambda shown: set(shown[:4]) == ZERO_DONOR_RACES and len(shown) == 12, id="donors-asc-whole-list"),
+        pytest.param("state_race_sort=race&state_race_dir=asc",
+                     lambda shown: shown == RACE_ALPHA_ORDER[:12], id="race-alpha"),
+        pytest.param("state_race_sort=race&state_race_dir=desc",
+                     lambda shown: shown == list(reversed(RACE_ALPHA_ORDER))[:12], id="race-alpha-desc"),
+        pytest.param("state_race_sort=outside_spending_total&state_race_dir=asc",
+                     lambda shown: shown == OUTSIDE_ASC[:12], id="outside-asc"),
+    ],
+)
+def test_preview_is_the_head_of_the_whole_list_sorted_by_the_column(client, query, check):
+    """The twelve preview rows are the first twelve of ALL races sorted by the requested column,
+    so races outside the default twelve (13, 14, 15) surface when the sort favours them.
+
+    Kills: sorting the preloaded twelve (13-15 never appear); a whitelist fallback to
+    total_amount for the new fields; an alphabetical sort that ignores ``dir``."""
+    shown = _shown(_get(client, f"{OVERVIEW}?period=cycle:2026&{query}"))
+
+    assert check(shown), f"{query}: {shown}"
+
+
+@pytest.mark.parametrize(
+    "query, check",
+    [
+        pytest.param("sort=donor_count&dir=asc", lambda shown: set(shown[:4]) == ZERO_DONOR_RACES, id="donors-asc"),
+        pytest.param("sort=race&dir=asc", lambda shown: shown == RACE_ALPHA_ORDER, id="race-alpha"),
+        pytest.param("sort=top_candidate_share&dir=desc", lambda shown: len(shown) == 15, id="share-desc-renders"),
+    ],
+)
+def test_index_sorts_by_every_column_too(client, query, check):
+    page = _get(client, f"{INDEX}?period=cycle:2026&{query}")
+
+    assert check(_shown(page)), f"{query}: {_shown(page)}"
+    for field in PREVIEW_COLUMNS.values():
+        assert f'<option value="{field}"' in page.markup, f"the index sort select lacks {field}"
+
+
+def test_every_sort_order_is_served_from_one_cached_build(cached_client, builder_calls):
+    """Overview default, overview by donors ascending, overview by race, index by share: ONE race
+    build (plan N3). The variants are real (the donors-ascending page leads with the zero-donor
+    races), so they are not the default order served from the cache.
+
+    Kills: sort in either cache key (each variant rebuilds); the overview caching only its
+    default twelve (another sort has nothing to re-slice); a variant served the default rows."""
+    default = _shown(_get(cached_client, f"{OVERVIEW}?period=cycle:2026"))
+    donors_asc = _shown(_get(cached_client, f"{OVERVIEW}?period=cycle:2026&state_race_sort=donor_count&state_race_dir=asc"))
+    _get(cached_client, f"{OVERVIEW}?period=cycle:2026&state_race_sort=race&state_race_dir=asc")
+    _get(cached_client, f"{INDEX}?period=cycle:2026&sort=top_candidate_share&dir=desc")
+
+    assert len(builder_calls) == 1, f"builder calls (race_filter per call): {builder_calls}"
+    assert default == OVERVIEW_TOP_TWELVE
+    assert set(donors_asc[:4]) == ZERO_DONOR_RACES, donors_asc

@@ -37,21 +37,6 @@
         Recon Min Abs Diff
         <input type="number" name="recon_min_abs_diff" min="0" step="100" value="{{ recon_min_abs_diff }}">
     </label>
-    <label>
-        Top Races Sort
-        <select name="state_race_sort">
-            <option value="total_amount" {% if state_race_sort == 'total_amount' %}selected{% endif %}>Total Amount</option>
-            <option value="outside_spending_total" {% if state_race_sort == 'outside_spending_total' %}selected{% endif %}>Outside Spending (E)</option>
-            <option value="outside_pressure_ratio" {% if state_race_sort == 'outside_pressure_ratio' %}selected{% endif %}>Outside Pressure Ratio</option>
-        </select>
-    </label>
-    <label>
-        Top Races Direction
-        <select name="state_race_dir">
-            <option value="desc" {% if state_race_dir != 'asc' %}selected{% endif %}>Descending</option>
-            <option value="asc" {% if state_race_dir == 'asc' %}selected{% endif %}>Ascending</option>
-        </select>
-    </label>
     <button type="submit">Apply</button>
 </form>
 
@@ -92,7 +77,7 @@
     </div>
 </div>
 
-<div class="status-section">
+<div class="status-section" id="top-state-races">
     <h2>Top State Races {{ scope_tag() }}</h2>
     {% if show_state_race_cycle %}
     <p class="help-text">Candidates: {{ state_race_cycle }} cycle; the money columns follow the selected window.</p>
@@ -103,17 +88,21 @@
     {% if not state_race_table_available %}
     <p>State race bulk tables are not available yet.</p>
     {% else %}
-    <table class="data-table">
+    {# Header links sort the WHOLE race list on the server (plan N1); data-server-sort keeps the DOM sorter off the 12 rows. #}
+    {% macro race_sort_link(field, label) -%}
+    <a href="{{ state_race_sort_links[field] }}">{{ label }}{% if state_race_sort == field %} {{ '↑' if state_race_dir == 'asc' else '↓' }}{% endif %}</a>
+    {%- endmacro %}
+    <table class="data-table" data-server-sort>
         <thead>
             <tr>
-                <th>Race</th>
-                <th>Candidates (cycle)</th>
-                <th>Donors</th>
-                <th>Contributions</th>
-                <th>Total Amount</th>
-                <th>Outside Spending (E)</th>
-                <th>Outside Pressure Ratio</th>
-                <th>Top Candidate Share (cycle)</th>
+                <th>{{ race_sort_link('race', 'Race') }}</th>
+                <th>{{ race_sort_link('candidate_count', 'Candidates (cycle)') }}</th>
+                <th>{{ race_sort_link('donor_count', 'Donors') }}</th>
+                <th>{{ race_sort_link('contribution_count', 'Contributions') }}</th>
+                <th>{{ race_sort_link('total_amount', 'Total Amount') }}</th>
+                <th>{{ race_sort_link('outside_spending_total', 'Outside Spending (E)') }}</th>
+                <th>{{ race_sort_link('outside_pressure_ratio', 'Outside Pressure Ratio') }}</th>
+                <th>{{ race_sort_link('top_candidate_share', 'Top Candidate Share (cycle)') }}</th>
             </tr>
         </thead>
         <tbody>

@@ -23,6 +23,7 @@ from database.analytics import (
     get_nlp_spending_summary,
     get_reconciliation_outliers,
     get_state_race_analytics,
+    sort_state_race_rows,
     get_state_race_detail,
     get_state_race_details,
     get_state_federal_overlap_graph,
@@ -57,7 +58,7 @@ _state_race_detail_cache = RouteCache("analytics_state_race_detail")
 # Every race of one cycle: the overview shows its first 12 rows, /analytics/state-races/ all.
 _state_races_cache = RouteCache("analytics_state_races")
 # First element of the race-list and overview keys: bump when the race builder's numbers change under an unchanged row shape, so entries built by older code are never read.
-_STATE_RACE_CACHE_REV = "os2"
+_STATE_RACE_CACHE_REV = "os3"  # os3 (2026-10-28): overview payload carries state_race_previews; race-list key has no sort
 # Graphs whose builders take no dates (plan B3 / J-S15): the relationships co-giving, similarity
 # and competition graphs and the networks overlap graph. One build serves every window: keyed
 # by the builder's name and its own arguments, never the window, so ?period=all reuses the
@@ -492,7 +493,10 @@ def _base_context(active_page: str, filters: dict, snapshot_state: dict) -> dict
     }
 
 
-_STATE_RACE_SORTS = ("total_amount", "outside_spending_total", "outside_pressure_ratio")
+_STATE_RACE_SORTS = (  # every Top State Races column; the cached race list is sorted after the read (plan N2/N3)
+    "race", "candidate_count", "donor_count", "contribution_count",
+    "total_amount", "outside_spending_total", "outside_pressure_ratio", "top_candidate_share",
+)
 # The relations the race builder reads; it returns no rows when any of them is missing.
 _STATE_RACE_RELATIONS = (
     "isbe_race_candidacies",
@@ -516,15 +520,15 @@ def _state_race_cycle(scope, election_cycle: int | None, today: date | None = No
     return _window_cycle(scope) or analytics_db.current_election_cycle(today)
 
 
-def _state_races_cache_key(scope, election_cycle: int | None, sort_by: str, sort_dir: str,
-                           today: date | None = None) -> tuple:
-    """Key of the shared full race list: the revision, the window, the RESOLVED cycle and the sort.
+def _state_races_cache_key(scope, election_cycle: int | None, today: date | None = None) -> tuple:
+    """Key of the shared full race list: the revision, the window and the RESOLVED cycle.
 
-    The cycle is resolved, never None: ``period=all`` has the same window all year, so only
-    the cycle keeps a list built before a cycle rollover from being served after it. The
-    revision (_STATE_RACE_CACHE_REV, read when the key is built) comes first.
+    No sort: one unsorted list per window and cycle serves every sort order, applied after the
+    cache read (plan N3). The cycle is resolved, never None: ``period=all`` has the same window
+    all year, so only the cycle keeps a list built before a cycle rollover from being served
+    after it. The revision (_STATE_RACE_CACHE_REV, read when the key is built) comes first.
     """
-    return (_STATE_RACE_CACHE_REV, scope_cache_key(scope), _state_race_cycle(scope, election_cycle, today), sort_by, sort_dir)
+    return (_STATE_RACE_CACHE_REV, scope_cache_key(scope), _state_race_cycle(scope, election_cycle, today))
 
 
 def _state_race_sort_args(sort_param: str, dir_param: str) -> tuple[str, str]:
@@ -540,10 +544,10 @@ def _state_race_tables_available(conn) -> bool:
     return all(_table_exists(conn, table_name) for table_name in _STATE_RACE_RELATIONS)
 
 
-def _get_state_race_rows(conn, scope, election_cycle, sort_by, sort_dir, *, cache_enabled, refresh,
-                         ttl_seconds) -> list[dict]:
-    """Every race of the resolved cycle, sorted: the one cached build behind the overview's
-    Top State Races (its first 12 rows) and /analytics/state-races/ (all rows)."""
+def _get_state_race_rows(conn, scope, election_cycle, *, cache_enabled, refresh, ttl_seconds) -> list[dict]:
+    """Every race of the resolved cycle in the builder's default order: the one cached build
+    behind the overview's Top State Races and /analytics/state-races/. Callers order a COPY with
+    sort_state_race_rows; the cached list is shared and never reordered."""
     cycle = _state_race_cycle(scope, election_cycle)
 
     def build() -> list[dict]:
@@ -553,14 +557,54 @@ def _get_state_race_rows(conn, scope, election_cycle, sort_by, sort_dir, *, cach
             date_from=_iso_or_empty(scope.start),
             date_to=_iso_or_empty(scope.end),
             election_cycle=cycle,
-            sort_by=sort_by,
-            sort_dir=sort_dir,
         )
 
     return _cached_build(
-        _state_races_cache, _state_races_cache_key(scope, cycle, sort_by, sort_dir), build, ttl_seconds,
+        _state_races_cache, _state_races_cache_key(scope, cycle), build, ttl_seconds,
         cache_enabled=cache_enabled, refresh=refresh,
     )
+
+
+_PREVIEW_ROWS = 12
+
+
+def _state_race_previews(rows: list[dict]) -> dict[str, dict]:
+    """``{"<field>:<dir>": {"rows": first 12, "nonzero_below_visible": bool}}`` for every sort
+    order of Top State Races, computed once per overview build (plan N3): a header click is then
+    a cache hit that picks its variant."""
+    previews: dict[str, dict] = {}
+    for field in _STATE_RACE_SORTS:
+        for direction in ("desc", "asc"):
+            ordered = sort_state_race_rows(rows, field, direction)
+            visible, hidden = ordered[:_PREVIEW_ROWS], ordered[_PREVIEW_ROWS:]
+            visible_nonzero = any(float(row.get("outside_spending_total") or 0.0) > 0.0 for row in visible)
+            hidden_nonzero = any(float(row.get("outside_spending_total") or 0.0) > 0.0 for row in hidden)
+            previews[f"{field}:{direction}"] = {
+                "rows": visible,
+                "nonzero_below_visible": bool(visible) and not visible_nonzero and hidden_nonzero,
+            }
+    return previews
+
+
+def _state_race_sort_links(sort_by: str, sort_dir: str) -> dict[str, str]:
+    """Header-link targets of the preview: the current request with ``state_race_sort`` /
+    ``state_race_dir`` replaced (the active column flips its direction; numeric columns descend
+    first, the race name ascends first), anchored at the table. One-shot actions never carry."""
+    dropped = {"state_race_sort", "state_race_dir", "refresh_cache", "refresh_full", "sync_full"}
+    base = {
+        key: value for key, value in request.args.to_dict().items()
+        if key not in dropped and not key.startswith("_")
+    }
+    links: dict[str, str] = {}
+    for field in _STATE_RACE_SORTS:
+        if field == sort_by:
+            direction = "asc" if sort_dir == "desc" else "desc"
+        else:
+            direction = "asc" if field == "race" else "desc"
+        links[field] = url_for(
+            "analytics.dashboard", state_race_sort=field, state_race_dir=direction, _anchor="top-state-races", **base
+        )
+    return links
 
 
 def _state_race_detail_cache_key(race_key: str, scope, election_cycle: int | None) -> tuple:
@@ -601,8 +645,10 @@ def _get_state_race_detail_cached(conn, race_key, scope, election_cycle, *, cach
     return detail
 
 
-def _overview_cache_key(filters: dict, state_race_cycle: int, state_race_sort: str, state_race_dir: str) -> tuple:
+def _overview_cache_key(filters: dict, state_race_cycle: int) -> tuple:
     """Key of the /analytics/ payload: the revision plus every input build_overview reads.
+
+    Not the race sort: the payload holds the top twelve of every sort order (plan N3).
 
     Quick and full mode get separate entries, and the geo limits count only in full mode (in
     quick mode the geo section is the empty placeholder whatever they are).
@@ -620,8 +666,6 @@ def _overview_cache_key(filters: dict, state_race_cycle: int, state_race_sort: s
         filters["months"],
         filters["nlp_limit"],
         state_race_cycle,
-        state_race_sort,
-        state_race_dir,
         filters["recon_limit"],
         round(filters["recon_min_abs_diff"], 2),
         filters["full_mode_requested"],
@@ -646,7 +690,7 @@ def dashboard():
     refresh_requested = request.args.get("refresh_cache", 0, type=int) == 1
     election_cycle = request.args.get("election_cycle", type=int)
     state_race_cycle = _state_race_cycle(filters["time_scope"], election_cycle)
-    cache_key = _overview_cache_key(filters, state_race_cycle, state_race_sort, state_race_dir)
+    cache_key = _overview_cache_key(filters, state_race_cycle)
     now = time.monotonic()
 
     def build_overview() -> dict:
@@ -709,33 +753,20 @@ def dashboard():
             }
 
         # One cached build of every race, shared with /analytics/state-races/; the
-        # overview shows its first 12 rows.
+        # overview keeps the first 12 rows of EVERY sort order (plan N3).
         state_race_all_rows = _get_state_race_rows(
             conn,
             filters["time_scope"],
             state_race_cycle,
-            state_race_sort,
-            state_race_dir,
             cache_enabled=cache_enabled,
             refresh=refresh_requested,
             ttl_seconds=overview_cache_ttl,
         )
-        visible_rows = state_race_all_rows[:12]
-        hidden_rows = state_race_all_rows[12:]
-        visible_has_nonzero_outside = any(
-            float(row.get("outside_spending_total") or 0.0) > 0.0 for row in visible_rows
-        )
-        hidden_has_nonzero_outside = any(
-            float(row.get("outside_spending_total") or 0.0) > 0.0 for row in hidden_rows
-        )
         return {
             **sections,
-            "state_race_analytics": visible_rows,
+            "state_race_previews": _state_race_previews(state_race_all_rows),
             "state_race_total": len(state_race_all_rows),
             "state_race_table_available": bool(state_race_all_rows) or _state_race_tables_available(conn),
-            "state_race_nonzero_below_visible": (
-                bool(visible_rows) and (not visible_has_nonzero_outside) and hidden_has_nonzero_outside
-            ),
         }
 
     overview = _cached_build(
@@ -750,10 +781,14 @@ def dashboard():
     time_series = overview["time_series"]
     nlp_summary = overview["nlp_summary"]
     reconciliation = overview["reconciliation"]
-    state_race_analytics = overview["state_race_analytics"]
+    # The sort picks a pre-sorted twelve out of the cached payload: no rebuild, no mutation.
+    preview = overview["state_race_previews"].get(f"{state_race_sort}:{state_race_dir}") or {
+        "rows": [], "nonzero_below_visible": False,
+    }
+    state_race_analytics = preview["rows"]
     state_race_total = overview["state_race_total"]
     state_race_table_available = overview["state_race_table_available"]
-    state_race_nonzero_below_visible = overview.get("state_race_nonzero_below_visible", False)
+    state_race_nonzero_below_visible = preview["nonzero_below_visible"]
 
     latest_time_point = time_series[-1] if time_series else None
 
@@ -775,6 +810,7 @@ def dashboard():
         show_state_race_cycle=state_race_cycle != _window_cycle(filters["time_scope"]),
         state_race_sort=state_race_sort,
         state_race_dir=state_race_dir,
+        state_race_sort_links=_state_race_sort_links(state_race_sort, state_race_dir),
         state_race_nonzero_below_visible=state_race_nonzero_below_visible,
         election_cycle=election_cycle,
     )
@@ -789,16 +825,14 @@ def state_races():
     sort_by, sort_dir = _state_race_sort_args("sort", "dir")
     election_cycle = request.args.get("election_cycle", type=int)
     state_race_cycle = _state_race_cycle(scope, election_cycle)
-    rows = _get_state_race_rows(
+    rows = sort_state_race_rows(_get_state_race_rows(
         conn,
         scope,
         state_race_cycle,
-        sort_by,
-        sort_dir,
         cache_enabled=bool(current_app.config.get("ROUTE_PERF_CACHE_ENABLED", not current_app.config.get("TESTING", False))),
         refresh=request.args.get("refresh_cache", 0, type=int) == 1,
         ttl_seconds=max(15, int(current_app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
-    )
+    ), sort_by, sort_dir)
     # Activity (plan J-R2) = receipts or Part-9 outside spending in the window. D-2 totals
     # are not windowed, so a race with only a D-2 total stays unlinked.
     race_rows = [
@@ -1297,8 +1331,6 @@ def warm_analytics_caches(
     default_geo_state_limit = 15
     default_geo_city_limit = 25
     default_nlp_limit = 20
-    default_state_race_sort = "total_amount"
-    default_state_race_dir = "desc"
     default_election_cycle = None  # request.args.get("election_cycle", type=int) → None by default
 
     # Default relationship params
@@ -1405,12 +1437,7 @@ def warm_analytics_caches(
             "geo_state_limit": default_geo_state_limit,
             "geo_city_limit": default_geo_city_limit,
         }
-        cache_key = _overview_cache_key(
-            window_filters,
-            _state_race_cycle(scope, default_election_cycle),
-            default_state_race_sort,
-            default_state_race_dir,
-        )
+        cache_key = _overview_cache_key(window_filters, _state_race_cycle(scope, default_election_cycle))
 
         def build_overview() -> dict:
             network = get_network_graph(
@@ -1443,20 +1470,9 @@ def warm_analytics_caches(
                 conn,
                 scope,
                 default_election_cycle,
-                default_state_race_sort,
-                default_state_race_dir,
                 cache_enabled=True,
                 refresh=False,
                 ttl_seconds=overview_ttl,
-            )
-            state_race_analytics = state_race_all_rows[:12]
-            visible_has_nonzero_outside = any(
-                float(row.get("outside_spending_total") or 0.0) > 0.0
-                for row in state_race_analytics
-            )
-            hidden_has_nonzero_outside = any(
-                float(row.get("outside_spending_total") or 0.0) > 0.0
-                for row in state_race_all_rows[12:]
             )
             return {
                 "network": network,
@@ -1466,14 +1482,9 @@ def warm_analytics_caches(
                 "time_series": time_series,
                 "nlp_summary": nlp_summary,
                 "reconciliation": reconciliation,
-                "state_race_analytics": state_race_analytics,
+                "state_race_previews": _state_race_previews(state_race_all_rows),
                 "state_race_total": len(state_race_all_rows),
                 "state_race_table_available": bool(state_race_all_rows) or _state_race_tables_available(conn),
-                "state_race_nonzero_below_visible": (
-                    bool(state_race_analytics)
-                    and (not visible_has_nonzero_outside)
-                    and hidden_has_nonzero_outside
-                ),
             }
 
         _overview_cache.get_or_compute(cache_key, build_overview, overview_ttl)
@@ -1494,8 +1505,6 @@ def warm_analytics_caches(
             conn,
             scope,
             default_election_cycle,
-            default_state_race_sort,
-            default_state_race_dir,
             cache_enabled=True,
             refresh=False,
             ttl_seconds=overview_ttl,
