@@ -1,7 +1,8 @@
 /* Vendor network view of an entity's network (plan step 8, Phase A): a two-column bipartite graph in plain SVG
    from network.json?view=vendor_network -- the entity's committees and independent spenders on the left, the
    vendors they pay and the candidates they support or oppose on the right. Vendors paid by two or more of the
-   entity's committees are highlighted as shared. */
+   entity's committees are highlighted as shared. Line and node colours come from the site-wide style map
+   (js/graph_legend.js); the key under the graph (ctx.keyBox) explains them. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
@@ -23,8 +24,10 @@
         return max > 0 ? 5 + 13 * Math.sqrt(Math.max(amount, 0) / max) : 5;
     }
 
-    window.EntityViews.vendor_network = function (container, data) {
+    window.EntityViews.vendor_network = function (container, data, ctx) {
         container.innerHTML = "";
+        var keyBox = ctx && ctx.keyBox, definitions = ctx && ctx.definitions;
+        window.renderGraphKey(keyBox);  // no options: empties the key until the graph below has drawn
         if (!data.edges || !data.edges.length) {
             container.textContent = "No vendor payments or independent expenditures in this window.";
             return;
@@ -54,11 +57,11 @@
             var s = pos[edge.source], t = pos[edge.target];
             if (!s || !t) { return; }
             var ie = edge.edge_type === "independent_expenditure";
+            var style = window.GraphKey.edgeStyle(edge);
             var line = el("line", {
-                x1: s.x, y1: s.y, x2: t.x, y2: t.y,
-                stroke: ie ? (edge.support_oppose === "S" ? "#38a169" : "#e53e3e") : "#dd6b20",
+                x1: s.x, y1: s.y, x2: t.x, y2: t.y, stroke: style.color,
                 "stroke-width": Math.max(1, 10 * Math.sqrt(edge.weight / maxWeight)), "stroke-opacity": 0.5,
-                "stroke-dasharray": ie ? "6 4" : null
+                "stroke-dasharray": style.dash
             });
             var side = ie ? (edge.support_oppose === "S" ? " supporting " : " opposing ") : " → ";
             line.appendChild(el("title", {}, labels[edge.source] + side + labels[edge.target] + ": " + money(edge.weight)
@@ -67,11 +70,9 @@
         });
         data.nodes.forEach(function (node) {
             var p = pos[node.id], shared = node.shared === true;
-            var fill = node.node_type === "vendor" ? (shared ? "#f6ad55" : "#fbd38d")
-                : node.node_type === "candidate" ? "#68d391" : node.role === "entity" ? "#2b6cb0" : "#9f7aea";
             var g = el("g", { "class": "vendor-network-node" + (shared ? " shared" : "") });
-            g.appendChild(el("circle", { cx: p.x, cy: p.y, r: radius(node.total_amount, maxAmount), fill: fill,
-                                         stroke: shared ? "#c05621" : "#fff", "stroke-width": shared ? 3 : 1 }));
+            g.appendChild(el("circle", { cx: p.x, cy: p.y, r: radius(node.total_amount, maxAmount), fill: window.GraphKey.nodeStyle(node).color,
+                                         stroke: shared ? "#1a202c" : "#fff", "stroke-width": shared ? 3 : 1 }));
             var left = node.side === "payer";
             var caption = node.label.length > 30 ? node.label.slice(0, 29) + "…" : node.label;
             if (shared) { caption += " (shared by " + node.committee_count + ")"; }
@@ -88,7 +89,9 @@
         note.textContent = (data.shared_vendors.length
             ? data.shared_vendors.length + " vendor(s) paid by two or more of the entity's committees are outlined. "
             : "No vendor is shared by two of the entity's committees. ")
-            + "Solid: payments to vendors; dashed: independent expenditures supporting (green) or opposing (red) a candidate.";
+            + "The key below explains the lines.";
         container.appendChild(note);
+        window.renderGraphKey(keyBox, { edgeTypes: window.GraphKey.styleKeys(data.edges), definitions: definitions,
+                                        nodeTypes: data.nodes.map(window.GraphKey.nodeKey) });
     };
 })();

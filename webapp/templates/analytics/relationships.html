@@ -92,6 +92,7 @@
         </div>
         <aside id="donor-cogiving-panel" class="graph-selection-panel"></aside>
     </div>
+    <div class="graph-key" id="donor-cogiving-key"></div>
     <p id="donor-cogiving-summary" class="subtitle"></p>
     <p class="help-text"><strong>How to read:</strong> Donor A and Donor B are two donors connected because they gave to overlapping targets. Shared Amount is the summed overlap across those shared targets.</p>
     <table id="donor-cogiving-table" class="data-table">
@@ -161,6 +162,7 @@
         </div>
         <aside id="committee-similarity-panel" class="graph-selection-panel"></aside>
     </div>
+    <div class="graph-key" id="committee-similarity-key"></div>
     <p id="committee-similarity-summary" class="subtitle"></p>
     <p class="help-text"><strong>How to read:</strong> Committee A and Committee B are linked when they draw money from overlapping donors. Jaccard measures overlap breadth; Dollar Overlap indicates overlap intensity.</p>
     <table id="committee-similarity-table" class="data-table">
@@ -225,6 +227,7 @@
             <div id="candidate-state-matrix" class="graph-mode-matrix"></div>
             <aside id="candidate-state-panel" class="graph-selection-panel"></aside>
         </div>
+        <div class="graph-key" id="candidate-state-key"></div>
         <p id="candidate-state-summary" class="subtitle"></p>
         <p class="help-text"><strong>How to read:</strong> Candidate A and Candidate B are connected when they share donor entities. Shared Amount is combined overlap from those shared donors.</p>
         <div id="candidate-state-ranked" class="graph-ranked"></div>
@@ -279,6 +282,7 @@
             <div id="candidate-federal-matrix" class="graph-mode-matrix"></div>
             <aside id="candidate-federal-panel" class="graph-selection-panel"></aside>
         </div>
+        <div class="graph-key" id="candidate-federal-key"></div>
         <p id="candidate-federal-summary" class="subtitle"></p>
         <p class="help-text"><strong>How to read:</strong> Candidate A and Candidate B are linked by shared donor entities in federal data under the current filters.</p>
         <div id="candidate-federal-ranked" class="graph-ranked"></div>
@@ -334,6 +338,7 @@
             <div id="candidate-combined-matrix" class="graph-mode-matrix"></div>
             <aside id="candidate-combined-panel" class="graph-selection-panel"></aside>
         </div>
+        <div class="graph-key" id="candidate-combined-key"></div>
         <p id="candidate-combined-summary" class="subtitle"></p>
         <p class="help-text"><strong>How to read:</strong> Combined table splits overlap by source: State Share, Federal Share, and Cross Share show where shared funding relationships come from.</p>
         <div id="candidate-combined-ranked" class="graph-ranked"></div>
@@ -413,6 +418,7 @@
         </div>
         <aside id="lobbying-influence-panel" class="graph-selection-panel"></aside>
     </div>
+    <div class="graph-key" id="lobbying-influence-key"></div>
     <p id="lobbying-influence-summary" class="subtitle"></p>
     <table id="lobbying-influence-table" class="data-table">
         <thead>
@@ -477,6 +483,7 @@
         </div>
         <aside id="ecosystem-527-panel" class="graph-selection-panel"></aside>
     </div>
+    <div class="graph-key" id="ecosystem-527-key"></div>
     <p id="ecosystem-527-summary" class="subtitle"></p>
     <table id="ecosystem-527-table" class="data-table">
         <thead>
@@ -516,5 +523,6 @@
 <script id="candidate-combined-data" type="application/json">{{ candidate_competition.combined|tojson }}</script>
 <script id="lobbying-influence-data" type="application/json">{{ lobbying_influence|tojson }}</script>
 <script id="ecosystem-527-data" type="application/json">{{ ecosystem_527|tojson }}</script>
-<script src="{{ url_for('static', filename='js/relationship_graphs.js') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_legend.js', v='20261028-2') }}"></script>
+<script src="{{ url_for('static', filename='js/relationship_graphs.js', v='20261028-2') }}"></script>
 {% endblock %}

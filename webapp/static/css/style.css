@@ -2103,3 +2103,54 @@ h2 {
 .entity-network-graph svg text {
     fill: #2d3748;
 }
+
+/* Graph key (plan race-sort-and-entity-networks, N18): one key under every graph, built by js/graph_legend.js */
+.graph-key {
+    margin: 0 0 0.75rem;
+    font-size: 0.82rem;
+    color: #334155;
+}
+
+.graph-key:empty {
+    display: none;
+}
+
+.graph-key-heading {
+    margin: 0.4rem 0 0.2rem;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.graph-key-lines,
+.graph-key-nodes {
+    list-style: none;
+}
+
+.graph-key-lines .graph-key-item {
+    margin: 0.2rem 0;
+}
+
+.graph-key-nodes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+}
+
+.graph-key-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.1rem 0.5rem;
+}
+
+.graph-key-swatch {
+    flex: none;
+}
+
+.graph-key-label {
+    font-weight: 600;
+}
+
+.graph-key-meaning {
+    color: #64748b;
+}

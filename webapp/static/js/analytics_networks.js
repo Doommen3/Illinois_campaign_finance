@@ -40,13 +40,12 @@
         return Math.abs(h);
     };
 
-    const typeColor = {
-        donor: "#2563eb", committee: "#059669", candidate: "#dc2626",
-        vendor: "#d97706", lobbying_client: "#7c3aed", lobbying_entity: "#a855f7",
-        matched_donor: "#6366f1", matched_payee: "#0891b2",
-        irs527_org: "#be185d", director: "#ea580c", recipient_target: "#ef4444",
-        local_committee: "#059669", federal_committee: "#0284c7",
-    };
+    // Node and edge colours, and the key printed under each graph, come from graph_legend.js (loaded first): one
+    // style map for every graph on the site. drawKey(id, options) fills the .graph-key container with that id
+    // (no options: empties it; no id: the graph has no key).
+    const { GRAPH_STYLES, GRAPH_NODE_STYLES, GraphKey } = window;
+    const typeColor = Object.fromEntries(Object.entries(GRAPH_NODE_STYLES).map(([type, style]) => [type, style.color]));
+    const drawKey = (keyId, options) => { if (keyId) window.renderGraphKey(document.getElementById(keyId), options); };
     const regionColors = {
         "Chicago Metro": "#0ea5e9", "Collar Counties": "#22c55e",
         "Central Illinois": "#f59e0b", "Southern Illinois": "#ef4444",
@@ -589,6 +588,7 @@
     const renderForceGraph = (svg, summaryEl, nodes, edges, colorFn, opts = {}) => {
         clearSvg(svg);
         const { width, height } = viewBoxSize(svg);
+        drawKey(opts.keyId);
         if (!nodes.length || !edges.length) {
             drawEmpty(svg, opts.emptyMsg || "No data available for this visualization.");
             if (summaryEl) summaryEl.textContent = "";
@@ -619,12 +619,14 @@
             const s = localById.get(e.source), t = localById.get(e.target);
             if (!s || !t) continue;
             const meta = edgeMeta(e);
+            const style = GraphKey.edgeStyle(e);
             const line = createSvgEl("line", {
                 x1: s.x.toFixed(2), y1: s.y.toFixed(2),
                 x2: t.x.toFixed(2), y2: t.y.toFixed(2),
-                stroke: "#94a3b8", "stroke-opacity": "0.42",
+                stroke: style.color, "stroke-opacity": "0.42",
                 "stroke-width": String(Math.max(0.8, Math.log10((e.weight || 1) + 1))),
             });
+            if (style.dash) line.setAttribute("stroke-dasharray", style.dash);
             line.dataset.source = e.source;
             line.dataset.target = e.target;
             const title = createSvgEl("title");
@@ -668,6 +670,11 @@
 
         setupClickToLock(svg, nodeEls, labelEls, edgeEls, adjacency, localById, opts.infoPanelId, filtered.edges);
         setupZoomPan(svg);
+        drawKey(opts.keyId, {
+            edgeTypes: GraphKey.styleKeys(filtered.edges),
+            definitions: opts.definitions,
+            nodeTypes: filtered.nodes.map(opts.nodeSpec || ((n) => ({ type: n.node_type, color: colorFn(n) }))),
+        });
         if (summaryEl) {
             const modeLabel = densityMode === "focus" ? "Strongest links" : densityMode === "full" ? "Full detail" : "Balanced";
             if (filtered.filtered) {
@@ -727,6 +734,9 @@
             emptyMsg: "No network data. Switch to Full mode.",
             infoPanelId: "network-info-panel",
             densityMode: getDensityMode(),
+            keyId: "network-key",
+            definitions: networkData.summary?.edge_type_definitions,
+            nodeSpec: mode === "region" ? (n) => ({ type: n.region, label: n.region, color: colorFn(n) }) : undefined,
         });
         // Toggle description text based on mode
         const descEl = document.getElementById("network-description");
@@ -808,6 +818,7 @@
         const topCommittees = committees.filter((c) => connectedCommittees.has(c.id)).sort((a, b) => (committeeTotals.get(b.id) || 0) - (committeeTotals.get(a.id) || 0)).slice(0, 20);
         const topCommitteeIds = new Set(topCommittees.map((c) => c.id));
 
+        drawKey("sankey-key");
         if (!topDonors.length || !topCommittees.length) {
             drawEmpty(sankeySvg, "Not enough data for Sankey flow.");
             return;
@@ -840,7 +851,7 @@
             const cx1 = donorX + nodeWidth + 80, cx2 = committeeX - 80;
             sankeySvg.appendChild(createSvgEl("path", {
                 d: `M ${donorX + nodeWidth} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${committeeX} ${y2}`,
-                fill: "none", stroke: "#2563eb", "stroke-width": span, "stroke-opacity": "0.3",
+                fill: "none", stroke: GRAPH_STYLES.donor_committee.color, "stroke-width": span, "stroke-opacity": "0.3",
             }));
         }
 
@@ -860,7 +871,7 @@
             const cx1 = committeeX + nodeWidth + 80, cx2 = candidateX - 80;
             sankeySvg.appendChild(createSvgEl("path", {
                 d: `M ${committeeX + nodeWidth} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${candidateX} ${y2}`,
-                fill: "none", stroke: "#dc2626", "stroke-width": span, "stroke-opacity": "0.3",
+                fill: "none", stroke: GRAPH_STYLES.committee_candidate.color, "stroke-width": span, "stroke-opacity": "0.3",
             }));
         }
 
@@ -888,6 +899,11 @@
         drawText(sankeySvg, committeeX + nodeWidth / 2, 18, "Committees", { size: "12px", weight: "600", color: "#0f172a" });
         drawText(sankeySvg, candidateX + nodeWidth / 2, 18, "Candidates", { size: "12px", weight: "600", color: "#0f172a" });
 
+        drawKey("sankey-key", {
+            edgeTypes: [sortedDC.length ? "donor_committee" : "", sortedCC.length ? "committee_candidate" : ""],
+            nodeTypes: ["donor", "committee", "candidate"].map((type) => ({ type, shape: "square" })),
+            definitions: networkData.summary?.edge_type_definitions,
+        });
         if (sankeySummary) sankeySummary.textContent = `Sankey: ${topDonors.length} donors \u2192 ${topCommittees.length} committees \u2192 ${topCandidates.length} candidates`;
     };
 
@@ -1022,6 +1038,11 @@
             charge: 3000, spring: 0.012, iterations: 200,
             infoPanelId: "vendor-info-panel",
             densityMode: getDensityMode(),
+            keyId: "vendor-key",
+            definitions: vendorData.summary?.edge_type_definitions,
+            nodeSpec: (n) => (n.is_lobbying_match
+                ? { type: "lobbying_match", label: "Vendor matched to lobbying records", color: colorFn(n) }
+                : { type: n.node_type, color: colorFn(n) }),
         });
     };
 
@@ -1080,6 +1101,7 @@
         const vendorNodes = (vendorData?.nodes || []).filter((n) => n.node_type === "vendor" && vendorTotals.has(n.id));
         const topVendors = vendorNodes.sort((a, b) => (vendorTotals.get(b.id) || 0) - (vendorTotals.get(a.id) || 0)).slice(0, maxVendors);
 
+        drawKey("combined-key");
         if (!topDonors.length || !topCommittees.length) {
             drawEmpty(combinedSvg, "Not enough data for combined flow.");
             return;
@@ -1097,6 +1119,7 @@
 
         // Ribbons: donor -> committee (blue)
         const dOff = new Map(), cOffL = new Map(), cOffR = new Map(), caOff = new Map(), vOff = new Map();
+        const drawn = new Set(); // edge types with at least one ribbon, for the key
         for (const [key, weight] of Array.from(dcFlows.entries()).sort((a, b) => b[1] - a[1])) {
             const [did, cid] = key.split("|");
             if (!topDonorIds.has(did) || !topCommitteeIds.has(cid)) continue;
@@ -1108,11 +1131,12 @@
             cOffL.set(cid, (cOffL.get(cid) || 0) + span);
             combinedSvg.appendChild(createSvgEl("path", {
                 d: `M ${col1X + nodeWidth} ${y1} C ${col1X + 60} ${y1}, ${col2X - 60} ${y2}, ${col2X} ${y2}`,
-                fill: "none", stroke: "#2563eb", "stroke-width": span, "stroke-opacity": "0.25",
+                fill: "none", stroke: GRAPH_STYLES.donor_committee.color, "stroke-width": span, "stroke-opacity": "0.25",
             }));
+            drawn.add("donor_committee");
         }
 
-        // Ribbons: committee -> candidate (red)
+        // Ribbons: committee -> candidate
         const topCandidateIds = new Set(topCandidates.map((c) => c.id));
         for (const [key, weight] of Array.from(ccFlows.entries()).sort((a, b) => b[1] - a[1])) {
             const [cid, caid] = key.split("|");
@@ -1125,8 +1149,9 @@
             caOff.set(caid, (caOff.get(caid) || 0) + span);
             combinedSvg.appendChild(createSvgEl("path", {
                 d: `M ${col2X + nodeWidth} ${y1} C ${col2X + 60} ${y1}, ${col3X - 60} ${y2}, ${col3X} ${y2}`,
-                fill: "none", stroke: "#dc2626", "stroke-width": span, "stroke-opacity": "0.25",
+                fill: "none", stroke: GRAPH_STYLES.committee_candidate.color, "stroke-width": span, "stroke-opacity": "0.25",
             }));
+            drawn.add("committee_candidate");
         }
 
         // Ribbons: committee -> vendor (amber)
@@ -1141,8 +1166,9 @@
             vOff.set(vid, (vOff.get(vid) || 0) + span);
             combinedSvg.appendChild(createSvgEl("path", {
                 d: `M ${col2X + nodeWidth} ${y1} C ${col3X} ${y1}, ${col4X - 80} ${y2}, ${col4X} ${y2}`,
-                fill: "none", stroke: "#d97706", "stroke-width": span, "stroke-opacity": "0.25",
+                fill: "none", stroke: GRAPH_STYLES.committee_vendor.color, "stroke-width": span, "stroke-opacity": "0.25",
             }));
+            drawn.add("committee_vendor");
         }
 
         // Node bars
@@ -1156,6 +1182,12 @@
         drawText(combinedSvg, col3X, 18, "Candidates", { size: "11px", weight: "600" });
         drawText(combinedSvg, col4X, 18, "Vendors", { size: "11px", weight: "600" });
 
+        drawKey("combined-key", {
+            edgeTypes: Array.from(drawn),
+            nodeTypes: ["donor", "committee", "candidate", "vendor"].filter((type) => type !== "vendor" || topVendors.length)
+                .map((type) => ({ type, shape: "square" })),
+            definitions: { ...vendorData?.summary?.edge_type_definitions, ...networkData.summary?.edge_type_definitions },
+        });
         if (combinedSummary) combinedSummary.textContent = `Combined flow: ${topDonors.length} donors, ${topCommittees.length} committees, ${topCandidates.length} candidates, ${topVendors.length} vendors`;
     };
 
@@ -1194,6 +1226,8 @@
             anchorFn, anchorStrength: 0.015, charge: 3500, spring: 0.01,
             infoPanelId: "overlap-info-panel",
             densityMode: getDensityMode(),
+            keyId: "overlap-key",
+            definitions: overlapData.summary?.edge_type_definitions,
         });
     };
 
@@ -1219,6 +1253,8 @@
             charge: 3000, spring: 0.012,
             infoPanelId: "lobbying-info-panel",
             densityMode: getDensityMode(),
+            keyId: "lobbying-key",
+            definitions: lobbyingData.summary?.edge_type_definitions,
         });
     };
 
@@ -1244,6 +1280,8 @@
             charge: 3000, spring: 0.012,
             infoPanelId: "darkmoney-info-panel",
             densityMode: getDensityMode(),
+            keyId: "darkmoney-key",
+            definitions: darkMoneyData.summary?.edge_type_definitions,
         });
     };
 
@@ -1271,10 +1309,10 @@
     };
     const outgoingTypeOrder = { committee: 0, candidate: 1, vendor: 2, donor: 3, other: 99 };
     const outgoingTypeColor = {
-        committee: "#059669",
-        candidate: "#dc2626",
-        vendor: "#d97706",
-        donor: "#2563eb",
+        committee: typeColor.committee,
+        candidate: typeColor.candidate,
+        vendor: typeColor.vendor,
+        donor: typeColor.donor,
         other: "#64748b",
     };
     const inferFocusTypeFromNodeId = (nodeId) => {
@@ -1462,6 +1500,7 @@
         const graph = buildFocusCentricGraph(rawData, { topN, groupSmall, splitOutgoingByType: splitByType });
         const tooltip = ensureSankeyTooltip();
         hideSankeyTooltip(tooltip);
+        drawKey("custom-sankey-key");
 
         if (!graph || (!graph.incoming_nodes.length && !graph.outgoing_nodes.length)) {
             drawEmpty(customSankeySvg, rawData && rawData.error ? rawData.error : "No connected nodes found for this entity.");
@@ -1647,6 +1686,13 @@
             drawText(customSankeySvg, rightX + sideNodeW + 7, box.y + box.h / 2 + 3, shortLabel(row.label, 28), { anchor: "start", size: "9px", color: "#1e293b" });
         }
 
+        // The flows are drawn by direction, not edge type; the key names the per-type colours of the outgoing column.
+        if (splitByType) {
+            const outgoingTypes = Array.from(new Set(outgoingNodes.map((row) => row.node_type)));
+            drawKey("custom-sankey-key", {
+                nodeTypes: outgoingTypes.map((type) => ({ type, label: focusTypeLabel[type] || type, color: outgoingTypeColor[type] || "#ea580c", shape: "square" })),
+            });
+        }
         if (customSankeySummary) {
             const minAmount = Number(customSankeyMinAmount?.value || 0);
             const shownNodes = 1 + incomingNodes.length + outgoingNodes.length;
@@ -1687,6 +1733,7 @@
                 clearCustomDisambiguation();
                 fetchAndRenderCustomSankey();
             });
+            drawKey("custom-sankey-key");
             drawEmpty(customSankeySvg, "Multiple matches found. Choose one entity above.");
             return true;
         } catch {
@@ -1733,6 +1780,7 @@
             const data = await response.json();
             renderFocusCentricSankey(data);
         } catch {
+            drawKey("custom-sankey-key");
             drawEmpty(customSankeySvg, "Error loading data. Please try again.");
             if (customSankeySummary) customSankeySummary.textContent = "";
         }

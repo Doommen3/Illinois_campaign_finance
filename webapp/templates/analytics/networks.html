@@ -109,14 +109,6 @@
     <div class="tab-panels">
         <div class="tab-panel panel-force">
             <p id="network-description" class="help-text">Power Players view: top nodes by contribution volume and their direct connections. Committee-&gt;candidate links show committee receipts associated with a candidate committee link, with estimated donor provenance where available.</p>
-            <div class="network-color-legend" style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem;font-size:0.8rem;">
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2563eb;margin-right:3px;"></span>Donor</span>
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#059669;margin-right:3px;"></span>Committee</span>
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#dc2626;margin-right:3px;"></span>Candidate</span>
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#d97706;margin-right:3px;"></span>Vendor</span>
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#7c3aed;margin-right:3px;"></span>Lobbying</span>
-                <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#be185d;margin-right:3px;"></span>527 Org</span>
-            </div>
             <div class="network-controls">
                 <label for="network-view-mode">View</label>
                 <select id="network-view-mode">
@@ -132,6 +124,7 @@
             <div class="network-svg-wrap">
                 <svg id="network-svg" viewBox="0 0 1200 700" role="img" aria-label="Interactive force-directed network graph"></svg>
             </div>
+            <div class="graph-key network-color-legend" id="network-key"></div>
             <div id="network-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p class="help-text">Node detail panels show relationship type, metric units, and edge-level notes (including estimated donor source attribution on committee-candidate edges).</p>
             <p id="network-summary" class="subtitle"></p>
@@ -157,6 +150,7 @@
             <div class="network-svg-wrap">
                 <svg id="sankey-svg" viewBox="0 0 980 560" role="img" aria-label="Sankey flow diagram"></svg>
             </div>
+            <div class="graph-key" id="sankey-key"></div>
             <p id="sankey-summary" class="subtitle"></p>
         </div>
 
@@ -188,6 +182,7 @@
             <div class="network-svg-wrap">
                 <svg id="vendor-svg" viewBox="0 0 1200 700" role="img" aria-label="Vendor expenditure network"></svg>
             </div>
+            <div class="graph-key" id="vendor-key"></div>
             <div id="vendor-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="vendor-summary" class="subtitle"></p>
         </div>
@@ -210,6 +205,7 @@
             <div class="network-svg-wrap">
                 <svg id="combined-flow-svg" viewBox="0 0 980 560" role="img" aria-label="Combined money flow diagram"></svg>
             </div>
+            <div class="graph-key" id="combined-key"></div>
             <p id="combined-summary" class="subtitle"></p>
         </div>
 
@@ -218,6 +214,7 @@
             <div class="network-svg-wrap">
                 <svg id="overlap-svg" viewBox="0 0 1200 700" role="img" aria-label="State-federal donor overlap"></svg>
             </div>
+            <div class="graph-key" id="overlap-key"></div>
             <div id="overlap-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="overlap-summary" class="subtitle"></p>
         </div>
@@ -227,6 +224,7 @@
             <div class="network-svg-wrap">
                 <svg id="lobbying-svg" viewBox="0 0 1200 700" role="img" aria-label="Lobbying-campaign finance bridge"></svg>
             </div>
+            <div class="graph-key" id="lobbying-key"></div>
             <div id="lobbying-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="lobbying-summary" class="subtitle"></p>
         </div>
@@ -236,6 +234,7 @@
             <div class="network-svg-wrap">
                 <svg id="dark-money-svg" viewBox="0 0 1200 700" role="img" aria-label="527 dark money pathway"></svg>
             </div>
+            <div class="graph-key" id="darkmoney-key"></div>
             <div id="darkmoney-info-panel" class="graph-selection-panel" style="display:none"></div>
             <p id="darkmoney-summary" class="subtitle"></p>
         </div>
@@ -285,6 +284,7 @@
             <div class="network-svg-wrap">
                 <svg id="custom-sankey-svg" viewBox="0 0 980 560" role="img" aria-label="Custom Sankey flow diagram"></svg>
             </div>
+            <div class="graph-key" id="custom-sankey-key"></div>
             <p id="custom-sankey-summary" class="subtitle"></p>
         </div>
     </div>
@@ -295,7 +295,8 @@
     <script id="lobbying-graph-data" type="application/json">{{ lobbying_graph|tojson }}</script>
     <script id="ecosystem-527-data" type="application/json">{{ ecosystem_527|tojson }}</script>
     <script src="{{ url_for('static', filename='js/autocomplete.js', v='20260224-1') }}"></script>
-    <script src="{{ url_for('static', filename='js/analytics_networks.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/graph_legend.js', v='20261028-2') }}"></script>
+    <script src="{{ url_for('static', filename='js/analytics_networks.js', v='20261028-2') }}"></script>
     {% else %}
     {% if full_mode_requested %}
     <p>Full-mode snapshot is not ready yet.</p>

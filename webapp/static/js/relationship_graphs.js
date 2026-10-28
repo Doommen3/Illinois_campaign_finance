@@ -85,41 +85,15 @@
         },
     ];
 
-    const edgeTypeColors = {
-        donor_cogiving: "#64748b",
-        committee_similarity: "#0f766e",
-        candidate_competition: "#1d4ed8",
-        client_entity: "#7c3aed",
-        client_donor_match: "#2563eb",
-        client_payee_match: "#f59e0b",
-        entity_payee_match: "#d97706",
-        donor_committee_flow: "#059669",
-        payee_committee_match: "#475569",
-        org_committee_match: "#0ea5e9",
-        org_recipient_match: "#0284c7",
-        org_director: "#a16207",
-        director_donor_match: "#4f46e5",
-    };
-
-    const nodeTypeColors = {
-        donor: "#2563eb",
-        matched_donor: "#2563eb",
-        committee: "#059669",
-        candidate: "#dc2626",
-        lobbying_client: "#7c3aed",
-        lobbying_entity: "#8b5cf6",
-        matched_payee: "#f59e0b",
-        irs527_org: "#0284c7",
-        director: "#92400e",
-        recipient_target: "#475569",
-        community: "#334155",
-    };
-
+    // Colours and the key under each graph come from graph_legend.js (loaded first): one style map for every graph
+    // on the site. Candidate-competition graphs colour by system (state / federal / both) instead of by type.
+    const {GRAPH_STYLES, GRAPH_NODE_STYLES, GraphKey} = window;
     const systemColors = {
-        state: "#0369a1",
-        federal: "#b91c1c",
-        cross_system: "#7c3aed",
+        state: GRAPH_STYLES.system_state.color,
+        federal: GRAPH_STYLES.system_federal.color,
+        cross_system: GRAPH_STYLES.system_cross_system.color,
     };
+    const systemNodeLabels = {state: "State candidate", federal: "Federal candidate", cross_system: "Candidate in both systems"};
 
     const runtime = new Map();
 
@@ -182,15 +156,15 @@
         const system = String(node.system || "").toLowerCase();
         if (system && systemColors[system]) return systemColors[system];
         const nodeType = String(node.node_type || "").toLowerCase();
-        return nodeTypeColors[nodeType] || "#334155";
+        return GRAPH_NODE_STYLES[nodeType]?.color || "#334155";
     };
 
-    const edgeColor = (edge) => {
+    const edgeStyleKey = (edge) => {
         const systemMix = String(edge.system_mix || "").toLowerCase();
-        if (systemMix && systemColors[systemMix]) return systemColors[systemMix];
-        const edgeType = String(edge.edge_type || "").toLowerCase();
-        return edgeTypeColors[edgeType] || "#64748b";
+        return systemMix && systemColors[systemMix] ? `system_${systemMix}` : GraphKey.styleKey(edge);
     };
+
+    const edgeColor = (edge) => GRAPH_STYLES[edgeStyleKey(edge)]?.color || "#64748b";
 
     const edgeWidth = (edge, maxWeight) => {
         const weight = Math.max(0, weightValue(edge));
@@ -1569,6 +1543,26 @@
         return {context, size, nodes, edges: edgeRows, maxWeight};
     };
 
+    // The key under a graph lists the edge styles and node kinds of the subset on screen; no subset empties it.
+    const nodeKeySpec = (node, shape) => {
+        const system = String(node.system || "").toLowerCase();
+        return {
+            type: String(node.node_type || "").toLowerCase(),
+            label: systemColors[system] ? systemNodeLabels[system] : undefined,
+            color: nodeColor(node),
+            shape: shape || nodeShape(node),
+        };
+    };
+
+    const renderSpecKey = (spec, subset, graph, state) => {
+        const barShape = state.viewMode === "alluvial" ? "square" : null; // alluvial nodes are bars, not shapes
+        window.renderGraphKey(byId(`${spec.key}-key`), subset ? {
+            edgeTypes: subset.edges.map(edgeStyleKey),
+            definitions: graph.summary?.edge_type_definitions,
+            nodeTypes: subset.nodes.map((node) => nodeKeySpec(node, barShape)),
+        } : undefined);
+    };
+
     const updateSummary = (spec, graph, subset, state, context) => {
         const summary = byId(spec.summaryId);
         if (!summary) return;
@@ -1604,6 +1598,7 @@
         const subset = buildSubset(graph, spec, state);
         const viewMode = String(state.viewMode || "network");
         if (spec.supportsMatrix && viewMode === "matrix") {
+            renderSpecKey(spec, null, graph, state); // the matrix shades cells by amount; it draws no edge types
             renderMatrix(spec, subset, state);
             renderRankedCompetitors(spec, subset);
             updateSummary(spec, graph, subset, state, null);
@@ -1613,6 +1608,7 @@
         }
 
         renderMatrix(spec, subset, state);
+        renderSpecKey(spec, subset.nodes.length && subset.edges.length ? subset : null, graph, state);
         let drawResult;
         if (spec.supportsArc && viewMode === "arc") {
             drawResult = drawArcGraph(spec, subset, state);

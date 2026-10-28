@@ -2,15 +2,11 @@
    network.json?view=ego on a fixed radial layout -- the entity's committees and candidates on an inner ring,
    every neighbour on an outer ring grouped by role. This is the Phase A stand-in: plan step 7 replaces the body
    of this renderer with the shared readable force renderer (webapp/static/js/network_graph.js) and keeps the
-   container (#entity-network-graph) and the data contract. */
+   container (#entity-network-graph) and the data contract. Line and node colours come from the site-wide style map
+   (js/graph_legend.js); the key under the graph (ctx.keyBox) explains them. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
-    var FILL = { committee: "#2b6cb0", candidate: "#68d391", donor: "#63b3ed", vendor: "#f6ad55" };
-    var STROKE = {
-        donor_committee: "#3182ce", in_kind_donor_committee: "#63b3ed", transfer_in: "#805ad5",
-        committee_vendor: "#dd6b20", independent_expenditure: "#38a169", committee_candidate: "#718096"
-    };
     var ROLE_ORDER = ["donor", "transfer_source", "ie_spender", "vendor"];
 
     function el(name, attrs, text) {
@@ -26,8 +22,10 @@
         return "$" + Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    window.EntityViews.ego = function (container, data) {
+    window.EntityViews.ego = function (container, data, ctx) {
         container.innerHTML = "";
+        var keyBox = ctx && ctx.keyBox;
+        window.renderGraphKey(keyBox);  // no options: empties the key until the graph below has drawn
         if (!data.nodes || !data.nodes.length) {
             container.textContent = "No network in this window.";
             return;
@@ -62,10 +60,11 @@
         data.edges.forEach(function (edge) {
             var s = pos[edge.source], t = pos[edge.target];
             if (!s || !t) { return; }
+            var style = window.GraphKey.edgeStyle(edge);
             var line = el("line", {
-                x1: s.x, y1: s.y, x2: t.x, y2: t.y, stroke: STROKE[edge.edge_type] || "#a0aec0",
+                x1: s.x, y1: s.y, x2: t.x, y2: t.y, stroke: style.color,
                 "stroke-width": Math.max(0.75, 8 * Math.sqrt(edge.weight / maxWeight)), "stroke-opacity": 0.45,
-                "stroke-dasharray": edge.support_oppose === "O" ? "6 4" : null
+                "stroke-dasharray": style.dash
             });
             var side = edge.support_oppose ? (edge.support_oppose === "S" ? ", supporting" : ", opposing") : "";
             line.appendChild(el("title", {}, labels[edge.source] + " → " + labels[edge.target] + ": " + money(edge.weight)
@@ -76,7 +75,7 @@
             var p = pos[node.id];
             var r = 4 + 12 * Math.sqrt((node.total_amount || 0) / maxAmount);
             var g = el("g", { "class": "ego-node ego-" + node.role });
-            g.appendChild(el("circle", { cx: p.x, cy: p.y, r: r, fill: FILL[node.node_type] || "#a0aec0",
+            g.appendChild(el("circle", { cx: p.x, cy: p.y, r: r, fill: window.GraphKey.nodeStyle(node).color,
                                          stroke: node.role === "entity" ? "#1a365d" : "#fff", "stroke-width": node.role === "entity" ? 2.5 : 1 }));
             if (labelled[node.id]) {
                 var outside = p.angle !== undefined, right = !outside || Math.cos(p.angle) >= 0;
@@ -94,5 +93,7 @@
         note.textContent = data.nodes.length + " nodes, " + data.edges.length + " edges; the entity's committees and candidates on the inner ring,"
             + " neighbours on the outer ring (donors, transfer sources, independent spenders, vendors). Hover a node or edge for its figures.";
         container.appendChild(note);
+        window.renderGraphKey(keyBox, { edgeTypes: window.GraphKey.styleKeys(data.edges), nodeTypes: data.nodes.map(window.GraphKey.nodeKey),
+                                        definitions: ctx && ctx.definitions });
     };
 })();

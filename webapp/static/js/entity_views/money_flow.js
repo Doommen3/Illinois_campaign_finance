@@ -1,14 +1,11 @@
 /* Money flow view of an entity's network (plan step 8, Phase A): a three-column sankey drawn in plain SVG from
    network.json?view=money_flow -- sources (donor classes, in-kind, transfer sources, independent spenders) on the
    left, the entity's committees and the candidates named by independent spending in the middle, vendors on the
-   right. Band width and node height are proportional to dollars on one shared scale. */
+   right. Band width and node height are proportional to dollars on one shared scale. Band colour and dash come from the
+   site-wide style map (js/graph_legend.js), and the key under the graph (ctx.keyBox) explains them. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
-    var COLORS = {
-        donor_committee: "#3182ce", in_kind_donor_committee: "#63b3ed", transfer_in: "#805ad5",
-        committee_vendor: "#dd6b20", independent_expenditure: "#38a169"
-    };
 
     function el(name, attrs, text) {
         var node = document.createElementNS(NS, name);
@@ -23,8 +20,10 @@
         return "$" + Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
-    window.EntityViews.money_flow = function (container, data) {
+    window.EntityViews.money_flow = function (container, data, ctx) {
         container.innerHTML = "";
+        var keyBox = ctx && ctx.keyBox, definitions = ctx && ctx.definitions;
+        window.renderGraphKey(keyBox);  // no options: empties the key until the graph below has drawn
         if (!data.links || !data.links.length) {
             container.textContent = "No money flows in this window.";
             return;
@@ -64,10 +63,10 @@
             var y0 = s.y + s.out + w / 2, y1 = t.y + t.inn + w / 2;
             s.out += w; t.inn += w;
             var x0 = s.x + nodeW, x1 = t.x, mx = (x0 + x1) / 2;
+            var style = window.GraphKey.edgeStyle(link);
             var path = el("path", {
                 d: "M" + x0 + "," + y0 + " C" + mx + "," + y0 + " " + mx + "," + y1 + " " + x1 + "," + y1,
-                fill: "none", stroke: COLORS[link.edge_type] || "#718096", "stroke-width": w, "stroke-opacity": 0.45,
-                "stroke-dasharray": link.support_oppose === "O" ? "6 4" : null
+                fill: "none", stroke: style.color, "stroke-width": w, "stroke-opacity": 0.45, "stroke-dasharray": style.dash
             });
             var side = link.support_oppose ? (link.support_oppose === "S" ? ", supporting" : ", opposing") : "";
             path.appendChild(el("title", {}, labels[link.source] + " → " + labels[link.target] + ": " + money(link.weight)
@@ -96,7 +95,7 @@
             parts.push(key.replace(/_/g, " ") + " " + money(data.totals[key]));
         });
         if (data.totals.support || data.totals.oppose) {
-            parts.push("independent spending for " + money(data.totals.support) + " / against " + money(data.totals.oppose) + " (dashed)");
+            parts.push("independent spending for " + money(data.totals.support) + " / against " + money(data.totals.oppose));
         }
         var notes = [];
         var folded = Object.keys(data.folded || {}).filter(function (key) { return key !== "internal" && data.folded[key]; })
@@ -120,5 +119,6 @@
         }
         legend.textContent = parts.join("; ") + (notes.length ? ". " + notes.join(". ") + "." : ".");
         container.appendChild(legend);
+        window.renderGraphKey(keyBox, { edgeTypes: window.GraphKey.styleKeys(data.links), definitions: definitions });
     };
 })();
