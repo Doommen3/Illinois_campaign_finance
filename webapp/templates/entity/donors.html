@@ -82,7 +82,7 @@
         <tbody>
         {% for donor in payload.top_donors %}
             <tr>
-                <td>{% if donor.redacted %}{{ donor.donor_name }}{% else %}<a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key) }}">{{ donor.donor_name }}</a>{% endif %}</td>
+                <td>{{ donor_link(donor) }}</td>
                 <td>{{ donor.donor_class|capitalize }}</td>
                 <td>{{ format_currency(donor.total_amount) }}</td>
                 <td>{{ donor.contribution_count }}</td>
