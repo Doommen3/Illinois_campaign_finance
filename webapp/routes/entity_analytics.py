@@ -26,7 +26,7 @@ from database.entity_analytics import (
     get_entity_risk,
     resolve_entity,
 )
-from database.entity_network import DEFAULT_CAPS, get_entity_network
+from database.entity_network import DEFAULT_CAPS, get_entity_network, money_flow, vendor_network
 from webapp.cache_backend import RouteCache
 from webapp.routes.analytics import ANALYTICS_CACHE_TTL_FALLBACK_SECONDS, _cached_build, _state_race_cycle
 from webapp.utils.data_through import latest_data_date
@@ -42,7 +42,10 @@ TAB_LABELS = {
     "geography": "Geography",
     "relationships": "Relationships",
 }
-NETWORK_VIEWS = ("ego",)  # step 8 adds money_flow and vendor_network
+# The Network tab's JSON views (plan N6 Phase A): the ego payload itself, and two pure projections of it that are
+# cached under their own tab name but read the ego entry instead of rebuilding the graph.
+NETWORK_VIEWS = ("ego", "money_flow", "vendor_network")
+PROJECTIONS = {"money_flow": money_flow, "vendor_network": vendor_network}
 
 # The limits every tab is built with; they close its cache key (plan N14: two cap sets never share an entry).
 RISK_LIMIT = 50
@@ -115,8 +118,17 @@ def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None):
     if tab == "network":
         params = NETWORK_CAPS
 
-        def builder():
+        def ego_builder():
             return get_entity_network(conn, entity, **window, caps=dict(zip(NETWORK_CAP_CLASSES, NETWORK_CAPS)))
+
+        if view in PROJECTIONS:
+            ego_key = _entity_cache_key(kind, key, "network:ego", scope, ctx["cycle"], params)
+
+            def builder():
+                ego = _cached_build(_caches["network"], ego_key, ego_builder, ttl, cache_enabled=enabled, refresh=refresh)
+                return PROJECTIONS[view](ego)
+        else:
+            builder = ego_builder
     elif tab == "risk":
         params = (RISK_LIMIT,)
 
@@ -186,7 +198,7 @@ def _tab_page(kind: str, key, tab: str):
         nodes = {node["id"]: node for node in payload["nodes"]}
         context["nodes_by_id"] = nodes
         context["node_href"] = {node_id: _node_href(node) for node_id, node in nodes.items()}
-        context["network_src"] = _json_url(kind, key, ctx, "ego")
+        context["network_sources"] = {view: _json_url(kind, key, ctx, view) for view in NETWORK_VIEWS}
     return render_template(f"entity/{tab}.html", **context)
 
 

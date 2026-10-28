@@ -395,3 +395,160 @@ def _payload(entity, nodes, edges, centrality, truncated, window):
                        "date_to": window[1].isoformat() if window[1] else None},
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase A views (plan step 8): pure projections of the ego payload. Nothing here reads the database; every view
+# is a function of ``get_entity_network``'s dict and leaves it untouched.
+# ---------------------------------------------------------------------------
+
+MONEY_FLOW_VIEW = "money_flow"
+VENDOR_NETWORK_VIEW = "vendor_network"
+EGO_VIEW = "ego"
+CLASS_LABELS = {"individual": "Individual donors", "organization": "Organization donors", "in_kind": "In-kind contributions"}
+OTHER_LABELS = {"vendors": "Other vendors", "transfers": "Other transfers", "spenders": "Other independent spenders"}
+
+
+def donor_class(node_id: str) -> str:
+    """``individual`` when the donor key's first segment (the filed first name) is non-empty, else ``organization``
+    (ISBE files a business name in last_name only) -- the Donors tab's rule, applied to the node id."""
+    key = node_id.partition(":")[2]
+    return "individual" if key.split("|", 1)[0].strip() else "organization"
+
+
+def _fold(ranked_totals: dict[str, float], limit: int, other_id: str):
+    """Top ``limit`` ids by total (ties: id) keep themselves; the rest map to ``other_id``. Returns (mapping, folded)."""
+    ranked = sorted(ranked_totals, key=lambda node_id: (-round(ranked_totals[node_id], 2), node_id))
+    keep = set(ranked[: max(int(limit), 0)])
+    return {node_id: (node_id if node_id in keep else other_id) for node_id in ranked}, max(len(ranked) - len(keep), 0)
+
+
+def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
+    """Sankey projection: column 0 = donor classes, in-kind, transfer sources and independent spenders; column 1 =
+    the entity's committees and the candidates independent spending names; column 2 = vendors. The top
+    ``max_*`` transfer sources, spenders and vendors keep their own node, the rest fold into one "Other" node per
+    class (``folded`` counts them). ``committee_candidate`` edges are links of money raised, not flows, and are
+    left out; every other ego edge lands in exactly one link, so ``totals`` per edge type equal the ego's."""
+    nodes_by_id = {node["id"]: node for node in payload["nodes"]}
+    entity_committees = [node["id"] for node in payload["nodes"] if node.get("role") == "entity"]
+    edges = [edge for edge in payload["edges"] if edge["edge_type"] != COMMITTEE_CANDIDATE]
+
+    totals: dict[str, dict[str, float]] = {"vendors": defaultdict(float), "transfers": defaultdict(float),
+                                           "spenders": defaultdict(float)}
+    for edge in edges:
+        if edge["edge_type"] == COMMITTEE_VENDOR:
+            totals["vendors"][edge["target"]] += edge["weight"]
+        elif edge["edge_type"] == TRANSFER_IN:
+            totals["transfers"][edge["source"]] += edge["weight"]
+        elif edge["edge_type"] == INDEPENDENT_EXPENDITURE:
+            totals["spenders"][edge["source"]] += edge["weight"]
+    mapping, folded = {}, {}
+    for cls, limit in (("vendors", max_vendors), ("transfers", max_transfers), ("spenders", max_spenders)):
+        cls_mapping, folded[cls] = _fold(totals[cls], limit, f"other:{cls}")
+        mapping.update(cls_mapping)
+
+    links: dict[tuple, dict] = {}
+    kinds: dict[str, str] = {}
+    for edge in edges:
+        edge_type = edge["edge_type"]
+        if edge_type == DONOR_COMMITTEE:
+            source, target = f"class:{donor_class(edge['source'])}", edge["target"]
+            kinds[source] = "donor_class"
+        elif edge_type == IN_KIND_DONOR_COMMITTEE:
+            source, target = "class:in_kind", edge["target"]
+            kinds[source] = "in_kind"
+        elif edge_type == TRANSFER_IN:
+            source, target = mapping[edge["source"]], edge["target"]
+            kinds[source] = "transfer_source"
+        elif edge_type == INDEPENDENT_EXPENDITURE:
+            source, target = mapping[edge["source"]], edge["target"]
+            kinds[source] = "ie_spender"
+            kinds[target] = "candidate"
+        else:  # committee_vendor
+            source, target = edge["source"], mapping[edge["target"]]
+            kinds[target] = "vendor"
+        key = (source, target, edge_type, edge.get("support_oppose"))
+        link = links.get(key)
+        if link is None:
+            link = {"source": source, "target": target, "edge_type": edge_type, "edge_label": edge["edge_label"],
+                    "weight": 0.0, "count": 0}
+            if edge.get("support_oppose"):
+                link["support_oppose"] = edge["support_oppose"]
+            links[key] = link
+        link["weight"] += float(edge["weight"])
+        link["count"] += int(edge["count"])
+    for committee_id in entity_committees:
+        kinds[committee_id] = "committee"
+
+    amount: dict[str, float] = defaultdict(float)
+    for link in links.values():
+        link["weight"] = round(link["weight"], 2)
+        amount[link["source"]] += link["weight"]
+        amount[link["target"]] += link["weight"]
+    column = {"donor_class": 0, "in_kind": 0, "transfer_source": 0, "ie_spender": 0, "committee": 1, "candidate": 1,
+              "vendor": 2}
+    nodes = []
+    for node_id, kind in kinds.items():
+        if node_id.startswith("class:"):
+            label = CLASS_LABELS[node_id.partition(":")[2]]
+        elif node_id.startswith("other:"):
+            label = OTHER_LABELS[node_id.partition(":")[2]]
+        else:
+            label = nodes_by_id.get(node_id, {}).get("label") or node_id
+        node = {"id": node_id, "label": label, "kind": kind, "column": column[kind], "amount": round(amount[node_id], 2)}
+        if kind == "committee" and nodes_by_id.get(node_id, {}).get("group_label"):
+            node["group_label"] = nodes_by_id[node_id]["group_label"]
+        nodes.append(node)
+    nodes.sort(key=lambda node: (node["column"], -node["amount"], node["label"], node["id"]))
+    link_list = sorted(links.values(), key=lambda link: (-link["weight"], link["edge_type"], link["source"], link["target"],
+                                                         link.get("support_oppose") or ""))
+    by_type: dict[str, float] = defaultdict(float)
+    support = oppose = 0.0
+    for link in link_list:
+        by_type[link["edge_type"]] += link["weight"]
+        if link.get("support_oppose") == "S":
+            support += link["weight"]
+        elif link.get("support_oppose") == "O":
+            oppose += link["weight"]
+    return {
+        "view": MONEY_FLOW_VIEW,
+        "nodes": nodes,
+        "links": link_list,
+        "totals": {**{edge_type: round(value, 2) for edge_type, value in sorted(by_type.items())},
+                   "support": round(support, 2), "oppose": round(oppose, 2)},
+        "folded": folded,
+    }
+
+
+def vendor_network(payload):
+    """Bipartite projection: the entity's committees and the independent spenders (``side: "payer"``) against the
+    vendors they pay and the candidates the spenders support or oppose (``side: "payee"``); only ``committee_vendor``
+    and ``independent_expenditure`` edges. A vendor paid by two or more committees is ``shared`` (``committee_ids``
+    lists them). Phase A limit: the ego payload holds the entity committees' own payees only, so a vendor shared
+    with an independent spender's payees cannot be seen here (plan N6 Phase B)."""
+    keep = {COMMITTEE_VENDOR, INDEPENDENT_EXPENDITURE}
+    edges = [dict(edge) for edge in payload["edges"] if edge["edge_type"] in keep]
+    payers: dict[str, list] = defaultdict(list)
+    for edge in edges:
+        if edge["edge_type"] == COMMITTEE_VENDOR:
+            payers[edge["target"]].append(edge["source"])
+    wanted = {node["id"] for node in payload["nodes"] if node.get("role") == "entity"}
+    wanted |= {edge["source"] for edge in edges} | {edge["target"] for edge in edges}
+    nodes = []
+    for node in payload["nodes"]:
+        if node["id"] not in wanted:
+            continue
+        projected = dict(node, side="payee" if node["node_type"] in ("vendor", "candidate") else "payer")
+        if node["node_type"] == "vendor":
+            committee_ids = sorted(set(payers[node["id"]]))
+            projected.update(committee_ids=committee_ids, committee_count=len(committee_ids), shared=len(committee_ids) >= 2)
+        nodes.append(projected)
+    nodes.sort(key=lambda node: (node["side"], -node["total_amount"], node["label"], node["id"]))
+    shared = [node["id"] for node in nodes if node.get("shared")]
+    return {"view": VENDOR_NETWORK_VIEW, "nodes": nodes, "edges": edges, "shared_vendors": shared}
+
+
+def ego_force(payload):
+    """The ego graph as is: nodes and edges only (copies), for the force renderer (plan N7, step 7)."""
+    return {"view": EGO_VIEW, "nodes": [dict(node) for node in payload["nodes"]],
+            "edges": [dict(edge) for edge in payload["edges"]]}

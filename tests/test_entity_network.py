@@ -1263,3 +1263,209 @@ def test_caps_none_applies_the_default_cap_with_a_deterministic_tie_break(refere
         assert edge["source"] not in dropped and edge["target"] not in dropped, "an edge of a dropped neighbour"
     assert payload["summary"]["node_count"] == len(payload["nodes"])
     assert payload["summary"]["edge_count"] == len(payload["edges"])
+
+
+# ---------------------------------------------------------------------------
+# Phase A views (plan step 8): money_flow / vendor_network / ego_force are pure projections of the ego payload.
+# Expected sums are the RACE_WIN edges regrouped by hand: individuals (D1, D1b, D2a, D3, D4, D5, B1, B2, Penny)
+# give 9,700.30 to 100 (5000 + 2500 + 1000 + 1200 + 0.30), 2,300 to 101 (1000 + 900 + 400) and 300 to 200
+# (100 + 200); organizations (O1, O2, O3: no filed first name) give 5,500 to 100 (4000 + 1500) and 4,000 to 200
+# (2500 + 1500); in-kind 750 to 100 (O1) and 300 to 200 (Ina); transfer sources 400 (2000 + 700 = 2700), the
+# unresolved Inc payer 800 and the twin payer 500; vendors Prairie Print Co 1,100 (600 + 500), Lakeshore 900,
+# Wren Wexler 300; spenders 900 (7120 S + 375 O on Ada, 2430 O + 500 S on Bo = 10,425) and 905 (50 S on Bo).
+# ---------------------------------------------------------------------------
+
+from database.entity_network import donor_class, ego_force, money_flow, vendor_network  # noqa: E402
+
+CLASS_INDIVIDUAL, CLASS_ORGANIZATION, CLASS_IN_KIND = "class:individual", "class:organization", "class:in_kind"
+
+RACE_MONEY_FLOW_LINKS = {
+    (CLASS_INDIVIDUAL, C100, DC, None): (9700.3, 9),
+    (CLASS_INDIVIDUAL, C101, DC, None): (2300.0, 3),
+    (CLASS_INDIVIDUAL, C200, DC, None): (300.0, 2),
+    (CLASS_ORGANIZATION, C100, DC, None): (5500.0, 2),
+    (CLASS_ORGANIZATION, C200, DC, None): (4000.0, 2),
+    (CLASS_IN_KIND, C100, IK, None): (750.0, 1),
+    (CLASS_IN_KIND, C200, IK, None): (300.0, 1),
+    (C400, C100, TI, None): (2000.0, 1),
+    (C400, C200, TI, None): (700.0, 1),
+    (T_INC, C101, TI, None): (800.0, 1),
+    (T_TWIN, C100, TI, None): (500.0, 1),
+    (C100, V_A, CV, None): (600.0, 1),
+    (C101, V_A, CV, None): (500.0, 1),
+    (C101, V_P, CV, None): (300.0, 1),
+    (C200, V_B, CV, None): (900.0, 1),
+    (C900, CAND1, IE, "S"): (7120.0, 4),
+    (C900, CAND1, IE, "O"): (375.0, 2),
+    (C900, CAND2, IE, "O"): (2430.0, 3),
+    (C900, CAND2, IE, "S"): (500.0, 1),
+    (C905, CAND2, IE, "S"): (50.0, 1),
+}
+
+
+def _link_map(view) -> dict:
+    mapping = {}
+    for link in view["links"]:
+        key = (link["source"], link["target"], link["edge_type"], link.get("support_oppose"))
+        assert key not in mapping, f"duplicate link {key}"
+        mapping[key] = (link["weight"], link["count"])
+    return mapping
+
+
+def _sum_by_type(edges) -> dict:
+    totals = defaultdict(float)
+    for edge in edges:
+        totals[edge["edge_type"]] += edge["weight"]
+    return {edge_type: round(total, 2) for edge_type, total in totals.items()}
+
+
+@pytest.mark.parametrize("node_id, expected", [
+    (D["D1"], "individual"), (D["Penny"], "individual"), (D["D3"], "individual"),
+    (D["O1"], "organization"), (D["O2"], "organization"), (D["O3"], "organization"),
+])
+def test_donor_class_is_read_from_the_filed_first_name_in_the_node_id(node_id, expected):
+    """The Donors tab's rule (a first name filed -> individual; NULL or '' -> organization) applied to the key."""
+    assert donor_class(node_id) == expected
+
+
+def test_money_flow_links_regroup_the_race_edges_by_class_and_keep_every_dollar(world):
+    """Kills: a class assigned by name heuristics; in-kind merged into contributions; a transfer source or spender
+    dropped; committee_candidate edges counted as flows (they would double the 1A money); a link per donor."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    view = money_flow(payload)
+    problems = _edge_problems(_link_map(view), RACE_MONEY_FLOW_LINKS)
+    assert not problems, "\n".join(problems)
+    assert view["view"] == "money_flow"
+    assert set(view) == {"view", "nodes", "links", "totals", "folded"}
+
+
+def test_money_flow_totals_reconcile_to_the_ego_edges_for_every_entity_and_window(world):
+    """Per edge type the links sum to the ego's edges (committee_candidate excluded), support/oppose to the signed
+    IE edges; every node's amount is the sum of its links."""
+    for entity, window in ((RACE_ENTITY, WIN), (CANDIDATE_ENTITY, WIN), (RACE_ENTITY, (None, None))):
+        payload = _call(world, entity, date_from=window[0], date_to=window[1])
+        view = money_flow(payload)
+        ego = _sum_by_type(edge for edge in payload["edges"] if edge["edge_type"] != CC)
+        assert {k: v for k, v in view["totals"].items() if k not in ("support", "oppose")} == pytest.approx(ego, abs=0.005)
+        assert CC not in view["totals"]
+        assert view["totals"]["support"] == pytest.approx(
+            sum(e["weight"] for e in payload["edges"] if e.get("support_oppose") == "S"), abs=0.005)
+        assert view["totals"]["oppose"] == pytest.approx(
+            sum(e["weight"] for e in payload["edges"] if e.get("support_oppose") == "O"), abs=0.005)
+        incident = defaultdict(float)
+        for link in view["links"]:
+            incident[link["source"]] += link["weight"]
+            incident[link["target"]] += link["weight"]
+        for node in view["nodes"]:
+            assert node["amount"] == pytest.approx(incident[node["id"]], abs=0.005), node
+
+
+def test_money_flow_nodes_sit_in_three_columns_with_labels_and_kinds(world):
+    """Sources left, the entity's committees and the candidates it spends on in the middle, vendors right; class
+    nodes are labelled for readers; entity committees keep their group label; nothing else appears."""
+    view = money_flow(_call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1]))
+    by_id = {node["id"]: node for node in view["nodes"]}
+    assert set(by_id) == {
+        CLASS_INDIVIDUAL, CLASS_ORGANIZATION, CLASS_IN_KIND, C400, T_INC, T_TWIN, C900, C905,
+        C100, C101, C200, CAND1, CAND2, V_A, V_B, V_P,
+    }
+    assert {n: by_id[n]["column"] for n in (CLASS_INDIVIDUAL, C400, T_INC, C900)} == {CLASS_INDIVIDUAL: 0, C400: 0, T_INC: 0, C900: 0}
+    assert {n: by_id[n]["column"] for n in (C100, C101, C200, CAND1, CAND2)} == dict.fromkeys((C100, C101, C200, CAND1, CAND2), 1)
+    assert {n: by_id[n]["column"] for n in (V_A, V_B, V_P)} == dict.fromkeys((V_A, V_B, V_P), 2)
+    assert by_id[CLASS_INDIVIDUAL]["label"] == "Individual donors"
+    assert by_id[CLASS_IN_KIND]["kind"] == "in_kind"
+    assert by_id[C400]["kind"] == "transfer_source" and by_id[C900]["kind"] == "ie_spender"
+    assert by_id[C100]["kind"] == "committee" and by_id[C100]["group_label"] == "Ada Example"
+    assert by_id[CAND1]["kind"] == "candidate" and by_id[V_A]["kind"] == "vendor"
+    assert by_id[V_A]["label"] == "Prairie Print Co" and by_id[V_A]["amount"] == pytest.approx(1100.0)
+    assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0}
+    columns = [node["column"] for node in view["nodes"]]
+    assert columns == sorted(columns), "nodes are listed by column"
+
+
+def test_money_flow_caps_fold_the_smaller_vendors_transfers_and_spenders_into_one_other_node_each(world):
+    """Kills: a cap that drops money instead of folding it; a fold that merges support and oppose; a cap applied to
+    the entity's own committees or to donor classes."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    view = money_flow(payload, max_vendors=1, max_transfers=1, max_spenders=1)
+    links = _link_map(view)
+    assert view["folded"] == {"vendors": 2, "transfers": 2, "spenders": 1}
+    assert links[(C100, V_A, CV, None)] == (600.0, 1)
+    assert links[(C101, V_A, CV, None)] == (500.0, 1)
+    assert links[(C101, "other:vendors", CV, None)] == (300.0, 1)
+    assert links[(C200, "other:vendors", CV, None)] == (900.0, 1)
+    assert links[(C400, C100, TI, None)] == (2000.0, 1)
+    assert links[("other:transfers", C101, TI, None)] == (800.0, 1)
+    assert links[("other:transfers", C100, TI, None)] == (500.0, 1)
+    assert links[("other:spenders", CAND2, IE, "S")] == (50.0, 1)
+    assert links[(C900, CAND1, IE, "S")] == (7120.0, 4)
+    assert not any(key[0] in (T_INC, T_TWIN, C905) or key[1] in (V_B, V_P) for key in links)
+    assert view["totals"] == money_flow(payload)["totals"], "folding moves money, it never loses it"
+    by_id = {node["id"]: node for node in view["nodes"]}
+    assert by_id["other:vendors"] == {"id": "other:vendors", "label": "Other vendors", "kind": "vendor", "column": 2,
+                                      "amount": 1200.0}
+    assert {C100, C101, C200, CLASS_INDIVIDUAL, CLASS_ORGANIZATION, CLASS_IN_KIND} <= set(by_id)
+
+
+def test_vendor_network_flags_vendors_shared_by_two_committees(world):
+    """Prairie Print Co is paid by 100 and 101 (shared); Lakeshore by 200 and Wren Wexler by 101 only. Spenders and
+    the candidates they name are in, donors and transfer sources are not; edges are the vendor and IE edges only."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    view = vendor_network(payload)
+    assert set(view) == {"view", "nodes", "edges", "shared_vendors"}
+    assert view["view"] == "vendor_network"
+    by_id = {node["id"]: node for node in view["nodes"]}
+    assert set(by_id) == {C100, C101, C200, C900, C905, V_A, V_B, V_P, CAND1, CAND2}
+    assert by_id[V_A]["shared"] is True and by_id[V_A]["committee_ids"] == [C100, C101] and by_id[V_A]["committee_count"] == 2
+    assert by_id[V_B]["shared"] is False and by_id[V_B]["committee_ids"] == [C200]
+    assert by_id[V_P]["shared"] is False
+    assert view["shared_vendors"] == [V_A]
+    assert {by_id[n]["side"] for n in (C100, C101, C200, C900, C905)} == {"payer"}
+    assert {by_id[n]["side"] for n in (V_A, V_B, V_P, CAND1, CAND2)} == {"payee"}
+    assert {edge["edge_type"] for edge in view["edges"]} == {CV, IE}
+    expected = {key: value for key, value in RACE_WIN.items() if key[0] in (CV, IE)}
+    assert not _edge_problems(_edge_map(view), expected)
+    assert by_id[C100]["label"] == "Friends of Ada Example" and by_id[C100]["role"] == "entity"
+
+
+def test_vendor_network_counts_every_entity_committee_paying_a_vendor(world):
+    """The candidate entity pays Prairie Print Co from 100, 101 and 102; a committee without vendor edges stays a node."""
+    view = vendor_network(_call(world, CANDIDATE_ENTITY, date_from=WIN[0], date_to=WIN[1]))
+    by_id = {node["id"]: node for node in view["nodes"]}
+    assert by_id[V_A]["committee_ids"] == [C100, C101, C102] and by_id[V_A]["committee_count"] == 3
+    assert view["shared_vendors"] == [V_A]
+    empty = vendor_network(_call(world, RACE_ENTITY, date_from=date(2030, 1, 1), date_to=date(2030, 12, 31)))
+    assert {node["id"] for node in empty["nodes"]} == {C100, C101, C200}
+    assert empty["edges"] == [] and empty["shared_vendors"] == []
+
+
+def test_ego_force_is_the_payload_nodes_and_edges(world):
+    view = ego_force(_call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1]))
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    assert set(view) == {"view", "nodes", "edges"}
+    assert view["view"] == "ego"
+    assert view["nodes"] == payload["nodes"] and view["edges"] == payload["edges"]
+
+
+@pytest.mark.parametrize("projection", [money_flow, vendor_network, ego_force])
+def test_projections_leave_the_payload_untouched_and_serialise_to_json(world, projection):
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    pristine = copy.deepcopy(payload)
+    view = projection(payload)
+    assert payload == pristine
+    json.dumps(view)
+    for item in view["nodes"] + view.get("edges", view.get("links", [])):
+        for value in item.values():
+            assert not isinstance(value, float) or value == round(value, 2)
+    view["nodes"][0]["label"] = "changed"
+    assert payload == pristine, "the projection must not alias the payload's dicts"
+
+
+@pytest.mark.parametrize("projection", [money_flow, vendor_network, ego_force])
+def test_projections_of_an_empty_graph_are_empty(world, projection):
+    view = projection(_call(world, EMPTY_ENTITY, date_from=WIN[0], date_to=WIN[1]))
+    assert view["nodes"] == []
+    assert view.get("edges", view.get("links")) == []
+    if projection is money_flow:
+        assert view["totals"] == {"support": 0.0, "oppose": 0.0}
+        assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0}

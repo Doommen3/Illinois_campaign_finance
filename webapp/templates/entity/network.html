@@ -18,7 +18,14 @@
         {% if dropped %}Top neighbours per class shown; {{ dropped }} smaller ones left out
         ({% for cls, n in payload.summary.truncated.items() if n %}{{ n }} {{ cls|replace('_', ' ') }}{% if not loop.last %}, {% endif %}{% endfor %}).{% endif %}
     </p>
-    <div id="entity-network-graph" class="entity-network-graph" data-src="{{ network_src }}" data-view="ego"></div>
+    <div class="view-switch" role="group" aria-label="Network views">
+        <button type="button" class="btn view-switch-button" data-view="money_flow">Money flow</button>
+        <button type="button" class="btn view-switch-button" data-view="vendor_network">Vendor network</button>
+        <button type="button" class="btn view-switch-button" data-view="ego">Ego graph</button>
+    </div>
+    <div id="entity-network-graph" class="entity-network-graph" data-src="{{ network_sources.ego }}"
+         data-src-money-flow="{{ network_sources.money_flow }}" data-src-vendor-network="{{ network_sources.vendor_network }}"
+         data-view="money_flow"><noscript>Enable JavaScript to draw the network; the edge table below lists every edge.</noscript></div>
 </div>
 
 <div class="status-section">
@@ -55,4 +62,37 @@
     </details>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/entity_views/money_flow.js', v='20261028-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/vendor_network.js', v='20261028-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261028-1') }}"></script>
+<script>
+(function () {
+    var box = document.getElementById("entity-network-graph");
+    var views = window.EntityViews || {};
+    if (!box || !window.fetch) { return; }
+    var sources = { ego: box.dataset.src, money_flow: box.dataset.srcMoneyFlow, vendor_network: box.dataset.srcVendorNetwork };
+    var buttons = Array.prototype.slice.call(document.querySelectorAll(".view-switch-button"));
+    var loaded = {};
+    function show(view) {
+        var render = views[view];
+        if (!render || !sources[view]) { return; }
+        buttons.forEach(function (button) { button.classList.toggle("btn-primary", button.dataset.view === view); });
+        box.dataset.view = view;
+        if (!loaded[view]) {
+            loaded[view] = fetch(sources[view], { credentials: "same-origin" }).then(function (response) {
+                if (!response.ok) { throw new Error(String(response.status)); }
+                return response.json();
+            });
+        }
+        box.textContent = "Loading\u2026";
+        loaded[view].then(function (data) { if (box.dataset.view === view) { render(box, data); } })
+            .catch(function () { delete loaded[view]; box.textContent = "The network could not be loaded; the edge table below lists every edge."; });
+    }
+    buttons.forEach(function (button) { button.addEventListener("click", function () { show(button.dataset.view); }); });
+    show(box.dataset.view || "money_flow");
+})();
+</script>
 {% endblock %}

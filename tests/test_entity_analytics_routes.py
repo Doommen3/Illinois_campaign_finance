@@ -840,10 +840,10 @@ def test_unknown_tab_is_404_even_for_a_known_entity(cached_client, fakes, cache_
 
 
 @pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("view", ["bogus", "money_flow", "vendor_network"])
+@pytest.mark.parametrize("view", ["bogus", "Ego", "ego_force", "moneyflow", "money_flow.json"])
 def test_network_json_with_an_unknown_view_is_404(cached_client, fakes, cache_calls, kind, view):
-    """Phase A knows only ``ego`` (step 8 adds the others): every other value is a 404, not a silent fall back to ego.
-    Kills: ignoring ``view``; accepting the step-8 views early."""
+    """Phase A serves ``ego``, ``money_flow`` and ``vendor_network`` (step 8): every other value is a 404, not a silent
+    fall back to ego.  Kills: ignoring ``view``; a case-insensitive, prefix or suffix match."""
     _assert_404_without_side_effects(cached_client, fakes, cache_calls, url_of(kind, "network.json", f"view={view}"),
                                      url_of(kind, "network.json", "view=ego"))
 
@@ -1236,6 +1236,80 @@ def test_network_tab_graph_placeholder_points_at_the_json_with_the_scope(client,
     assert window_of(args) == expected
     if "election_cycle" in request_args:
         assert args.get("election_cycle") == request_args["election_cycle"]
+
+
+PHASE_A_VIEWS = {
+    "money_flow": {"view", "nodes", "links", "totals", "folded"},
+    "vendor_network": {"view", "nodes", "edges", "shared_vendors"},
+}
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("view", sorted(PHASE_A_VIEWS))
+def test_network_json_phase_a_views_are_projections_of_the_ego_payload(client, fakes, kind, view):
+    """Step 8: money_flow and vendor_network are pure projections of the one ego build (database.entity_network).  On
+    the fake payload the donor edge regroups under the individual-donor class, the vendor edge keeps its vendor and the
+    committee_candidate edge is no money flow.  Kills: a view served the raw ego payload; a projection that reads the
+    database itself (the fake is the only source here); a missing ``view`` echo; a second ego build per view."""
+    response = client.get(url_of(kind, "network.json", f"view={view}"))
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    body = response.get_json()
+    assert set(body) == PHASE_A_VIEWS[view]
+    assert body["view"] == view
+    assert len(fakes.calls["get_entity_network"]) == 1
+    if view == "money_flow":
+        links = {(link["source"], link["target"], link["edge_type"]): link["weight"] for link in body["links"]}
+        assert links == {("class:individual", "committee:901", "donor_committee"): 25000.0,
+                         ("committee:901", VENDOR_ID, "committee_vendor"): 12345.67}
+        assert {node["id"]: node["column"] for node in body["nodes"]} == {"class:individual": 0, "committee:901": 1,
+                                                                           VENDOR_ID: 2}
+        assert body["totals"] == {"committee_vendor": 12345.67, "donor_committee": 25000.0, "support": 0.0, "oppose": 0.0}
+    else:
+        assert {edge["edge_type"] for edge in body["edges"]} == {"committee_vendor"}
+        assert {node["id"] for node in body["nodes"]} == {"committee:901", VENDOR_ID}
+        vendor = next(node for node in body["nodes"] if node["id"] == VENDOR_ID)
+        assert vendor["shared"] is False
+        assert vendor["committee_ids"] == ["committee:901"]
+        assert body["shared_vendors"] == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_phase_a_views_share_one_cached_ego_build(cached_client, fakes, cache_calls, kind):
+    """Each view is its own entry (``network:<view>``) but the projections read the ego entry instead of rebuilding the
+    graph: three views, one build, and every later request is a hit.  Kills: a projection that calls the builder again;
+    a projection stored under the ego key (the ego JSON would then be a projection)."""
+    for view in ("ego", "money_flow", "vendor_network"):
+        assert cached_client.get(url_of(kind, "network.json", f"view={view}")).status_code == 200
+    assert len(fakes.calls["get_entity_network"]) == 1
+    assert [call["key"][3] for call in cache_calls] == ["network:ego", "network:money_flow", "network:ego",
+                                                        "network:vendor_network", "network:ego"]
+    for view in ("ego", "money_flow", "vendor_network"):
+        assert cached_client.get(url_of(kind, "network.json", f"view={view}")).get_json()["view"] == view
+    assert len(fakes.calls["get_entity_network"]) == 1
+
+
+@pytest.mark.parametrize("kind, query", [
+    pytest.param("candidate", "period=cycle:2024", id="candidate"),
+    pytest.param("race", "period=cycle:2024&election_cycle=2024", id="race"),
+])
+def test_network_tab_carries_a_source_per_phase_a_view(client, fakes, kind, query):
+    """The graph container names the JSON of every view (``data-src`` = ego, for the step-7 renderer;
+    ``data-src-money-flow``; ``data-src-vendor-network``), each with its view, the scope and (races) the cycle.
+    Kills: a view URL without the scope (the graph would show another window than the page)."""
+    page = get(client, url_of(kind, "network", query))
+    attrs = page.by_id["entity-network-graph"]
+    request_args = dict(parse_qsl(query))
+    expected = window_of(request_args, default=page_default(kind, request_args))
+    for attribute, view in (("data-src", "ego"), ("data-src-money-flow", "money_flow"),
+                            ("data-src-vendor-network", "vendor_network")):
+        parts = urlsplit(attrs.get(attribute, ""))
+        assert unquote(parts.path) == f"{parent_path(kind)}/network.json", attribute
+        args = dict(parse_qsl(parts.query))
+        assert args.get("view") == view, attribute
+        assert window_of(args) == expected, attribute
+        if "election_cycle" in request_args:
+            assert args.get("election_cycle") == request_args["election_cycle"], attribute
 
 
 # ---------------------------------------------------------------------------
