@@ -16,6 +16,7 @@ def _make_client(db_path: str):
         {
             "TESTING": True,
             "DATABASE_PATH": db_path,
+            "REFRESH_PARAMS_REQUIRE_LOGIN": False,  # these tests force rebuilds anonymously (LD4)
             "DASHBOARD_PREWARM_ENABLED": False,
             "ROUTE_PERF_CACHE_ENABLED": False,
         }

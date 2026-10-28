@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+{% from "committees/_filing_table.html" import filing_table %}
+
+{% block title %}Filings - {{ committee_name }}{% endblock %}
+
+{% block content %}
+<h1>{{ committee_name }}</h1>
+<p class="subtitle">SBE Committee ID: {{ committee_id }} | <a href="{{ url_for('committees.committee_detail', committee_id=committee_id, **scope_query) }}">Committee profile</a></p>
+
+<h2>Filings {{ scope_tag('All time') }}</h2>
+{% if total %}
+<p class="subtitle">{{ '{:,}'.format(total) }} filing{{ 's' if total != 1 }}, newest first</p>
+{% endif %}
+
+{% if filings %}
+{{ filing_table(filings) }}
+{% else %}
+<p class="help-text">No filings{% if total %} on this page{% endif %}.</p>
+{% endif %}
+
+{% if total_pages > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('committees.committee_filings', committee_id=committee_id, page=[page - 1, total_pages]|min, **scope_query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('committees.committee_filings', committee_id=committee_id, page=page+1, **scope_query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

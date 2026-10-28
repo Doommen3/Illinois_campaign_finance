@@ -1,0 +1,18 @@
+{# The committee filing table, shared by the profile's Filing History (newest 25) and the full list at
+   /committees/<id>/filings, so both pages show the same columns, cells and per-row link. #}
+{% macro filing_table(filings) -%}
+<table class="data-table">
+    <thead>
+        <tr><th>Document</th><th>Filed</th><th>Reporting Period</th></tr>
+    </thead>
+    <tbody>
+        {% for filing in filings %}
+        <tr>
+            <td><a href="{{ url_for('committees.filing_detail', filed_doc_id=filing.id) }}">{{ filing.doc_name }}</a></td>
+            <td>{{ filing.filed_date }}</td>
+            <td>{% if filing.period_begin %}{{ filing.period_begin }} to {{ filing.period_end }}{% else %}&mdash;{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{%- endmacro %}

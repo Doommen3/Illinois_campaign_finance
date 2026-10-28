@@ -59,8 +59,9 @@ SEARCH_MIN_QUERY_LENGTH = int(os.environ.get('SEARCH_MIN_QUERY_LENGTH', 2))
 SEARCH_MAX_QUERY_LENGTH = int(os.environ.get('SEARCH_MAX_QUERY_LENGTH', 64))
 SEARCH_QUERY_TIMEOUT_MS = int(os.environ.get('SEARCH_QUERY_TIMEOUT_MS', 700))
 SEARCH_SLOW_QUERY_MS = int(os.environ.get('SEARCH_SLOW_QUERY_MS', 400))
-SEARCH_RESULTS_CACHE_TTL_SECONDS = int(os.environ.get('SEARCH_RESULTS_CACHE_TTL_SECONDS', 120))
-SEARCH_RESULTS_CACHE_MAX_ENTRIES = int(os.environ.get('SEARCH_RESULTS_CACHE_MAX_ENTRIES', 256))
+# Search results live in RouteCache "search_results" (Redis when REDIS_URL is set), which the
+# post-import route-cache flush clears, so a six-hour TTL costs no freshness.
+SEARCH_RESULTS_CACHE_TTL_SECONDS = int(os.environ.get('SEARCH_RESULTS_CACHE_TTL_SECONDS', 21600))
 
 # Federal route caching
 FEDERAL_VIEW_CACHE_ENABLED = _env_bool('FEDERAL_VIEW_CACHE_ENABLED', default=True)
@@ -72,6 +73,18 @@ FEDERAL_MATCHING_CACHE_TTL_SECONDS = int(os.environ.get('FEDERAL_MATCHING_CACHE_
 # Data freshness display
 LOCAL_DATA_STALE_DAYS = int(os.environ.get('LOCAL_DATA_STALE_DAYS', 45))
 FEDERAL_DATA_STALE_DAYS = int(os.environ.get('FEDERAL_DATA_STALE_DAYS', 14))
+# Per-process cache of the Data Status strip; 0 rebuilds it on every render.
+GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS = int(os.environ.get('GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS', 900))
+
+# Edge caching of anonymous HTML: Cache-Control s-maxage for public 200/404 pages; 0 disables.
+HTML_EDGE_CACHE_SECONDS = int(os.environ.get('HTML_EDGE_CACHE_SECONDS', 300))
+# LD4: anonymous requests carrying refresh_cache / refresh_full / sync_full are redirected without
+# them; set to 0 to restore the old unauthenticated cache-busting (tests do this per fixture).
+REFRESH_PARAMS_REQUIRE_LOGIN = os.environ.get('REFRESH_PARAMS_REQUIRE_LOGIN', '1').strip().lower() not in ('0', 'false', 'no')
+
+# Per-statement guards on web request connections (CLI and prewarm connections keep server defaults).
+WEB_STATEMENT_TIMEOUT_MS = int(os.environ.get('WEB_STATEMENT_TIMEOUT_MS', 30000))
+WEB_MAX_PARALLEL_WORKERS_PER_GATHER = int(os.environ.get('WEB_MAX_PARALLEL_WORKERS_PER_GATHER', 2))
 
 # Route-level performance caching. Defaults assume the underlying data
 # refreshes ~weekly; long TTLs are fine because Redis-backed RouteCache
@@ -84,7 +97,9 @@ ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_RELATI
 ANALYTICS_NETWORKS_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_NETWORKS_CACHE_TTL_SECONDS', 21600))
 ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS', 21600))
 ANALYTICS_RISK_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_RISK_CACHE_TTL_SECONDS', 21600))
-ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 180))
+ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS', 21600))
+ANALYTICS_DONORS_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_DONORS_CACHE_TTL_SECONDS', 21600))
+ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS = int(os.environ.get('ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 21600))
 FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS = int(os.environ.get('FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS', 180))
 IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS = int(os.environ.get('IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS', 180))
 DASHBOARD_PREWARM_ENABLED = _env_bool('DASHBOARD_PREWARM_ENABLED', default=True)

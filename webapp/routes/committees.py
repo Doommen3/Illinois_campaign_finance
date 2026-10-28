@@ -238,6 +238,64 @@ def committee_payee_rollup_count(conn, committee_id_sbe: int, scope: TimeScope, 
     return _rollup_count(conn, _payee_rollup_source(conn, committee_id_sbe, scope), "payee_name", q)
 
 
+# ---------------------------------------------------------------------------------------------
+# Filing history (plan P8 / L11). The profile lists the newest filings only; the full list is
+# /committees/<id>/filings, 100 per page. Both read through _committee_filings and render through
+# committees/_filing_table.html, so a row is the same on either page.
+# ---------------------------------------------------------------------------------------------
+
+_PROFILE_FILING_LIMIT = 25
+_FILINGS_PAGE_SIZE = 100
+
+
+def _filed_date(received) -> str:
+    """YYYY-MM-DD of a ``received_datetime`` (a datetime on production, text in older fixtures); "" when NULL."""
+    if not received:
+        return ""
+    return received.strftime("%Y-%m-%d") if hasattr(received, "strftime") else str(received)[:10]
+
+
+def _filing_summary(conn, committee_id_sbe: int) -> tuple[int, str]:
+    """(number of filings, date of the earliest Statement of Organization or "") over ALL the committee's
+    filings, however few of them a page lists: the profile's count line and its Founded / Re-activated dates."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS filing_count,
+               MIN(received_datetime) FILTER (WHERE doc_name = 'Statement of Organization') AS founded
+        FROM isbe_filed_docs
+        WHERE committee_id = ?
+        """,
+        (committee_id_sbe,),
+    ).fetchone()
+    return int(row["filing_count"] or 0), _filed_date(row["founded"])
+
+
+def _committee_filings(conn, committee_id_sbe: int, *, limit: int, offset: int = 0) -> list[dict]:
+    """The committee's filings newest first: by received time, those without one last, the higher id first
+    among equal times, so a page boundary never splits a tie differently on the next request."""
+    rows = conn.execute(
+        """
+        SELECT id, doc_name, received_datetime, reporting_period_begin, reporting_period_end
+        FROM isbe_filed_docs
+        WHERE committee_id = ?
+        ORDER BY received_datetime DESC NULLS LAST, id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (committee_id_sbe, limit, offset),
+    ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "doc_name": row["doc_name"] or "",
+            "received_datetime": str(row["received_datetime"]) if row["received_datetime"] else "",
+            "filed_date": _filed_date(row["received_datetime"]),
+            "period_begin": row["reporting_period_begin"] or "",
+            "period_end": row["reporting_period_end"] or "",
+        }
+        for row in rows
+    ]
+
+
 def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> dict | None:
     # Same filters as the scope-windowed totals, but over the CURRENT cycle, whatever the scope is.
     cycle_start, cycle_end = cycle_window(current_cycle())
@@ -580,40 +638,13 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         ]
 
     filing_history: list[dict] = []
+    filing_count = 0
     if has_filed_docs:
-        filing_rows = conn.execute(
-            """
-            SELECT id, doc_name, received_datetime,
-                   reporting_period_begin, reporting_period_end
-            FROM isbe_filed_docs
-            WHERE committee_id = ?
-            ORDER BY received_datetime DESC, id DESC
-            """,
-            (committee_id_sbe,),
-        ).fetchall()
-        filing_history = []
-        for row in filing_rows:
-            rdt = row["received_datetime"]
-            if rdt:
-                filed_date = rdt.strftime("%Y-%m-%d") if hasattr(rdt, "strftime") else str(rdt)[:10]
-            else:
-                filed_date = ""
-            filing_history.append({
-                "id": row["id"],
-                "doc_name": row["doc_name"] or "",
-                "received_datetime": str(rdt) if rdt else "",
-                "filed_date": filed_date,
-                "period_begin": row["reporting_period_begin"] or "",
-                "period_end": row["reporting_period_end"] or "",
-            })
-        # Derive original founding date from earliest Statement of Organization
-        d1_dates = [
-            f["filed_date"]
-            for f in filing_history
-            if f["doc_name"] == "Statement of Organization" and f["filed_date"]
-        ]
-        if d1_dates:
-            founding_date = min(d1_dates)
+        filing_count, founding_date = _filing_summary(conn, committee_id_sbe)
+        filing_history = _committee_filings(conn, committee_id_sbe, limit=_PROFILE_FILING_LIMIT)
+        # Original founding date: the earliest Statement of Organization of ALL the filings (usually
+        # the oldest one, beyond the rows listed).
+        if founding_date:
             committee_meta["founding_date"] = founding_date
             # If founding_date differs from creation_date, flag as re-activated
             creation = committee_meta.get("creation_date")
@@ -629,6 +660,7 @@ def _bulk_committee_profile(conn, committee_id_sbe: int, scope: TimeScope) -> di
         "candidate_links": candidate_links,
         "officers": officers,
         "filing_history": filing_history,
+        "filing_count": filing_count,
         "top_donors": top_donors,
         "top_payees": top_payees,
         "donor_count": donor_count,
@@ -1115,6 +1147,33 @@ def _full_list_page(committee_id: int, kind: str):
         time_scope=scope,
         scope_default_key="all",
         time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
+    )
+
+
+@committees_bp.route('/<int:committee_id>/filings')
+def committee_filings(committee_id):
+    """Every filing of the ISBE committee, newest first, 100 per page (``?page=``); the profile lists the newest 25.
+    All time whatever the page window: the window is only carried through to the profile link. A page past
+    the last is an empty list, not the last page."""
+    conn = current_app.get_database()
+    committee_name = _isbe_committee_name(conn, committee_id)
+    if committee_name is None:
+        abort(404)
+    scope = resolve_time_scope(default="all", axis="received")
+    total = _filing_summary(conn, committee_id)[0] if _table_exists(conn, "isbe_filed_docs") else 0
+    total_pages = max(1, (total + _FILINGS_PAGE_SIZE - 1) // _FILINGS_PAGE_SIZE)
+    page = max(request.args.get("page", 1, type=int), 1)
+    offset = (page - 1) * _FILINGS_PAGE_SIZE
+    filings = _committee_filings(conn, committee_id, limit=_FILINGS_PAGE_SIZE, offset=offset) if offset < total else []
+    return render_template(
+        "committees/filings.html",
+        committee_id=committee_id,
+        committee_name=committee_name,
+        filings=filings,
+        total=total,
+        page=page,
+        total_pages=total_pages,
         scope_query=scope_params(scope),
     )
 

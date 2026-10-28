@@ -4,12 +4,11 @@ from __future__ import annotations
 import csv
 from io import StringIO
 import json
-import threading
-import time
 
 from flask import Blueprint, Response, current_app, render_template, request, url_for
 
 from database.models import Donor
+from webapp.cache_backend import RouteCache
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cycles, scope_params
 from database.federal_fec import (
@@ -38,8 +37,7 @@ from database.federal_fec import (
 )
 
 federal_finance_bp = Blueprint('federal_finance', __name__)
-_federal_geo_drilldown_cache: dict[str, dict] = {}
-_federal_geo_drilldown_cache_lock = threading.Lock()
+_federal_geo_drilldown_cache = RouteCache('federal_geo_drilldown')
 
 
 def _parse_shared_filters(window: dict | None = None) -> tuple[int | None, int, str, str]:
@@ -146,43 +144,6 @@ def _federal_cache_ttl(config_key: str, default_seconds: int) -> int:
 
 def _federal_cache_refresh_requested() -> bool:
     return request.args.get('refresh_cache', 0, type=int) == 1
-
-
-def _get_cached_federal_geo_drilldown(cache_key: str) -> dict | None:
-    now = time.monotonic()
-    with _federal_geo_drilldown_cache_lock:
-        entry = _federal_geo_drilldown_cache.get(cache_key)
-        if not entry:
-            return None
-        if float(entry.get('expires_at', 0.0)) <= now:
-            _federal_geo_drilldown_cache.pop(cache_key, None)
-            return None
-        return entry.get('payload')
-
-
-def _store_cached_federal_geo_drilldown(cache_key: str, payload: dict, ttl_seconds: int) -> None:
-    now = time.monotonic()
-    with _federal_geo_drilldown_cache_lock:
-        _federal_geo_drilldown_cache[cache_key] = {
-            'payload': payload,
-            'expires_at': now + max(15, int(ttl_seconds)),
-            'updated_at': now,
-        }
-        if len(_federal_geo_drilldown_cache) > 96:
-            stale_keys = [
-                key
-                for key, entry in _federal_geo_drilldown_cache.items()
-                if float(entry.get('expires_at', 0.0)) <= now
-            ]
-            for key in stale_keys:
-                _federal_geo_drilldown_cache.pop(key, None)
-            if len(_federal_geo_drilldown_cache) > 96:
-                oldest_keys = sorted(
-                    _federal_geo_drilldown_cache.keys(),
-                    key=lambda key: float(_federal_geo_drilldown_cache[key].get('updated_at', 0.0)),
-                )[: len(_federal_geo_drilldown_cache) - 96]
-                for key in oldest_keys:
-                    _federal_geo_drilldown_cache.pop(key, None)
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -948,7 +909,7 @@ def federal_geo_drilldown():
         }
         cache_key = json.dumps(cache_params, sort_keys=True, separators=(',', ':'))
 
-        cached = _get_cached_federal_geo_drilldown(cache_key) if cache_enabled else None
+        cached = _federal_geo_drilldown_cache.get(cache_key) if cache_enabled else None
         if cached is not None:
             drilldown = cached
         else:
@@ -968,7 +929,7 @@ def federal_geo_drilldown():
                 date_to=date_to,
             )
             if cache_enabled:
-                _store_cached_federal_geo_drilldown(cache_key, drilldown, cache_ttl)
+                _federal_geo_drilldown_cache.set(cache_key, drilldown, cache_ttl)
 
     if source_page == 'geography':
         back_url = url_for(

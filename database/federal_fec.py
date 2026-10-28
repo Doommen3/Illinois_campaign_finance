@@ -11,7 +11,6 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -82,9 +81,12 @@ def get_federal_view_snapshot(
             "is_fresh": False,
         }
 
+    # completed_at is a naive TIMESTAMP written as the session time zone's wall clock, so the
+    # age is computed where that zone is known: in the database (plan L10 / LD5).
     row = conn.execute(
         """
-        SELECT cache_key, status, payload_json, error_message, completed_at, updated_at
+        SELECT cache_key, status, payload_json, error_message, completed_at, updated_at,
+               EXTRACT(EPOCH FROM (now() - completed_at)) AS age_seconds
         FROM analytics_snapshots
         WHERE cache_key = ? AND snapshot_type = ?
         LIMIT 1
@@ -105,23 +107,11 @@ def get_federal_view_snapshot(
         }
 
     payload = json.loads(row["payload_json"]) if row["payload_json"] else None
-    completed_at = row["completed_at"]
     age_seconds = None
     is_fresh = False
-    if completed_at:
-        try:
-            if isinstance(completed_at, datetime):
-                completed_dt = (
-                    completed_at.replace(tzinfo=timezone.utc)
-                    if completed_at.tzinfo is None
-                    else completed_at.astimezone(timezone.utc)
-                )
-            else:
-                completed_dt = datetime.strptime(str(completed_at), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            age_seconds = max(0.0, (datetime.now(timezone.utc) - completed_dt).total_seconds())
-            is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
-        except (ValueError, TypeError):
-            age_seconds = None
+    if row["age_seconds"] is not None:
+        age_seconds = max(0.0, float(row["age_seconds"]))
+        is_fresh = row["status"] == "completed" and age_seconds <= float(max(1, ttl_seconds))
 
     return {
         "cache_key": row["cache_key"],

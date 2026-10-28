@@ -41,6 +41,29 @@ def test_condensed_expenditures_has_committee_date_index():
     ) in source
 
 
+def test_condensed_expenditures_has_part9_partial_index():
+    # Candidate outside-spending pages (plan outside-spending-drilldown D6) read the
+    # Part-9 rows of the matview directly: 19K rows of 3.5M. Without the partial index
+    # every candidate page is a 170-185 ms parallel seq scan (crawler-exposed, cf. A15/A16).
+    source = Path("scripts/isbe_sunshine_etl.py").read_text(encoding="utf-8")
+    assert (
+        "CREATE INDEX idx_isbe_condensed_expenditures_part9_date ON isbe_condensed_expenditures "
+        "(expended_date) WHERE d2_part LIKE '9%' AND archived = FALSE;"
+    ) in source
+    # database/pg_compat.py rewrites upper-case LIKE to ILIKE (SQLite semantics); an
+    # ILIKE predicate cannot use the partial index, so the module spells it lower-case.
+    module = Path("database/outside_spending.py").read_text(encoding="utf-8")
+    assert "e.d2_part like '9%' AND e.archived = FALSE" in module
+    assert "e.d2_part LIKE '9%'" not in module
+    # The state race builder reads the same Part-9 rows through the same index (database/analytics.py): its
+    # predicate repeats the index's, and the name prefilter is lower-case for the same reason. The upper-case
+    # LIKEs of the compat-view fallback just below it are deliberate (that view has no such index), so the
+    # absence of upper-case LIKE is NOT asserted here.
+    analytics = Path("database/analytics.py").read_text(encoding="utf-8")
+    assert "e.d2_part like '9%' AND e.archived = FALSE" in analytics
+    assert "{STRIPPED_NAME_SQL} like ANY(?)" in analytics
+
+
 def test_condensed_receipts_has_md5_donor_key_index_and_models_use_it():
     # /donors/key/<key> matches receipts on the computed donor-key expression
     # (database/models.py Donor._bulk_donor_key_sql); without an index that is a
@@ -59,6 +82,30 @@ def test_condensed_receipts_has_md5_donor_key_index_and_models_use_it():
     models = Path("database/models.py").read_text(encoding="utf-8")
     assert models.count('f"md5({donor_key_expr}) = md5(?)"') == 3
     assert 'f"{donor_key_expr} = ?"' not in models
+
+
+def test_condensed_receipts_has_normalized_donor_name_index():
+    # /lobbying/<id> and /lobbying/client/<id> (_get_receipt_activity) look up receipts by the
+    # normalized donor name through the compat view; without this expression index every
+    # page is a 1.3 s parallel seq scan over 4M rows (load-time plan L3 / P4, 2026-10-28).
+    source = Path("scripts/isbe_sunshine_etl.py").read_text(encoding="utf-8")
+    assert (
+        "CREATE INDEX idx_isbe_condensed_receipts_donor_name_norm ON isbe_condensed_receipts "
+        "(LOWER(TRIM(COALESCE(NULLIF(TRIM(first_name), ''), '') || CASE WHEN COALESCE(NULLIF(TRIM(first_name), ''), '') != '' "
+        "AND COALESCE(NULLIF(TRIM(last_name), ''), '') != '' THEN ' ' ELSE '' END || COALESCE(NULLIF(TRIM(last_name), ''), ''))));"
+    ) in source
+
+
+def test_etl_analyzes_rebuilt_relations_and_indexes_filed_doc_received_datetime():
+    # Load-time plan L12: nothing in the refresh chain ran ANALYZE after the drop-and-reload,
+    # so the first requests after each weekly import planned on empty statistics
+    # (prod incident 2026-10-22). The freshness gate's MAX(received_datetime) probe on
+    # isbe_filed_docs was a 957K-row seq scan for want of an index.
+    source = Path("scripts/isbe_sunshine_etl.py").read_text(encoding="utf-8")
+    assert "ANALYZE isbe_condensed_receipts, isbe_condensed_expenditures, isbe_most_recent_filings" in source
+    assert (
+        "CREATE INDEX idx_isbe_filed_docs_received_datetime ON isbe_filed_docs (received_datetime);"
+    ) in source
 
 
 def test_filed_doc_pickers_order_nulls_last():

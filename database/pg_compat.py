@@ -7,10 +7,13 @@ This module enables incremental runtime migration by letting existing code call
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import re
-from typing import Any, Iterable
+import time
+from typing import Any, Callable, Iterable, Iterator
 
 import psycopg
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 
@@ -266,6 +269,84 @@ def _translate_sqlite_functions(sql: str) -> str:
     return translated
 
 
+# Catalog-probe memo (plan L9). Every _table_exists / _column_exists copy ends in the
+# sqlite_master / PRAGMA table_info emulation below, a page issues 5-26 of them, and each one
+# cost a catalog query. Answers are kept per process (every web request opens a new
+# connection, so a per-connection memo would save nothing), keyed by (dsn, schema, ...) so
+# per-test schemas never share an entry; negative ones expire sooner. DDL run through this
+# layer drops the memo when it is issued and again when it commits; index DDL is ignored (it
+# changes neither answer, and /lobbying/flows/data issues it on every request). Changes made
+# by another process (the weekly ETL, the compat swap) show up after invalidate_catalog_memo()
+# or once an entry has expired. A falsy answer (absent table, no columns, a zero count) expires
+# after _CATALOG_MEMO_NEGATIVE_TTL_SECONDS: a stale "absent" answer is what poisons the route
+# caches during a live import (an empty payload is cached for hours), so it is kept only a few
+# seconds. Every other answer lives _CATALOG_MEMO_TTL_SECONDS; a stale "present" answer heals
+# through the cursor below, which drops the memo when a statement raises UndefinedTable or
+# UndefinedColumn. PRAGMA temp.table_info is never memoized.
+_CATALOG_MEMO_TTL_SECONDS = 300.0
+_CATALOG_MEMO_NEGATIVE_TTL_SECONDS = 5.0
+_catalog_memo: dict[tuple, tuple[float, Any]] = {}
+_catalog_memo_generation = 0
+_DDL_RE = re.compile(r"\b(?:CREATE|DROP|ALTER)\b(?!\s+(?:UNIQUE\s+)?INDEX\b)", re.IGNORECASE)
+
+
+def invalidate_catalog_memo() -> None:
+    """Forget every memoized catalog answer and every schema_memo() value."""
+    global _catalog_memo_generation
+    _catalog_memo_generation += 1
+    _catalog_memo.clear()
+
+
+def schema_memo(conn: PostgresCompatConnection, key: tuple, compute: Callable[[], Any]) -> Any:
+    """Return ``compute()``, computed once per (database, schema, *key) in this process.
+
+    Same lifetime as the catalog memo above. A connection with uncommitted DDL neither reads
+    nor fills it: it sees a catalog that no other connection sees yet.
+    """
+    if conn._uncommitted_ddl:
+        return compute()
+    memo_key = (conn._dsn, conn._schema, *key)
+    now = time.monotonic()
+    entry = _catalog_memo.get(memo_key)
+    if entry is not None and entry[0] > now:
+        return entry[1]
+    generation = _catalog_memo_generation
+    value = compute()
+    if generation == _catalog_memo_generation:  # not invalidated while computing
+        ttl = _CATALOG_MEMO_NEGATIVE_TTL_SECONDS if not value else _CATALOG_MEMO_TTL_SECONDS
+        _catalog_memo[memo_key] = (now + ttl, value)
+    return value
+
+
+@contextmanager
+def statement_timeout_scope(conn: PostgresCompatConnection, ms: int) -> Iterator[None]:
+    """Give every statement run inside the block a budget of ``ms`` milliseconds (plan L2).
+
+    A statement over budget is cancelled by the server and raises
+    psycopg.errors.QueryCanceled, which propagates. The budget is a SET LOCAL inside a
+    savepoint. SET LOCAL outlives RELEASE SAVEPOINT, so a normal exit puts the previous value
+    back before releasing; an error rolls back to the savepoint, unless the whole transaction
+    is already gone (the compat cursor rolls back on a failed statement). Either way the
+    statements after the block run under the budget they had before it.
+    """
+    pg = conn._pg_conn
+    previous = pg.execute("SELECT current_setting('statement_timeout') AS value").fetchone()["value"]
+    pg.execute("SAVEPOINT ilcf_statement_timeout")
+    pg.execute(f"SET LOCAL statement_timeout = {int(ms)}")
+    completed = False
+    try:
+        yield
+        completed = True
+    finally:
+        status = pg.info.transaction_status
+        if completed and status == TransactionStatus.INTRANS:
+            pg.execute("SELECT set_config('statement_timeout', %s, true)", (previous,))
+            pg.execute("RELEASE SAVEPOINT ilcf_statement_timeout")
+        elif status in (TransactionStatus.INTRANS, TransactionStatus.INERROR):
+            pg.execute("ROLLBACK TO SAVEPOINT ilcf_statement_timeout")
+            pg.execute("RELEASE SAVEPOINT ilcf_statement_timeout")
+
+
 class PostgresCompatCursor:
     def __init__(self, conn: "PostgresCompatConnection") -> None:
         self._conn = conn
@@ -297,6 +378,8 @@ class PostgresCompatCursor:
             return self
 
         self._fake_rows = None
+        if _DDL_RE.search(stripped):
+            self._conn._note_ddl()
         translated = sql
         # Apply DDL translation for CREATE TABLE statements
         upper = stripped.upper()
@@ -324,13 +407,17 @@ class PostgresCompatCursor:
                         self._conn._pg_conn.execute("RELEASE SAVEPOINT _lastrowid_sp")
                     except Exception:
                         pass
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+                invalidate_catalog_memo()  # a stale "present" answer; before rollback(), which can raise
             self._conn.rollback()
             raise
         return self
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]) -> "PostgresCompatCursor":
         self._fake_rows = None
+        if _DDL_RE.search(sql):
+            self._conn._note_ddl()
         translated = sql
         upper = sql.strip().upper()
         if upper.startswith("CREATE TABLE") or upper.startswith("CREATE TEMP TABLE"):
@@ -340,7 +427,9 @@ class PostgresCompatCursor:
         translated = _qmark_to_percent_s(_translate_sqlite_functions(translated))
         try:
             self._cursor.executemany(translated, seq_of_params)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn)):
+                invalidate_catalog_memo()  # a stale "present" answer; before rollback(), which can raise
             self._conn.rollback()
             raise
         return self
@@ -395,10 +484,12 @@ class PostgresCompatCursor:
 class PostgresCompatConnection:
     """Connection wrapper that emulates the sqlite3 API used by this project."""
 
-    def __init__(self, dsn: str, *, schema: str | None = None):
+    def __init__(self, dsn: str, *, schema: str | None = None, **connect_kwargs: Any):
+        """``connect_kwargs`` go to psycopg.connect (get_db passes the web guards this way)."""
         self._dsn = dsn
         self._schema = schema or "public"
-        self._pg_conn = psycopg.connect(dsn, row_factory=dict_row)
+        self._uncommitted_ddl = False  # DDL issued since the last commit / rollback
+        self._pg_conn = psycopg.connect(dsn, row_factory=dict_row, **connect_kwargs)
         if schema and schema != "public":
             self._pg_conn.execute(f"SET search_path TO {schema}, public")
             self._pg_conn.commit()
@@ -425,7 +516,7 @@ class PostgresCompatConnection:
         """
         # Commit any pending transaction first so DDL runs cleanly
         try:
-            self._pg_conn.commit()
+            self.commit()
         except Exception:
             pass
 
@@ -436,16 +527,26 @@ class PostgresCompatConnection:
         # Strip trailing whitespace/semicolons that could produce empty statements
         adapted = adapted.rstrip().rstrip(";")
 
+        self._note_ddl()
         # Execute the whole script as one multi-statement command via pipeline
         with self._pg_conn.cursor() as cur:
             cur.execute(adapted)
-        self._pg_conn.commit()
+        self.commit()
 
     def commit(self) -> None:
         self._pg_conn.commit()
+        if self._uncommitted_ddl:
+            self._uncommitted_ddl = False
+            invalidate_catalog_memo()
 
     def rollback(self) -> None:
         self._pg_conn.rollback()
+        self._uncommitted_ddl = False
+
+    def _note_ddl(self) -> None:
+        """DDL went through this connection: drop the catalog memo now and again at commit."""
+        self._uncommitted_ddl = True
+        invalidate_catalog_memo()
 
     def close(self) -> None:
         self._pg_conn.close()
@@ -454,11 +555,12 @@ class PostgresCompatConnection:
     def in_transaction(self) -> bool:
         return self._pg_conn.info.transaction_status != 0
 
-    def set_progress_handler(self, handler, n: int) -> None:  # noqa: ARG002
-        # SQLite-only optimization hook. Intentionally a no-op on PostgreSQL.
-        return None
-
     def _sqlite_master_table_exists(self, table_name: str) -> list[dict[str, Any]]:
+        if schema_memo(self, ("table", table_name), lambda: self._read_table_exists(table_name)):
+            return [{"one": 1}]
+        return []
+
+    def _read_table_exists(self, table_name: str) -> bool:
         schema = self._schema
         try:
             row = self._pg_conn.execute(
@@ -487,71 +589,65 @@ class PostgresCompatConnection:
                 """,
                 (schema, table_name, schema, table_name),
             ).fetchone()
-        return [{"one": 1}] if row else []
+        return row is not None
 
     def _pragma_table_info(self, table_name: str, *, temp: bool = False) -> list[dict[str, Any]]:
         if temp:
             return self._pragma_table_info_temp(table_name)
+        rows = schema_memo(self, ("table_info", table_name), lambda: self._read_table_info(table_name))
+        return [dict(row) for row in rows]
+
+    def _read_table_info(self, table_name: str) -> list[dict[str, Any]]:
         schema = self._schema
+        # information_schema.columns leaves materialized views out, so their columns come from
+        # pg_attribute (second branch); without it every _column_exists() on a matview is False.
+        sql = """
+            WITH pk_columns AS (
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+                 AND tc.table_name = kcu.table_name
+                WHERE tc.table_schema = %s
+                  AND tc.table_name = %s
+                  AND tc.constraint_type = 'PRIMARY KEY'
+            )
+            SELECT
+                c.ordinal_position - 1 AS cid,
+                c.column_name AS name,
+                c.data_type AS type,
+                CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+                c.column_default AS dflt_value,
+                CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
+            FROM information_schema.columns c
+            LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
+            WHERE c.table_schema = %s
+              AND c.table_name = %s
+            UNION ALL
+            SELECT
+                a.attnum - 1,
+                a.attname,
+                pg_catalog.format_type(a.atttypid, a.atttypmod),
+                CASE WHEN a.attnotnull THEN 1 ELSE 0 END,
+                NULL,
+                0
+            FROM pg_catalog.pg_attribute a
+            JOIN pg_catalog.pg_class m ON m.oid = a.attrelid
+            JOIN pg_catalog.pg_namespace n ON n.oid = m.relnamespace
+            WHERE n.nspname = %s
+              AND m.relname = %s
+              AND m.relkind = 'm'
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            ORDER BY cid
+        """
+        params = (schema, table_name, schema, table_name, schema, table_name)
         try:
-            rows = self._pg_conn.execute(
-                """
-                WITH pk_columns AS (
-                    SELECT kcu.column_name
-                    FROM information_schema.table_constraints tc
-                    JOIN information_schema.key_column_usage kcu
-                      ON tc.constraint_name = kcu.constraint_name
-                     AND tc.table_schema = kcu.table_schema
-                     AND tc.table_name = kcu.table_name
-                    WHERE tc.table_schema = %s
-                      AND tc.table_name = %s
-                      AND tc.constraint_type = 'PRIMARY KEY'
-                )
-                SELECT
-                    c.ordinal_position - 1 AS cid,
-                    c.column_name AS name,
-                    c.data_type AS type,
-                    CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
-                    c.column_default AS dflt_value,
-                    CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
-                FROM information_schema.columns c
-                LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
-                WHERE c.table_schema = %s
-                  AND c.table_name = %s
-                ORDER BY c.ordinal_position
-                """,
-                (schema, table_name, schema, table_name),
-            ).fetchall()
+            rows = self._pg_conn.execute(sql, params).fetchall()
         except Exception:
             self._pg_conn.rollback()
-            rows = self._pg_conn.execute(
-                """
-                WITH pk_columns AS (
-                    SELECT kcu.column_name
-                    FROM information_schema.table_constraints tc
-                    JOIN information_schema.key_column_usage kcu
-                      ON tc.constraint_name = kcu.constraint_name
-                     AND tc.table_schema = kcu.table_schema
-                     AND tc.table_name = kcu.table_name
-                    WHERE tc.table_schema = %s
-                      AND tc.table_name = %s
-                      AND tc.constraint_type = 'PRIMARY KEY'
-                )
-                SELECT
-                    c.ordinal_position - 1 AS cid,
-                    c.column_name AS name,
-                    c.data_type AS type,
-                    CASE WHEN c.is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
-                    c.column_default AS dflt_value,
-                    CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END AS pk
-                FROM information_schema.columns c
-                LEFT JOIN pk_columns pk ON pk.column_name = c.column_name
-                WHERE c.table_schema = %s
-                  AND c.table_name = %s
-                ORDER BY c.ordinal_position
-                """,
-                (schema, table_name, schema, table_name),
-            ).fetchall()
+            rows = self._pg_conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
     def _pragma_table_info_temp(self, table_name: str) -> list[dict[str, Any]]:

@@ -3,15 +3,17 @@
 Plan profiles-races-dated-widgets, step C1 (section 2.4, journal rows J-C1..J-C3). Lists every
 committee linked to one ISBE candidate, most recently active first, so a reader can tell which
 are still live. Built on the ISBE tables and matviews from ``scripts/isbe_sunshine_etl.py``.
-The landing page ``/candidates`` stays in ``main.py``.
+The landing page ``/candidates`` stays in ``main.py``. ``/candidates/<id>/outside-spending`` lists
+the D-2 Part 9 rows attributed to the candidate (``database/outside_spending.py``).
 """
 from collections import Counter
 from dataclasses import replace
 from datetime import date
 
-from flask import Blueprint, abort, current_app, render_template
+from flask import Blueprint, abort, current_app, render_template, request, url_for
 
 from database.committee_families import accepted_family_map
+from database.outside_spending import get_candidate_outside_spending, summarize
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import (
     TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_params, scope_where,
@@ -21,6 +23,7 @@ candidates_bp = Blueprint("candidates", __name__)
 
 RECENT_YEARS = 1  # "Recently active" badge: last activity within 12 months of data_through
 MUTED_YEARS = 4   # muted row: last activity 4+ years before data_through
+LINE_ITEMS_PER_PAGE = 100  # /candidates/<id>/outside-spending
 
 # Committees linked to the candidate (one qmark parameter: the candidate id).
 _LINKED_COMMITTEES = "(SELECT committee_id FROM isbe_candidate_committees WHERE candidate_id = ?)"
@@ -235,6 +238,74 @@ def candidate_detail(candidate_id):
         totals=totals,
         candidacies=_candidacies(conn, candidate_id),
         cycles=_receipts_by_cycle(conn, candidate_id),
+        outside=get_candidate_outside_spending(conn, candidate_id, scope=scope),
+        outside_url=url_for("candidates.candidate_outside_spending", candidate_id=candidate_id, **scope_params(scope)),
+        time_scope=scope,
+        scope_default_key="all",
+        time_scope_source_label="ISBE",
+        scope_query=scope_params(scope),
+    )
+
+
+@candidates_bp.route("/<int:candidate_id>/outside-spending")
+def candidate_outside_spending(candidate_id):
+    """Outside spending line items: the D-2 Part 9 rows attributed to the candidate, in the window.
+
+    Filters: ``support_oppose`` (S / O), ``committee_id`` (the spender); ``sort`` date | amount,
+    ``dir`` desc | asc; ``page`` (LINE_ITEMS_PER_PAGE rows). The summary line is the window's,
+    before the filters.
+    """
+    conn = current_app.get_database()
+    if not _table_exists(conn, "isbe_candidates"):
+        abort(404)
+    candidate = _candidate_header(conn, candidate_id)
+    if candidate is None:
+        abort(404)
+
+    scope = resolve_time_scope(default="all", axis="transaction", data_through=latest_data_date("isbe"))
+    support_oppose = request.args.get("support_oppose", "")
+    if support_oppose not in ("S", "O"):
+        support_oppose = ""
+    committee_id = request.args.get("committee_id", type=int)
+    sort_by = request.args.get("sort", "date")
+    if sort_by not in ("date", "amount"):
+        sort_by = "date"
+    sort_dir = "asc" if request.args.get("dir") == "asc" else "desc"
+    page = max(request.args.get("page", 1, type=int), 1)
+
+    outside = get_candidate_outside_spending(conn, candidate_id, scope=scope)
+    rows = outside["rows"] if outside else []
+    if support_oppose:
+        rows = [row for row in rows if row["supporting" if support_oppose == "S" else "opposing"]]
+    if committee_id is not None:
+        rows = [row for row in rows if row["committee_id"] == committee_id]
+    if sort_by == "amount":
+        rows = sorted(
+            rows,
+            key=lambda row: (row["amount"], row["expended_date"], row["expenditure_id"]),
+            reverse=sort_dir == "desc",
+        )
+    elif sort_dir == "asc":
+        rows = rows[::-1]  # get_candidate_outside_spending lists newest first
+    total_pages = max(1, (len(rows) + LINE_ITEMS_PER_PAGE - 1) // LINE_ITEMS_PER_PAGE)
+    first = (page - 1) * LINE_ITEMS_PER_PAGE
+    spenders = outside["by_spender"] if outside else []
+    if committee_id is not None and all(spender["committee_id"] != committee_id for spender in spenders):
+        # A spender filter carried into a window without that spender's rows stays visible, selected.
+        spenders = [*spenders, {"committee_id": committee_id, "committee_name": f"Committee {committee_id}"}]
+    return render_template(
+        "candidates/outside_spending.html",
+        candidate=candidate,
+        candidate_id=candidate_id,
+        summary=outside["window"] if outside else summarize([]),
+        spenders=spenders,
+        rows=rows[first:first + LINE_ITEMS_PER_PAGE],
+        support_oppose=support_oppose,
+        committee_id=committee_id,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=page,
+        total_pages=total_pages,
         time_scope=scope,
         scope_default_key="all",
         time_scope_source_label="ISBE",

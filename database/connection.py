@@ -272,6 +272,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, 'fec_candidate_cycle_totals', 'disbursements', 'disbursements REAL NOT NULL DEFAULT 0')
     _ensure_column(conn, 'analytics_donor_committee_agg', 'occupation', 'occupation TEXT')
     _ensure_column(conn, 'analytics_donor_committee_agg', 'employer', 'employer TEXT')
+    # Load-time P5 geo keys: an ALTER in schema.sql would take ACCESS EXCLUSIVE on the 1.3M-row agg at every init-db (review C17).
+    _ensure_column(conn, 'analytics_donor_committee_agg', 'donor_state_key', 'donor_state_key TEXT')
+    _ensure_column(conn, 'analytics_donor_committee_agg', 'donor_city_key', 'donor_city_key TEXT')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_version', 'materialization_version INTEGER NOT NULL DEFAULT 1')
     _ensure_column(conn, 'analytics_materialized_meta', 'materialization_notes', 'materialization_notes TEXT')
     _ensure_column(conn, 'bulk_receipts_clean', 'received_datetime_raw', 'received_datetime_raw TEXT')
@@ -319,13 +322,28 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 _get_db_override = None  # Set by test conftest to redirect all callers
 
+WEB_APPLICATION_NAME = 'ilcf-web'
 
-def get_db(db_path: str = None) -> sqlite3.Connection:
+
+def get_db(
+    db_path: str = None,
+    *,
+    web: bool = False,
+    statement_timeout_ms: int | None = None,
+    max_parallel_workers_per_gather: int | None = None,
+) -> sqlite3.Connection:
     """Get a database connection.
 
     Args:
         db_path: Optional path to the database file. If not provided,
                  uses the default path in the data directory.
+        web: True for a web-request connection (create_app's get_database). It
+             gets application_name 'ilcf-web' and the two guards below as
+             connect options: session defaults that survive rollbacks and
+             failed statements (plan L2 / LD3). CLI, prewarm and warm builders
+             leave it False and keep the server defaults.
+        statement_timeout_ms: web only; the per-statement cap in milliseconds.
+        max_parallel_workers_per_gather: web only; parallel workers per Gather.
 
     Returns:
         A sqlite3 connection with row factory set to sqlite3.Row
@@ -339,7 +357,16 @@ def get_db(db_path: str = None) -> sqlite3.Connection:
         db_target = os.environ.get('DATABASE_PATH', str(DEFAULT_DB_PATH))
 
     if _is_postgres_dsn(db_target):
-        return PostgresCompatConnection(db_target)
+        if not web:
+            return PostgresCompatConnection(db_target)
+        options = []
+        if statement_timeout_ms is not None:
+            options.append(f'-c statement_timeout={int(statement_timeout_ms)}')
+        if max_parallel_workers_per_gather is not None:
+            options.append(f'-c max_parallel_workers_per_gather={int(max_parallel_workers_per_gather)}')
+        return PostgresCompatConnection(
+            db_target, application_name=WEB_APPLICATION_NAME, options=' '.join(options)
+        )
 
     # Ensure the directory exists
     Path(db_target).parent.mkdir(parents=True, exist_ok=True)

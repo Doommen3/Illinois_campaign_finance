@@ -238,8 +238,8 @@ def _seed_isbe_tables(conn):
             city TEXT, state TEXT, zipcode TEXT,
             d2_part TEXT, purpose TEXT,
             candidate_name TEXT, office TEXT,
-            supporting INTEGER DEFAULT 0,
-            opposing INTEGER DEFAULT 0,
+            supporting BOOLEAN DEFAULT FALSE,
+            opposing BOOLEAN DEFAULT FALSE,
             archived BOOLEAN DEFAULT FALSE,
             country TEXT,
             redaction_requested INTEGER DEFAULT 0

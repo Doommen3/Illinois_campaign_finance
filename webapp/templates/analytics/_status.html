@@ -23,18 +23,6 @@
     {% if snapshot_meta and snapshot_meta.error_message %}
     <p class="subtitle">Snapshot error: internal details hidden in public view (check server logs).</p>
     {% endif %}
-    {% if snapshot_loading %}
-    <p class="subtitle">Full snapshot is building in the background. Reload this page in a few seconds.</p>
-    {% elif snapshot_refreshed %}
-    <p class="subtitle">Snapshot refresh was queued.</p>
-    {% endif %}
-    <form class="search-form analytics-form analytics-inline-form" method="get" action="{{ url_for(request.endpoint) }}">
-        <input type="hidden" name="load_mode" value="full">
-        {% for key, value in refresh_params.items() %}
-        <input type="hidden" name="{{ key }}" value="{{ value }}">
-        {% endfor %}
-        <input type="hidden" name="refresh_full" value="1">
-        <button type="submit">Refresh Full Snapshot</button>
-    </form>
+    <p class="subtitle">Snapshots are no longer built or refreshed from page requests; without a stored snapshot the sections are computed live.</p>
 </div>
 {% endif %}

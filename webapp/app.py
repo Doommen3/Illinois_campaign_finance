@@ -6,8 +6,9 @@ from datetime import date, datetime, timezone
 import hmac
 import threading
 import time
+from urllib.parse import quote, urlencode
 
-from flask import Flask, abort, g, jsonify, render_template, request
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request
 
 import config as app_config
 from database.connection import close_db, get_db
@@ -16,6 +17,36 @@ from webapp.utils.scope_links import scope_form_hidden, scope_presets, scope_url
 
 DEFAULT_INSECURE_SECRET = "dev-secret-key-change-in-production"
 DEFAULT_API_RATE_LIMIT_PER_MINUTE = 120
+
+# LD1 (.claude/plans/load-times.md): keep crawlers off search, the geo drill-downs, the non-public tools
+# and every cache-busting or scoped query-string variant (scoped views are for readers, not indexes).
+ROBOTS_DISALLOW_RULES = (
+    "/search",
+    "/analytics/geo-drilldown",
+    "/federal-finance/geo-drilldown",
+    "/api/",
+    "/experimental/",
+    "/compare",
+    "/investigate",
+    "/person-intelligence",
+    "/admin/",
+    "/manual-entry/",
+    "/auth/",
+    "/*?*refresh_cache=",
+    "/*?*refresh_full=",
+    "/*?*sync_full=",
+    "/*?*load_mode=",
+    "/*?*period=",
+    "/*?*cycle=",
+    "/*?*year=",
+    "/*?*date_from=",
+)
+
+# LD4: query parameters that force a cache rebuild; honoured only for a signed-in user.
+REFRESH_QUERY_PARAMS = ("refresh_cache", "refresh_full", "sync_full")
+
+# LD2: blueprints whose HTML is never marked edge-cacheable.
+EDGE_CACHE_EXCLUDED_BLUEPRINTS = frozenset({"auth", "admin", "manual_entry", "api", "experimental"})
 
 
 def _as_bool(value) -> bool:
@@ -141,21 +172,13 @@ class InMemoryWindowRateLimiter:
 
 def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days: int) -> dict:
     local_receipt_date = None
-    if _table_exists(conn, "bulk_receipts_clean"):
-        if _column_exists(conn, "bulk_receipts_clean", "is_archived"):
-            local_receipt_date = _scalar(
-                conn,
-                """
-                SELECT MAX(received_date) AS max_date
-                FROM bulk_receipts_clean
-                WHERE NOT COALESCE(is_archived::boolean, FALSE)
-                """,
-            )
-        else:
-            local_receipt_date = _scalar(
-                conn,
-                "SELECT MAX(received_date) AS max_date FROM bulk_receipts_clean",
-            )
+    # The matview's native DATE/BOOLEAN columns answer from its received_date index (~1 ms); the same
+    # MAX through the bulk_receipts_clean compat view is a parallel seq scan (~1.5 s on prod data).
+    if _table_exists(conn, "isbe_condensed_receipts"):
+        local_receipt_date = _scalar(
+            conn,
+            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts WHERE archived = FALSE",
+        )
 
     federal_receipt_date = None
     federal_disbursement_date = None
@@ -276,7 +299,6 @@ def create_app(config=None):
             "SEARCH_QUERY_TIMEOUT_MS": int(app_config.SEARCH_QUERY_TIMEOUT_MS),
             "SEARCH_SLOW_QUERY_MS": int(app_config.SEARCH_SLOW_QUERY_MS),
             "SEARCH_RESULTS_CACHE_TTL_SECONDS": int(app_config.SEARCH_RESULTS_CACHE_TTL_SECONDS),
-            "SEARCH_RESULTS_CACHE_MAX_ENTRIES": int(app_config.SEARCH_RESULTS_CACHE_MAX_ENTRIES),
             "FEDERAL_VIEW_CACHE_ENABLED": _as_bool(app_config.FEDERAL_VIEW_CACHE_ENABLED),
             "FEDERAL_OVERVIEW_CACHE_TTL_SECONDS": int(app_config.FEDERAL_OVERVIEW_CACHE_TTL_SECONDS),
             "FEDERAL_NETWORKS_CACHE_TTL_SECONDS": int(app_config.FEDERAL_NETWORKS_CACHE_TTL_SECONDS),
@@ -284,6 +306,7 @@ def create_app(config=None):
             "FEDERAL_MATCHING_CACHE_TTL_SECONDS": int(app_config.FEDERAL_MATCHING_CACHE_TTL_SECONDS),
             "LOCAL_DATA_STALE_DAYS": int(app_config.LOCAL_DATA_STALE_DAYS),
             "FEDERAL_DATA_STALE_DAYS": int(app_config.FEDERAL_DATA_STALE_DAYS),
+            "GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS": int(app_config.GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS),
             "DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_INSIGHTS_CACHE_TTL_SECONDS),
             "DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_CANDIDATE_STATS_CACHE_TTL_SECONDS),
             "DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS": int(app_config.DASHBOARD_TOP_DONORS_CACHE_TTL_SECONDS),
@@ -291,11 +314,17 @@ def create_app(config=None):
             "ANALYTICS_NETWORKS_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_NETWORKS_CACHE_TTL_SECONDS),
             "ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS),
             "ANALYTICS_RISK_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_RISK_CACHE_TTL_SECONDS),
+            "ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS),
+            "ANALYTICS_DONORS_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_DONORS_CACHE_TTL_SECONDS),
             "ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS),
             "FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS": int(app_config.FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS),
             "IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS": int(app_config.IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS),
             "DASHBOARD_PREWARM_ENABLED": _as_bool(app_config.DASHBOARD_PREWARM_ENABLED),
             "ROUTE_PERF_CACHE_ENABLED": _as_bool(app_config.ROUTE_PERF_CACHE_ENABLED),
+            "HTML_EDGE_CACHE_SECONDS": int(app_config.HTML_EDGE_CACHE_SECONDS),
+            "REFRESH_PARAMS_REQUIRE_LOGIN": bool(app_config.REFRESH_PARAMS_REQUIRE_LOGIN),
+            "WEB_STATEMENT_TIMEOUT_MS": int(app_config.WEB_STATEMENT_TIMEOUT_MS),
+            "WEB_MAX_PARALLEL_WORKERS_PER_GATHER": int(app_config.WEB_MAX_PARALLEL_WORKERS_PER_GATHER),
         }
     )
 
@@ -382,6 +411,45 @@ def create_app(config=None):
             return None
         abort(400, description="Invalid CSRF token.")
 
+    def has_session_cookie() -> bool:
+        # Checking request.cookies leaves the session unread, so a cookie-less response gets no Vary: Cookie.
+        return app.config["SESSION_COOKIE_NAME"] in request.cookies
+
+    @app.before_request
+    def gate_refresh_params():
+        """LD4: only a signed-in user may force a rebuild; anyone else goes to the same URL without the refresh keys."""
+        if request.method not in {"GET", "HEAD"}:
+            return None
+        if not app.config.get("REFRESH_PARAMS_REQUIRE_LOGIN", True):
+            return None
+        if not any(key in request.args for key in REFRESH_QUERY_PARAMS):
+            return None
+        if has_session_cookie() and get_current_user() is not None:
+            return None
+        kept = [(key, value) for key, value in request.args.items(multi=True) if key not in REFRESH_QUERY_PARAMS]
+        location = request.script_root + quote(request.path, safe="/")
+        if kept:
+            location = f"{location}?{urlencode(kept)}"
+        return redirect(location, code=302)
+
+    @app.after_request
+    def add_edge_cache_header(response):
+        """LD2: anonymous public HTML (200/404) may be served by the edge cache for HTML_EDGE_CACHE_SECONDS."""
+        seconds = int(app.config.get("HTML_EDGE_CACHE_SECONDS", 300))
+        if (
+            seconds > 0
+            and request.method in {"GET", "HEAD"}
+            and response.status_code in {200, 404}
+            and response.mimetype == "text/html"
+            and request.blueprint not in EDGE_CACHE_EXCLUDED_BLUEPRINTS
+            and not has_session_cookie()
+        ):
+            if g.get("_no_edge_cache"):
+                response.headers["Cache-Control"] = "no-store"
+            else:
+                response.headers["Cache-Control"] = f"public, max-age=0, s-maxage={seconds}"
+        return response
+
     # Register teardown - close connection at end of each request
     @app.teardown_appcontext
     def teardown_db(exception):
@@ -392,7 +460,12 @@ def create_app(config=None):
     # Add database helper - creates per-request connection using Flask's g object
     def get_database():
         if '_database' not in g:
-            g._database = get_db(app.config['DATABASE_TARGET'])
+            g._database = get_db(
+                app.config['DATABASE_TARGET'],
+                web=True,
+                statement_timeout_ms=app.config["WEB_STATEMENT_TIMEOUT_MS"],
+                max_parallel_workers_per_gather=app.config["WEB_MAX_PARALLEL_WORKERS_PER_GATHER"],
+            )
         return g._database
 
     app.get_database = get_database
@@ -441,11 +514,18 @@ def create_app(config=None):
 
     @app.errorhandler(404)
     def not_found(error):
+        g._skip_global_data_status = True
         return render_template("errors/404.html"), 404
 
     @app.errorhandler(500)
     def internal_error(error):
+        g._skip_global_data_status = True
         return render_template("errors/500.html"), 500
+
+    @app.route("/robots.txt")
+    def robots_txt():
+        body = "User-agent: *\n" + "".join(f"Disallow: {rule}\n" for rule in ROBOTS_DISALLOW_RULES)
+        return Response(body, mimetype="text/plain")
 
     # Confidence label filter for cross-match scores
     def confidence_label(score):
@@ -488,6 +568,8 @@ def create_app(config=None):
                     relationships_ttl=max(15, int(app.config.get("ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
                     risk_ttl=max(15, int(app.config.get("ANALYTICS_RISK_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
                     overview_ttl=max(15, int(app.config.get("ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+                    geography_ttl=max(15, int(app.config.get("ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
+                    donors_ttl=max(15, int(app.config.get("ANALYTICS_DONORS_CACHE_TTL_SECONDS", ANALYTICS_CACHE_TTL_FALLBACK_SECONDS))),
                 )
             except Exception:
                 return
@@ -502,7 +584,7 @@ def create_app(config=None):
         """
         data_status = None
         try:
-            ttl_seconds = max(0, int(app.config.get("GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS", 45)))
+            ttl_seconds = max(0, int(app.config.get("GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS", 900)))
             now = time.monotonic()
             cache = app.extensions.get("global_data_status_cache", {"value": None, "expires_at": 0.0})
 
@@ -537,7 +619,8 @@ def create_app(config=None):
                 return '$0.00'
             return '${:,.2f}'.format(value)
 
-        data_status = get_global_data_status()
+        # Error pages (404/500) render without the Data Status strip: a bot's 404 runs no freshness queries.
+        data_status = None if g.get("_skip_global_data_status") else get_global_data_status()
 
         # Viz Lab nav link: shown only when the feature flag is on AND graph.json exists under
         # viz_lab._artifact_root() (the artifacts aren't deployed to prod, where it would dead-end in a 404).
@@ -548,7 +631,7 @@ def create_app(config=None):
         return dict(
             format_currency=format_currency,
             confidence_label=confidence_label,
-            current_manual_user=get_current_user(),
+            current_manual_user=get_current_user() if has_session_cookie() else None,
             public_contact_email=(app.config.get('PUBLIC_CONTACT_EMAIL') or '').strip(),
             csrf_token=get_csrf_token,
             global_data_status=data_status,

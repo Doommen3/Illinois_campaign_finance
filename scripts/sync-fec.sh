@@ -68,7 +68,7 @@ log "Starting FEC sync (cycle=$CYCLE, max_calls=$MAX_CALLS, python=$PYTHON). Log
 # --refresh-cache is required: without it the sync replays the legacy payload cache
 # (api_calls_made=0) and refreshes nothing — the prod timer ran that way from Feb to Oct 2026
 # and Schedule A sat at 2026-07-01 (see CLAUDE.md, "FEC silent no-op").
-log "Step 1/3: sync-fec-il-federal"
+log "Step 1/4: sync-fec-il-federal"
 "$PYTHON" run.py sync-fec-il-federal \
     --cycle "$CYCLE" \
     --contributor-state IL \
@@ -77,13 +77,18 @@ log "Step 1/3: sync-fec-il-federal"
     >> "$LOG_FILE" 2>&1
 
 # --- Step 2: Rebuild donor identities ----------------------------------------
-log "Step 2/3: rebuild-fec-donor-identities"
+log "Step 2/4: rebuild-fec-donor-identities"
 "$PYTHON" run.py rebuild-fec-donor-identities \
     >> "$LOG_FILE" 2>&1
 
 # --- Step 3: Refresh analytics -----------------------------------------------
-log "Step 3/3: refresh-analytics --with-snapshot"
+log "Step 3/4: refresh-analytics --with-snapshot"
 "$PYTHON" run.py refresh-analytics --with-snapshot \
     >> "$LOG_FILE" 2>&1
+
+# --- Step 4: Warm the route caches (refresh-analytics flushed them) ----------
+log "Step 4/4: warm_caches"
+"$PYTHON" scripts/warm_caches.py \
+    >> "$LOG_FILE" 2>&1 || log "warm_caches failed (pages build on first request instead)"
 
 log "FEC sync complete. Full log: $LOG_FILE"

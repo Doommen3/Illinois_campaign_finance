@@ -159,7 +159,7 @@ def test_search_results_cached_across_requests(tmp_path: Path, monkeypatch):
     db_path = str(tmp_path / "search_cache.db")
     init_db(db_path)
 
-    main_routes._search_results_cache.clear()
+    main_routes._search_results_cache.invalidate()  # RouteCache since the 2026-10-28 search unit
     call_count = {"value": 0}
 
     def fake_search_reports(*args, **kwargs):
@@ -174,7 +174,6 @@ def test_search_results_cached_across_requests(tmp_path: Path, monkeypatch):
             "DATABASE_PATH": db_path,
             "ROUTE_PERF_CACHE_ENABLED": True,
             "SEARCH_RESULTS_CACHE_TTL_SECONDS": 60,
-            "SEARCH_RESULTS_CACHE_MAX_ENTRIES": 64,
         }
     )
 

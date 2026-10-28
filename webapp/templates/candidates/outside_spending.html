@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}{{ candidate.name }} - Outside Spending{% endblock %}
+
+{% block content %}
+{% macro sort_link(key, label) -%}
+{%- set next_dir = ('asc' if sort_dir == 'desc' else 'desc') if sort_by == key else 'desc' -%}
+<a href="{{ url_for('candidates.candidate_outside_spending', candidate_id=candidate_id, sort=key, dir=next_dir, support_oppose=support_oppose or None, committee_id=committee_id, **scope_query) }}">{{ label }}{% if sort_by == key %} {{ '↑' if sort_dir == 'asc' else '↓' }}{% endif %}</a>
+{%- endmacro %}
+<h1>{{ candidate.name }}</h1>
+<p class="subtitle">Outside spending (D-2 Part 9) | <a href="{{ url_for('candidates.candidate_detail', candidate_id=candidate_id, **scope_query) }}">Candidate profile</a></p>
+{% include "_partials/time_scope_bar.html" %}
+
+<form action="{{ url_for('candidates.candidate_outside_spending', candidate_id=candidate_id) }}" method="get" class="search-form">
+    <select name="support_oppose">
+        <option value="">Supporting and opposing</option>
+        <option value="S"{% if support_oppose == 'S' %} selected{% endif %}>Supporting only</option>
+        <option value="O"{% if support_oppose == 'O' %} selected{% endif %}>Opposing only</option>
+    </select>
+    <select name="committee_id">
+        <option value="">All spenders</option>
+        {% for spender in spenders %}
+        <option value="{{ spender.committee_id }}"{% if spender.committee_id == committee_id %} selected{% endif %}>{{ spender.committee_name }}</option>
+        {% endfor %}
+    </select>
+    <input type="hidden" name="sort" value="{{ sort_by }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    {% for name, value in scope_query.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <button type="submit">Filter</button>
+</form>
+
+<p class="subtitle">
+    Supporting: <strong>{{ format_currency(summary.support_total) }}</strong> |
+    Opposing: <strong>{{ format_currency(summary.oppose_total) }}</strong> |
+    Total: <strong>{{ format_currency(summary.total) }}</strong> |
+    {{ '{:,}'.format(summary.row_count) }} row{{ 's' if summary.row_count != 1 }}
+</p>
+<p class="help-text">Independent expenditures (D-2 Part 9) reported naming this candidate; matched on first and last name (case, periods, commas, apostrophes, quotes, middle names and trailing suffixes such as Jr or II ignored; a "Last, First" filing is read as one name); a row naming several candidates is split equally among them; rows filed by the candidate's own committees are not excluded. A name shared with another candidate in the same cycle, or one person running for several offices, gives each the same rows; Office (as filed) and Name (as filed) below show what the filer wrote. Amount is the filed amount; Share is that amount divided by the candidates the row names, and is what the totals add up.</p>
+
+<h2>Line items {{ scope_tag() }}</h2>
+<table class="data-table" data-server-sort>
+    <thead>
+        <tr>
+            <th>{{ sort_link('date', 'Date') }}</th>
+            <th>Spender</th>
+            <th>For / Against</th>
+            <th>{{ sort_link('amount', 'Amount') }}</th>
+            <th>Share</th>
+            <th>Purpose</th>
+            <th>Payee</th>
+            <th>Office (as filed)</th>
+            <th>Name (as filed)</th>
+            <th>Filing</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row.expended_date.isoformat() }}</td>
+            <td><a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id, **scope_query) }}">{{ row.committee_name }}</a></td>
+            <td>{{ 'For' if row.supporting else ('Against' if row.opposing else '') }}</td>
+            <td>{{ format_currency(row.amount) }}</td>
+            <td>{{ format_currency(row.share) }}{% if row.named_count > 1 %} (1 of {{ row.named_count }}){% endif %}</td>
+            <td>{{ row.purpose or '' }}</td>
+            <td>{{ row.payee or '' }}</td>
+            <td>{{ row.office_as_filed or '' }}</td>
+            <td>{{ row.candidate_name_as_filed or '' }}</td>
+            <td>{% if row.filed_doc_id %}<a href="{{ url_for('committees.filing_detail', filed_doc_id=row.filed_doc_id) }}">{{ row.filed_doc_id }}</a>{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10">{% if support_oppose or committee_id is not none %}No outside spending rows match these filters in this window.{% else %}No outside spending rows in this window.{% endif %}</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if total_pages > 1 or page > 1 %}
+<nav class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('candidates.candidate_outside_spending', candidate_id=candidate_id, page=page-1, sort=sort_by, dir=sort_dir, support_oppose=support_oppose or None, committee_id=committee_id, **scope_query) }}">&laquo; Previous</a>
+    {% endif %}
+    <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('candidates.candidate_outside_spending', candidate_id=candidate_id, page=page+1, sort=sort_by, dir=sort_dir, support_oppose=support_oppose or None, committee_id=committee_id, **scope_query) }}">Next &raquo;</a>
+    {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

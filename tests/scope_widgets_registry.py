@@ -41,7 +41,7 @@ tests/test_webapp.py::TestWebApp, AF tests/test_analytics_features.py, AD
 tests/test_analytics_date_semantics.py, FF tests/test_federal_fec.py, EV
 tests/test_experimental_viz_lab.py, LR tests/test_lobbying_routes.py, CP
 tests/test_candidate_profile.py, AW tests/test_scope_axis_and_windows.py, WB
-tests/test_scope_windows_part_b.py. Markers: [iw] asserts
+tests/test_scope_windows_part_b.py, OS tests/test_outside_spending.py. Markers: [iw] asserts
 with only in-window fixture rows, so it cannot catch a dropped window; [at] asserts the
 all-time branch only; [fl] calls the feeder, not the page; no marker = rows inside and
 outside the window, or output compared across scopes.
@@ -253,6 +253,25 @@ WIDGETS: tuple[Widget, ...] = (
         "Money raised", "table", "fixed", "none",
         covered_by="CP::TestScope::test_fixed_tables_ignore_the_window",
         note="receipts per election cycle across all the candidate's committees; the tag text is the grain",
+    ),
+    Widget(
+        "candidates.candidate_detail", "/candidates/<int:candidate_id>", "candidates/detail.html",
+        "Outside spending (D-2 Part 9)", "card+table", "window", "received (eff: expended_date)",
+        covered_by="OS::TestProfileSection::test_section_totals_follow_the_window",
+        note=(
+            "plan outside-spending-drilldown D1-D5: Part-9 rows attributed by first+last name token within the "
+            "candidate's candidacy cycles; Supporting / Opposing / Total line + by-spender table follow the window; "
+            "the section renders whenever the candidate has rows all-time"
+        ),
+    ),
+
+    # /candidates/<int:candidate_id>/outside-spending  [candidates.candidate_outside_spending]
+    Widget(
+        "candidates.candidate_outside_spending", "/candidates/<int:candidate_id>/outside-spending",
+        "candidates/outside_spending.html",
+        "Line items", "table", "window", "transaction (eff: expended_date)",
+        covered_by="OS::TestLineItemsPage::test_rows_follow_the_window_and_filters",
+        note="one row per attributed Part-9 expenditure (share = amount / names on the row); S/O + spender filters",
     ),
 
     # /live-feed  [main.live_feed]

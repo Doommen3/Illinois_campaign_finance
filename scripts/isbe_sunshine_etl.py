@@ -263,6 +263,7 @@ CREATE TABLE isbe_filed_docs (
     redaction_requested     BOOLEAN DEFAULT FALSE
 );
 CREATE INDEX idx_isbe_filed_docs_committee_id ON isbe_filed_docs(committee_id);
+CREATE INDEX idx_isbe_filed_docs_received_datetime ON isbe_filed_docs (received_datetime);
 CREATE INDEX idx_isbe_filed_docs_doc_name ON isbe_filed_docs(doc_name);
 CREATE INDEX idx_isbe_filed_docs_reporting ON isbe_filed_docs(committee_id, reporting_period_end DESC, received_datetime DESC);
 
@@ -511,6 +512,9 @@ CREATE INDEX idx_isbe_condensed_receipts_received_date ON isbe_condensed_receipt
 -- /donors/key/<key> lookups match md5(donor-key expression) (database/models.py); a plain
 -- expression index fails on a few oversized rows (btree row limit), the hash fits.
 CREATE INDEX idx_isbe_condensed_receipts_donor_key_md5 ON isbe_condensed_receipts (md5(LOWER(TRIM(COALESCE(first_name,'') || '|' || COALESCE(last_name,'') || '|' || COALESCE(address1,'') || '|' || COALESCE(address2,'') || '|' || COALESCE(city,'') || '|' || COALESCE(state,'') || '|' || COALESCE(zipcode,'')))));
+-- /lobbying/<id> receipt activity matches receipts by the normalized donor name (webapp/routes/lobbying.py);
+-- through the compat view the expression is identical, so the planner uses this index (load-time plan P4).
+CREATE INDEX idx_isbe_condensed_receipts_donor_name_norm ON isbe_condensed_receipts (LOWER(TRIM(COALESCE(NULLIF(TRIM(first_name), ''), '') || CASE WHEN COALESCE(NULLIF(TRIM(first_name), ''), '') != '' AND COALESCE(NULLIF(TRIM(last_name), ''), '') != '' THEN ' ' ELSE '' END || COALESCE(NULLIF(TRIM(last_name), ''), ''))));
 CREATE INDEX idx_isbe_condensed_receipts_active_part1 ON isbe_condensed_receipts (committee_id, received_date)
     WHERE archived = FALSE AND d2_part LIKE '1%' AND amount > 0;
 
@@ -534,6 +538,8 @@ CREATE MATERIALIZED VIEW isbe_condensed_expenditures AS (
 CREATE UNIQUE INDEX ON isbe_condensed_expenditures (id);
 CREATE INDEX idx_isbe_condensed_expenditures_committee_date ON isbe_condensed_expenditures (committee_id, expended_date);
 CREATE INDEX idx_isbe_condensed_expenditures_filed_doc_id ON isbe_condensed_expenditures (filed_doc_id);
+-- Candidate outside-spending pages (database/outside_spending.py) read only the live Part-9 rows.
+CREATE INDEX idx_isbe_condensed_expenditures_part9_date ON isbe_condensed_expenditures (expended_date) WHERE d2_part LIKE '9%' AND archived = FALSE;
 
 -- Committee money totals
 CREATE MATERIALIZED VIEW isbe_committee_money AS (
@@ -1542,6 +1548,13 @@ def create_materialized_views(conn):
     t0 = time.time()
     with conn.cursor() as cur:
         cur.execute(MATVIEW_DDL)
+        # Fresh statistics for the relations this step just dropped and rebuilt: without them
+        # the first requests after each import plan seq scans (load-time plan L12, 2026-10-28).
+        cur.execute(
+            "ANALYZE isbe_condensed_receipts, isbe_condensed_expenditures, isbe_most_recent_filings, "
+            "isbe_committee_money, isbe_candidate_money, isbe_receipts, isbe_expenditures, isbe_filed_docs, "
+            "isbe_d2_reports, isbe_committees, isbe_candidates"
+        )
     conn.commit()
     elapsed = time.time() - t0
     print(f"  Materialized views created in {elapsed:.1f}s")

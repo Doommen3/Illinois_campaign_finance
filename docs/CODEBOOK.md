@@ -681,10 +681,9 @@ All settings in `config.py`, overridable via environment variables.
 | `ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS` | `21600` | Relationships cache TTL |
 | `ANALYTICS_RISK_CACHE_TTL_SECONDS` | `21600` | Risk page cache TTL |
 | `ANALYTICS_OVERVIEW_CACHE_TTL_SECONDS` | `21600` | Overview cache TTL |
-| `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS` | `180` | Geo drilldown cache TTL |
+| `ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS` | `21600` | Geo drilldown cache TTL (Redis-shared; flushed after each import/refresh) |
 | `IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS` | `180` | Dark money stats cache TTL |
-| `SEARCH_RESULTS_CACHE_TTL_SECONDS` | `120` | Search result cache TTL |
-| `SEARCH_RESULTS_CACHE_MAX_ENTRIES` | `256` | Max cached search results |
+| `SEARCH_RESULTS_CACHE_TTL_SECONDS` | `21600` | Search result cache TTL (Redis-shared RouteCache since 2026-10-28; was a per-worker dict with 120 s) |
 
 ### Search Guardrails
 

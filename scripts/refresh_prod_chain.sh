@@ -76,6 +76,13 @@ if ! $PYTHON run.py refresh-analytics --with-snapshot >> "$LOG" 2>&1; then
 fi
 log "STEP7_END refresh_analytics"
 
+# refresh-analytics flushed the route caches: warm them before readers hit cold pages (load-time plan L8).
+log "STEP7B_START warm_caches"
+if ! $PYTHON scripts/warm_caches.py >> "$LOG" 2>&1; then
+  log "STEP7B_WARN warm_caches failed (pages build on first request instead)"
+fi
+log "STEP7B_END warm_caches"
+
 if [ "${SKIP_RESTART:-0}" = "1" ]; then
   # SKIP_RESTART=1 keeps the site offline (e.g. a refresh that must land before a deploy goes live).
   log "STEP8_SKIPPED restart_service (SKIP_RESTART=1)"

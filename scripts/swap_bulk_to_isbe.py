@@ -6,7 +6,10 @@ This script:
 2. Renames old bulk_*_clean tables to *_legacy
 3. Creates views with the old names pointing to isbe_* data
 4. Recreates the state race builder inputs: bulk_candidate_committee_finance_agg
+   (a MATERIALIZED VIEW, rebuilt with its indexes and analyzed on every run)
    and the isbe_race_candidacies candidacy feed
+5. Flushes the Redis route caches (a no-op without REDIS_URL): every cached payload was
+   built from the objects this run just replaced
 
 Safe to run multiple times (idempotent).
 Requires isbe_* tables to be populated first (run isbe_sunshine_etl.py).
@@ -33,9 +36,12 @@ SWAP_PAIRS = [
     ("bulk_committee_candidate_links", "isbe_bulk_committee_candidate_links_compat"),
 ]
 
-# SQL for the ISBE-derived candidate committee finance agg view (PostgreSQL)
+# SQL for the ISBE-derived candidate committee finance aggregate (PostgreSQL). A MATERIALIZED view
+# (load-time plan L6): as a plain view every reader -- search, /candidate-finance/, the race builder --
+# re-aggregated all receipts on each access. main() drops and rebuilds it on every run, so it is as
+# fresh as the last import.
 CANDIDATE_FINANCE_AGG_VIEW_SQL = """
-CREATE VIEW bulk_candidate_committee_finance_agg AS
+CREATE MATERIALIZED VIEW bulk_candidate_committee_finance_agg AS
 WITH filing_periods AS (
     SELECT
         committee_id AS committee_id_sbe,
@@ -99,6 +105,28 @@ GROUP BY
         ELSE fp.period_year + 1
     END
 """
+
+# Built on the fresh materialized view by every run (they go with it when it is dropped).
+CANDIDATE_FINANCE_AGG_INDEX_SQL = [
+    "CREATE INDEX idx_bulk_candidate_committee_finance_agg_candidate ON bulk_candidate_committee_finance_agg (candidate_id);",
+    "CREATE INDEX idx_bulk_candidate_committee_finance_agg_committee ON bulk_candidate_committee_finance_agg (committee_id_sbe);",
+    "CREATE INDEX idx_bulk_candidate_committee_finance_agg_cycle ON bulk_candidate_committee_finance_agg (election_cycle);",
+]
+
+# information_schema.tables does not list materialized views, so relation kinds come from pg_class:
+# 'r' table, 'v' view, 'm' materialized view; no row when the relation is absent.
+RELKIND_SQL = """
+    SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = %s
+"""
+RELKIND_LABELS = {"r": "BASE TABLE", "v": "VIEW", "m": "MATERIALIZED VIEW"}
+
+
+def _relkind(cur, name):
+    cur.execute(RELKIND_SQL, (name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
 
 # The candidacy feed for the state race builder: one row per candidacy x linked
 # committee (committee columns NULL when the candidate has no committee).  The
@@ -198,45 +226,30 @@ def main():
             if not args.dry_run:
                 cur.execute(sql)
 
-    # Step 4: Swap bulk_candidate_committee_finance_agg to ISBE-derived VIEW
-    print("\nSwapping bulk_candidate_committee_finance_agg to ISBE-derived VIEW...")
-    cur.execute("""
-        SELECT table_type FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'bulk_candidate_committee_finance_agg'
-    """)
-    row = cur.fetchone()
-    if row and row[0] == "BASE TABLE":
-        cur.execute("""
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'bulk_candidate_committee_finance_agg_legacy'
-        """)
-        if cur.fetchone():
-            if args.dry_run:
-                print("  [DRY RUN] Would drop table and create view")
-            else:
-                cur.execute("DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg CASCADE")
-                cur.execute(CANDIDATE_FINANCE_AGG_VIEW_SQL)
-                print("  Dropped old table (legacy exists), created ISBE view ✓")
+    # Step 4: Rebuild bulk_candidate_committee_finance_agg as a MATERIALIZED VIEW. DROP ... IF EXISTS
+    # still raises on the wrong kind of relation, so the removal follows what is there now.
+    kind = _relkind(cur, "bulk_candidate_committee_finance_agg")
+    print(f"\nRebuilding bulk_candidate_committee_finance_agg as a MATERIALIZED VIEW (now: {RELKIND_LABELS.get(kind, kind or 'absent')})...")
+    if kind == "r":
+        if _relkind(cur, "bulk_candidate_committee_finance_agg_legacy"):
+            removal = "DROP TABLE IF EXISTS bulk_candidate_committee_finance_agg CASCADE"
         else:
-            if args.dry_run:
-                print("  [DRY RUN] Would rename to _legacy and create view")
-            else:
-                cur.execute("ALTER TABLE bulk_candidate_committee_finance_agg RENAME TO bulk_candidate_committee_finance_agg_legacy")
-                cur.execute(CANDIDATE_FINANCE_AGG_VIEW_SQL)
-                print("  Renamed to _legacy, created ISBE view ✓")
-    elif row and row[0] == "VIEW":
-        if args.dry_run:
-            print("  [DRY RUN] Would recreate view")
-        else:
-            cur.execute("DROP VIEW IF EXISTS bulk_candidate_committee_finance_agg CASCADE")
-            cur.execute(CANDIDATE_FINANCE_AGG_VIEW_SQL)
-            print("  Recreated ISBE view ✓")
+            removal = "ALTER TABLE bulk_candidate_committee_finance_agg RENAME TO bulk_candidate_committee_finance_agg_legacy"
+    elif kind == "v":
+        removal = "DROP VIEW IF EXISTS bulk_candidate_committee_finance_agg CASCADE"
+    elif kind == "m":
+        removal = "DROP MATERIALIZED VIEW IF EXISTS bulk_candidate_committee_finance_agg CASCADE"
     else:
+        removal = None
+    statements = [removal] if removal else []
+    statements += [CANDIDATE_FINANCE_AGG_VIEW_SQL, *CANDIDATE_FINANCE_AGG_INDEX_SQL, "ANALYZE bulk_candidate_committee_finance_agg"]
+    for statement in statements:
+        first_line = statement.strip().splitlines()[0]
         if args.dry_run:
-            print("  [DRY RUN] Would create view")
+            print(f"  [DRY RUN] Would execute: {first_line}")
         else:
-            cur.execute(CANDIDATE_FINANCE_AGG_VIEW_SQL)
-            print("  Created ISBE view ✓")
+            cur.execute(statement)
+            print(f"  {first_line} ✓")
 
     # Step 5: Candidacy feed for the state race builder
     print("\nRecreating isbe_race_candidacies VIEW...")
@@ -251,18 +264,27 @@ def main():
     print("\nVerification:")
     all_tables = [name for name, _ in SWAP_PAIRS] + ["bulk_candidate_committee_finance_agg", "isbe_race_candidacies"]
     for tbl_name in all_tables:
-        cur.execute("""
-            SELECT table_type FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = %s
-        """, (tbl_name,))
-        row = cur.fetchone()
-        status = row[0] if row else "MISSING"
+        kind = _relkind(cur, tbl_name)
+        status = RELKIND_LABELS.get(kind, kind) if kind else "MISSING"
         cur.execute(f"SELECT COUNT(*) FROM {tbl_name}")
         count = cur.fetchone()[0]
         print(f"  {tbl_name}: {status} ({count:,} rows)")
 
     print("\nDone! ISBE sunshine data is now served through bulk_*_clean views.")
     conn.close()
+
+    # Step 7: flush the route caches. Run as a script, sys.path[0] is scripts/, not the repo
+    # root where webapp lives, so put the root on the path before importing it.
+    print("\nFlushing the route caches...")
+    if args.dry_run:
+        print("  [DRY RUN] Would flush the route caches")
+    else:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        from webapp.cache_backend import flush_all_route_caches
+
+        print(f"  Deleted {flush_all_route_caches()} cached route keys (Redis)")
 
 
 if __name__ == "__main__":

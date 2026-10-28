@@ -21,6 +21,9 @@ Pinned contract (each test names the wrong implementation it kills):
 * B6 / J-S17      ``refresh_analytics_materialized`` flushes the route caches exactly once,
         after its commit; the ETL ``main()`` flushes after ``create_compat_views``.
 * C3 / J-S17      one analytics TTL fallback constant (21600) replaces the 300 / 1800 literals.
+* R4 / review C13, C20  the race list key and the overview key both start with ``_STATE_RACE_CACHE_REV``, so the payloads
+        the previous release left in Redis (same keys, same row shape, old numbers) are never read again; the constant is
+        read when the key is built, so bumping it bumps the key.
 
 Clock: frozen at 2026-10-26 (house technique of tests/test_candidate_profile.py, extended
 to the two other modules that call ``date.today()``), so cycle 2026 is "current" and cycle
@@ -224,7 +227,8 @@ def race_db_path(tmp_path: Path) -> str:
 @pytest.fixture
 def make_client(race_db_path):
     def make(**config):
-        settings = {"TESTING": True, "DATABASE_PATH": race_db_path, "DASHBOARD_PREWARM_ENABLED": False}
+        settings = {"TESTING": True, "DATABASE_PATH": race_db_path, "DASHBOARD_PREWARM_ENABLED": False,
+                    "REFRESH_PARAMS_REQUIRE_LOGIN": False}  # anonymous ?refresh_cache=1 in these tests (LD4)
         settings.update(config)
         return create_app(settings).test_client()
 
@@ -500,6 +504,86 @@ def test_state_races_cache_key_separates_everything_that_changes_the_build():
     assert helper(_scope("all"), None, "outside_spending_total", "desc", today=START) != base, "sort field"
     assert helper(_scope("all"), None, "total_amount", "asc", today=START) != base, "direction"
     assert helper(_scope("all", date(2027, 3, 1)), None, "total_amount", "desc", today=date(2027, 3, 1)) != base, "today"
+
+
+# ---------------------------------------------------------------------------
+# R4 (review C13 / C20)  both race keys start with _STATE_RACE_CACHE_REV
+# ---------------------------------------------------------------------------
+# The outside-spending release changed what the race builder returns without changing its row shape, and a restart never clears
+# Redis (only the per-worker LRUs), so the payloads the old code stored under the SAME keys would be served until their TTL.
+# Redis files an entry under sha1(repr(key)): a revision as the FIRST element of both keys makes every entry the old code wrote
+# unreachable, and bumping the constant is how the next change of meaning is made safe -- so the keys must READ the constant.
+
+def _cache_rev() -> str:
+    rev = getattr(analytics_routes, "_STATE_RACE_CACHE_REV", None)
+    assert rev is not None, "webapp.routes.analytics._STATE_RACE_CACHE_REV is not defined (plan R4: the revision of both keys)"
+    assert isinstance(rev, str), f"_STATE_RACE_CACHE_REV is a {type(rev).__name__} ({rev!r}), not a str"
+    assert rev != "", "_STATE_RACE_CACHE_REV is the empty string: it adds nothing to the keys"
+    return rev
+
+
+def _overview_cache_key_function():
+    helper = getattr(analytics_routes, "_overview_cache_key", None)
+    assert callable(helper), (
+        "webapp.routes.analytics._overview_cache_key(filters, state_race_cycle, state_race_sort, state_race_dir) -> tuple "
+        "is not defined"
+    )
+    return helper
+
+
+def _bare_overview_filters() -> dict:
+    """Hand-built stand-in for ``_parse_filters()``: every field ``_overview_cache_key`` may read, at a bare request's values
+    (cycle 2026: 2025-01-01..2026-12-31 = 24 months, default limits, quick mode)."""
+    return {
+        "time_period_key": "received:2025-01-01:2026-12-31",
+        "date_from": "2025-01-01",
+        "date_to": "2026-12-31",
+        "min_edge_amount": 1000.0,
+        "network_limit": 200,
+        "anomaly_limit": 25,
+        "concentration_limit": 25,
+        "months": 24,
+        "nlp_limit": 20,
+        "recon_limit": 20,
+        "recon_min_abs_diff": 1000.0,
+        "load_mode": "quick",
+        "full_mode_requested": False,
+        "geo_state_limit": 15,
+        "geo_city_limit": 25,
+    }
+
+
+RACE_KEYS = {
+    "race-list": lambda: _cache_key_function()(_scope("all"), None, "total_amount", "desc", today=START),
+    "overview": lambda: _overview_cache_key_function()(_bare_overview_filters(), CURRENT_CYCLE, "total_amount", "desc"),
+}
+
+
+def test_state_race_cache_rev_is_a_non_empty_string():
+    """RED until the constant exists.
+
+    Kills: no constant (a literal in the keys that nobody bumps); None or a number; an empty string."""
+    _cache_rev()
+
+
+@pytest.mark.parametrize("which", sorted(RACE_KEYS))
+def test_both_race_cache_keys_start_with_the_revision(which, monkeypatch):
+    """RED until both keys start with ``_STATE_RACE_CACHE_REV``; bumping the constant then bumps the key.
+
+    Kills: no revision in the key (the entries the old code stored are read after the deploy); the revision in only one of the
+    two keys (one parametrization per key: the other cache keeps serving old rows); the revision put anywhere but first; the
+    constant defined but a copy of its value written into the key (bumping the constant would then change nothing, which is
+    what the bump below shows)."""
+    build_key = RACE_KEYS[which]
+    rev = _cache_rev()
+
+    key = build_key()
+    assert isinstance(key, tuple)
+    assert key[0] == rev, f"the {which} key starts with {key[0]!r}, not with _STATE_RACE_CACHE_REV ({rev!r})"
+
+    monkeypatch.setattr(analytics_routes, "_STATE_RACE_CACHE_REV", "rev-bumped-by-the-test")
+    bumped = build_key()
+    assert bumped[0] == "rev-bumped-by-the-test", f"the {which} key does not read _STATE_RACE_CACHE_REV when it is built"
 
 
 ROLLOVER_PAGES = {

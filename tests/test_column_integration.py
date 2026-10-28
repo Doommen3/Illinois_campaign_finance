@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from database.connection import get_db, init_db
 from pathlib import Path
 
 import pytest
@@ -18,16 +20,13 @@ import pytest
 
 @pytest.fixture()
 def db(tmp_path: Path):
-    """Create a fresh DB with schema applied."""
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    schema_path = Path(__file__).parent.parent / "database" / "schema.sql"
-    conn.executescript(schema_path.read_text())
-    conn.commit()
+    # PostgreSQL fixture (house rule): database/schema.sql carries PostgreSQL-only statements
+    # (pg_trgm, GIN) since the 2026-10-28 search unit, so it can no longer be applied by sqlite3.
+    db_path = str(tmp_path / "column_integration.db")
+    init_db(db_path)
+    conn = get_db(db_path)
     yield conn
     conn.close()
-
 
 # ===================================================================
 # SCHEMA CONTRACT TESTS

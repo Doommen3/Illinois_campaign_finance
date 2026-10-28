@@ -60,6 +60,46 @@
     {% endif %}
 </div>
 
+{% if outside is not none %}
+<div class="status-section">
+    <h2 id="outside-spending">Outside spending (D-2 Part 9) {{ scope_tag() }}</h2>
+    {% if outside.window.row_count %}
+    <p class="subtitle">
+        Supporting: <strong>{{ format_currency(outside.window.support_total) }}</strong> |
+        Opposing: <strong>{{ format_currency(outside.window.oppose_total) }}</strong> |
+        Total: <strong>{{ format_currency(outside.window.total) }}</strong> |
+        {{ '{:,}'.format(outside.window.row_count) }} row{{ 's' if outside.window.row_count != 1 }}
+    </p>
+    <p class="help-text">Independent expenditures (D-2 Part 9) reported naming this candidate; matched on first and last name (case, periods, commas, apostrophes, quotes, middle names and trailing suffixes such as Jr or II ignored; a "Last, First" filing is read as one name); a row naming several candidates is split equally among them; rows filed by the candidate's own committees are not excluded. A row counts only when its date falls in an election cycle the candidate ran in; amended (archived) rows are left out. A name shared with another candidate in the same cycle, or one person running for several offices, gives each the same rows; check Office (as filed) and Name (as filed) on the line items.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Spender</th>
+                <th>Supporting</th>
+                <th>Opposing</th>
+                <th>Total</th>
+                <th>Rows</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in outside.by_spender %}
+            <tr>
+                <td><a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id, **scope_query) }}">{{ row.committee_name }}</a></td>
+                <td>{{ format_currency(row.support_total) }}</td>
+                <td>{{ format_currency(row.oppose_total) }}</td>
+                <td>{{ format_currency(row.total) }}</td>
+                <td>{{ '{:,}'.format(row.row_count) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="subtitle">No outside spending in this window.</p>
+    {% endif %}
+    <p><a href="{{ outside_url }}">All {{ '{:,}'.format(outside.window.row_count) }} line item{{ 's' if outside.window.row_count != 1 }}</a></p>
+</div>
+{% endif %}
+
 <div class="status-section">
     <h2>Candidacies {{ scope_tag('All time') }}</h2>
     {% if candidacies %}

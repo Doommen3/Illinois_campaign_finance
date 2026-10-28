@@ -232,6 +232,8 @@ CREATE TABLE IF NOT EXISTS analytics_donor_committee_agg (
     total_amount REAL NOT NULL,
     contribution_count INTEGER NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    donor_state_key TEXT, -- the geo drill-down's cell keys: state trimmed + upper-cased,
+    donor_city_key TEXT,  -- city as _city_key; filled by refresh-analytics (load-time L4)
     PRIMARY KEY (source, donor_key, committee_id)
 );
 
@@ -242,6 +244,10 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_committee
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_source_donor
     ON analytics_donor_committee_agg(source, donor_key);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_agg_source_committee ON analytics_donor_committee_agg (source, committee_id);
+-- The all-time geo drill-down: a state or city cell is an equality probe, a city cell's page comes
+-- out in total_amount order (load-time L4).
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_committee_agg_geo
+    ON analytics_donor_committee_agg (source, donor_state_key, donor_city_key, total_amount DESC);
 
 CREATE TABLE IF NOT EXISTS analytics_committee_monthly_totals (
     source TEXT NOT NULL, -- bulk_receipts, contributions
@@ -319,6 +325,13 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
     ON analytics_donor_summary(source, donor_name);
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_city_state
     ON analytics_donor_summary(donor_state, donor_city);
+
+-- The search donors section filters donor_name with a leading-wildcard LIKE (sent as ILIKE by
+-- the compat layer); a btree cannot serve that, a trigram GIN index serves both. pg_trgm is a
+-- trusted extension (PostgreSQL 13+) and is already used by cross-matching.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_name_trgm
+    ON analytics_donor_summary USING gin (donor_name gin_trgm_ops);
 
 -- One row per donor per election cycle (cycle = year + year % 2 of received_date), rebuilt by
 -- refresh_analytics_materialized with the live /donors/ list predicate (receipts_filter_sql,

@@ -1,5 +1,7 @@
 """Tests for analytics features (network, anomalies, concentration, trends, geo, NLP)."""
+from html.parser import HTMLParser
 from pathlib import Path
+import html as html_lib
 import re
 from urllib.parse import parse_qs, urlparse
 
@@ -290,23 +292,33 @@ def _seed_analytics_dataset(conn):
             payee_last_or_business_name TEXT,
             candidate_name TEXT,
             d2_part_code TEXT,
+            is_supporting INTEGER,
+            is_opposing INTEGER,
             is_archived INTEGER,
             amount REAL,
             expended_date TEXT
         )
         """
     )
+    # Governor race (cycle window 2025-01-01..2026-12-31): Candidate Alpha (901) has ONE counted
+    # Part-9 row, supporting 1500 (2026-01-08) -> Supporting 1500 / Opposing 0 / Total 1500 / 1 row.
+    # Never counted: the 1A row (999, not Part 9), the ARCHIVED row (888) and the 2024-07-15 row (600,
+    # before the cycle window).  The 1A trap carries the opposing flag and the other two the
+    # supporting flag, so a miscount shows up in the column it would pollute.  Rows that make the
+    # support / oppose split differ are seeded by the tests that need them
+    # (_seed_opposing_outside_rows): the dashboard and period tests pin this race at $1,500.00.
     conn.executemany(
         """
         INSERT INTO bulk_expenditures_clean (
-            committee_id_sbe, payee_last_or_business_name, candidate_name, d2_part_code, is_archived, amount, expended_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            committee_id_sbe, payee_last_or_business_name, candidate_name, d2_part_code,
+            is_supporting, is_opposing, is_archived, amount, expended_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            (1001, "Vendor One", "Candidate Alpha", "9A", 0, 1500.0, "2026-01-08"),
-            (1001, "Vendor One", "Candidate Alpha", "1A", 0, 999.0, "2026-01-08"),
-            (1001, "Vendor One", "Candidate Alpha", "9A", 1, 888.0, "2026-01-08"),
-            (1001, "Legacy Vendor", "Candidate Alpha", "9A", 0, 600.0, "2024-07-15"),
+            (1001, "Vendor One", "Candidate Alpha", "9A", 1, 0, 0, 1500.0, "2026-01-08"),
+            (1001, "Vendor One", "Candidate Alpha", "1A", 0, 1, 0, 999.0, "2026-01-08"),
+            (1001, "Vendor One", "Candidate Alpha", "9A", 1, 0, 1, 888.0, "2026-01-08"),
+            (1001, "Legacy Vendor", "Candidate Alpha", "9A", 1, 0, 0, 600.0, "2024-07-15"),
         ],
     )
 
@@ -366,7 +378,7 @@ def _extract_top_state_race_href(response_data: bytes, race_label: str) -> str:
         html,
     )
     assert match is not None, f"Missing state race link for label: {race_label}"
-    return match.group(1)
+    return html_lib.unescape(match.group(1))  # the href is an HTML attribute (&amp;)
 
 
 def _extract_first_top_state_race_label(response_data: bytes) -> str:
@@ -378,6 +390,90 @@ def _extract_first_top_state_race_label(response_data: bytes) -> str:
     )
     assert match is not None, "Missing Top State Races first-row label"
     return " ".join(match.group(1).split())
+
+
+class _TableRows(HTMLParser):
+    """Header cells and body rows of one <table> fragment: the first row without a <td> is the
+    header, every row with one is a body row {"cells": [cell texts], "hrefs": [its anchors]}."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.headers: list[str] = []
+        self.rows: list[dict] = []
+        self._row: dict | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = {"cells": [], "hrefs": [], "has_td": False}
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+            self._row["has_td"] = self._row["has_td"] or tag == "td"
+        elif tag == "a" and self._row is not None:
+            self._row["hrefs"].append(dict(attrs).get("href") or "")
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None and self._row is not None:
+            self._row["cells"].append(" ".join(" ".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if self._row["has_td"]:
+                self.rows.append(self._row)
+            elif not self.headers:
+                self.headers = self._row["cells"]
+            self._row = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _outside_spending_table(response_data: bytes) -> tuple[list[str], list[dict]]:
+    """(header cells, body rows) of the table under the 'Outside Spending Rows' heading."""
+    html = response_data.decode("utf-8")
+    heading = re.search(r"<h2\b[^>]*>\s*Outside Spending Rows.*?</h2>", html, flags=re.DOTALL)
+    assert heading is not None, "Missing the 'Outside Spending Rows' heading"
+    table = re.search(r"<table\b.*?</table>", html[heading.end():], flags=re.DOTALL)
+    assert table is not None, "Missing the table under 'Outside Spending Rows'"
+    parser = _TableRows()
+    parser.feed(table.group(0))
+    parser.close()
+    return parser.headers, parser.rows
+
+
+def _dollars(cell: str) -> float:
+    """The one dollar figure in a table cell; a cell without one (a dash) counts as zero."""
+    figures = re.findall(r"\$[\d,]+\.\d{2}", cell)
+    assert len(figures) <= 1, f"more than one dollar figure in {cell!r}"
+    if not figures:
+        return 0.0
+    return float(figures[0].replace("$", "").replace(",", ""))
+
+
+def _seed_opposing_outside_rows(db_path: str) -> None:
+    """Two OPPOSING Part-9 rows inside the 2026 window, on top of the fixture's supporting 1500:
+        "Candidate Q. Alpha"  275  (2026-02-14; a middle initial in the filed name)
+        "CANDIDATE BETA"      120  (2026-03-03)
+    Seeded by the tests that need a support / oppose split rather than put in the shared fixture:
+    test_analytics_dashboard_route_loads pins the Governor race's outside total at $1,500.00
+    (15.0%) and the period-propagation test pins $1,500.00."""
+    conn = get_db(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO bulk_expenditures_clean (
+                committee_id_sbe, payee_last_or_business_name, candidate_name, d2_part_code,
+                is_supporting, is_opposing, is_archived, amount, expended_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1002, "Vendor Two", "Candidate Q. Alpha", "9A", 0, 1, 0, 275.0, "2026-02-14"),
+                (1001, "Vendor Three", "CANDIDATE BETA", "9A", 0, 1, 0, 120.0, "2026-03-03"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _seed_top_state_races_zero_outside_high_totals(db_path: str, *, race_count: int = 13) -> None:
@@ -481,7 +577,8 @@ def analytics_app(tmp_path: Path, monkeypatch):
     conn = get_db(db_path)
     _seed_analytics_dataset(conn)
     conn.close()
-    return create_app({"TESTING": True, "DATABASE_PATH": db_path})
+    # REFRESH_PARAMS_REQUIRE_LOGIN False: these tests force rebuilds with anonymous ?refresh_cache=1 (LD4).
+    return create_app({"TESTING": True, "DATABASE_PATH": db_path, "REFRESH_PARAMS_REQUIRE_LOGIN": False})
 
 
 @pytest.fixture
@@ -1232,6 +1329,8 @@ def test_state_race_detail_route_returns_200_for_valid_race(analytics_client):
     assert b"Candidate Committee Rows" in detail.data
     assert b"Committee Contribution Rows" in detail.data
     assert b"Outside Spending Rows" in detail.data
+    headers, _rows = _outside_spending_table(detail.data)
+    assert headers == ["Candidate", "Supporting", "Opposing", "Total", "Rows"]
 
 
 def test_state_race_detail_route_returns_404_for_invalid_race_key(analytics_client):
@@ -1262,6 +1361,134 @@ def test_state_race_detail_period_propagation_changes_output(analytics_client):
     # under an all-time page scope, so the 2024-07-15 fixture row ($600) no longer attaches to a 2026 race.
     assert b"$1,500.00" in all_detail.data
     assert b"$2,100.00" not in all_detail.data
+
+
+# Outside Spending Rows of the Governor race once the opposing rows of _seed_opposing_outside_rows
+# are in.  Cycle window 2025-01-01..2026-12-31; hand-computed (never counted: 999 part 1A, 888
+# archived, 600 on 2024-07-15):
+#   Candidate Alpha (901)  supporting 1500 (01-08) + opposing 275 (02-14) -> 1500 / 275 / 1775 / 2 rows
+#   Candidate Beta  (902)  opposing 120 (03-03)                           ->    0 / 120 /  120 / 1 row
+# Race outside total 1895, Alpha first.
+# {name: (candidate id, supporting, opposing, total, rows cell)}
+OUTSIDE_CYCLE_ROWS = {
+    "Candidate Alpha": (901, 1500.0, 275.0, 1775.0, "2"),
+    "Candidate Beta": (902, 0.0, 120.0, 120.0, "1"),
+}
+# Inside January 2026 only Alpha's supporting 1500 (01-08) falls: 1500 / 0 / 1500 / 1 row, no Beta row.
+OUTSIDE_JANUARY_ROWS = {"Candidate Alpha": (901, 1500.0, 0.0, 1500.0, "1")}
+
+
+@pytest.mark.parametrize(
+    "page_query, expected_link_query, expected_rows",
+    [
+        pytest.param("period=2026cycle", {"period": ["cycle:2026"]}, OUTSIDE_CYCLE_ROWS, id="cycle-page"),
+        pytest.param(
+            "period=all", {"period": ["cycle:2026"]}, OUTSIDE_CYCLE_ROWS,
+            id="all-time-page-still-links-the-cycle-window",
+        ),
+        pytest.param(
+            "date_from=2020-01-01&date_to=2030-12-31", {"period": ["cycle:2026"]}, OUTSIDE_CYCLE_ROWS,
+            id="wide-custom-range-is-cut-to-the-cycle",
+        ),
+        pytest.param(
+            "date_from=2026-01-01&date_to=2026-01-31",
+            {"date_from": ["2026-01-01"], "date_to": ["2026-01-31"]},
+            OUTSIDE_JANUARY_ROWS,
+            id="narrow-custom-range-links-its-own-dates",
+        ),
+    ],
+)
+def test_state_race_detail_outside_rows_link_to_candidate_line_items(
+    analytics_client, page_query, expected_link_query, expected_rows
+):
+    """Each Outside Spending row shows Supporting / Opposing / Total / Rows and links to that
+    candidate's line-item page, /candidates/<candidate id>/outside-spending, with the window the
+    row's figures were cut to: the outside-spending window, NOT the page scope.  So an all-time
+    page (outside spending is cycle-bounded) links period=cycle:2026, a custom range wider than
+    the cycle links the same, and a custom range inside the cycle links its own two dates.  The
+    line-item page then reconciles with the row.  Figures: see OUTSIDE_CYCLE_ROWS / OUTSIDE_JANUARY_ROWS.
+    Kills: no link; a link with the committee id (1001 / 1002) or one candidate's id on every row;
+    forwarding the page's scope_query (period=all, or date_from / date_to of 2020..2030); a link
+    query that merges the page's scope with the window (a date pair beside period=cycle:2026
+    outranks it); always period=cycle:2026 (the January case); a missing row; an extra column;
+    the old two-column table."""
+    _seed_opposing_outside_rows(analytics_client.application.config["DATABASE_PATH"])
+    overview = analytics_client.get(f"/analytics/?{page_query}")
+    assert overview.status_code == 200
+    href = _extract_top_state_race_href(overview.data, "Governor - Statewide At-Large")
+
+    detail = analytics_client.get(href)
+
+    assert detail.status_code == 200
+    headers, rows = _outside_spending_table(detail.data)
+    assert headers == ["Candidate", "Supporting", "Opposing", "Total", "Rows"]
+    assert [row["cells"][0] for row in rows] == list(expected_rows)
+    for row in rows:
+        name = row["cells"][0]
+        candidate_id, supporting, opposing, total, row_count = expected_rows[name]
+        assert len(row["cells"]) == 5, row["cells"]
+        assert _dollars(row["cells"][1]) == supporting, name
+        assert _dollars(row["cells"][2]) == opposing, name
+        assert _dollars(row["cells"][3]) == total, name
+        assert row["cells"][4] == row_count, name
+        assert len(row["hrefs"]) == 1, (name, row["hrefs"])
+        link = urlparse(row["hrefs"][0])
+        assert link.path == f"/candidates/{candidate_id}/outside-spending", name
+        assert parse_qs(link.query) == expected_link_query, name
+
+
+def test_state_race_detail_outside_row_without_a_candidate_id_is_plain_text(analytics_client):
+    """A candidacy-feed row with no candidate id ('' in the payload) has no profile to link to:
+    its Outside Spending row renders as plain text beside linked rows.  Candidate Gamma (NULL id,
+    no committee) has one counted Part-9 row, supporting 60 (2026-04-04): 60 / 0 / 60 / 1 row.
+    Candidate Alpha keeps 1500 / 0 / 1500 / 1 row and its link; Alpha first.
+    Kills: linking every row (url_for with '' raises BuildError, a 500 for every race that has a
+    candidate without an id and outside spending); a guard that tests `is not none` where the
+    payload carries ''; dropping the id-less candidate's row."""
+    conn = get_db(analytics_client.application.config["DATABASE_PATH"])
+    try:
+        conn.execute(
+            """
+            INSERT INTO isbe_race_candidacies (
+                candidacy_id, candidate_id, election_year, election_cycle, election_type,
+                candidate_full_name, office_sought, district_type, district,
+                candidate_party_affiliation, committee_id_sbe, committee_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (9903, None, 2026, 2026, "General Election", "Candidate Gamma", "Governor", "Statewide",
+             "At-Large", "Independent", None, None),
+        )
+        conn.execute(
+            """
+            INSERT INTO bulk_expenditures_clean (
+                committee_id_sbe, payee_last_or_business_name, candidate_name, d2_part_code,
+                is_supporting, is_opposing, is_archived, amount, expended_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1002, "Vendor Four", "CANDIDATE GAMMA", "9A", 1, 0, 0, 60.0, "2026-04-04"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    overview = analytics_client.get("/analytics/?period=2026cycle")
+    href = _extract_top_state_race_href(overview.data, "Governor - Statewide At-Large")
+
+    detail = analytics_client.get(href)
+
+    assert detail.status_code == 200
+    _headers, rows = _outside_spending_table(detail.data)
+    by_name = {row["cells"][0]: row for row in rows}
+    assert list(by_name) == ["Candidate Alpha", "Candidate Gamma"]
+    for name, supporting, total in [("Candidate Alpha", 1500.0, 1500.0), ("Candidate Gamma", 60.0, 60.0)]:
+        cells = by_name[name]["cells"]
+        assert len(cells) == 5, cells
+        assert _dollars(cells[1]) == supporting, name
+        assert _dollars(cells[2]) == 0.0, name
+        assert _dollars(cells[3]) == total, name
+        assert cells[4] == "1", name
+    alpha_link = urlparse(by_name["Candidate Alpha"]["hrefs"][0])
+    assert alpha_link.path == "/candidates/901/outside-spending"
+    assert by_name["Candidate Gamma"]["hrefs"] == []
 
 
 def test_analytics_dashboard_full_mode_loads_heavy_sections(analytics_client):
@@ -1801,7 +2028,8 @@ def federal_sankey_app(tmp_path: Path):
     conn = get_db(db_path)
     _seed_federal_sankey_data(conn)
     conn.close()
-    return create_app({"TESTING": True, "DATABASE_PATH": db_path})
+    # REFRESH_PARAMS_REQUIRE_LOGIN False: these tests force rebuilds with anonymous ?refresh_cache=1 (LD4).
+    return create_app({"TESTING": True, "DATABASE_PATH": db_path, "REFRESH_PARAMS_REQUIRE_LOGIN": False})
 
 
 @pytest.fixture

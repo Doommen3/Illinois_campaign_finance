@@ -12,13 +12,15 @@ Detailed reference for the `RouteCache` layer used by heavy routes (`webapp/cach
 - `/analytics/networks`
 - `/analytics/risk` — anomalies + reconciliation
 - `/analytics/relationships`
-- `/analytics/geo-drilldown`
-- `/federal-finance/geo-drilldown`
+- `/analytics/geography` and `/analytics/donors` — `analytics_geography` / `analytics_donors` (load-time plan L5; keyed on the window plus every limit/months argument; warmed for the default scope)
+- `/analytics/geo-drilldown` — `analytics_geo_drilldown` (Redis-shared since L4; was a per-worker dict with a 180 s TTL)
+- `/federal-finance/geo-drilldown` — `federal_geo_drilldown` (Redis-shared since L4; TTL still 180 s)
+- `/search` — `search_results` (L6; period + query + type; `SEARCH_RESULTS_CACHE_TTL_SECONDS` = 21600, flushed after imports)
 - `/candidate-finance/` — paginated, keyed on all filter params
 - `/527/dark-money` — summary stats
 - `/experimental/viz-lab/data/*` — prototype gallery endpoints
 
-All caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags; the startup prewarm is the exception — it is gated only by `DASHBOARD_PREWARM_ENABLED` (and skipped under `TESTING`) and never reads `ROUTE_PERF_CACHE_ENABLED`. Append `?refresh_cache=1` to force a miss. TTL constants live in `config.py` under names matching `*_CACHE_TTL_SECONDS` — `grep _CACHE_TTL_SECONDS config.py` for the current list.
+All caches respect `ROUTE_PERF_CACHE_ENABLED` and `TESTING` flags; the startup prewarm is the exception — it is gated only by `DASHBOARD_PREWARM_ENABLED` (and skipped under `TESTING`) and never reads `ROUTE_PERF_CACHE_ENABLED`. Append `?refresh_cache=1` to force a miss — from a signed-in session: anonymous requests carrying `refresh_cache`, `refresh_full` or `sync_full` are redirected to the same URL without them (`REFRESH_PARAMS_REQUIRE_LOGIN`, L7/LD4). TTL constants live in `config.py` under names matching `*_CACHE_TTL_SECONDS` — `grep _CACHE_TTL_SECONDS config.py` for the current list.
 
 ## Performance baselines
 
@@ -34,7 +36,7 @@ Prod re-measure after deploy of `23c6cc7` (2026-10-26, through Cloudflare): forc
 
 The first Cold/Warm columns are the pre-overhaul prod measurements; the last column was taken on the local prod-sized `ilcf` after cache keys moved to the resolved scope (`scope_cache_key`), so the default window is the whole current cycle (`2025-01-01..2026-12-31`) rather than cycle-start..today. Cold cost is the same order of magnitude; warm hits are unchanged in kind (in-process cache). Not directly comparable machine-to-machine — re-measure on prod after deploy.
 
-`bulk_candidate_committee_finance_agg` is a **view**, not a table — it joins/aggregates 6.4M receipt rows on each access.
+`bulk_candidate_committee_finance_agg` was a plain **view** (joining/aggregating 6.4M receipt rows on each access) until the load-time plan's P6 swap (2026-10-28); it is now a MATERIALIZED VIEW rebuilt by `scripts/swap_bulk_to_isbe.py` (see "Search route guardrails").
 
 ### 2026-10-27 release baselines (local, before → after)
 
@@ -68,9 +70,11 @@ Prod after the 2026-10-27 deploy: not yet re-measured; add the numbers here afte
 - **Why prewarm**: where `REDIS_URL` is set (production), `RouteCache` entries live in Redis and are shared by every worker. Without Redis (dev, CI) each of the 3 gunicorn `--workers` processes falls back to its own per-instance 32-entry LRU, so without prewarm only ~33% of requests hit a warm worker. Prewarm populates the default-scope keys at startup either way.
 - **Cache key alignment**: prewarm keys must exactly match `_parse_filters()` defaults — otherwise prewarm results won't be hit. Both sides derive the key from the resolved scope (`scope_cache_key(scope)` = `axis:start:end`), so a cycle preset's key is stable across days; only `last12m` and custom windows roll.
 - **TTL choice**: the analytics caches default to 21600s (6 h; `ANALYTICS_*_CACHE_TTL_SECONDS` in `config.py`), which ensures they survive between typical user sessions. Data only changes on import, so long TTL is safe.
-- **Cost**: ~2-3 min per worker for prewarm to complete.
+- **Cost**: ~2-3 min per worker for prewarm to complete — but since L8 the prewarm checks each key first and builds only the missing ones, so with Redis already warm a restart builds nothing.
+- **Single-flight (L8)**: the overview, risk, networks, relationships and state-race list/detail builds go through `RouteCache.get_or_compute`: concurrent misses on one key, across workers, run the builder once (Redis `SET NX PX` lock `ilcf:lock:<cache>:<sha1>`, 120 s, compare-and-delete release; in-process `Event` fallback without Redis) and the others wait for its value; a builder exception caches nothing and releases the lock, after which the waiters retry the build one at a time (plan LD12: right for a transient failure; a persistent one costs k × build time until the 120 s wait deadline lets the rest build in parallel). A build that straddles a flush is not stored: `flush_all_route_caches()` writes a new token to `ilcf:flush_gen` and `_build_and_store` compares the token before and after the builder (review C2). The Redis lock is not renewed, so a worker killed mid-build blocks its key for up to 120 s (plan LD11). Stale-while-revalidate (`soft_ttl_seconds`) exists in the class but is not wired on routes (their builders need the request connection) — plan LD7.
+- **Warm after a flush (L8)**: `scripts/warm_caches.py` fills the four scope presets (current cycle, previous cycle, last 12 months, all time) for the analytics pages and the homepage; both refresh chains (`scripts/refresh_prod_chain.sh` step 7B, `scripts/sync-fec.sh` step 4) run it right after `refresh-analytics`. Without `REDIS_URL` it only warns (the caches would die with its process); with `REDIS_URL` set but Redis unreachable it logs an error, warms nothing and exits 1 (the chain scripts log `STEP7B_WARN` and carry on).
 - **Window-free graphs**: builders that take no dates (relationships: donor co-giving, committee similarity, candidate competition; networks: state–federal overlap) are cached once under `(builder name, arguments)` in the `analytics_window_free_graphs` cache and serve every window, so `?period=all` on relationships only builds the lobbying and 527 graphs. Prewarm fills them; a failed build is not cached (B3, J-S15).
-- **Invalidation**: `refresh-analytics` (after its commit) and `sunshine-import` (after the matviews and compat views) call `flush_all_route_caches()`, which deletes the Redis `ilcf:cache:*` keys. The per-instance LRUs live in each gunicorn worker and clear only on a service restart, so restart after a refresh (the weekly chain does).
+- **Invalidation**: `refresh-analytics` (after its commit), `sunshine-import` (after the matviews and compat views) and `scripts/swap_bulk_to_isbe.py` (when it finishes recreating the `bulk_*` wrappers, the candidate aggregate and `isbe_race_candidacies` — the swap runs after the import's flush; skipped under `--dry-run`) call `flush_all_route_caches()`, which deletes the Redis `ilcf:cache:*` keys. The per-process catalog memo (`database/pg_compat.py`) is separate: a "table absent" answer is kept 5 s, a "present" one 300 s, and an `UndefinedTable` / `UndefinedColumn` error drops the whole memo, so a live import's DROP/CREATE shows up within seconds (review C7/C19). The per-instance LRUs live in each gunicorn worker and clear only on a service restart, so without Redis restart after a refresh (the weekly chain does); with Redis the flush is enough and the warm script refills the presets.
 
 ## Viz Lab network advanced metrics contract
 
@@ -96,7 +100,8 @@ Endpoint: `/experimental/viz-lab/data/network_slice`.
 
 - In `type=all`, `filed_docs` runs only for doc-id-like queries.
 - In `type=all`, `donor_keys` runs only for donor-key-like queries.
-- Cached in-process by `period + query + type`.
+- Cached in `RouteCache("search_results")` (Redis-shared, TTL `SEARCH_RESULTS_CACHE_TTL_SECONDS` = 21600, flushed after imports) by `period + query + type`; each section runs under a real `SET LOCAL statement_timeout` (`SEARCH_QUERY_TIMEOUT_MS`, 700 ms) and reports `timed_out` instead of running on; a response with a timed-out or errored section is not cached (`webapp/routes/main.py`, the `timed_out_sections` check), so the next request retries it.
+- Candidates section reads the MATERIALIZED `bulk_candidate_committee_finance_agg` (swap script, L6; was a plain view: 620–2,758 ms → 50–55 ms); donors ILIKE uses the trigram GIN index below.
 - Source-aware helpers:
   - Committees: prefers `isbe_committees` (LIKE name match), falls back to legacy `committees`.
   - Donors: prefers `analytics_donor_summary` (LIKE), falls back to legacy `donors`.
@@ -110,12 +115,14 @@ Created automatically by `isbe_sunshine_etl.py` matview/schema DDL and `database
 - `isbe_d2_reports`: `active_filed_doc` (partial: `(filed_doc_id) WHERE archived = FALSE`)
 - 527 perf: `idx_irs527_contributions_name_amount`, `idx_irs527_contributions_date_amount`, `idx_irs527_expenditures_date_amount`
 - Analytics graphs: `idx_irs527_orgs_ein`, `idx_irs527_committee_matches_ein`, `idx_irs527_exp_recipient_matches_ein`, `idx_irs527_director_donor_matches_ein` (EIN lookups for 527 ecosystem graph); `idx_lobbying_donor_matches_client_id`, `idx_lobbying_exp_matches_source` (lobbying influence graph); `idx_isbe_condensed_exp_committee_id` (vendor network)
+- Load-time plan (2026-10-28): `idx_isbe_condensed_receipts_donor_name_norm` (expression index on the normalized donor name; `/lobbying/<id>` receipt activity, L3), `idx_isbe_condensed_expenditures_part9_date` (partial: `d2_part LIKE '9%' AND archived = FALSE`; the race pages' Part-9 block and the candidate outside-spending pages), `idx_isbe_filed_docs_received_datetime` (freshness gate) — all matview/ETL DDL, prod gets them with `CREATE INDEX CONCURRENTLY` at deploy; `idx_analytics_donor_summary_name_trgm` (GIN `gin_trgm_ops`; search donors ILIKE, L6) and `idx_analytics_donor_committee_agg_geo (source, donor_state_key, donor_city_key, total_amount DESC)` (all-time geo drill-down, L4) in `database/schema.sql`; the three indexes of the materialized `bulk_candidate_committee_finance_agg` (swap script).
 - Committee profile and see-all lists: `idx_isbe_condensed_expenditures_committee_date (committee_id, expended_date)` (matview DDL; prod needs the one-time `CREATE INDEX IF NOT EXISTS` from `deployment.md`) and `idx_analytics_donor_committee_agg_source_committee (source, committee_id)` (`database/schema.sql`); the per-cycle `/donors/` list reads `analytics_donor_cycle_summary` (`idx_analytics_donor_cycle_summary_total`)
 
 ## Snapshot build compatibility
 
 - `get_nlp_spending_summary` falls back to `bulk_expenditures_clean` when legacy `contributions` is absent.
 - `get_dashboard_snapshot` handles PostgreSQL `datetime` objects for `completed_at` in addition to string timestamps.
+- `?load_mode=full` never builds or refreshes a snapshot from a request (L8): the stored `analytics_snapshots` row is served stale or not, and without one the overview computes its geo summary live; `refresh_full` / `sync_full` are ignored and logged. `refresh-analytics --with-snapshot` stores its snapshot under `snapshot_version` 1 without a window, which the pages (version 3 + window) do not read — a pre-existing mismatch in `cli/commands.py`.
 
 ## Query-shape rules
 

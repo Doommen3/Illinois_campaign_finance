@@ -21,11 +21,21 @@ Pinned contract (see each test for the hand-computed numbers):
         money still comes from bulk_candidate_committee_finance_agg joined per
         (committee_id_sbe, election_cycle); the default cycle is the current
         cycle by date, passed to the builder as `today=`.
+* OS    (.claude/plans/outside-spending-drilldown.md, decisions D1-D4) a Part-9 row
+        attaches to a race candidate by (first token, last token) of the name with
+        . , ' " stripped, case folded (middle names, punctuation and case do not
+        matter); a row naming n candidates adds amount / n to each name; every
+        per-candidate figure is split Supporting / Opposing; the race total is the
+        sum of its candidate rows; the detail payload carries the date window the
+        outside spending was cut to.  The last section of this file pins it through
+        both builder paths: the targeted lookup (race_filter + Part-9 prefilter)
+        and the full-cycle build.
 
 Fixture shape: tables below mirror the production compat views column-for-column
 for the columns the builder can read (see COMPAT_VIEWS_DDL in
 scripts/isbe_sunshine_etl.py and CANDIDATE_FINANCE_AGG_VIEW_SQL in
-scripts/swap_bulk_to_isbe.py).  `is_archived` is INTEGER 0/1 there, so it is here.
+scripts/swap_bulk_to_isbe.py).  `is_archived`, `is_supporting` and `is_opposing` are
+INTEGER 0/1 there (CASE WHEN ... THEN 1 ELSE 0), so they are here.
 The agg grain is (candidate, committee, period_year): one committee-candidate link
 spans several rows per cycle, and a committee linked to n candidates repeats the
 same committee-level D-2 total on every link.  The fixtures keep both properties.
@@ -36,6 +46,7 @@ cycle, so nothing here depends on the wall clock.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -64,6 +75,22 @@ RACE_R_KEY = "state-representative-representative-district-45"
 RACE_S = ("State Senator", "Senate District", "12")
 RACE_S_LABEL = "State Senator - Senate District 12"
 RACE_S_KEY = "state-senator-senate-district-12"
+
+# Race Q: the 2024-cycle race of the cycle-gate test.
+RACE_Q = ("State Senator", "Senate District", "7")
+RACE_Q_LABEL = "State Senator - Senate District 7"
+RACE_Q_KEY = "state-senator-senate-district-7"
+
+# The keys of one outside_spending_rows item (the exact set: an extra or a missing key is a bug).
+OUTSIDE_ROW_KEYS = {
+    "candidate_id", "candidate_name", "support_total", "oppose_total", "total_amount", "row_count",
+}
+# Every outside-spending scenario runs through both builder paths: the targeted lookup
+# (get_state_race_detail: race_filter set, Part-9 prefilter on) and the full-cycle build.
+PATHS = ["detail", "full_build"]
+# The only Part-9 code in the production feed.  The older fixtures all use "9A", which a
+# `d2_part_code = '9A'` filter would pass; rows of the outside-spending section use both.
+PROD_PART9 = "9B"
 
 DIGEST_SUFFIX = re.compile(r"-[0-9a-f]{10}$")
 SLUG_SHAPE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -136,6 +163,8 @@ def _create_race_tables(conn) -> None:
             d2_part_code TEXT,
             candidate_name TEXT,
             office TEXT,
+            is_supporting INTEGER,
+            is_opposing INTEGER,
             is_archived INTEGER
         )
         """
@@ -232,10 +261,12 @@ def _add_receipt(
 
 def _add_part9(
     conn, candidate_name, amount, expended_date, *, spender=301, part="9A", archived=0,
-    office="House of Representatives 45",
+    office="House of Representatives 45", supporting=True,
 ) -> None:
     """One Part-9 (independent expenditure) row.  `office` is ISBE free text and
-    deliberately does NOT match the candidate-office vocabulary (J-S4)."""
+    deliberately does NOT match the candidate-office vocabulary (J-S4).  `supporting`
+    sets the flags the compat view derives from the filing: is_supporting 1 and
+    is_opposing 0, or the reverse when False (a filed row has exactly one of them)."""
     next_id = conn.execute(
         "SELECT COALESCE(MAX(bulk_row_id), 0) + 1 AS next_id FROM bulk_expenditures_clean"
     ).fetchone()["next_id"]
@@ -243,12 +274,14 @@ def _add_part9(
         """
         INSERT INTO bulk_expenditures_clean (
             bulk_row_id, committee_id_sbe, filed_doc_id, payee_last_or_business_name,
-            expended_date, amount, d2_part_code, candidate_name, office, is_archived
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            expended_date, amount, d2_part_code, candidate_name, office,
+            is_supporting, is_opposing, is_archived
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_id, spender, 60000 + next_id, "Media Vendor",
-            expended_date, amount, part, candidate_name, office, archived,
+            expended_date, amount, part, candidate_name, office,
+            1 if supporting else 0, 0 if supporting else 1, archived,
         ),
     )
 
@@ -1229,8 +1262,11 @@ def test_state_race_detail_populates_candidate_committee_and_outside_spending_ro
     """Full world for race R under the new digest-free key, detail (race_filter) path.
 
     receipts: X Pat 300 + Quinn 100 (+ an ARCHIVED 999 from Ghost, excluded), Y Rae 200
-    Part-9: ALICE ALPHA 700 in the cycle window, 300 before it (excluded)
-    Expected: 600.0 / 3 contributions / 3 donors ; outside 700.0 ; share 0.75.
+    Part-9 (_seed_alice_part9, supporting by default): ALICE ALPHA 700 in the cycle window;
+    excluded: 300 before it, an ARCHIVED 5000, a part-1A 999.
+    Expected: 600.0 / 3 contributions / 3 donors ; outside 700.0 ; share 0.75 ; ONE outside
+    row, for Alice under the feed's spelling (not the filed "ALICE ALPHA"): candidate_id
+    "101" (a string, like candidate_rows), support 700.0, oppose 0.0, total 700.0, 1 row.
     """
     _seed_race_r_structure(race_conn)
     _seed_race_r_receipts(race_conn)
@@ -1261,5 +1297,530 @@ def test_state_race_detail_populates_candidate_committee_and_outside_spending_ro
 
     outside_rows = detail["outside_spending_rows"]
     assert len(outside_rows) == 1
-    assert outside_rows[0]["candidate_name"].upper() == "ALICE ALPHA"
+    assert set(outside_rows[0]) == OUTSIDE_ROW_KEYS
+    assert outside_rows[0]["candidate_id"] == "101"
+    assert outside_rows[0]["candidate_name"] == "Alice Alpha"
+    assert outside_rows[0]["support_total"] == 700.0
+    assert outside_rows[0]["oppose_total"] == 0.0
     assert outside_rows[0]["total_amount"] == 700.0
+    assert outside_rows[0]["row_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Outside spending: attribution, support / oppose, window
+# (.claude/plans/outside-spending-drilldown.md, decisions D1-D4)
+# ---------------------------------------------------------------------------
+
+def _race(conn, path, race_key=RACE_R_KEY, **kwargs) -> dict:
+    """One race's payload WITH supporting rows, through either builder path:
+      detail       get_state_race_detail: the targeted lookup (race_filter + Part-9 prefilter)
+      full_build   the whole cycle built at once (the overview / prewarm path).
+    The route caches this payload as JSON (webapp/cache_backend.py: json.dumps(default=str)), so
+    it must come back from that round trip unchanged: no tuple, set, date or Decimal inside."""
+    kwargs.setdefault("election_cycle", CYCLE)
+    if path == "detail":
+        race = get_state_race_detail(conn, race_key=race_key, **kwargs)
+        assert race is not None, f"no detail payload for {race_key}"
+    else:
+        rows = _build_state_race_analytics_rows(conn, include_supporting_rows=True, **kwargs)
+        by_key = {row["race_key"]: row for row in rows}
+        assert race_key in by_key, f"{race_key} is not among {sorted(by_key)}"
+        race = by_key[race_key]
+    assert json.loads(json.dumps(race, default=str)) == race, "payload changes in the JSON cache round trip"
+    return race
+
+
+def _outside_by_name(race: dict) -> dict[str, dict]:
+    """The race's outside_spending_rows keyed by candidate name.  Pins on the way what every
+    scenario relies on: the exact key set of an item, one item per name, total = support +
+    oppose, and the race total = the sum of the item totals."""
+    rows = race["outside_spending_rows"]
+    for row in rows:
+        assert set(row) == OUTSIDE_ROW_KEYS, f"outside row keys: {sorted(row)}"
+        assert row["total_amount"] == row["support_total"] + row["oppose_total"], row
+    names = [row["candidate_name"] for row in rows]
+    assert len(names) == len(set(names)), f"a candidate is listed twice: {names}"
+    assert race["outside_spending_total"] == sum(row["total_amount"] for row in rows)
+    return {row["candidate_name"]: row for row in rows}
+
+
+def _assert_outside_row(row, *, candidate_id, support, oppose, count) -> None:
+    name = row["candidate_name"]
+    assert row["candidate_id"] == candidate_id, name
+    assert row["support_total"] == support, name
+    assert row["oppose_total"] == oppose, name
+    assert row["total_amount"] == support + oppose, name
+    assert row["row_count"] == count, name
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_outside_rows_match_on_first_and_last_name_ignoring_middle_names_punctuation_and_case(race_conn, path):
+    """D1.  Race R, cycle 2026.  Feed names: Alice Alpha (101), Bob Beta (102), Carl C Charlie
+    (103; a middle initial in the feed, the way ISBE spells "Michelle N Pierre" while the filers
+    write "Michelle Pierre") and an unnamed candidacy (109, NULL name).  Part-9 rows, supporting,
+    inside the cycle window:
+        attach to Alice (101)  "Alice M. Alpha" 1000 | "ALICE ALPHA." 200 | "Alice Marie Alpha" 30 |
+                               "alice alpha" 4 | " ALICE  ALPHA " 0.5 (padding, a double space)
+                                                                            -> 1234.5 over 5 rows
+        attach to Carl (103)   "Carl Charlie" 500 | "CARL C. CHARLIE" 60    ->  560 over 2 rows
+        attach to nobody       near misses "Alice Alphabet" 50000 (the last token only CONTAINS
+                               Alpha), "Alicia Alpha" 600000 (another first name), "Bob Alpha"
+                               7000000 (Bob's first name, Alice's last name), "Alpha" 80000 (one
+                               token); rows that name nobody: NULL 111111, "" 222222, "   " 333333
+    Race outside total 1234.5 + 560 = 1794.5 over exactly two rows, Alice first, each under the FEED
+    spelling ("Alice Alpha", "Carl C Charlie") with the candidate id as a string.
+    Kills: the exact whole-string match (today only "alice alpha" counts: 4); a first-name-only,
+    last-name-only, substring or startswith match (the three near misses); a first x last cross
+    product of the race's names ("Bob Alpha"); a one-token fallback ("Alpha"); a NULL key equal to
+    a NULL key (the unnamed candidate would take the 666666 of unnameable rows) or a crash on a NULL
+    / blank filed name; reporting the filed spelling; a detail-path SQL prefilter narrower than the
+    Python key (every variant must pass it); a key built with split(" ") (the padded row's last
+    token is ''); counting per committee link (Alice has two) or per candidacy row (three)."""
+    _seed_race_r_structure(race_conn)
+    _add_candidacy(race_conn, 9105, 103, "Carl C Charlie", RACE_R, 203)
+    _add_candidacy(race_conn, 9109, 109, None, RACE_R, None)
+    attached = [
+        ("Alice M. Alpha", 1000.0, "2025-03-01", PROD_PART9),
+        ("ALICE ALPHA.", 200.0, "2025-04-01", PROD_PART9),
+        ("Alice Marie Alpha", 30.0, "2025-05-01", "9A"),
+        ("alice alpha", 4.0, "2026-02-01", "9A"),
+        (" ALICE  ALPHA ", 0.5, "2025-09-01", "9A"),
+        ("Carl Charlie", 500.0, "2025-06-01", PROD_PART9),
+        ("CARL C. CHARLIE", 60.0, "2025-07-01", PROD_PART9),
+    ]
+    near_misses_and_unnameable = [
+        ("Alice Alphabet", 50000.0),
+        ("Alicia Alpha", 600000.0),
+        ("Bob Alpha", 7000000.0),
+        ("Alpha", 80000.0),
+        (None, 111111.0),
+        ("", 222222.0),
+        ("   ", 333333.0),
+    ]
+    for name, amount, day, part in attached:
+        _add_part9(race_conn, name, amount, day, part=part)
+    for name, amount in near_misses_and_unnameable:
+        _add_part9(race_conn, name, amount, "2025-08-01", part=PROD_PART9)
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    assert list(outside) == ["Alice Alpha", "Carl C Charlie"]
+    _assert_outside_row(outside["Alice Alpha"], candidate_id="101", support=1234.5, oppose=0.0, count=5)
+    _assert_outside_row(outside["Carl C Charlie"], candidate_id="103", support=560.0, oppose=0.0, count=2)
+    assert race["outside_spending_total"] == 1794.5
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_a_row_naming_several_names_adds_its_amount_over_the_names_in_its_text_and_counts_once(race_conn, path):
+    """D3 + D4.  Race R: Alice Alpha (101, two committees), Bob Beta (102).  Race S: Dana Delta
+    (103).  Part-9 rows inside the window, all supporting ("n names" = the names in the text):
+        "Alice Alpha, Bob Beta"      600  2 names                         -> Alice 300, Bob 300
+        "Alice Alpha, Zed Zeta"      100  2 names, Zed is nobody's        -> Alice 50 (Zed's 50 is attached to nobody)
+        "Alice Alpha, Dana Delta"     40  2 names, one candidate per race -> Alice 20 in R, Dana 20 in S
+        "ALICE ALPHA"                 10  1 name                          -> Alice 10
+        "BOB BETA"                    20  1 name                          -> Bob 20
+        ARCHIVED "Alice Alpha, Bob Beta" 8000                             -> nobody
+    Race R: Alice 300 + 50 + 20 + 10 = 380 over 4 rows, Bob 300 + 20 = 320 over 2 rows; race total
+    700.0 (the 600 row contributes its two halves, 600 in all, not 1200).  Race S: Dana 20.0 over
+    1 row, total 20.0.
+    Kills: the whole amount to every named candidate (Alice 750, Bob 620, race 1370); dividing by
+    the names that MATCH a candidate of the race instead of the names in the text (Alice would take
+    all of the 100 and the 40: 450, race 770) or by the race's candidates; counting a split row once
+    per committee link of Alice; counters that are not per candidate or per race (the row counts
+    4 / 2 / 1 and the totals 700 / 20 differ); counting the archived split row."""
+    _seed_race_r_structure(race_conn)
+    _add_candidacy(race_conn, 9201, 103, "Dana Delta", RACE_S, 203)
+    for name, amount, day in [
+        ("Alice Alpha, Bob Beta", 600.0, "2025-03-01"),
+        ("Alice Alpha, Zed Zeta", 100.0, "2025-04-01"),
+        ("Alice Alpha, Dana Delta", 40.0, "2025-05-01"),
+        ("ALICE ALPHA", 10.0, "2025-06-01"),
+        ("BOB BETA", 20.0, "2025-07-01"),
+    ]:
+        _add_part9(race_conn, name, amount, day)
+    _add_part9(race_conn, "Alice Alpha, Bob Beta", 8000.0, "2025-08-01", archived=1)
+
+    race_r = _race(race_conn, path, RACE_R_KEY)
+    race_s = _race(race_conn, path, RACE_S_KEY)
+    outside_r = _outside_by_name(race_r)
+    outside_s = _outside_by_name(race_s)
+
+    assert list(outside_r) == ["Alice Alpha", "Bob Beta"]
+    _assert_outside_row(outside_r["Alice Alpha"], candidate_id="101", support=380.0, oppose=0.0, count=4)
+    _assert_outside_row(outside_r["Bob Beta"], candidate_id="102", support=320.0, oppose=0.0, count=2)
+    assert race_r["outside_spending_total"] == 700.0
+    assert list(outside_s) == ["Dana Delta"]
+    _assert_outside_row(outside_s["Dana Delta"], candidate_id="103", support=20.0, oppose=0.0, count=1)
+    assert race_s["outside_spending_total"] == 20.0
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_every_separator_splits_a_row_but_the_letters_and_inside_a_name_do_not(race_conn, path):
+    """D1.  Race R: Alice Alpha (101), Bob Beta (102), Randy Sanders (103; "and" sits inside both
+    of his names).  Part-9 rows (code 9B, as in production), supporting, inside the window:
+        "Alice Alpha, Bob Beta"                    100   comma
+        "Alice Alpha; Bob Beta"                    200   semicolon
+        "Alice Alpha / Bob Beta"                   300   slash
+        "Alice Alpha & Bob Beta"                   400   ampersand
+        "Alice Alpha and Bob Beta"                 500   the word and
+        "ALICE ALPHA AND BOB BETA"                 600   the word AND (case)
+        "Alice Alpha, Bob Beta and Randy Sanders"  900   three names, two kinds of separator
+        "Randy Sanders and Alice Alpha"            800   the word and, between names that contain "and"
+        "RANDY SANDERS"                             70   one name
+        ARCHIVED "Alice Alpha, Bob Beta"         10000   -> nobody
+    Rows 1-6 give Alice and Bob 2100 / 2 = 1050 each; row 7 gives each of the three 300; row 8
+    gives Randy and Alice 400 each; row 9 gives Randy 70:
+        Alice 1050 + 300 + 400 = 1750 over 8 rows ; Bob 1050 + 300 = 1350 over 7 rows ;
+        Randy 300 + 400 + 70 = 770 over 3 rows ; race total 3870 = the sum of every live row (every
+        name here is a candidate, so nothing is left over).
+    Kills: a split on commas only or on any subset of the five separators; a case-sensitive "and";
+    a split on the letters "and" anywhere in the text (Randy / Sanders); a fixed two-way split
+    (row 7); the archived split row."""
+    _seed_race_r_structure(race_conn)
+    _add_candidacy(race_conn, 9106, 103, "Randy Sanders", RACE_R, 203)
+    for name, amount, day in [
+        ("Alice Alpha, Bob Beta", 100.0, "2025-03-01"),
+        ("Alice Alpha; Bob Beta", 200.0, "2025-03-02"),
+        ("Alice Alpha / Bob Beta", 300.0, "2025-03-03"),
+        ("Alice Alpha & Bob Beta", 400.0, "2025-03-04"),
+        ("Alice Alpha and Bob Beta", 500.0, "2025-03-05"),
+        ("ALICE ALPHA AND BOB BETA", 600.0, "2025-03-06"),
+        ("Alice Alpha, Bob Beta and Randy Sanders", 900.0, "2025-03-07"),
+        ("Randy Sanders and Alice Alpha", 800.0, "2025-03-08"),
+        ("RANDY SANDERS", 70.0, "2025-03-09"),
+    ]:
+        _add_part9(race_conn, name, amount, day, part=PROD_PART9)
+    _add_part9(race_conn, "Alice Alpha, Bob Beta", 10000.0, "2025-03-10", part=PROD_PART9, archived=1)
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    assert list(outside) == ["Alice Alpha", "Bob Beta", "Randy Sanders"]
+    _assert_outside_row(outside["Alice Alpha"], candidate_id="101", support=1750.0, oppose=0.0, count=8)
+    _assert_outside_row(outside["Bob Beta"], candidate_id="102", support=1350.0, oppose=0.0, count=7)
+    _assert_outside_row(outside["Randy Sanders"], candidate_id="103", support=770.0, oppose=0.0, count=3)
+    assert race["outside_spending_total"] == 3870.0
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_outside_totals_are_split_into_supporting_and_opposing_for_each_candidate(race_conn, path):
+    """D2.  Race R (Alice 101 with two committees, Bob 102).  Part-9 rows, flags as filed:
+        Alice, supporting  "ALICE ALPHA"  700    (2025-06-01)                        counts
+        Alice, opposing    "ALICE ALPHA"  200.25 (2025-09-01)                        counts
+        Alice, opposing    "ALICE ALPHA"   30.5  (2026-03-01, is_archived NULL)      counts (NULL = current)
+        Bob,   opposing    "BOB BETA"     450.5  (2026-01-15)                        counts
+      never counted: supporting 300 before the cycle window, ARCHIVED supporting 5000 and part-1A
+      supporting 999 (all three from _seed_alice_part9); opposing ARCHIVED 4000, part-1A 888 and 77
+      before the window; Bob's ARCHIVED supporting 3000.
+    Alice: support 700, oppose 200.25 + 30.5 = 230.75, total 930.75 over 3 rows.
+    Bob:   support 0,   oppose 450.5,                  total 450.5 over 1 row.
+    Race total 930.75 + 450.5 = 1381.25, Alice first.  (Binary-exact cents, so == is safe.)
+    Kills: swapped or ignored flags; a total that is not support + oppose; a support / oppose
+    pair computed globally instead of per candidate; the archived / Part-1 / pre-window filters
+    applied to one side only (the traps are planted on both); a NULL is_archived dropped
+    (`is_archived = 0`); the flags read from a column the compat view does not have."""
+    _seed_race_r_structure(race_conn)
+    _seed_alice_part9(race_conn)
+    _add_part9(race_conn, "ALICE ALPHA", 200.25, "2025-09-01", supporting=False)
+    _add_part9(race_conn, "ALICE ALPHA", 30.5, "2026-03-01", supporting=False, archived=None)
+    _add_part9(race_conn, "ALICE ALPHA", 4000.0, "2025-07-02", supporting=False, archived=1)
+    _add_part9(race_conn, "ALICE ALPHA", 888.0, "2025-08-02", supporting=False, part="1A")
+    _add_part9(race_conn, "ALICE ALPHA", 77.0, "2021-05-02", supporting=False)
+    _add_part9(race_conn, "BOB BETA", 450.5, "2026-01-15", supporting=False)
+    _add_part9(race_conn, "BOB BETA", 3000.0, "2025-10-01", archived=1)
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    assert list(outside) == ["Alice Alpha", "Bob Beta"]
+    _assert_outside_row(outside["Alice Alpha"], candidate_id="101", support=700.0, oppose=230.75, count=3)
+    _assert_outside_row(outside["Bob Beta"], candidate_id="102", support=0.0, oppose=450.5, count=1)
+    assert race["outside_spending_total"] == 1381.25
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_a_row_attaches_only_in_the_cycle_whose_window_holds_its_date(race_conn, path):
+    """D1 cycle gate.  Cycle-2026 window 2025-01-01..2026-12-31, cycle-2024 window
+    2023-01-01..2024-12-31.  Race R (cycle 2026): Alice Alpha (101), Bob Beta (102).  Race Q
+    (cycle 2024): Zed Zeta (201) and a namesake Alice Alpha (301) whose only candidacy is in 2024.
+    Part-9 rows, supporting:
+        "ZED ZETA"     400    on 2023-06-01   inside the 2024 window only
+        "ZED ZETA"      55    on 2025-06-01   inside the 2026 window, but Zed has no 2026 candidacy
+        "ALICE ALPHA"   90    on 2023-06-01   inside the 2024 window only
+        "ALICE ALPHA"    7    on 2025-06-01   inside the 2026 window only
+        "ALICE ALPHA" 31337   with no date    inside no window
+        "BOB BETA"      12    on 2021-05-01   inside no window
+    Cycle 2026 builds race R only: Alice (101) 7.0 over 1 row, race total 7.0 (not Zed's 55, not
+    the namesake's 90, not the undated row), and NO row for Bob (his one row is before the
+    window).  Cycle 2024 builds race Q only: Zed (201) 400.0 and Alice (301) 90.0, race total
+    490.0, Zed first.
+    Kills: a name match with no cycle gate (Alice 101 would also take the namesake's 90); a window
+    that is always the 2026 one; candidates taken from every cycle's feed (Zed's 55); an undated
+    row counted in every window; a candidate listed with zeros because an all-time row names him."""
+    _seed_race_r_structure(race_conn)
+    _add_candidacy(race_conn, 9910, 201, "Zed Zeta", RACE_Q, 701, year=2024)
+    _add_candidacy(race_conn, 9911, 301, "Alice Alpha", RACE_Q, 702, year=2024)
+    for name, amount, day in [
+        ("ZED ZETA", 400.0, "2023-06-01"),
+        ("ZED ZETA", 55.0, "2025-06-01"),
+        ("ALICE ALPHA", 90.0, "2023-06-01"),
+        ("ALICE ALPHA", 7.0, "2025-06-01"),
+        ("ALICE ALPHA", 31337.0, None),
+        ("BOB BETA", 12.0, "2021-05-01"),
+    ]:
+        _add_part9(race_conn, name, amount, day)
+
+    assert set(_by_label(_build(race_conn, election_cycle=2026))) == {RACE_R_LABEL}
+    assert set(_by_label(_build(race_conn, election_cycle=2024))) == {RACE_Q_LABEL}
+
+    race_2026 = _race(race_conn, path, RACE_R_KEY, election_cycle=2026)
+    outside_2026 = _outside_by_name(race_2026)
+    assert list(outside_2026) == ["Alice Alpha"]
+    _assert_outside_row(outside_2026["Alice Alpha"], candidate_id="101", support=7.0, oppose=0.0, count=1)
+    assert race_2026["outside_spending_total"] == 7.0
+
+    race_2024 = _race(race_conn, path, RACE_Q_KEY, election_cycle=2024)
+    outside_2024 = _outside_by_name(race_2024)
+    assert list(outside_2024) == ["Zed Zeta", "Alice Alpha"]
+    _assert_outside_row(outside_2024["Zed Zeta"], candidate_id="201", support=400.0, oppose=0.0, count=1)
+    _assert_outside_row(outside_2024["Alice Alpha"], candidate_id="301", support=90.0, oppose=0.0, count=1)
+    assert race_2024["outside_spending_total"] == 490.0
+
+
+def test_outside_total_is_one_number_in_the_overview_the_full_build_and_the_detail(race_conn):
+    """The overview row (no supporting rows), the full build and the targeted detail run the same
+    matcher: one outside total, and the pressure ratio is computed from it.  Race R, receipts in
+    the window 300 + 100 + 200 = 600.0 (_seed_race_r_receipts).  Part-9 rows, inside the window:
+        "Alice M. Alpha"          1000  supporting   -> Alice 1000  (middle initial)
+        "Alice Alpha, Bob Beta"    600  supporting   -> Alice 300, Bob 300
+        "BOB BETA"                  50  opposing     -> Bob 50
+        ARCHIVED "ALICE ALPHA"    9000  supporting   -> nobody
+    Outside total 1000 + 300 + 300 + 50 = 1650.0 ; pressure ratio 1650 / 600 = 2.75 (today:
+    50.0 and 0.0833, from the one exact-name row).  The two builds that carry rows reconcile
+    (the rows add up to the total).
+    Kills: an implementation that rewrites only the branch that builds the rows, or only the one
+    that sums the total, or leaves the ratio on the old number."""
+    _seed_race_r_structure(race_conn)
+    _seed_race_r_receipts(race_conn)
+    _add_part9(race_conn, "Alice M. Alpha", 1000.0, "2025-03-01")
+    _add_part9(race_conn, "Alice Alpha, Bob Beta", 600.0, "2025-04-01")
+    _add_part9(race_conn, "BOB BETA", 50.0, "2025-05-01", supporting=False)
+    _add_part9(race_conn, "ALICE ALPHA", 9000.0, "2025-06-01", archived=1)
+
+    overview = _by_label(get_state_race_analytics(race_conn, limit=5000, election_cycle=CYCLE))[RACE_R_LABEL]
+    summary = _by_label(_build(race_conn, include_supporting_rows=False))[RACE_R_LABEL]
+    full = _race(race_conn, "full_build")
+    detail = _race(race_conn, "detail")
+
+    for label, race in [("overview", overview), ("summary build", summary), ("full build", full), ("detail", detail)]:
+        assert race["outside_spending_total"] == 1650.0, label
+        assert race["outside_pressure_ratio"] == 2.75, label
+    _outside_by_name(full)
+    _outside_by_name(detail)
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize(
+    "cycle, date_from, date_to, expected_from, expected_to",
+    [
+        pytest.param(2026, None, None, "2025-01-01", "2026-12-31", id="whole-cycle"),
+        pytest.param(2026, "", "", "2025-01-01", "2026-12-31", id="empty-strings-as-the-route-passes-them"),
+        pytest.param(2026, "2000-01-01", "2030-12-31", "2025-01-01", "2026-12-31", id="wider-page-window"),
+        pytest.param(2026, "2025-06-01", "2026-03-31", "2025-06-01", "2026-03-31", id="narrower-at-both-ends"),
+        pytest.param(2026, "2025-03-15", None, "2025-03-15", "2026-12-31", id="only-date-from"),
+        pytest.param(2026, None, "2025-09-30", "2025-01-01", "2025-09-30", id="only-date-to"),
+        pytest.param(2026, "2024-06-01", "2025-06-30", "2025-01-01", "2025-06-30", id="starts-before-the-cycle"),
+        pytest.param(2026, "2026-02-01", "2029-01-01", "2026-02-01", "2026-12-31", id="ends-after-the-cycle"),
+        pytest.param(2028, None, None, "2027-01-01", "2028-12-31", id="cycle-2028"),
+    ],
+)
+def test_detail_payload_carries_the_window_its_outside_spending_was_cut_to(
+    race_conn, path, cycle, date_from, date_to, expected_from, expected_to
+):
+    """The window is the cycle window ((cycle-1)-01-01 .. cycle-12-31, both ends inclusive)
+    intersected with the page window, as ISO strings.  Expected values are hand-computed in the
+    parameters, e.g. "starts-before-the-cycle": max(2025-01-01, 2024-06-01) ..
+    min(2026-12-31, 2025-06-30) = 2025-01-01 .. 2025-06-30.
+    No Part-9 row exists on purpose: a race WITHOUT outside spending (most races) still carries
+    the window, because the page builds its line-item links from it.  The route hands the builder
+    '' (not None) for an unbounded side, so '' is a case.
+    Kills: no key; a hard-coded 2025 / 2026 window; the page window replacing the cycle window;
+    min / max swapped; None or '' compared as a date (min('2026-12-31', '') is ''); a window
+    computed only when rows exist."""
+    _seed_race_r_structure(race_conn)
+    _add_candidacy(race_conn, 9110, 101, "Alice Alpha", RACE_R, 201, year=2028)
+
+    race = _race(race_conn, path, election_cycle=cycle, date_from=date_from, date_to=date_to)
+
+    assert race["outside_spending_rows"] == []
+    assert race["outside_spending_total"] == 0.0
+    assert race["outside_spending_window"] == {"date_from": expected_from, "date_to": expected_to}
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_outside_rows_are_sorted_by_total_descending_with_a_stable_name_order_for_ties(race_conn, path):
+    """Race R with five candidates, one supporting row each.  Ids and the Part-9 insertion order
+    match neither the expected order nor its reverse:
+        id   name            outside total
+        101  Evan Echo         50
+        102  Carl Charlie     100   (three-way tie at 100)
+        103  Dina Delta       100   (three-way tie at 100)
+        104  Bob Beta         100   (three-way tie at 100)
+        105  Alice Alpha      300
+    Part-9 rows are inserted Evan, Dina, Bob, Alice, Carl.  Expected: totals [300, 100, 100, 100,
+    50]; Alice first, Evan last, the three tied candidates between them in name order.
+    AMBIGUOUS in the contract ("total desc then name" gives no direction; the old code sorted the
+    names descending on ties): the tie group may be ascending or descending but must be ordered,
+    because either direction is a stable page and neither changes a decision.
+    Kills: candidate-id order (Evan first), row-insertion order, ascending totals, a sort on the
+    name alone, and a tie group left in whatever order the scan produced."""
+    for candidate_id, name in [
+        (101, "Evan Echo"), (102, "Carl Charlie"), (103, "Dina Delta"), (104, "Bob Beta"), (105, "Alice Alpha"),
+    ]:
+        _add_candidacy(race_conn, 9000 + candidate_id, candidate_id, name, RACE_R)
+    for name, amount in [
+        ("EVAN ECHO", 50.0), ("DINA DELTA", 100.0), ("BOB BETA", 100.0), ("ALICE ALPHA", 300.0), ("CARL CHARLIE", 100.0),
+    ]:
+        _add_part9(race_conn, name, amount, "2025-06-01")
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    names = list(outside)
+    assert names[0] == "Alice Alpha"
+    assert names[-1] == "Evan Echo"
+    tied = names[1:4]
+    assert set(tied) == {"Bob Beta", "Carl Charlie", "Dina Delta"}
+    assert tied in (sorted(tied), sorted(tied, reverse=True)), f"tie group is not in name order: {tied}"
+    assert [row["total_amount"] for row in race["outside_spending_rows"]] == [300.0, 100.0, 100.0, 100.0, 50.0]
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_candidates_without_an_id_keep_their_own_rows_with_a_blank_candidate_id(race_conn, path):
+    """Race R: Alice Alpha (101) and two candidacy-feed rows whose candidate_id is NULL (Nora
+    Nullid, Olga Orphan; no committees).  Part-9 rows inside the window:
+        "ALICE ALPHA" 10 supporting | "NORA NULLID" 40 supporting | "OLGA ORPHAN" 25.5 opposing
+    Items, in order: Nora candidate_id "" support 40 / oppose 0 / total 40 / 1 row ; Olga ""
+    0 / 25.5 / 25.5 / 1 ; Alice "101" 10 / 0 / 10 / 1.  Race total 75.5.
+    Kills: dropping a candidate that has no id; keying the rows by candidate_id (the two blank ids
+    would merge into one row of 65.5); None or the text "None" instead of ''."""
+    _add_candidacy(race_conn, 9101, 101, "Alice Alpha", RACE_R, 201)
+    _add_candidacy(race_conn, 9701, None, "Nora Nullid", RACE_R, None)
+    _add_candidacy(race_conn, 9702, None, "Olga Orphan", RACE_R, None)
+    _add_part9(race_conn, "ALICE ALPHA", 10.0, "2025-06-01")
+    _add_part9(race_conn, "NORA NULLID", 40.0, "2025-06-02")
+    _add_part9(race_conn, "OLGA ORPHAN", 25.5, "2025-06-03", supporting=False)
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    assert list(outside) == ["Nora Nullid", "Olga Orphan", "Alice Alpha"]
+    _assert_outside_row(outside["Nora Nullid"], candidate_id="", support=40.0, oppose=0.0, count=1)
+    _assert_outside_row(outside["Olga Orphan"], candidate_id="", support=0.0, oppose=25.5, count=1)
+    _assert_outside_row(outside["Alice Alpha"], candidate_id="101", support=10.0, oppose=0.0, count=1)
+    assert race["outside_spending_total"] == 75.5
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_apostrophes_quotes_and_periods_are_ignored_on_both_sides(race_conn, path):
+    """D1.  The key strips . , ' " from the filed name AND from the feed name, and the detail
+    lookup's SQL prefilter strips the same characters from the filed name, so the patterns it is
+    given must come from the stripped names.  Race R: Alice Alpha (101), Pat O'Brien (103; an
+    apostrophe in the feed), Sean Oneill (104; none in the feed).  Part-9 rows, supporting, inside
+    the window:
+        "PAT OBRIEN" 100 | "Pat O'Brien" 20 | "PAT O'BRIEN." 3     -> Pat 123 over 3 rows
+        "SEAN O'NEILL" 400                                         -> Sean 400 over 1 row
+        '"Alice" Alpha' 9000                                       -> Alice 9000 over 1 row
+    Race total 9000 + 400 + 123 = 9523.0, in the order Alice, Sean, Pat.
+    Kills: LIKE patterns built from the raw feed name ("O'BRIEN" never occurs in the stripped SQL
+    text, so the detail path would lose Pat's rows while the full build keeps them); a key that
+    keeps apostrophes ("O'NEILL" != "ONEILL") or quote characters ('"ALICE"' != 'ALICE')."""
+    _add_candidacy(race_conn, 9101, 101, "Alice Alpha", RACE_R, 201)
+    _add_candidacy(race_conn, 9103, 103, "Pat O'Brien", RACE_R, 203)
+    _add_candidacy(race_conn, 9104, 104, "Sean Oneill", RACE_R, 204)
+    for name, amount, day in [
+        ("PAT OBRIEN", 100.0, "2025-03-01"),
+        ("Pat O'Brien", 20.0, "2025-03-02"),
+        ("PAT O'BRIEN.", 3.0, "2025-03-03"),
+        ("SEAN O'NEILL", 400.0, "2025-03-04"),
+        ('"Alice" Alpha', 9000.0, "2025-03-05"),
+    ]:
+        _add_part9(race_conn, name, amount, day, part=PROD_PART9)
+
+    race = _race(race_conn, path)
+    outside = _outside_by_name(race)
+
+    assert list(outside) == ["Alice Alpha", "Sean Oneill", "Pat O'Brien"]
+    _assert_outside_row(outside["Alice Alpha"], candidate_id="101", support=9000.0, oppose=0.0, count=1)
+    _assert_outside_row(outside["Sean Oneill"], candidate_id="104", support=400.0, oppose=0.0, count=1)
+    _assert_outside_row(outside["Pat O'Brien"], candidate_id="103", support=123.0, oppose=0.0, count=3)
+    assert race["outside_spending_total"] == 9523.0
+
+
+LAST_NAMES = [
+    "Alder", "Birch", "Cedar", "Dogwood", "Elm", "Fir", "Ginkgo", "Hazel",
+    "Ivy", "Juniper", "Kauri", "Larch", "Maple", "Nutmeg", "Olive", "Poplar",
+]
+
+
+@pytest.mark.parametrize(
+    "count, race_total",
+    [pytest.param(15, 1200.0, id="15-candidates"), pytest.param(16, 1360.0, id="16-candidates")],
+)
+def test_the_part9_prefilter_does_not_drop_the_candidates_of_a_large_race(race_conn, count, race_total):
+    """The detail lookup prefilters Part-9 rows by the race's last names, and by the contract only
+    when the race has at most 15 of them (more: no prefilter).  Race R has `count` candidates
+    "Pat <Last>" (ids 501..), position k = 1..count, each with one supporting row "PAT <LAST>" of
+    10 * k.
+        15 candidates: totals 10, 20 .. 150, race 10 * (15 * 16 / 2) = 1200.0
+        16 candidates: totals 10, 20 .. 160, race 10 * (16 * 17 / 2) = 1360.0
+    Kills: a prefilter truncated to the first 15 names (the 16th candidate loses its row), a
+    truncation one short of the limit (the 15th loses its row), a prefilter that breaks above the
+    limit."""
+    for position, last in enumerate(LAST_NAMES[:count], start=1):
+        _add_candidacy(race_conn, 9500 + position, 500 + position, f"Pat {last}", RACE_R)
+        _add_part9(race_conn, f"PAT {last.upper()}", 10.0 * position, "2025-06-01")
+
+    race = _race(race_conn, "detail")
+    outside = _outside_by_name(race)
+
+    assert len(outside) == count
+    for position, last in enumerate(LAST_NAMES[:count], start=1):
+        row = outside[f"Pat {last}"]
+        _assert_outside_row(row, candidate_id=str(500 + position), support=10.0 * position, oppose=0.0, count=1)
+    assert race["outside_spending_total"] == race_total
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_two_candidates_with_the_same_name_in_one_race_count_once_and_the_first_record_carries_the_row(race_conn, path):
+    """D4 REVERSED 2026-10-28 (review finding: on real data a person registered under two ISBE
+    candidate ids in one race -- "Margaret Croke" / "Margaret Noble Croke", Committeewoman
+    Congressional 5, 2026 -- doubled the race total to $2.73M).  Race R has two candidate records
+    with the key PAT/QUINN (ids 201 and 202, the feed lists 201 first) and race S a third (203).
+    Part-9 rows inside the window: "PAT QUINN" 100 supporting, "Pat Quinn" 50 opposing.  Within a
+    race one name key is one candidate: the first record in feed order carries the rows (support
+    100, oppose 50, total 150 over 2 rows), the twin gets no row, and the race total is 150.0 --
+    not 300.  Race S counts its own copy, 150.0 (keys are per race, not global).
+    Kills: counting the rows per id (R: two rows, 300), dropping both twins, letting the LAST
+    record win, or deduping across races (S would lose its row)."""
+    _add_candidacy(race_conn, 9201, 201, "Pat Quinn", RACE_R, 701)
+    _add_candidacy(race_conn, 9202, 202, "Pat Quinn", RACE_R, 702)
+    _add_candidacy(race_conn, 9203, 203, "Pat Quinn", RACE_S, 703)
+    _add_part9(race_conn, "PAT QUINN", 100.0, "2025-06-01")
+    _add_part9(race_conn, "Pat Quinn", 50.0, "2025-06-02", supporting=False)
+
+    race = _race(race_conn, path)
+    race_s = _race(race_conn, path, RACE_S_KEY)
+
+    rows = race["outside_spending_rows"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row) == OUTSIDE_ROW_KEYS
+    assert row["candidate_name"] == "Pat Quinn"
+    _assert_outside_row(row, candidate_id="201", support=100.0, oppose=50.0, count=2)
+    assert race["outside_spending_total"] == 150.0
+    outside_s = _outside_by_name(race_s)
+    assert list(outside_s) == ["Pat Quinn"]
+    _assert_outside_row(outside_s["Pat Quinn"], candidate_id="203", support=100.0, oppose=50.0, count=2)
+    assert race_s["outside_spending_total"] == 150.0

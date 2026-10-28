@@ -217,6 +217,7 @@ def _make_app(tmp_path, *, route_cache: bool):
         "DATABASE_PATH": db_path,
         "DASHBOARD_PREWARM_ENABLED": False,
         "ROUTE_PERF_CACHE_ENABLED": route_cache,
+        "REFRESH_PARAMS_REQUIRE_LOGIN": False,  # anonymous ?refresh_cache=1 in these tests (LD4)
         "ANALYTICS_RELATIONSHIPS_CACHE_TTL_SECONDS": 600,
         "ANALYTICS_NETWORKS_CACHE_TTL_SECONDS": 600,
     })

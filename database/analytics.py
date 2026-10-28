@@ -11,6 +11,7 @@ import sqlite3
 from typing import Optional
 
 from database.models import Donor, _normalized_date_sql, receipts_filter_sql
+from database.outside_spending import STRIPPED_NAME_SQL, attribute_part9_rows, candidate_name_key, summarize
 from database.race_keys import race_key as build_race_key
 
 try:
@@ -408,6 +409,20 @@ def _city_display(city: str | None) -> str:
     if not city_key:
         return ""
     return " ".join(part.capitalize() for part in city_key.split())
+
+
+def _geo_city_state(
+    donor_city: str | None, donor_state: str | None, donor_address: str | None
+) -> tuple[str, str]:
+    """(city, STATE) of a donor row as the geo drill-down reads it: the trimmed columns (state
+    upper-cased), or -- only when both are blank -- what _extract_city_state finds in the address."""
+    city = (donor_city or "").strip()
+    state = (donor_state or "").strip().upper()
+    if not city and not state:
+        parsed_city, parsed_state = _extract_city_state(donor_address)
+        city = parsed_city or ""
+        state = (parsed_state or "").strip().upper()
+    return city, state
 
 
 _COLLAR_CITIES = {
@@ -2258,6 +2273,150 @@ def get_geo_summary(
     }
 
 
+# ORDER BY of the all-time drill-down page: the row-by-row path's sort tuples, every component in the
+# requested direction, names lower-cased and compared in code-point order (COLLATE "C", as Python
+# compares str). donor_key and committee_id make the order total, so LIMIT/OFFSET pages never overlap.
+# One known difference from that path: the amount component is the raw float8 total_amount (so the
+# index can supply the order), where the row-by-row path sorted round(amount, 2); rows whose displayed
+# cent totals tie are therefore ordered by their sub-cent residue, not by count/name. ROUND() here
+# would cost the index order (IL page statement 1.2 ms -> 307 ms); page row sets, totals and the
+# header are unaffected (review C9, 2026-10-28).
+_GEO_DRILLDOWN_NAME_SQL = "LOWER(COALESCE(NULLIF(donor_name, ''), 'Unknown Donor')) COLLATE \"C\""
+_GEO_DRILLDOWN_COMMITTEE_SQL = "LOWER(COALESCE(NULLIF(committee_name, ''), 'Unknown Committee')) COLLATE \"C\""
+_GEO_DRILLDOWN_ORDER_SQL = {
+    "total_amount": ("total_amount", "contribution_count", _GEO_DRILLDOWN_NAME_SQL),
+    "contribution_count": ("contribution_count", "total_amount", _GEO_DRILLDOWN_NAME_SQL),
+    "donor_name": (_GEO_DRILLDOWN_NAME_SQL, "total_amount"),
+    "committee_name": (_GEO_DRILLDOWN_COMMITTEE_SQL, "total_amount"),
+}
+
+
+def _geo_drilldown_from_agg(
+    conn: sqlite3.Connection,
+    summary: dict,
+    city_key: str | None,
+    page: int,
+    per_page: int,
+    sort_key: str,
+    sort_direction: str,
+) -> dict | None:
+    """The all-time get_geo_drilldown payload, computed in SQL on analytics_donor_committee_agg (plan L4).
+
+    Two statements on the refresh-time keys behind idx_analytics_donor_committee_agg_geo: the cell
+    header (one row) and the page (at most per_page rows). `summary` is the caller's empty summary of
+    the cell (its geo_state is the state key); `city_key` is None for a state cell. Returns None when
+    the agg cannot answer -- no current rows for the active source, or keys missing or not yet filled
+    (a table init-db extended before its next refresh-analytics run) -- and the caller then reads the
+    rows one by one, as before.
+    """
+    source = _donor_flow_source(conn)
+    if not _rows_for_source_exist(conn, "analytics_donor_committee_agg", source):
+        return None
+    if not (
+        _column_exists(conn, "analytics_donor_committee_agg", "donor_state_key")
+        and _column_exists(conn, "analytics_donor_committee_agg", "donor_city_key")
+    ):
+        return None
+    unfilled = conn.execute(
+        "SELECT 1 FROM analytics_donor_committee_agg WHERE source = ? AND donor_state_key IS NULL LIMIT 1",
+        (source,),
+    ).fetchone()
+    if unfilled is not None:
+        return None
+
+    cell_sql = "source = ? AND donor_state_key = ?"
+    cell_params: list[object] = [source, summary["geo_state"]]
+    if city_key is not None:
+        cell_sql += " AND donor_city_key = ?"
+        cell_params.append(city_key)
+
+    # Amounts are summed as exact decimals of their shortest text form: ROUND of that equals Python's
+    # round(x, 2) on every stored amount (the 15-digit float8::numeric cast does not), so the header
+    # and sum_check_delta are the row-by-row path's. The distinct donors are counted in a scan of
+    # their own, so that the sort behind COUNT(DISTINCT) carries donor_key alone (IL: 0.48 s vs 0.55 s).
+    header = conn.execute(
+        f"""
+        SELECT
+            cell.*,
+            (
+                SELECT COUNT(DISTINCT donor_key COLLATE "C")
+                FROM analytics_donor_committee_agg
+                WHERE {cell_sql}
+            ) AS donor_count
+        FROM (
+            SELECT
+                COUNT(*) AS row_count,
+                COALESCE(SUM(contribution_count), 0) AS contribution_count,
+                COALESCE(SUM(CAST(CAST(total_amount AS TEXT) AS NUMERIC)), 0) AS total_amount,
+                COALESCE(SUM(ROUND(CAST(CAST(total_amount AS TEXT) AS NUMERIC), 2)), 0) AS rounded_total_amount
+            FROM analytics_donor_committee_agg
+            WHERE {cell_sql}
+        ) cell
+        """,
+        [*cell_params, *cell_params],
+    ).fetchone()
+    total_rows = int(header["row_count"] or 0)
+    total_pages = (total_rows + per_page - 1) // per_page if total_rows else 0
+    if total_pages and page > total_pages:
+        page = total_pages
+
+    page_rows: list[dict] = []
+    if total_rows:
+        direction = "DESC" if sort_direction == "desc" else "ASC"
+        order_by = ", ".join(
+            f"{column} {direction}"
+            for column in (*_GEO_DRILLDOWN_ORDER_SQL[sort_key], 'donor_key COLLATE "C"', 'committee_id COLLATE "C"')
+        )
+        rows = conn.execute(
+            f"""
+            SELECT donor_key, donor_name, donor_address, donor_city, donor_state,
+                   committee_id, committee_name, total_amount, contribution_count
+            FROM analytics_donor_committee_agg
+            WHERE {cell_sql}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+            """,
+            [*cell_params, per_page, (page - 1) * per_page],
+        ).fetchall()
+        for row in rows:
+            city, state = _geo_city_state(row["donor_city"], row["donor_state"], row["donor_address"])
+            committee_id = row["committee_id"]
+            if isinstance(committee_id, str) and committee_id.isdigit():
+                committee_id = int(committee_id)
+            page_rows.append(
+                {
+                    "donor_key": str(row["donor_key"] or "").strip(),
+                    "donor_name": row["donor_name"] or "Unknown Donor",
+                    "donor_city": _city_display(city),
+                    "donor_state": state,
+                    "committee_id": committee_id,
+                    "committee_name": row["committee_name"] or "Unknown Committee",
+                    "total_amount": round(float(row["total_amount"] or 0.0), 2),
+                    "contribution_count": int(row["contribution_count"] or 0),
+                }
+            )
+
+    total_amount = round(float(header["total_amount"]), 2)
+    return {
+        "source": source,
+        "rows": page_rows,
+        "summary": {
+            **summary,
+            "total_amount": total_amount,
+            "contribution_count": int(header["contribution_count"]),
+            "donor_count": int(header["donor_count"]),
+            "detail_row_count": total_rows,
+            "page_total_amount": round(sum(row["total_amount"] for row in page_rows), 2),
+            "page_contribution_count": sum(row["contribution_count"] for row in page_rows),
+            "sum_check_delta": round(total_amount - round(float(header["rounded_total_amount"]), 2), 2),
+        },
+        "pagination": {"page": page, "per_page": per_page, "total_rows": total_rows, "total_pages": total_pages},
+        "sort": {"sort_by": sort_key, "sort_dir": sort_direction},
+        "date_from": None,
+        "date_to": None,
+    }
+
+
 def get_geo_drilldown(
     conn: sqlite3.Connection,
     geo_type: str,
@@ -2270,7 +2429,11 @@ def get_geo_drilldown(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> dict:
-    """Return paginated donor->committee rows backing a geographic aggregate."""
+    """Return paginated donor->committee rows backing a geographic aggregate.
+
+    All time: answered in SQL from analytics_donor_committee_agg (_geo_drilldown_from_agg). A custom
+    window, or an agg that cannot answer: every donor->committee row is read and filtered here.
+    """
     geo_type_key = "city" if (geo_type or "").strip().lower() == "city" else "state"
     value_text = (geo_value or "").strip()
     state_filter = (geo_state or "").strip().upper()
@@ -2313,6 +2476,19 @@ def get_geo_drilldown(
             "date_from": (date_from or "").strip() or None,
             "date_to": (date_to or "").strip() or None,
         }
+
+    if not ((date_from or "").strip() or (date_to or "").strip()):
+        agg_payload = _geo_drilldown_from_agg(
+            conn,
+            empty_summary,
+            city_filter if geo_type_key == "city" else None,
+            page,
+            per_page,
+            sort_key,
+            sort_direction,
+        )
+        if agg_payload is not None:
+            return agg_payload
 
     donor_committee_rows, donor_source = _get_donor_committee_rows(
         conn,
@@ -2515,7 +2691,13 @@ def _build_state_race_analytics_rows(
     Receipts (page window): every part, amount > 0, archived rows excluded;
     donors = the site donor_key with local entity merges applied.
     Outside spending: Part-9 rows inside the cycle window, narrowed by the page
-    window, matched to candidates by name.
+    window, attributed to the race's candidates by database/outside_spending.py
+    (first + last name token; a row naming n candidates gives each amount / n;
+    within a race one name key is one candidate, the first record in feed order);
+    one row per candidate, split supporting / opposing; the race total is the sum
+    of the rows.  Read from isbe_condensed_expenditures (its Part-9 partial index)
+    when it exists, else from bulk_expenditures_clean.  Supporting-rows builds carry
+    the window as `outside_spending_window`.
 
     `race_filter` (a race key) keeps only that race, and the D-2 / receipt /
     Part-9 scans then touch only its committees and candidates, so the
@@ -2551,7 +2733,6 @@ def _build_state_race_analytics_rows(
 
     races: dict[str, dict] = {}
     committee_to_races: dict[str, set[str]] = defaultdict(set)
-    candidate_name_to_races: dict[str, set[str]] = defaultdict(set)
 
     for row in candidate_rows:
         office_sought = row["office_sought"] or "Unknown Office"
@@ -2597,8 +2778,6 @@ def _build_state_race_analytics_rows(
         if committee_id:
             committee_to_races[committee_id].add(race_key_value)
             race["committee_candidates"][committee_id].add(candidate_token)
-        if candidate_name:
-            candidate_name_to_races[candidate_name.upper()].add(race_key_value)
         race["candidate_links"].append((candidate_id, candidate_name, committee_id, committee_name))
 
     if not races:
@@ -2746,68 +2925,136 @@ def _build_state_race_analytics_rows(
                     }
                 )
 
-    expenditure_part_exists = _column_exists(conn, "bulk_expenditures_clean", "d2_part_code")
-    expenditure_amount_exists = _column_exists(conn, "bulk_expenditures_clean", "amount")
-    expenditure_candidate_exists = _column_exists(conn, "bulk_expenditures_clean", "candidate_name")
-    if expenditure_part_exists and expenditure_amount_exists and expenditure_candidate_exists:
-        is_archived_exists = _column_exists(conn, "bulk_expenditures_clean", "is_archived")
-        expended_date_exists = _column_exists(conn, "bulk_expenditures_clean", "expended_date")
-        exp_where_parts = ["COALESCE(e.d2_part_code, '') LIKE '9%'"]
-        exp_params: list[object] = []
-        if is_archived_exists:
-            exp_where_parts.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
-        if expended_date_exists:
-            # Outside spending belongs to the race's cycle: the inclusive cycle
-            # window ((cycle-1)-01-01 .. cycle-12-31) narrowed by the page window.
-            outside_from = f"{resolved_cycle - 1}-01-01"
-            outside_to = f"{resolved_cycle}-12-31"
-            if date_from:
-                outside_from = max(outside_from, date_from)
-            if date_to:
-                outside_to = min(outside_to, date_to)
-            exp_where_parts.append("e.expended_date >= ?")
-            exp_params.append(outside_from)
-            exp_where_parts.append("e.expended_date <= ?")
-            exp_params.append(outside_to)
-        # Once the race spans many candidates, a large IN-list of names
-        # underperforms the full-cycle scan.
-        if race_filter is not None and candidate_name_to_races:
-            race_candidate_names = sorted({n for n in candidate_name_to_races.keys() if n})
-            if 0 < len(race_candidate_names) <= 15:
-                placeholders = ",".join(["?"] * len(race_candidate_names))
-                exp_where_parts.append(
-                    f"UPPER(TRIM(COALESCE(e.candidate_name, ''))) IN ({placeholders})"
-                )
-                exp_params.extend(race_candidate_names)
+    # Outside spending belongs to the race's cycle: the inclusive cycle window
+    # ((cycle-1)-01-01 .. cycle-12-31) narrowed by the page window.  The detail payload
+    # carries it, so the page can link each candidate row to the same window's line items.
+    outside_from = f"{resolved_cycle - 1}-01-01"
+    outside_to = f"{resolved_cycle}-12-31"
+    if date_from:
+        outside_from = max(outside_from, date_from)
+    if date_to:
+        outside_to = min(outside_to, date_to)
 
+    # One matcher candidate per race candidate (the token above: id, else name, else
+    # committee), keyed on the candidacy feed's spelling.  Within a race one name key is one
+    # candidate: the first record in feed order carries the rows and a twin record (one person
+    # under two candidate ids, e.g. "Margaret Croke" / "Margaret Noble Croke") gets none, so no
+    # row counts twice in the race total (plan D4, reversed 2026-10-28).  No cycle gate: the
+    # date window above is the race's cycle.
+    outside_candidates: list[dict] = []
+    for race_key_value, race in races.items():
+        tokens_seen: set[str] = set()
+        keys_seen: set[tuple[str, str]] = set()
+        for candidate_id, candidate_name, committee_id, _committee_name in race["candidate_links"]:
+            candidate_token = candidate_id or candidate_name.upper() or committee_id
+            if candidate_token in tokens_seen:
+                continue
+            tokens_seen.add(candidate_token)
+            name_key = candidate_name_key(candidate_name)
+            if name_key is not None:
+                if name_key in keys_seen:
+                    continue
+                keys_seen.add(name_key)
+            outside_candidates.append(
+                {
+                    "key": name_key,
+                    "cycles": None,
+                    "race_key": race_key_value,
+                    "candidate_id": candidate_id,
+                    "candidate_name": candidate_name,
+                }
+            )
+    # The detail lookup scans only rows whose stripped name holds a last name of the
+    # race; past 15 last names the pattern list underperforms the full-cycle scan.
+    last_name_patterns: list[str] = []
+    if race_filter is not None:
+        last_names = sorted({candidate["key"][1] for candidate in outside_candidates if candidate["key"]})
+        if 0 < len(last_names) <= 15:
+            last_name_patterns = [f"%{last_name}%" for last_name in last_names]
+
+    outside_rows: list = []
+    if _table_exists(conn, "isbe_condensed_expenditures"):
+        # The matview itself, through its partial index idx_isbe_condensed_expenditures_part9_date
+        # (scripts/isbe_sunshine_etl.py): the predicate repeats the index's, and both `like`s are
+        # lower-case because database/pg_compat.py rewrites an upper-case LIKE to ILIKE, which the
+        # index cannot serve (the compat view's predicate below never can).
+        exp_where_parts = [
+            "e.d2_part like '9%' AND e.archived = FALSE",
+            "e.expended_date >= ?",
+            "e.expended_date <= ?",
+        ]
+        exp_params: list[object] = [outside_from, outside_to]
+        if last_name_patterns:
+            exp_where_parts.append(f"{STRIPPED_NAME_SQL} like ANY(?)")
+            exp_params.append(last_name_patterns)
         outside_rows = conn.execute(
             f"""
-            SELECT
-                UPPER(TRIM(COALESCE(e.candidate_name, ''))) AS candidate_name_key,
-                MIN(NULLIF(TRIM(COALESCE(e.candidate_name, '')), '')) AS candidate_name,
-                COALESCE(SUM(COALESCE(e.amount, 0.0)), 0.0) AS total_amount
-            FROM bulk_expenditures_clean e
+            SELECT e.id, e.committee_id, e.candidate_name, e.amount, e.supporting, e.opposing, e.expended_date
+            FROM isbe_condensed_expenditures e
             WHERE {' AND '.join(exp_where_parts)}
-            GROUP BY candidate_name_key
             """,
             exp_params,
         ).fetchall()
-        for row in outside_rows:
-            candidate_name_key = (row["candidate_name_key"] or "").strip()
-            if not candidate_name_key:
-                continue
-            candidate_name = (row["candidate_name"] or "").strip() or candidate_name_key
-            outside_amount = float(row["total_amount"] or 0.0)
-            for race_key_value in candidate_name_to_races.get(candidate_name_key, set()):
-                race = races[race_key_value]
-                race["outside_spending_total"] += outside_amount
-                if include_supporting_rows:
-                    race["outside_spending_rows"].append(
-                        {
-                            "candidate_name": candidate_name,
-                            "total_amount": round(outside_amount, 2),
-                        }
-                    )
+    else:
+        # No matview (test fixtures): the bulk_expenditures_clean compat view.
+        expenditure_part_exists = _column_exists(conn, "bulk_expenditures_clean", "d2_part_code")
+        expenditure_amount_exists = _column_exists(conn, "bulk_expenditures_clean", "amount")
+        expenditure_candidate_exists = _column_exists(conn, "bulk_expenditures_clean", "candidate_name")
+        if expenditure_part_exists and expenditure_amount_exists and expenditure_candidate_exists:
+            is_archived_exists = _column_exists(conn, "bulk_expenditures_clean", "is_archived")
+            expended_date_exists = _column_exists(conn, "bulk_expenditures_clean", "expended_date")
+            exp_where_parts = ["COALESCE(e.d2_part_code, '') LIKE '9%'"]
+            exp_params = []
+            if is_archived_exists:
+                exp_where_parts.append("NOT COALESCE(e.is_archived::boolean, FALSE)")
+            if expended_date_exists:
+                exp_where_parts.append("e.expended_date >= ?")
+                exp_params.append(outside_from)
+                exp_where_parts.append("e.expended_date <= ?")
+                exp_params.append(outside_to)
+            if last_name_patterns:
+                exp_where_parts.append(f"{STRIPPED_NAME_SQL} LIKE ANY(?)")
+                exp_params.append(last_name_patterns)
+
+            # The compat view's flags are 0/1 integers in production, booleans in some fixtures.
+            supporting_sql = "e.is_supporting" if _column_exists(conn, "bulk_expenditures_clean", "is_supporting") else "0"
+            opposing_sql = "e.is_opposing" if _column_exists(conn, "bulk_expenditures_clean", "is_opposing") else "0"
+            outside_rows = conn.execute(
+                f"""
+                SELECT
+                    e.committee_id_sbe AS committee_id,
+                    e.candidate_name,
+                    COALESCE(e.amount, 0.0) AS amount,
+                    {supporting_sql} AS supporting,
+                    {opposing_sql} AS opposing
+                FROM bulk_expenditures_clean e
+                WHERE {' AND '.join(exp_where_parts)}
+                """,
+                exp_params,
+            ).fetchall()
+
+    attributed: dict[int, list[dict]] = defaultdict(list)
+    for attribution in attribute_part9_rows(outside_rows, outside_candidates):
+        attributed[id(attribution["candidate"])].append(attribution)
+    # A candidate row per attributed candidate; the race total is the sum of the rows.
+    for candidate in outside_candidates:
+        if id(candidate) not in attributed:
+            continue
+        summary = summarize(attributed[id(candidate)])
+        race = races[candidate["race_key"]]
+        candidate_total = round(summary["total"], 2)
+        race["outside_spending_total"] += candidate_total
+        if include_supporting_rows:
+            race["outside_spending_rows"].append(
+                {
+                    "candidate_id": candidate["candidate_id"],
+                    "candidate_name": candidate["candidate_name"],
+                    "support_total": round(summary["support_total"], 2),
+                    "oppose_total": round(summary["oppose_total"], 2),
+                    "total_amount": candidate_total,
+                    "row_count": summary["row_count"],
+                }
+            )
 
     output: list[dict] = []
     for race in races.values():
@@ -2858,6 +3105,7 @@ def _build_state_race_analytics_rows(
                 ),
                 reverse=True,
             )
+            payload["outside_spending_window"] = {"date_from": outside_from, "date_to": outside_to}
         output.append(payload)
 
     output.sort(
@@ -2999,13 +3247,23 @@ def get_state_race_details(
 
 
 def get_analytics_data_sources(conn: sqlite3.Connection) -> dict:
-    """Describe analytics inputs currently available/used."""
+    """Describe analytics inputs currently available/used.
+
+    The recon row count (~150 ms over 530K rows, paid on every /analytics/* hit) is kept per
+    database schema for the process, beside the catalog-probe memo (plan L9).
+    """
+    from database.pg_compat import schema_memo
+
     donor_source = _donor_flow_source(conn)
     has_recon = _table_exists(conn, "bulk_d2_receipts_recon")
     recon_rows = 0
     if has_recon:
-        recon_rows = int(
-            conn.execute("SELECT COUNT(*) AS count FROM bulk_d2_receipts_recon").fetchone()["count"]
+        recon_rows = schema_memo(
+            conn,
+            ("row_count", "bulk_d2_receipts_recon"),
+            lambda: int(
+                conn.execute("SELECT COUNT(*) AS count FROM bulk_d2_receipts_recon").fetchone()["count"]
+            ),
         )
 
     return {
@@ -3071,6 +3329,53 @@ def _refresh_donor_cycle_summary(conn: sqlite3.Connection) -> int:
     ).rowcount
 
 
+def _geo_key_sql(city_sql: str, state_sql: str) -> tuple[str, str]:
+    """SQL for an agg row's (donor_state_key, donor_city_key), given its city and state.
+
+    The keys are the geo drill-down's cell filter -- _geo_city_state, then _city_key(_city_display(city))
+    -- stored at refresh time so that a cell is an index probe (plan L4). SQL computes them only where
+    it matches Python exactly: city and state made of printable ASCII (BTRIM/UPPER/LOWER and the regexes
+    then agree with str.strip/upper/lower and re) and not both blank (those rows need the address).
+    Everywhere else the keys stay NULL and _fill_geo_keys computes them in Python.
+    """
+    city = f"COALESCE({city_sql}, '')"
+    state = f"COALESCE({state_sql}, '')"
+    exact = f"{city} ~ '^[ -~]*$' AND {state} ~ '^[ -~]*$' AND (BTRIM({city}) <> '' OR BTRIM({state}) <> '')"
+    state_key = f"CASE WHEN {exact} THEN UPPER(BTRIM({state})) END"
+    city_key = (
+        f"CASE WHEN {exact} THEN "
+        f"BTRIM(REGEXP_REPLACE(REGEXP_REPLACE(LOWER({city}), '[^a-z0-9 ]+', '', 'g'), ' +', ' ', 'g')) END"
+    )
+    return state_key, city_key
+
+
+def _fill_geo_keys(conn: sqlite3.Connection, source: str) -> None:
+    """Key, in Python, the agg rows of `source` that the refresh INSERT left NULL (address-only rows,
+    text that is not printable ASCII; ~10K of 1.3M rows). Every row ends with both keys non-NULL
+    ('' when there is no state or city), which is what get_geo_drilldown's readiness probe checks."""
+    rows = conn.execute(
+        """
+        SELECT donor_key, committee_id, donor_city, donor_state, donor_address
+        FROM analytics_donor_committee_agg
+        WHERE source = ? AND donor_state_key IS NULL
+        """,
+        (source,),
+    ).fetchall()
+    updates = []
+    for row in rows:
+        city, state = _geo_city_state(row["donor_city"], row["donor_state"], row["donor_address"])
+        updates.append((state, _city_key(_city_display(city)), source, row["donor_key"], row["committee_id"]))
+    if updates:
+        conn.executemany(
+            """
+            UPDATE analytics_donor_committee_agg
+            SET donor_state_key = ?, donor_city_key = ?
+            WHERE source = ? AND donor_key = ? AND committee_id = ?
+            """,
+            updates,
+        )
+
+
 def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
     """Refresh materialized analytics from native ISBE tables (no compat view overhead)."""
     donor_inserted = 0
@@ -3084,10 +3389,11 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
     conn.execute("DELETE FROM analytics_donor_summary WHERE source = 'bulk_receipts'")
 
     # 1. Donor-committee aggregation from isbe_condensed_receipts
+    geo_state_key_sql, geo_city_key_sql = _geo_key_sql("MAX(r.city)", "MAX(r.state)")
     conn.execute(
         f"""
         INSERT INTO analytics_donor_committee_agg (
-            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            source, donor_key, donor_name, donor_address, donor_city, donor_state, donor_state_key, donor_city_key,
             occupation, employer, committee_id, committee_name, total_amount, contribution_count, updated_at
         )
         SELECT
@@ -3115,6 +3421,8 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
             )) AS donor_address,
             MAX(r.city) AS donor_city,
             MAX(r.state) AS donor_state,
+            {geo_state_key_sql} AS donor_state_key,
+            {geo_city_key_sql} AS donor_city_key,
             MAX(NULLIF(TRIM(r.occupation), '')) AS occupation,
             MAX(NULLIF(TRIM(r.employer), '')) AS employer,
             CAST(c.id AS TEXT) AS committee_id,
@@ -3136,6 +3444,7 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
             COALESCE(c.name, 'Committee ' || r.committee_id)
         """
     )
+    _fill_geo_keys(conn, "bulk_receipts")
     donor_inserted = int(
         conn.execute(
             """
@@ -3327,10 +3636,11 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
     conn.execute("DELETE FROM analytics_large_contributions WHERE source = 'bulk_receipts'")
     conn.execute("DELETE FROM analytics_donor_summary WHERE source = 'bulk_receipts'")
 
+    geo_state_key_sql, geo_city_key_sql = _geo_key_sql("MAX(r.city)", "MAX(r.state)")
     conn.execute(
         f"""
         INSERT INTO analytics_donor_committee_agg (
-            source, donor_key, donor_name, donor_address, donor_city, donor_state,
+            source, donor_key, donor_name, donor_address, donor_city, donor_state, donor_state_key, donor_city_key,
             occupation, employer, committee_id, committee_name, total_amount, contribution_count, updated_at
         )
         SELECT
@@ -3358,6 +3668,8 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
             )) AS donor_address,
             MAX(r.city) AS donor_city,
             MAX(r.state) AS donor_state,
+            {geo_state_key_sql} AS donor_state_key,
+            {geo_city_key_sql} AS donor_city_key,
             MAX(NULLIF(TRIM(r.occupation), '')) AS occupation,
             MAX(NULLIF(TRIM(r.employer), '')) AS employer,
             CAST(COALESCE(c.committee_id_sbe, r.committee_id_sbe) AS TEXT) AS committee_id,
@@ -3379,6 +3691,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
             COALESCE(c.committee_name, 'Committee ' || r.committee_id_sbe)
         """
     )
+    _fill_geo_keys(conn, "bulk_receipts")
     donor_inserted = int(
         conn.execute(
             """
@@ -3593,6 +3906,7 @@ def _refresh_materialized_contributions(conn: sqlite3.Connection) -> dict:
         GROUP BY d.id, c.id
         """
     )
+    _fill_geo_keys(conn, "contributions")
     donor_inserted = int(
         conn.execute(
             """
@@ -3792,6 +4106,14 @@ def refresh_analytics_materialized(conn: sqlite3.Connection) -> dict:
         stats = _refresh_materialized_bulk(conn)
     else:
         stats = _refresh_materialized_contributions(conn)
+    conn.commit()
+    # Planner statistics for the rebuilt aggregates (load-time plan L12): the geo
+    # drill-down key columns and the trigram-indexed donor names plan badly on
+    # stale statistics until autovacuum catches up.
+    conn.execute(
+        "ANALYZE analytics_donor_committee_agg, analytics_donor_summary, "
+        "analytics_committee_monthly_totals, analytics_large_contributions"
+    )
     conn.commit()
     # Every cached route payload now describes the old aggregates. Flush after the
     # commit, so no request re-caches the old numbers in between (plan B6). Lazy
@@ -4809,13 +5131,16 @@ def get_committee_similarity_network(
     source = _donor_flow_source(conn)
 
     if source == "bulk_receipts" and _table_exists(conn, "analytics_donor_committee_agg"):
+        # COUNT(*) is the donor count: the agg has one row per (source, donor_key, committee_id) and
+        # source is fixed below. COUNT(DISTINCT donor_key) took 5.8-10.7 s with 2 parallel workers
+        # (the web cap), the closest request-path statement to the 30 s timeout (plan LD12).
         committee_rows = conn.execute(
             """
             SELECT
                 committee_id,
                 MAX(committee_name) AS committee_name,
                 COALESCE(SUM(total_amount), 0) AS total_amount,
-                COUNT(DISTINCT donor_key) AS donor_count
+                COUNT(*) AS donor_count
             FROM analytics_donor_committee_agg
             WHERE source = 'bulk_receipts'
               AND committee_id IS NOT NULL

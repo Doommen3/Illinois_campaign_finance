@@ -1,5 +1,6 @@
 (() => {
-    const TABLE_SELECTOR = "table.data-table, table.info-table";
+    // A table whose header links sort on the server (paginated) opts out with data-server-sort.
+    const TABLE_SELECTOR = "table.data-table:not([data-server-sort]), table.info-table:not([data-server-sort])";
     const collator = new Intl.Collator(undefined, {
         numeric: true,
         sensitivity: "base",

@@ -4,13 +4,13 @@ import csv
 from datetime import datetime
 import inspect
 from io import StringIO
-import sqlite3
-import threading
 import time
 
-from flask import Blueprint, Response, render_template, request, current_app
+from flask import Blueprint, Response, render_template, request, current_app, g
+import psycopg
 
 from database.models import Committee, Report, Donor, Contribution, receipts_filter_sql
+from database.pg_compat import statement_timeout_scope
 from webapp.cache_backend import RouteCache
 from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
 
@@ -20,8 +20,7 @@ main_bp = Blueprint('main', __name__)
 _dashboard_insights_cache = RouteCache("dashboard_insights")
 _candidate_stats_cache = RouteCache("candidate_stats")
 _top_donors_cache = RouteCache("top_donors")
-_search_results_cache: OrderedDict[str, dict] = OrderedDict()
-_search_results_cache_lock = threading.Lock()
+_search_results_cache = RouteCache("search_results")
 
 SEARCH_TYPES = {
     "all",
@@ -45,30 +44,21 @@ def _sanitize_search_query(raw_query: str, max_length: int) -> tuple[str, bool]:
 
 
 def _run_query_with_timeout(conn, query_fn, timeout_ms: int) -> tuple[object, float, bool]:
-    """Execute sqlite work with a progress-handler timeout guardrail."""
+    """Run query_fn with a per-statement budget of timeout_ms (statement_timeout_scope).
+
+    A statement over budget is cancelled by PostgreSQL: the result is ([], elapsed_ms, True).
+    Any other error propagates. The connection stays usable either way.
+    """
     start = time.perf_counter()
     if timeout_ms <= 0:
         return query_fn(), (time.perf_counter() - start) * 1000.0, False
 
-    deadline = start + (float(timeout_ms) / 1000.0)
-
-    def _progress_handler():
-        return 1 if time.perf_counter() >= deadline else 0
-
-    conn.set_progress_handler(_progress_handler, 2000)
-    timed_out = False
     try:
-        result = query_fn()
-    except sqlite3.OperationalError as exc:
-        if "interrupted" in str(exc).lower():
-            result = []
-            timed_out = True
-        else:
-            raise
-    finally:
-        conn.set_progress_handler(None, 0)
-
-    return result, (time.perf_counter() - start) * 1000.0, timed_out
+        with statement_timeout_scope(conn, timeout_ms):
+            result = query_fn()
+    except psycopg.errors.QueryCanceled:
+        return [], (time.perf_counter() - start) * 1000.0, True
+    return result, (time.perf_counter() - start) * 1000.0, False
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -188,11 +178,7 @@ def _search_results_cache_enabled() -> bool:
 
 
 def _search_results_cache_ttl_seconds() -> int:
-    return max(15, int(current_app.config.get("SEARCH_RESULTS_CACHE_TTL_SECONDS", 120)))
-
-
-def _search_results_cache_max_entries() -> int:
-    return max(16, int(current_app.config.get("SEARCH_RESULTS_CACHE_MAX_ENTRIES", 256)))
+    return max(15, int(current_app.config.get("SEARCH_RESULTS_CACHE_TTL_SECONDS", 21600)))
 
 
 def _is_filed_doc_query(query: str) -> bool:
@@ -218,36 +204,18 @@ def _search_results_cache_key(scope_token: str, query: str, search_type: str) ->
 def _get_cached_search_results(scope_token: str, query: str, search_type: str) -> dict | None:
     if not _search_results_cache_enabled():
         return None
-    key = _search_results_cache_key(scope_token, query, search_type)
-    now = time.monotonic()
-    with _search_results_cache_lock:
-        entry = _search_results_cache.get(key)
-        if not entry:
-            return None
-        if float(entry.get("expires_at", 0.0)) <= now:
-            _search_results_cache.pop(key, None)
-            return None
-        _search_results_cache.move_to_end(key)
-        payload = entry.get("payload")
-        if not isinstance(payload, dict):
-            return None
-        return payload
+    payload = _search_results_cache.get(_search_results_cache_key(scope_token, query, search_type))
+    return payload if isinstance(payload, dict) else None
 
 
 def _set_cached_search_results(scope_token: str, query: str, search_type: str, payload: dict) -> None:
     if not _search_results_cache_enabled():
         return
-    key = _search_results_cache_key(scope_token, query, search_type)
-    now = time.monotonic()
-    max_entries = _search_results_cache_max_entries()
-    with _search_results_cache_lock:
-        _search_results_cache.pop(key, None)
-        _search_results_cache[key] = {
-            "payload": payload,
-            "expires_at": now + float(_search_results_cache_ttl_seconds()),
-        }
-        while len(_search_results_cache) > max_entries:
-            _search_results_cache.popitem(last=False)
+    _search_results_cache.set(
+        _search_results_cache_key(scope_token, query, search_type),
+        payload,
+        _search_results_cache_ttl_seconds(),
+    )
 
 
 def _call_build_dashboard_insights(conn, scope=None) -> dict:
@@ -398,19 +366,30 @@ def warm_dashboard_home_cache(
     insights_ttl_seconds: int = 180,
     candidate_stats_ttl_seconds: int = 180,
     top_donors_ttl_seconds: int = 180,
+    *,
+    scope_key: str = "cycle:current",
 ) -> None:
-    from database.connection import get_db
+    """Fill the homepage's three caches for one preset window (``?period=<scope_key>``).
 
-    scope = _default_home_scope()
+    Each goes through get_or_compute, so a key already cached (in Redis: by any worker or by
+    scripts/warm_caches.py) is not rebuilt.
+    """
+    from database.connection import get_db
+    from webapp.utils.time_scope import resolve_time_scope
+
+    scope = resolve_time_scope(default="cycle:current", axis="received", args={"period": scope_key})
+    key = _scope_token(scope)
     conn = get_db(database_path)
     try:
-        insights = _call_build_dashboard_insights(conn, scope=scope)
-        stats = _get_candidate_stats(conn, scope=scope)
-        donors = _query_top_donors(conn, scope)
-        key = _scope_token(scope)
-        _dashboard_insights_cache.set(key, insights, max(15, insights_ttl_seconds))
-        _candidate_stats_cache.set(key, stats, max(15, candidate_stats_ttl_seconds))
-        _top_donors_cache.set(key, donors, max(15, top_donors_ttl_seconds))
+        _dashboard_insights_cache.get_or_compute(
+            key, lambda: _call_build_dashboard_insights(conn, scope=scope), max(15, insights_ttl_seconds),
+        )
+        _candidate_stats_cache.get_or_compute(
+            key, lambda: _get_candidate_stats(conn, scope=scope), max(15, candidate_stats_ttl_seconds),
+        )
+        _top_donors_cache.get_or_compute(
+            key, lambda: _query_top_donors(conn, scope), max(15, top_donors_ttl_seconds),
+        )
     finally:
         conn.close()
 
@@ -705,10 +684,11 @@ def _get_candidate_stats(conn, scope=None):
         'federal_independent_expenditure_date': None,
         'federal_sync_updated_at': None,
     }
-    if _table_exists(conn, "bulk_receipts_clean"):
+    # Native matview columns (index on received_date); MAX through the bulk_receipts_clean compat view is a seq scan.
+    if _table_exists(conn, "isbe_condensed_receipts"):
         freshness['local_receipt_date'] = _scalar(
             conn,
-            "SELECT MAX(received_date) AS max_date FROM bulk_receipts_clean WHERE NOT COALESCE(is_archived::boolean, FALSE)",
+            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts WHERE archived = FALSE",
             default=None,
         )
     if _table_exists(conn, "fec_schedule_a_contributions"):
@@ -2801,7 +2781,7 @@ def index():
                            scope_query=scope_params(scope))
 
 
-@main_bp.route('/candidates')
+@main_bp.route('/candidates', strict_slashes=False)
 def candidates():
     """Unified candidates landing page — state and federal entry points."""
     from webapp.utils.data_through import latest_data_date
@@ -3042,6 +3022,9 @@ def search():
                     "donor_keys": results["donor_keys"],
                 },
             )
+        else:
+            # Not stored above, so the edge must not keep it either (add_edge_cache_header in webapp/app.py).
+            g._no_edge_cache = True
 
     search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)
     if search_meta['duration_ms'] >= float(slow_query_ms) and query and not is_short_query:
