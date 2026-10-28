@@ -1790,6 +1790,31 @@ def test_large_threshold_override_replaces_the_site_wide_rule(conn, override, ex
     assert result["counts"]["large_single_contribution"] == len(expected_rows)
 
 
+def test_site_threshold_kwarg_is_used_verbatim_as_the_site_wide_rule_without_the_percentile_statement(conn, monkeypatch):
+    """Plan N15: the route layer computes the site-wide threshold once per process and passes it in; the builder uses
+    it verbatim with source 'site_wide' and does not run its own percentile statement.  Kills: a kwarg that is ignored
+    (the disabled helper raises), one relabelled 'override', or one that beats an explicit ``large_threshold``."""
+    import database.entity_analytics as module
+
+    expected = _risk(conn)  # the module's own path, before its statement is disabled
+
+    def no_statement(_conn):
+        raise AssertionError("_site_large_threshold must not run when site_threshold is given")
+
+    monkeypatch.setattr(module, "_site_large_threshold", no_statement)
+    result = _risk(conn, site_threshold=SITE_THRESHOLD)
+    assert result == expected
+    assert result["threshold"] == {"large_single": SITE_THRESHOLD, "source": "site_wide"}
+
+    higher = _risk(conn, site_threshold=10000.0)
+    large = _flags(higher, "large_single_contribution")
+    assert [flag["donor_name"] for flag in large] == [_donor_name(VIC), _donor_name(ZOE)]
+    assert {flag["severity"] for flag in large} == {"medium"}
+    assert _risk(conn, site_threshold=10000.0, large_threshold=6000.0)["threshold"] == {
+        "large_single": 6000.0, "source": "override",
+    }
+
+
 def test_large_flags_follow_the_window_but_the_threshold_does_not(conn):
     """Window ending 2026-01-31 keeps Vic (01-15) and Wes (01-12), drops Zoe (02-20); the threshold is still the
     all-time site-wide 6,760.  Kills: flags over all time, a p95 recomputed over the window."""

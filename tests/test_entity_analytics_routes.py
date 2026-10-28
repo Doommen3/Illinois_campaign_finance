@@ -863,15 +863,17 @@ def test_resolve_entity_gets_the_kind_the_int_candidate_id_and_the_race_slug(cli
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_race_election_cycle_reaches_resolve_entity(client, fakes, target):
-    """None when the request has no ``election_cycle``, the int when it has.  Kills: dropping it (the 2024 candidates
-    are unreachable); a str ('2024'); the resolved window's cycle or the current cycle sent when the arg is absent
-    (reading I2: the request arg only)."""
+    """The window's cycle when the request has no ``election_cycle`` (plan N16, amending reading I2: the race page's
+    rule -- the arg wins, else the window's cycle, else the current cycle; the default window is the current cycle,
+    2026 by the frozen clock), the int when it has.  Kills: dropping it (the 2024 candidates are unreachable); a str
+    ('2024'); None or another cycle sent when the arg is absent (the tabs would list other candidates than Overview
+    for the same URL)."""
     assert client.get(url_of("race", target)).status_code == 200
     assert client.get(url_of("race", target, "election_cycle=2024")).status_code == 200
 
     absent = [c for c in fakes.resolve_calls if c["kind"] == "race"][0]
     given = [c for c in fakes.resolve_calls if c["kind"] == "race"][-1]
-    assert absent["election_cycle"] is None
+    assert absent["election_cycle"] == 2026
     assert given["election_cycle"] == 2024
     assert type(given["election_cycle"]) is int
 

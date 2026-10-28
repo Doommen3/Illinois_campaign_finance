@@ -719,10 +719,14 @@ def _reconciliation_rows(conn, committee_ids, limit, labels):
 
 
 def get_entity_risk(
-    conn, entity, *, date_from: date | None = None, date_to: date | None = None, limit=50, large_threshold=None
+    conn, entity, *, date_from: date | None = None, date_to: date | None = None, limit=50, large_threshold=None,
+    site_threshold=None,
 ):
     """Large contributions, monthly spikes, concentrated groups and D-2 mismatches, from the entity's rows only.
-    ``limit`` caps each list; ``counts`` are the uncapped totals per type."""
+    ``limit`` caps each list; ``counts`` are the uncapped totals per type. ``site_threshold`` is the site-wide
+    large-contribution threshold computed by the caller (plan N15: the routes cache it once per process) and is
+    used as such (``source: "site_wide"``); None runs the module's own statement; ``large_threshold`` overrides
+    both."""
     committee_ids = _entity_committee_ids(entity)
     labels: dict[int, str] = {}
     for group in entity["groups"]:
@@ -730,10 +734,12 @@ def get_entity_risk(
             labels.setdefault(int(committee_id), group["label"])
     names = _committee_names(conn, committee_ids)
 
-    if large_threshold is None:
-        threshold, source = _site_large_threshold(conn), "site_wide"
-    else:
+    if large_threshold is not None:
         threshold, source = float(large_threshold), "override"
+    elif site_threshold is not None:
+        threshold, source = float(site_threshold), "site_wide"
+    else:
+        threshold, source = _site_large_threshold(conn), "site_wide"
 
     large, large_total = ([], 0)
     spikes = []

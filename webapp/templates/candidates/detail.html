@@ -11,6 +11,8 @@
 </p>
 {% endif %}
 {% include "_partials/time_scope_bar.html" %}
+{% set subnav = {'kind': 'candidate', 'key': candidate_id, 'active': 'overview'} %}
+{% include "entity/_subnav.html" %}
 
 <div class="status-section">
     <h2>Committees {{ scope_tag() }}</h2>

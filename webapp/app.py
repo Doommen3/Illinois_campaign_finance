@@ -333,6 +333,7 @@ def create_app(config=None):
             "ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_GEOGRAPHY_CACHE_TTL_SECONDS),
             "ANALYTICS_DONORS_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_DONORS_CACHE_TTL_SECONDS),
             "ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS": int(app_config.ANALYTICS_GEO_DRILLDOWN_CACHE_TTL_SECONDS),
+            "ENTITY_ANALYTICS_CACHE_TTL_SECONDS": int(app_config.ENTITY_ANALYTICS_CACHE_TTL_SECONDS),
             "FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS": int(app_config.FEDERAL_GEO_DRILLDOWN_CACHE_TTL_SECONDS),
             "IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS": int(app_config.IRS527_DARK_MONEY_STATS_CACHE_TTL_SECONDS),
             "DASHBOARD_PREWARM_ENABLED": _as_bool(app_config.DASHBOARD_PREWARM_ENABLED),
@@ -506,10 +507,12 @@ def create_app(config=None):
     from webapp.routes.experimental import experimental_bp
     from webapp.routes.viz_lab import viz_lab_bp
     from webapp.routes.candidates import candidates_bp
+    from webapp.routes.entity_analytics import bp as entity_analytics_bp
     from webapp.routes import viz_lab as viz_lab_routes
 
     app.register_blueprint(main_bp)
     app.register_blueprint(candidates_bp, url_prefix='/candidates')
+    app.register_blueprint(entity_analytics_bp)  # /candidates/<id>/<tab>, /analytics/state-races/<key>/<tab>
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(committees_bp, url_prefix='/committees')
     app.register_blueprint(donors_bp, url_prefix='/donors')

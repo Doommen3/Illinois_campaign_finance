@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}{{ entity.label }} — Relationships{% endblock %}
+
+{% block content %}
+<h1>{{ entity.label }} — Relationships</h1>
+<p class="subtitle">Committees outside this {{ entity.kind }} that share its donors, and the donors shared across its own groups.</p>
+{% include "_partials/time_scope_bar.html" %}
+{% include "entity/_subnav.html" %}
+
+<div class="status-section">
+    <h2>Co-giving committees {{ scope_tag() }}</h2>
+    <p class="help-text">
+        Committees outside this {{ entity.kind }} that received itemized contributions from at least two of its top
+        {{ '{:,}'.format(payload.summary.donor_pool_size) }} donors in the window, ranked by shared donors, then by the money they received from them.
+        {{ payload.summary.entity_donor_count }} donors in the pool; {{ payload.summary.cogiving_committee_count }} co-giving committees.
+    </p>
+    {% if payload.cogiving %}
+    <table class="data-table">
+        <thead><tr><th>Committee</th><th>Shared donors</th><th>Given to this {{ entity.kind }}</th><th>Given to the committee</th><th>Top shared donors</th></tr></thead>
+        <tbody>
+        {% for row in payload.cogiving %}
+            <tr>
+                <td><a href="{{ url_for('committees.committee_detail', committee_id=row.committee_id) }}">{{ row.committee_name }}</a></td>
+                <td>{{ row.shared_donor_count }}</td>
+                <td>{{ format_currency(row.shared_amount_to_entity) }}</td>
+                <td>{{ format_currency(row.shared_amount_to_committee) }}</td>
+                <td>{% for donor in row.top_shared_donors %}{% if donor.donor_key %}<a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key) }}">{{ donor.donor_name }}</a>{% else %}{{ donor.donor_name }}{% endif %} ({{ format_currency(donor.amount_to_entity) }} here, {{ format_currency(donor.amount_to_committee) }} there){% if not loop.last %}; {% endif %}{% endfor %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No committee outside this {{ entity.kind }} shares two or more of its donors in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Shared donors {{ scope_tag() }}</h2>
+    <p class="help-text">Donors who gave to committees in more than one of this {{ entity.kind }}'s groups{% if entity.kind == 'race' %} &mdash; donors giving to several candidates of the race{% endif %}.</p>
+    {% if payload.shared_donors %}
+    <table class="data-table">
+        <thead><tr><th>Donor</th><th>Total</th><th>Groups</th><th>Per group</th></tr></thead>
+        <tbody>
+        {% for donor in payload.shared_donors %}
+            <tr>
+                <td><a href="{{ url_for('donors.donor_detail_by_key', donor_key=donor.donor_key) }}">{{ donor.donor_name }}</a></td>
+                <td>{{ format_currency(donor.total_amount) }}</td>
+                <td>{{ donor.group_count }}</td>
+                <td>{% for part in donor.groups %}{{ part.label }} {{ format_currency(part.amount) }}{% if not loop.last %}; {% endif %}{% endfor %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No donor gave to more than one group in this window.</p>
+    {% endif %}
+</div>
+{% endblock %}

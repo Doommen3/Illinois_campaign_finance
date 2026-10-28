@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "_partials/macros.html" import scope_tag with context %}
+
+{% block title %}{{ entity.label }} — Geography{% endblock %}
+
+{% block content %}
+<h1>{{ entity.label }} — Geography</h1>
+<p class="subtitle">Where this {{ entity.kind }}'s itemized contributions come from, and when. Redacted donors count in the totals but in no state or city.</p>
+{% include "_partials/time_scope_bar.html" %}
+{% include "entity/_subnav.html" %}
+
+<div class="status-section">
+    <p class="help-text">
+        {{ format_currency(payload.totals.total_amount) }} from {{ payload.totals.donor_count }} donors in {{ payload.totals.contribution_count }} contributions;
+        in-state share {{ '%.1f%%'|format((payload.in_state_share or 0) * 100) }};
+        {{ format_currency(payload.unknown_amount) }} with no usable address (redacted or unfiled).
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>States {{ scope_tag() }}</h2>
+    {% if payload.states %}
+    <table class="data-table">
+        <thead><tr><th>State</th><th>Amount</th><th>Donors</th><th>Contributions</th><th>Share</th></tr></thead>
+        <tbody>
+        {% for row in payload.states %}
+            <tr>
+                <td>{{ row.state }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ '%.1f%%'|format((row.share or 0) * 100) }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No contributions with a state in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Cities {{ scope_tag() }}</h2>
+    {% if payload.cities %}
+    <table class="data-table">
+        <thead><tr><th>City</th><th>State</th><th>Amount</th><th>Donors</th><th>Contributions</th><th>Share</th></tr></thead>
+        <tbody>
+        {% for row in payload.cities %}
+            <tr>
+                <td>{{ row.city }}</td>
+                <td>{{ row.state or '' }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.donor_count }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ '%.1f%%'|format((row.share or 0) * 100) }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No contributions with a city in this window.</p>
+    {% endif %}
+</div>
+
+<div class="status-section">
+    <h2>Monthly contributions {{ scope_tag() }}</h2>
+    <p class="help-text">Every month from the first to the last contribution in the window; months without contributions stay in the series.</p>
+    {% if payload.time_series %}
+    <table class="data-table">
+        <thead><tr><th>Month</th><th>Amount</th><th>Contributions</th><th>Donors</th></tr></thead>
+        <tbody>
+        {% for row in payload.time_series %}
+            <tr>
+                <td>{{ row.month }}</td>
+                <td>{{ format_currency(row.total_amount) }}</td>
+                <td>{{ row.contribution_count }}</td>
+                <td>{{ row.donor_count }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No contributions in this window.</p>
+    {% endif %}
+</div>
+{% endblock %}
