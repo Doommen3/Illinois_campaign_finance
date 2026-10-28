@@ -977,3 +977,51 @@ def test_a_degraded_search_does_not_make_later_responses_uncacheable(make_app, m
     assert calls["count"] == 1, "control: type=committees must not run the donors section"
     assert "Some sections" not in healthy_search.get_data(as_text=True), "control: the follow-up page must be healthy"
     assert _cache_tokens(healthy_search) == _edge_tokens(300)
+
+
+# --- LD2, Flask-version independence (CI 2026-10-28: Flask 3.1.3 marks the session "accessed" on any
+# touch of the proxy, so base.html's get_flashed_messages() gave every anonymous page "Vary: Cookie";
+# Flask 3.0 only counted key reads). A cookieless request that neither reads a cookie nor needs to set
+# one must not vary on Cookie whatever Flask does; a request that carries the session cookie, or a
+# response that sets one, must.
+
+def _session_probe_app(make_app):
+    import flask
+
+    app = make_app()
+
+    @app.route("/_probe/session-read")
+    def _probe_session_read():
+        flask.session.get("nothing")  # marks the session accessed on every Flask version
+        return flask.Response("<p>ok</p>", mimetype="text/html")
+
+    @app.route("/_probe/session-flash")
+    def _probe_session_flash():
+        flask.flash("hello")
+        return flask.Response("<p>ok</p>", mimetype="text/html")
+
+    return app
+
+
+def test_a_cookieless_request_that_reads_the_session_does_not_vary_on_cookie(make_app):
+    response = _session_probe_app(make_app).test_client().get("/_probe/session-read")
+    assert response.status_code == 200
+    assert "cookie" not in _vary_tokens(response), "a request without a session cookie read nothing from a cookie"
+    assert "Set-Cookie" not in response.headers
+
+
+def test_a_request_carrying_the_session_cookie_still_varies_on_cookie(make_app):
+    app = _session_probe_app(make_app)
+    client = app.test_client()
+    client.set_cookie(app.config["SESSION_COOKIE_NAME"], "not-a-real-session")
+    response = client.get("/_probe/session-read")
+    assert response.status_code == 200
+    assert "cookie" in _vary_tokens(response)
+
+
+def test_a_flash_on_a_cookieless_request_still_sets_the_cookie_and_varies(make_app):
+    app = _session_probe_app(make_app)
+    response = app.test_client().get("/_probe/session-flash")
+    assert response.status_code == 200
+    assert app.config["SESSION_COOKIE_NAME"] in response.headers.get("Set-Cookie", "")
+    assert "cookie" in _vary_tokens(response)

@@ -9,6 +9,7 @@ import time
 from urllib.parse import quote, urlencode
 
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request
+from flask.sessions import SecureCookieSessionInterface
 
 import config as app_config
 from database.connection import close_db, get_db
@@ -276,9 +277,24 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
     }
 
 
+class EdgeCacheSessionInterface(SecureCookieSessionInterface):
+    """LD2: a response to a request that carried no session cookie, whose session stayed empty and
+    unmodified, is not marked `Vary: Cookie`: nothing in it came from a cookie and no cookie is set.
+    Flask 3.1.3 marks the session "accessed" on any touch of the proxy (base.html's
+    get_flashed_messages() touches it on every page), which would put `Vary: Cookie` on every
+    anonymous page and defeat the edge cache; Flask 3.0 only counted key reads. A request carrying
+    the cookie, or a response that sets one (a flash, a login), varies on Cookie as before."""
+
+    def save_session(self, app, session, response):
+        if not session and not session.modified and self.get_cookie_name(app) not in request.cookies:
+            return
+        super().save_session(app, session, response)
+
+
 def create_app(config=None):
     """Create and configure the Flask application."""
     app = Flask(__name__)
+    app.session_interface = EdgeCacheSessionInterface()
 
     app.config.update(
         {
