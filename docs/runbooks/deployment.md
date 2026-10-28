@@ -169,3 +169,13 @@ Ships the candidate profile, full committee and 527 donor/payee lists, `/analyti
 | `il-campaign-fec-schedule-e-catchup.timer` | hourly | `scripts/fec-schedule-e-catchup.sh` (`backfill-fec-schedule-e` with refresh) | Logs `shared/logs/fec-schedule-e-catchup-<stamp>.log`. |
 
 There is no ISBE timer: `sunshine-import` runs by hand (wrappers `shared/isbe_refresh_<date>.sh`, `shared/isbe_fec_refresh_20261027.sh`). `systemctl list-timers --all | grep il-campaign` shows the next runs.
+
+## Live load diagnosis (added 2026-10-28)
+
+When the site hangs, read before changing anything. Both scripts are read-only and run from the laptop (prod SSH is denied to the agent in auto mode, so Devin runs them with the `!` prefix):
+
+- `ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 bash -s < scripts/audit/prod_snapshot.sh` — load, memory, gunicorn workers, perf env keys, Redis, active queries, planner settings, analyze state of the big relations, recent journal lines.
+- `ssh -i ~/.ssh/hetzner_ed25519 root@178.156.162.56 bash -s < scripts/audit/prod_activity_sample.sh` — six samples 10 s apart of active backends, leaders separated from parallel workers, so the number of real requests behind the load is visible.
+- From outside: `https://www.followthemoneyil.com` (the apex answers 308 to www through Cloudflare); the homepage "Data Status" strip and sequential `curl -w '%{time_total}'` timings of the heavy routes.
+
+2026-10-28 case: load 9–10 on 8 cores came from `/committees/filing/<id>` (two parallel seq scans per page over `isbe_condensed_expenditures`, no `filed_doc_id` index; 956K crawlable pages) and `/donors/key/<key>` (three computed-key scans per page over the condensed receipts; 1.1M pages). Fixes: the `filed_doc_id` index and the `md5(donor key)` expression index, both in the ETL DDL now and built once by hand on prod with `CREATE INDEX CONCURRENTLY` (2.2 s and 15 s); details in `docs/architecture_suggestions_2026-10-26.md` §G A15/A16.

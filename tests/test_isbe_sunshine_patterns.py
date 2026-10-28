@@ -32,6 +32,33 @@ def test_condensed_expenditures_has_committee_date_index():
         "CREATE INDEX idx_isbe_condensed_expenditures_committee_date "
         "ON isbe_condensed_expenditures (committee_id, expended_date);"
     ) in source
+    # /committees/filing/<id> filters both condensed views by filed_doc_id; without
+    # this index every filing page ran two parallel seq scans over 3.6M expenditure
+    # rows (prod load 9-10 on 8 cores, 2026-10-28; 1.2 s -> 0.06 ms locally).
+    assert (
+        "CREATE INDEX idx_isbe_condensed_expenditures_filed_doc_id "
+        "ON isbe_condensed_expenditures (filed_doc_id);"
+    ) in source
+
+
+def test_condensed_receipts_has_md5_donor_key_index_and_models_use_it():
+    # /donors/key/<key> matches receipts on the computed donor-key expression
+    # (database/models.py Donor._bulk_donor_key_sql); without an index that is a
+    # parallel seq scan over 4M condensed receipts, three times per donor page
+    # (2.2 s each locally, prod 3.1 s/page, 1.1M crawlable pages, 2026-10-28).
+    # A plain expression index cannot be built (4 rows exceed the btree row
+    # limit), so the index is on md5(expr) and the lookups compare md5() on
+    # both sides; the planner matches it through the bulk_receipts_clean view.
+    source = Path("scripts/isbe_sunshine_etl.py").read_text(encoding="utf-8")
+    assert (
+        "CREATE INDEX idx_isbe_condensed_receipts_donor_key_md5 ON isbe_condensed_receipts "
+        "(md5(LOWER(TRIM(COALESCE(first_name,'') || '|' || COALESCE(last_name,'') || '|' || "
+        "COALESCE(address1,'') || '|' || COALESCE(address2,'') || '|' || COALESCE(city,'') || '|' || "
+        "COALESCE(state,'') || '|' || COALESCE(zipcode,'')))));"
+    ) in source
+    models = Path("database/models.py").read_text(encoding="utf-8")
+    assert models.count('f"md5({donor_key_expr}) = md5(?)"') == 3
+    assert 'f"{donor_key_expr} = ?"' not in models
 
 
 def test_filed_doc_pickers_order_nulls_last():

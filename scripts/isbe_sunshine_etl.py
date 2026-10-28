@@ -508,6 +508,9 @@ CREATE UNIQUE INDEX ON isbe_condensed_receipts (id);
 CREATE INDEX idx_isbe_condensed_receipts_filed_doc_id ON isbe_condensed_receipts (filed_doc_id);
 CREATE INDEX idx_isbe_condensed_receipts_committee_id ON isbe_condensed_receipts (committee_id);
 CREATE INDEX idx_isbe_condensed_receipts_received_date ON isbe_condensed_receipts (received_date);
+-- /donors/key/<key> lookups match md5(donor-key expression) (database/models.py); a plain
+-- expression index fails on a few oversized rows (btree row limit), the hash fits.
+CREATE INDEX idx_isbe_condensed_receipts_donor_key_md5 ON isbe_condensed_receipts (md5(LOWER(TRIM(COALESCE(first_name,'') || '|' || COALESCE(last_name,'') || '|' || COALESCE(address1,'') || '|' || COALESCE(address2,'') || '|' || COALESCE(city,'') || '|' || COALESCE(state,'') || '|' || COALESCE(zipcode,'')))));
 CREATE INDEX idx_isbe_condensed_receipts_active_part1 ON isbe_condensed_receipts (committee_id, received_date)
     WHERE archived = FALSE AND d2_part LIKE '1%' AND amount > 0;
 
@@ -530,6 +533,7 @@ CREATE MATERIALIZED VIEW isbe_condensed_expenditures AS (
 );
 CREATE UNIQUE INDEX ON isbe_condensed_expenditures (id);
 CREATE INDEX idx_isbe_condensed_expenditures_committee_date ON isbe_condensed_expenditures (committee_id, expended_date);
+CREATE INDEX idx_isbe_condensed_expenditures_filed_doc_id ON isbe_condensed_expenditures (filed_doc_id);
 
 -- Committee money totals
 CREATE MATERIALIZED VIEW isbe_committee_money AS (

@@ -1709,7 +1709,7 @@ class Donor:
             donor_address_expr = cls._bulk_donor_address_sql("r")
             where_clauses: List[str] = [
                 cls._bulk_receipts_base_filter_sql(conn, "r"),
-                f"{donor_key_expr} = ?",
+                f"md5({donor_key_expr}) = md5(?)",
             ]
             params: List[object] = [donor_key]
             _append_date_range_filters(
@@ -1896,7 +1896,7 @@ class Donor:
             )
             where_clauses: List[str] = [
                 cls._bulk_receipts_base_filter_sql(conn, "r"),
-                f"{donor_key_expr} = ?",
+                f"md5({donor_key_expr}) = md5(?)",
             ]
             params: List[object] = [donor_key]
             _append_date_range_filters(
@@ -1991,7 +1991,7 @@ class Donor:
             donor_key_expr = cls._bulk_donor_key_sql("r")
             where_clauses: List[str] = [
                 cls._bulk_receipts_base_filter_sql(conn, "r"),
-                f"{donor_key_expr} = ?",
+                f"md5({donor_key_expr}) = md5(?)",
             ]
             params: List[object] = [donor_key]
             _append_date_range_filters(
