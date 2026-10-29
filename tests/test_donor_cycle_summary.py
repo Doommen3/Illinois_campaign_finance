@@ -54,9 +54,13 @@ Committees 100 and 200, filed docs 5001 (committee 100) and 5002 (committee 200)
                                                                        (cells are total / contributions / committees)
   EXCLUDED (never in the table): Ada Archived (archived receipt 999), Pat Transfer (part 2A, 888); Bob's refund
   and zero rows.  INCLUDED by the list predicate (and, since fix-8b F1, by analytics_donor_summary too):
-  Una Blankpart (part NULL, 777), Nora NoDtwo (doc 5099, no D-2 at all, 666), Sam Superseded (doc 5004,
-  only an archived D-2, 555) -- the A-1 receipt shape (J-S2 / J-S16).
-  => cycle 2024: 2 rows (Alice, Edgar).  cycle 2026: 11 rows (Whale, Alice, Bob, Tie x4, Una, Nora, Sam, Edgar).
+  Una Blankpart (part NULL, 777), Nora NoDtwo (doc 5099, no D-2 at all, 666 -- the A-1 receipt shape) and Leo
+  Legacy (2009-06-10, cycle 2010: a live receipt on doc 5006, the only doc for its period, whose D-2 is archived with
+  no replacement -- a real legacy shape, not a superseded filing; 555) (J-S2 / J-S16).
+  => cycle 2010: 1 row (Leo).  cycle 2024: 2 rows (Alice, Edgar).  cycle 2026: 10 rows (Whale, Alice, Bob, Tie x4,
+  Una, Nora, Edgar).
+  Amended filing (added by its own test): original doc 5004 (archived D-2 9004, receipt archived) and its amendment
+  doc 5005 (same committee and period, filed later, live D-2 9005, the re-filed receipt live) count once.
 
   Late data (inserted after the refresh): Lena Late 4444 on 2026-03-05; Alice +1000 on 2026-04-04 (live cycle
   2026 total 16000); Olga Old 333 on 2022-05-05 (cycle 2022 has no aggregate rows); Edgar +16 on 2024-06-06
@@ -148,7 +152,8 @@ ADA = Who("Ada", "Archived", "1 Gone Ave", "Chicago", "IL", "60601", None, None)
 PAT = Who("Pat", "Transfer", "2 Gone Ave", "Chicago", "IL", "60601", None, None)
 UNA = Who("Una", "Blankpart", "3 Gone Ave", "Chicago", "IL", "60601", None, None)
 NORA = Who("Nora", "NoDtwo", "4 Gone Ave", "Chicago", "IL", "60601", None, None)
-SAM = Who("Sam", "Superseded", "5 Gone Ave", "Chicago", "IL", "60601", None, None)
+LEO = Who("Leo", "Legacy", "5 Gone Ave", "Chicago", "IL", "60601", None, None)
+AMY = Who("Amy", "Amended", "6 Gone Ave", "Chicago", "IL", "60601", None, None)
 LENA = Who("Lena", "Late", "9 Late Ln", "Chicago", "IL", "60601", "Writer", "Self")
 OLGA = Who("Olga", "Old", "3 Old Rd", "Chicago", "IL", "60601", "Retired", None)
 CAROL = Who("Carol", "Donor", "303 Pine St", "Naperville", "IL", "60540", "Teacher", "District 203")
@@ -192,7 +197,7 @@ BASE_RECEIPTS = [
     receipt(30051, PAT, 100, "2025-03-04", 888.00, part="2A"),       # transfer in, not an itemized contribution
     receipt(30052, UNA, 100, "2025-03-05", 777.00, part=None),       # blank D-2 part
     receipt(30053, NORA, 100, "2025-03-06", 666.00, doc=5099),       # filed doc without any D-2 report
-    receipt(30054, SAM, 100, "2025-03-07", 555.00, doc=5004),        # filed doc whose only D-2 is archived
+    receipt(30054, LEO, 100, "2009-06-10", 555.00, doc=5006),        # legacy: the only doc, its D-2 archived
 ]
 
 LATE_RECEIPTS = [
@@ -223,21 +228,21 @@ BASE_ROWS = {
     # Plan J-S2 / J-S16: the list predicate keeps blank-part and no-D-2 receipts (since fix-8b F1 the summary's does too).
     (2026, "Una Blankpart"): (777.0, 1, 1),
     (2026, "Nora NoDtwo"): (666.0, 1, 1),
-    (2026, "Sam Superseded"): (555.0, 1, 1),
+    (2010, "Leo Legacy"): (555.0, 1, 1),
 }
 WHALE_ROW = (2026, "Willa Whale")
 
 # cycle 2026, base fixture, in list order
 BY_TOTAL_DESC = ["Willa Whale", "Alice Donor", "Bob Donor", "Tie Alpha", "Tie Bravo", "Tie Charlie", "Tie Delta",
-                 "Una Blankpart", "Nora NoDtwo", "Sam Superseded", "Edgar Edge"]  # equal totals fall back on the name
-BY_TOTAL_ASC = ["Edgar Edge", "Sam Superseded", "Nora NoDtwo", "Una Blankpart", "Tie Alpha", "Tie Bravo", "Tie Charlie",
+                 "Una Blankpart", "Nora NoDtwo", "Edgar Edge"]  # equal totals fall back on the name
+BY_TOTAL_ASC = ["Edgar Edge", "Nora NoDtwo", "Una Blankpart", "Tie Alpha", "Tie Bravo", "Tie Charlie",
                 "Tie Delta", "Bob Donor", "Alice Donor", "Willa Whale"]
-BY_NAME_ASC = ["Alice Donor", "Bob Donor", "Edgar Edge", "Nora NoDtwo", "Sam Superseded", "Tie Alpha", "Tie Bravo",
+BY_NAME_ASC = ["Alice Donor", "Bob Donor", "Edgar Edge", "Nora NoDtwo", "Tie Alpha", "Tie Bravo",
                "Tie Charlie", "Tie Delta", "Una Blankpart", "Willa Whale"]
-BY_CONTRIBUTIONS_DESC = ["Alice Donor", "Edgar Edge", "Bob Donor", "Nora NoDtwo", "Sam Superseded", "Tie Alpha",
+BY_CONTRIBUTIONS_DESC = ["Alice Donor", "Edgar Edge", "Bob Donor", "Nora NoDtwo", "Tie Alpha",
                          "Tie Bravo", "Tie Charlie", "Tie Delta", "Una Blankpart", "Willa Whale"]
                          # 2 receipts: Alice, Edgar; 1 receipt: everyone else (by name)
-BY_COMMITTEES_DESC = ["Alice Donor", "Bob Donor", "Edgar Edge", "Nora NoDtwo", "Sam Superseded", "Tie Alpha",
+BY_COMMITTEES_DESC = ["Alice Donor", "Bob Donor", "Edgar Edge", "Nora NoDtwo", "Tie Alpha",
                       "Tie Bravo", "Tie Charlie", "Tie Delta", "Una Blankpart", "Willa Whale"]
                       # 2 committees: Alice; 1 committee: everyone else (by name)
 
@@ -311,11 +316,13 @@ def _build(tmp_path, branch: str) -> Env:
     if branch == "isbe":
         conn.execute(f"ALTER TABLE {receipts} ALTER COLUMN received_date TYPE DATE USING received_date::date")
     conn.executemany(RECEIPT_SQL.format(table=receipts), BASE_RECEIPTS)
-    # D-2 reports: 5001 and 5002 active, 5004 superseded (archived), 5099 has none.
+    # D-2 reports: 5001 and 5002 active; 5004 superseded (archived) by 5005 (active); 5006's only D-2 archived;
+    # 5099 has none.
     conn.execute("DELETE FROM isbe_d2_reports")
     conn.execute(
         "INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, archived)"
-        " VALUES (9001, 100, 5001, FALSE), (9002, 200, 5002, FALSE), (9004, 100, 5004, TRUE)"
+        " VALUES (9001, 100, 5001, FALSE), (9002, 200, 5002, FALSE), (9004, 100, 5004, TRUE), (9005, 100, 5005, FALSE),"
+        " (9006, 100, 5006, TRUE)"
     )
     conn.commit()
     if branch == "bulk":
@@ -454,13 +461,13 @@ def test_refresh_builds_one_row_per_donor_per_cycle_with_exact_totals(env):
     """Hand-computed totals / contributions / committees for every (cycle, donor), and nothing else.
 
     The exact row set also proves the predicate: Ada (archived), Pat (part 2A) and Bob's refund and zero never produce
-    a row or change Bob's numbers; Una (blank part), Nora (no D-2) and Sam (archived D-2) do (plan J-S2 / J-S16).
+    a row or change Bob's numbers; Una (blank part), Nora (no D-2) and Leo (legacy: only D-2 archived) do (plan J-S2 / J-S16).
 
     Kills: cycle = year (receipts of 2025 would land in cycle 2025), year + 1, year - year % 2 (2025 -> 2024),
     integer-division rounding; windows off by a day (Edgar's 2023-01-01 / 2024-12-31 / 2025-01-01 / 2026-12-31
     receipts split 3 / 12 only when the boundaries are right); committee_count taken from all time (Alice's 2024
     row would say 2) or as the number of receipts; contribution_count of the whole donor; the summary builder's
-    predicate instead of `receipts_filter_sql` (Una, Nora and Sam would vanish); netting refunds; counting zero
+    predicate instead of `receipts_filter_sql` (Una, Nora and Leo would vanish); netting refunds; counting zero
     amounts; extra rows (a NULL or foreign cycle, another source)."""
     rows = cycle_rows(env.conn())
     expected = {key: value for key, value in BASE_ROWS.items() if key != WHALE_ROW}
@@ -490,10 +497,10 @@ def test_totals_are_exact_to_the_cent_for_a_very_large_donor(env):
 def test_cycle_rows_agree_with_the_all_time_summary_builder(env):
     """Same donor keys and descriptive columns as analytics_donor_summary where both hold the donor, the cycle totals
     add back up to it, and no donor is cycle-only: since fix-8b F1 both tables use the contributions predicate.
-    (Before F1 this test pinned Una, Nora and Sam as cycle-only, i.e. it pinned the D-2 EXISTS bug of to-do 8b.)
+    (Before F1 this test pinned Una, Nora and Sam (since relabelled Leo Legacy) as cycle-only, i.e. it pinned the D-2 EXISTS bug of to-do 8b.)
 
     Kills: a different donor_key expression (cycle rows no longer match /donors/key/<key> links and the all-time
-    list); a stricter all-time predicate (Una, Nora and Sam would be cycle-only again) or any other predicate drift
+    list); a stricter all-time predicate (Una, Nora and Leo would be cycle-only again) or any other predicate drift
     (the per-donor sums would drift apart); descriptive columns taken from the wrong donor.  The address punctuation is deliberately not pinned (the summary builder
     writes 'IL, 60601', branch A writes 'IL 60601'): either is accepted, anything else fails.
     The large donor is skipped in the sum check: the summary stores it as float4 (see the previous test)."""
@@ -501,7 +508,7 @@ def test_cycle_rows_agree_with_the_all_time_summary_builder(env):
     rows = cycle_rows(conn)
     summary = {r["donor_key"]: dict(r) for r in conn.execute(
         "SELECT * FROM analytics_donor_summary WHERE source = ?", (SOURCE,)).fetchall()}
-    people = {w.key: w for w in (ALICE, BOB, EDGAR, WHALE, TIE_ALPHA, TIE_BRAVO, TIE_CHARLIE, TIE_DELTA, UNA, NORA, SAM)}
+    people = {w.key: w for w in (ALICE, BOB, EDGAR, WHALE, TIE_ALPHA, TIE_BRAVO, TIE_CHARLIE, TIE_DELTA, UNA, NORA, LEO)}
     assert rows, "precondition: the cycle table is empty"
     # fix-8b F1: the same contributions predicate in both tables, so every cycle donor is in the all-time summary.
     cycle_only = {row["donor_key"] for row in rows if row["donor_key"] not in summary}
@@ -538,10 +545,11 @@ def _all_time_agg(conn, committee_id: str | None = None) -> dict:
 def test_all_time_donor_tables_count_a1_blank_part_and_superseded_d2_receipts(env):
     """fix-8b F1 (to-do 8b, finding I2): analytics_donor_committee_agg and analytics_donor_summary use the live
     contributions predicate.  A receipt on a filed doc without any live D-2 report counts: Nora (doc 5099, no D-2 at
-    all, the A-1 large-contribution shape) and Sam (doc 5004, only an archived D-2).  So does Una (blank part).  An
+    all, the A-1 large-contribution shape) and Leo (doc 5006, the only doc for its period, whose D-2 is archived with
+    no replacement).  So does Una (blank part).  An
     archived receipt (Ada) and a transfer in (Pat, 2A) do not.
 
-    Kills: the old EXISTS on a non-archived D-2 report (Nora and Sam vanish); part LIKE '1%' without the blank case
+    Kills: the old EXISTS on a non-archived D-2 report (Nora and Leo vanish); part LIKE '1%' without the blank case
     (Una vanishes); dropping the archived or the part filter (Ada or Pat appear)."""
     conn = env.conn()
     agg = _all_time_agg(conn)
@@ -549,12 +557,41 @@ def test_all_time_donor_tables_count_a1_blank_part_and_superseded_d2_receipts(en
                                 int(r["committee_count"]))
                for r in conn.execute("SELECT * FROM analytics_donor_summary WHERE source = ?", (SOURCE,)).fetchall()}
 
-    for who, amount in ((UNA, 777.0), (NORA, 666.0), (SAM, 555.0)):
+    for who, amount in ((UNA, 777.0), (NORA, 666.0), (LEO, 555.0)):
         assert agg.get((who.key, "100")) == (amount, 1), who.name
         assert summary.get(who.key) == (amount, 1, 1), who.name
     for who in (ADA, PAT):
         assert all(key != who.key for key, _ in agg), who.name
         assert who.key not in summary, who.name
+
+
+def test_an_amended_filing_counts_its_receipt_once(env):
+    """fix-8b A-M4b: the real amended-filing pair.  Original doc 5004 (D-2 9004 archived) carries Amy's 444 receipt
+    with archived = TRUE; the amendment doc 5005 (same committee and period, received later, live D-2 9005) carries the
+    re-filed 444 receipt with archived = FALSE.  The cycle table, the all-time summary and the agg each count 444 once.
+
+    Kills: a predicate that ignores the receipt's archived flag (888 / 2); one that drops the amendment."""
+    from database.analytics import _table_exists
+
+    conn = env.conn()
+    if _table_exists(conn, "isbe_filed_docs"):
+        conn.executemany(
+            "INSERT INTO isbe_filed_docs (id, committee_id, doc_name, reporting_period_begin, reporting_period_end,"
+            " received_datetime) VALUES (?, 100, 'Quarterly', '2025-01-01', '2025-03-31', ?)",
+            [(5004, "2025-04-10 09:00:00"), (5005, "2025-05-02 14:30:00")],
+        )
+        conn.commit()
+    env.add([receipt(30060, AMY, 100, "2025-03-09", 444.00, doc=5004, archived=True),
+             receipt(30061, AMY, 100, "2025-03-09", 444.00, doc=5005)])
+    env.refresh()
+
+    conn = env.conn()
+    cycle = [r for r in cycle_rows(conn) if r["donor_key"] == AMY.key]
+    assert [(r["election_cycle"], *row_values(r)) for r in cycle] == [(2026, 444.0, 1, 1)]
+    summary = conn.execute("SELECT total_amount, contribution_count FROM analytics_donor_summary"
+                           " WHERE source = ? AND donor_key = ?", (SOURCE, AMY.key)).fetchall()
+    assert [(round(float(r["total_amount"]), 2), int(r["contribution_count"])) for r in summary] == [(444.0, 1)]
+    assert _all_time_agg(conn).get((AMY.key, "100")) == (444.0, 1)
 
 
 def test_committee_donors_page_and_the_all_time_agg_agree_for_every_donor(env):
@@ -718,7 +755,7 @@ def test_exact_cycle_windows_are_served_from_the_aggregate(prod_env):
     Lena (new donor) absent, Alice 15000 not 16000, Edgar 3 not 19, and `count` agrees with the list.
 
     Kills: ignoring the table (today's live path); reading it for the current cycle only; serving the list from the
-    table but the count live (the count would say 12: Lena is live-only); cycle detection that
+    table but the count live (the count would say 11: Lena is live-only); cycle detection that
     only compares the start date."""
     prod_env.add_late()
     conn = prod_env.conn()
@@ -726,7 +763,7 @@ def test_exact_cycle_windows_are_served_from_the_aggregate(prod_env):
     rows_2026 = donors(conn, W2026)
     assert names(rows_2026) == BY_TOTAL_DESC
     assert by_name(rows_2026, "Alice Donor").total_amount == 15000.0
-    assert count(conn, W2026) == 11
+    assert count(conn, W2026) == 10
 
     rows_2024 = donors(conn, W2024)
     assert names(rows_2024) == ["Alice Donor", "Edgar Edge"]
@@ -784,8 +821,8 @@ def test_cycle_rows_have_the_shape_and_values_of_the_live_rows(prod_env):
 
     rows = donors(conn, W2026)
 
-    assert len(rows) == 11, "precondition: the cycle window must be served from the aggregate"
-    people = {w.key: w for w in (ALICE, BOB, EDGAR, WHALE, TIE_ALPHA, TIE_BRAVO, TIE_CHARLIE, TIE_DELTA, UNA, NORA, SAM)}
+    assert len(rows) == 10, "precondition: the cycle window must be served from the aggregate"
+    people = {w.key: w for w in (ALICE, BOB, EDGAR, WHALE, TIE_ALPHA, TIE_BRAVO, TIE_CHARLIE, TIE_DELTA, UNA, NORA, LEO)}
     for row in rows:
         reference = live[row.donor_key]
         for field in ("name", "occupation", "employer", "donor_city", "donor_state", "contribution_count",
@@ -811,7 +848,7 @@ def test_list_rows_and_count_agree_and_each_donor_key_appears_once(prod_env):
     prod_env.refresh()
     conn = prod_env.conn()
 
-    for bounds, expected in ((W2026, 12), (W2024, 2)):
+    for bounds, expected in ((W2026, 11), (W2024, 2)):
         rows = donors(conn, bounds)
         assert len(rows) == count(conn, bounds) == expected, f"window {bounds}"
         assert len({row.donor_key for row in rows}) == len(rows), f"window {bounds}: repeated donor_key"
@@ -922,7 +959,7 @@ def test_rows_of_another_source_are_ignored_by_every_read(prod_env):
         insert_cycle_row(conn, "contributions", cycle, f"donor:{cycle}", name=f"Sentinel {cycle}")
 
     assert names(donors(conn, W2026)) == BY_TOTAL_DESC
-    assert count(conn, W2026) == 11
+    assert count(conn, W2026) == 10
     assert names(donors(conn, W2024)) == ["Alice Donor", "Edgar Edge"]
     assert count(conn, W2024) == 2
     assert names(donors(conn, W2022)) == ["Olga Old"]
@@ -1009,7 +1046,7 @@ def test_page_serves_a_cycle_scope_from_the_aggregate_and_a_custom_window_live(p
     cycle_page = prod_env.get("/donors/?cycle=2026")
     rows = donor_rows(cycle_page)
     assert [r["name"] for r in rows] == BY_TOTAL_DESC
-    assert total_line(cycle_page) == 11
+    assert total_line(cycle_page) == 10
     alice = row_named(rows, "Alice Donor")
     assert alice["total"] == "$15,000.00"
     assert (alice["contributions"], alice["committees"]) == ("2", "2")
@@ -1067,8 +1104,8 @@ def test_page_has_one_row_per_donor_key_and_its_total_line_counts_them(prod_env)
     page = prod_env.get("/donors/?cycle=2026")
     rows = donor_rows(page)
 
-    assert len(rows) == total_line(page) == 12
-    assert len({r["key"] for r in rows}) == 12
+    assert len(rows) == total_line(page) == 11
+    assert len({r["key"] for r in rows}) == 11
     carol = row_named(rows, "Carol Donor")
     assert (carol["total"], carol["contributions"], carol["committees"]) == ("$600.00", "3", "2")
 
