@@ -1607,6 +1607,28 @@ def get_donor_concentration(
     return output[: max(1, int(limit))]
 
 
+
+def _quarterly_covered_through(conn: sqlite3.Connection) -> dict[str, date | None]:
+    """Committee name -> the date through which a filed quarterly covers its receipts (None: no quarterly).
+
+    The cutoff is ``isbe_most_recent_filings.reporting_period_end``, the same date ``isbe_condensed_receipts``
+    splits on: receipts after it are only the A-1s not yet re-listed. Keyed by the ISBE committee-name
+    expression the monthly totals use; same-named committees take the earliest cutoff. Empty (no cutoff
+    anywhere) when the matview is absent.
+    """
+    if not _table_exists(conn, "isbe_most_recent_filings"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT COALESCE(committee_name, 'Committee ' || committee_id) AS committee_name,
+               CAST(MIN(reporting_period_end) AS DATE) AS covered_through
+        FROM isbe_most_recent_filings
+        GROUP BY 1
+        """
+    ).fetchall()
+    return {row["committee_name"]: row["covered_through"] for row in rows}
+
+
 def get_anomaly_flags(
     conn: sqlite3.Connection,
     limit: int = 100,
@@ -1614,7 +1636,12 @@ def get_anomaly_flags(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[dict]:
-    """Generate anomaly/risk flags from contribution and concentration data."""
+    """Generate anomaly/risk flags from contribution and concentration data.
+
+    ``monthly_spike`` (a month at least 3x the trailing three months and $2,000 above them) only considers a
+    committee's months that its latest quarterly covers (``_quarterly_covered_through``): later months hold only
+    the A-1 receipts filed so far, so they are neither flagged nor used as a baseline (fix-8b D2).
+    """
     flags: list[dict] = []
     source = _donor_flow_source(conn)
     amount_markers = _amount_distribution_markers(conn, source)
@@ -1957,8 +1984,14 @@ def get_anomaly_flags(
             committee_name = row["committee_name"] or "Unknown Committee"
             committee_month_totals[committee_name][month_key] += float(row["amount"] or 0.0)
 
+    covered_through = _quarterly_covered_through(conn)
     for committee_name, month_map in committee_month_totals.items():
         months = sorted(month_map.keys())
+        if committee_name in covered_through:
+            # fix-8b D2: months after the committee's latest quarterly period end hold only the A-1
+            # receipts filed so far (partial months); never flag them or use them as a baseline.
+            cutoff = covered_through[committee_name]
+            months = [m for m in months if cutoff and _month_bounds(m)[1] <= cutoff]
         if len(months) < 4:
             continue
         monthly_values = [month_map[m] for m in months if month_map[m] > 0]
