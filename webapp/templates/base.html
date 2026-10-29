@@ -13,7 +13,7 @@
       gtag('config', 'G-27DK3CP405');
     </script>
     <title>{% block title %}Illinois Campaign Finance Tracker{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20260523-1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='20261029-1') }}">
 </head>
 <body>
     <nav class="navbar">
@@ -129,6 +129,7 @@
             {% if global_data_status.is_any_stale %}
             <p class="stat-detail">At least one source appears stale for its expected cadence (staleness uses the federal last-sync timestamp).</p>
             {% endif %}
+            <p><a href="{{ url_for('data_status.index') }}">Data status</a></p>
         </section>
         {% endif %}
 

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Data Status - Illinois Campaign Finance Tracker{% endblock %}
+
+{% block content %}
+<h1>Data Status</h1>
+<p class="subtitle">
+    How current each dataset on this site is, and the last nightly refreshes. Automated sources reload every night
+    at 3 a.m. Central; the rest are downloaded and loaded by hand on the cadence shown.
+</p>
+
+<div class="status-section">
+    <h2>Datasets</h2>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Dataset</th>
+                <th>Loaded</th>
+                <th>Cadence</th>
+                <th>Latest data</th>
+                <th>Last load (Central)</th>
+                <th>Age (days)</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in datasets %}
+            <tr>
+                <td>
+                    {{ d.label }}
+                    {% if d.notes %}<br><span class="help-text">{{ d.notes }}</span>{% endif %}
+                </td>
+                <td>{{ 'Automated' if d.automation == 'auto' else 'By hand' }}</td>
+                <td>{{ d.cadence }}</td>
+                <td>{{ d.last_data_date if d.last_data_date else ('Not loaded' if d.present else 'Not available') }}</td>
+                <td>{{ d.last_load_local or 'n/a' }}</td>
+                <td>{{ d.age_days if d.age_days is not none else 'n/a' }}</td>
+                <td>
+                    {% if d.stale is none %}No threshold
+                    {% elif d.stale %}<strong>Stale</strong> (over {{ d.max_age_days }} days)
+                    {% else %}Current{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="help-text">
+        "Latest data" is the newest record date in the dataset. Stale thresholds are deliberately generous: they flag a
+        refresh that stopped, not normal filing lag.
+    </p>
+</div>
+
+<div class="status-section">
+    <h2>Recent refresh runs</h2>
+    {% if runs %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Started (Central)</th>
+                <th>Kind</th>
+                <th>Minutes</th>
+                <th>Status</th>
+                <th>Check</th>
+                <th>What changed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr id="run-{{ r.id }}">
+                <td>{{ r.started_local }}</td>
+                <td>{{ r.kind }}</td>
+                <td>{{ r.minutes if r.minutes is not none else 'n/a' }}</td>
+                <td>
+                    {% if r.status == 'failed' %}<strong>failed</strong> (exit code {{ r.exit_code }}){% else %}{{ r.status }}{% endif %}
+                </td>
+                <td>
+                    {{ r.check_status or 'not checked' }}
+                    {% if r.notes %}<br><span class="help-text">{{ r.notes }}</span>{% endif %}
+                </td>
+                <td>
+                    {% for line in r.changes %}{{ line }}{% if not loop.last %}<br>{% endif %}{% else %}No change{% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No refresh runs recorded yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

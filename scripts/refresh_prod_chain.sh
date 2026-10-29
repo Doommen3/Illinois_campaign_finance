@@ -1,5 +1,7 @@
 #!/bin/bash
 # Prod refresh chain — orchestrates the weekly data refresh on the Hetzner box.
+# Runs nightly under scripts/nightly_refresh.sh (systemd ilcf-nightly-refresh.timer), which
+# records the run in data_refresh_runs; the usage below is the by-hand form.
 #
 # Usage (run on the server, inside tmux):
 #   LOG=/srv/illinois_campaign_finance/shared/refresh_$(date +%Y%m%d_%H%M%S).log
@@ -26,7 +28,7 @@ fail() { log "STEP_FAILED $1 (exit=$2)"; log "CHAIN_FAILED"; exit "$2"; }
 
 trap 'rc=$?; [ $rc -ne 0 ] && echo "[$(ts)] CHAIN_TRAP exit=$rc" >> "$LOG"' EXIT
 
-log "CHAIN_START host=$(hostname) python=$PYTHON"
+log "CHAIN_START host=$(hostname) python=$PYTHON run_id=${REFRESH_RUN_ID:-none}"
 
 log "STEP1_START snapshot_row_counts"
 mkdir -p Bulk_download
@@ -51,11 +53,25 @@ if ! python3 scripts/check_row_counts.py >> "$LOG" 2>&1; then
 fi
 log "STEP3_END sanity_check OK"
 
-log "STEP4_START sunshine_import"
-if ! $PYTHON run.py sunshine-import --bulk-dir Bulk_download >> "$LOG" 2>&1; then
-  fail "sunshine_import" 4
+# The ETL's DROP block and the compat swap both deadlock or time out against live readers
+# (CLAUDE.md "Data Refresh Schedule", deployment.md 2026-10-27): ilcf-web is stopped for the whole
+# load + swap (about 20 min) and started again before either failure exits. STEP4_START .. STEP4B_END
+# bracket the downtime. Under SKIP_RESTART=1 the site is already offline, so the service is left alone.
+log "STEP4_START sunshine_import (ilcf-web.service down until STEP4B_END)"
+[ "${SKIP_RESTART:-0}" = "1" ] || systemctl stop ilcf-web.service
+$PYTHON run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap >> "$LOG" 2>&1
+import_rc=$?
+swap_rc=1
+if [ $import_rc -eq 0 ]; then
+  log "STEP4_END sunshine_import"
+  log "STEP4B_START compat_swap"
+  $PYTHON scripts/swap_bulk_to_isbe.py >> "$LOG" 2>&1
+  swap_rc=$?
 fi
-log "STEP4_END sunshine_import"
+[ "${SKIP_RESTART:-0}" = "1" ] || systemctl start ilcf-web.service
+[ $import_rc -eq 0 ] || fail "sunshine_import" 4
+[ $swap_rc -eq 0 ] || fail "compat_swap" 10
+log "STEP4B_END compat_swap (ilcf-web.service started)"
 
 log "STEP5_START sync_fec_il_federal"
 # --refresh-cache is required: without it the sync replays the payload cache and refreshes nothing (CLAUDE.md "FEC silent no-op").
@@ -63,6 +79,28 @@ if ! $PYTHON run.py sync-fec-il-federal --refresh-cache >> "$LOG" 2>&1; then
   fail "sync_fec_il_federal" 5
 fi
 log "STEP5_END sync_fec_il_federal"
+
+# City of Chicago Socrata pull (non-fatal; needs SOCRATA_APP_TOKEN in shared/.env).
+if [ -n "${SOCRATA_APP_TOKEN:-}" ]; then
+  log "STEP5B_START import_chicago_phase1"
+  if ! $PYTHON run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert >> "$LOG" 2>&1; then
+    log "STEP5B_WARN import_chicago_phase1 failed (non-fatal; Chicago tables keep their previous rows)"
+  fi
+  log "STEP5B_END import_chicago_phase1"
+else
+  log "STEP5B_SKIPPED import_chicago_phase1 (SOCRATA_APP_TOKEN not set)"
+fi
+
+# FEC Schedule B has no timer: backfill it weekly, on Wednesdays (non-fatal; the script has its own lock and log).
+if [ "$(date +%u)" = "3" ]; then
+  log "STEP5C_START fec_schedule_b_catchup"
+  if ! bash scripts/fec-schedule-b-catchup.sh >> "$LOG" 2>&1; then
+    log "STEP5C_WARN fec_schedule_b_catchup failed (non-fatal)"
+  fi
+  log "STEP5C_END fec_schedule_b_catchup"
+else
+  log "STEP5C_SKIPPED fec_schedule_b_catchup (weekly, Wednesdays)"
+fi
 
 log "STEP6_START run_cross_matching (long ~30-60min)"
 if ! $PYTHON run.py run-cross-matching --only all >> "$LOG" 2>&1; then
@@ -99,5 +137,12 @@ if [ "$HTTP" != "200" ]; then
 fi
 log "STEP8_END restart_service http=$HTTP"
 fi
+
+# Gate: fails the run when a refresh advanced no data (the FEC silent no-op), after the restart.
+log "STEP9_START validate_freshness"
+if ! $PYTHON run.py validate-freshness >> "$LOG" 2>&1; then
+  fail "validate_freshness" 11
+fi
+log "STEP9_END validate_freshness"
 
 log "CHAIN_END"

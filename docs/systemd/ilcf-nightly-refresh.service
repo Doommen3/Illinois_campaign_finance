@@ -1,0 +1,15 @@
+[Unit]
+Description=ILCF nightly data refresh (scripts/nightly_refresh.sh wrapping scripts/refresh_prod_chain.sh)
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+# Runs as root (no User=): the chain's last step restarts ilcf-web.service, as the by-hand
+# chain does today. The il-campaign-* units run as User=app because they restart nothing.
+EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/bin/bash /srv/illinois_campaign_finance/app/scripts/nightly_refresh.sh
+# The chain takes 60-120 min; bound a hang well past that.
+TimeoutStartSec=6h
+Nice=5
