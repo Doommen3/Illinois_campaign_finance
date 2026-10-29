@@ -84,6 +84,18 @@ def test_independent_expenditure_for_and_against_are_visibly_different_in_every_
     assert len(entity) == 7
 
 
+def test_candidate_nodes_are_indigo_and_no_node_wears_the_against_red():
+    """Kills: candidates back to red -- they sit at the end of the red dashed "against" lines, and red is reserved for
+    spending against a candidate; a global sankey that hard-codes its candidate bars (the key swatch would disagree)."""
+    result = run_graph_js(["graph_legend.js"], """
+        result = { nodes: sandbox.GRAPH_NODE_STYLES, against: sandbox.GRAPH_STYLES["independent_expenditure:O"].color };
+    """)
+    assert result["nodes"]["candidate"]["color"] == "#4338ca"
+    assert result["against"] not in {style["color"] for style in result["nodes"].values()}
+    networks = (JS_DIR / "analytics_networks.js").read_text()
+    assert "#dc2626" not in networks, "the sankey candidate bars read typeColor.candidate"
+
+
 def test_render_graph_key_lists_only_what_it_is_given_and_says_against_in_words():
     """Kills: a key that lists every style; a swatch that is not a real line (dashed must show as dashed); an IE row
     without the for / against wording; definitions from the payload ignored for an unsigned type."""

@@ -43,8 +43,9 @@
         system_cross_system: { color: "#7c3aed", dash: null, label: "Cross-system link", meaning: "Link that joins state and federal data." }
     };
 
-    // One node palette for the whole site. ie_spender is a committee that spends independently (node role), shown
-    // apart from the entity's own committees on the entity networks.
+    // One node palette for the whole site. Candidates are indigo, never red: red is reserved for spending AGAINST a
+    // candidate (GRAPH_STYLES). ie_spender is a committee that spends independently (node role), shown apart from the
+    // entity's own committees on the entity networks.
     var GRAPH_NODE_STYLES = {
         donor: { color: "#2563eb", shape: "circle", label: "Donor" },
         matched_donor: { color: "#6366f1", shape: "circle", label: "Matched donor" },
@@ -52,7 +53,7 @@
         local_committee: { color: "#059669", shape: "circle", label: "State committee" },
         federal_committee: { color: "#0284c7", shape: "circle", label: "Federal committee" },
         ie_spender: { color: "#9f7aea", shape: "circle", label: "Outside spender" },
-        candidate: { color: "#dc2626", shape: "circle", label: "Candidate" },
+        candidate: { color: "#4338ca", shape: "circle", label: "Candidate" },
         vendor: { color: "#d97706", shape: "circle", label: "Vendor" },
         matched_payee: { color: "#0891b2", shape: "circle", label: "Matched payee" },
         lobbying_client: { color: "#7c3aed", shape: "circle", label: "Lobbying client" },

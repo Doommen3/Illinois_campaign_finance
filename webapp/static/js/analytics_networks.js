@@ -890,7 +890,7 @@
         for (const c of topCandidates) {
             const box = candidateLayout.get(c.id);
             if (!box) continue;
-            sankeySvg.appendChild(createSvgEl("rect", { x: candidateX, y: box.y, width: nodeWidth, height: box.h, rx: 3, fill: "#dc2626", stroke: "#b91c1c", "stroke-width": 1 }));
+            sankeySvg.appendChild(createSvgEl("rect", { x: candidateX, y: box.y, width: nodeWidth, height: box.h, rx: 3, fill: typeColor.candidate, stroke: "#3730a3", "stroke-width": 1 }));
             drawText(sankeySvg, candidateX + nodeWidth + 6, box.y + box.h / 2 + 3, shortLabel(c.label, 24), { anchor: "start", size: "9px" });
         }
 
@@ -1174,7 +1174,7 @@
         // Node bars
         for (const d of topDonors) { const b = donorLayout.get(d.id); if (b) combinedSvg.appendChild(createSvgEl("rect", { x: col1X, y: b.y, width: nodeWidth, height: b.h, rx: 3, fill: "#2563eb" })); drawText(combinedSvg, col1X - 4, b.y + b.h / 2 + 3, shortLabel(d.label, 18), { anchor: "end", size: "8px" }); }
         for (const c of topCommittees) { const b = committeeLayout.get(c.id); if (b) combinedSvg.appendChild(createSvgEl("rect", { x: col2X, y: b.y, width: nodeWidth, height: b.h, rx: 3, fill: "#059669" })); }
-        for (const c of topCandidates) { const b = candidateLayout.get(c.id); if (b) { combinedSvg.appendChild(createSvgEl("rect", { x: col3X, y: b.y, width: nodeWidth, height: b.h, rx: 3, fill: "#dc2626" })); drawText(combinedSvg, col3X + nodeWidth + 4, b.y + b.h / 2 + 3, shortLabel(c.label, 18), { anchor: "start", size: "8px" }); } }
+        for (const c of topCandidates) { const b = candidateLayout.get(c.id); if (b) { combinedSvg.appendChild(createSvgEl("rect", { x: col3X, y: b.y, width: nodeWidth, height: b.h, rx: 3, fill: typeColor.candidate })); drawText(combinedSvg, col3X + nodeWidth + 4, b.y + b.h / 2 + 3, shortLabel(c.label, 18), { anchor: "start", size: "8px" }); } }
         for (const v of topVendors) { const b = vendorLayout.get(v.id); if (b) { combinedSvg.appendChild(createSvgEl("rect", { x: col4X, y: b.y, width: nodeWidth, height: b.h, rx: 3, fill: "#d97706" })); drawText(combinedSvg, col4X + nodeWidth + 4, b.y + b.h / 2 + 3, shortLabel(v.label, 18), { anchor: "start", size: "8px" }); } }
 
         drawText(combinedSvg, col1X, 18, "Donors", { size: "11px", weight: "600" });
