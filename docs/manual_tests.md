@@ -76,6 +76,7 @@ a fail.
 | MT-022 | Home | "Find unusual patterns this month" opens the latest month of data | 2026-10-29 | ⭐ |
 | MT-023 | Freshness | Data Status box: same dates on every page, agrees with the window's "latest data" | 2026-10-29 | ⭐ |
 | MT-024 | Network tab | Network tab click drill-down panel (money flow and vendor network) | 2026-10-29 | ⭐ |
+| MT-025 | Search | Name search Phase 2: apostrophe surnames precise, possessives unchanged, nicknames on list pages, race total not doubled | 2026-10-29 | ⭐ |
 
 ## Tests
 
@@ -580,6 +581,32 @@ a fail.
 - **Fail:** No panel on click; member amounts that do not add up to the node amount; no cap note or no
   "See all donors" link while donors are capped; a dead member link; "See all donors" landing elsewhere or
   changing the window; a panel that does not clear; the vendor view's panel missing or empty.
+
+### MT-025 — Name search Phase 2: nicknames and apostrophes everywhere, possessives unchanged
+
+- **Area:** Search
+- **Created:** 2026-10-29
+- **Source commit:** 9fed404
+- **Precondition:** none
+- **Why:** Phase 2 routed every name search on the site (committees, lobbying, 527, candidate finance, the
+  investigate and person pages, the API suggests) through one normalizer, and changed how an apostrophe in the
+  typed name is read. It guards against a surname search that matches every bearer of the second half ("O'Neil"
+  finding every Neil), a possessive that stops finding its base word ("Women's" missing "Women of ..."), and a
+  nickname that no longer reaches the full name on a list page.
+- **Steps:**
+  1. Open `/search?q=O%27Neil`. Read the first eight rows of "Donors (N)".
+  2. Open `/search?q=Women%27s`. Read the "Committees (N)" section.
+  3. Open `/committees/?q=Mike%20Frerichs` and `/committees/?q=Michael%20Frerichs`.
+  4. Open `/lobbying/?q=Women%27s`.
+  5. Open `/analytics/state-races/supervisor-township-frankfort?cycle=2018` and read the outside-spending total.
+- **Pass:** Step 1: every donor shown is an O'Neil (spelled O'Neil, O Neil or ONeil); no plain "Neil" surname.
+  Step 2: N ≥ 1 and the committees listed have "Women" in their names, including names without the possessive
+  ("... Women of ..."). Step 3: both spellings list the same committees. Step 4: the lobbying list answers with
+  entities or clients whose names contain "Women" (or an honest empty state, no error). Step 5: the race's
+  outside-spending total is $8,233.30 and a candidate appears once under one name.
+- **Fail:** Any plain "Neil" in step 1; an empty "Committees" section or names without "Women" in step 2; the
+  two spellings in step 3 listing different committees; an error page in step 4; a doubled total (e.g.
+  $16,466.60) or the same person listed twice under two spellings in step 5.
 
 ## Run log
 
