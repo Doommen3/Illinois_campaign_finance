@@ -181,19 +181,58 @@ def test_ok_run_with_stale_nightly_source_fails(tmp_path):
     assert "STALE" in report.read_text()
 
 
-def test_unfinished_run_gets_its_diff_and_fails(tmp_path):
+def test_run_in_progress_is_running_not_failed(tmp_path):
+    # Still going at 05:00: check_status running, exit 1, the open step named, the diff so far stored.
+    log = tmp_path / "nightly-fixture.log"
+    log.write_text(CHAIN_LOG_OK.split("[2026-10-29 03:42:30] STEP4_END")[0])  # inside step 4
     conn = _conn(tmp_path)
     try:
         _fresh_sources(conn)
-        run_id = _run(conn, "2026-10-29 03:01:00-05", exit_code=None)  # killed or still running
+        run_id = _run(conn, "2026-10-29 03:01:00-05", exit_code=None, log_path=str(log))
         code, report = _check(tmp_path)
         row = _row(conn, run_id)
     finally:
         conn.close()
     assert code == 1
-    assert row["status"] == "running" and row["check_status"] == "failed"
+    assert row["status"] == "running" and row["check_status"] == "running"
     assert row["diff"] is not None and "fec_schedule_a_contributions" in row["diff"]
-    assert "running" in report.read_text()
+    text = report.read_text()
+    assert "RUNNING" in text and "still running" in text and "step 4 sunshine_import" in text
+
+
+def test_rerun_after_finish_overwrites_report_and_check_status(tmp_path):
+    # nightly_refresh.sh runs the check again after finish: a late run gets its final report.
+    conn = _conn(tmp_path)
+    try:
+        _fresh_sources(conn)
+        run_id = _run(conn, "2026-10-29 03:01:00-05", exit_code=None)
+        assert _check(tmp_path)[0] == 1
+        finish_run(conn, run_id, exit_code=0)
+        code, report = _check(tmp_path)
+        row = _row(conn, run_id)
+    finally:
+        conn.close()
+    assert code == 0 and row["check_status"] == "ok"
+    assert "**Check: OK**" in report.read_text()
+
+
+def test_earlier_run_never_finished_is_noted(tmp_path):
+    # A wrapper killed yesterday leaves a run "running"; today's report names it without failing today's check.
+    conn = _conn(tmp_path)
+    try:
+        _fresh_sources(conn)
+        stuck = _run(conn, "2026-10-28 03:01:00-05", exit_code=None)
+        _run(conn, "2026-10-29 03:01:00-05", exit_code=0)
+        code, report = _check(tmp_path)
+    finally:
+        conn.close()
+    assert code == 0
+    assert f"run {stuck}" in report.read_text() and "never finished" in report.read_text()
+
+
+def test_nightly_refresh_runs_the_check_after_finish():
+    wrapper = (REPO / "scripts" / "nightly_refresh.sh").read_text()
+    assert wrapper.index("scripts/nightly_check.py") > wrapper.index("data_refresh_cli.py finish")
 
 
 @pytest.mark.parametrize("script", ["nightly_refresh.sh", "manual_load.sh", "refresh_prod_chain.sh"])
