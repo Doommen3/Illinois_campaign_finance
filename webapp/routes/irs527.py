@@ -4,7 +4,7 @@ import time
 
 from flask import Blueprint, jsonify, render_template, request, current_app, abort
 from webapp.cache_backend import RouteCache
-from webapp.utils.search_normalize import normalize_search_query
+from database.name_normalize import name_predicates, normalized_substring_sql
 from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
 from webapp.utils.time_scope import (
     TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_cache_key, scope_params,
@@ -257,14 +257,20 @@ def list_orgs():
     page = max(1, min(request.args.get('page', 1, type=int), 5000))
     per_page = 50
     offset = (page - 1) * per_page
-    raw_query = request.args.get('q', '').strip()
-    query = normalize_search_query(raw_query) or raw_query.strip()
+    query = request.args.get('q', '').strip()
 
     where_clause = ""
     params = []
     if query:
-        where_clause = "WHERE org_name LIKE ?"
-        params.append(f"%{query}%")
+        # By name token, else the one substring fallback when no organization has the tokens (database/name_normalize.py).
+        variants = name_predicates("org_name", query) or [("FALSE", [])]
+        for name_sql, name_params in variants:
+            if conn.execute(
+                f"SELECT 1 FROM irs527_organizations WHERE {name_sql} LIMIT 1", tuple(name_params)
+            ).fetchone():
+                break
+        where_clause = f"WHERE {name_sql}"
+        params.extend(name_params)
 
     expenditure_join_sql = ""
     expenditure_join_params: list[object] = []
@@ -400,20 +406,18 @@ def list_orgs():
 def suggest():
     """Return up to 10 org name suggestions for autocomplete."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     if len(q) < 2 or not _table_exists(conn, "irs527_organizations"):
         return jsonify([])
-    rows = conn.execute(
-        """
-        SELECT DISTINCT org_name AS label, ein AS value
-        FROM irs527_organizations
-        WHERE org_name LIKE ?
-        ORDER BY org_name
-        LIMIT 10
-        """,
-        (f"%{q}%",),
-    ).fetchall()
+    rows = []
+    for where, params in name_predicates("org_name", q):
+        rows = conn.execute(
+            f"SELECT DISTINCT org_name AS label, ein AS value FROM irs527_organizations WHERE {where} "
+            "ORDER BY org_name LIMIT 10",
+            tuple(params),
+        ).fetchall()
+        if rows:
+            break
     return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
 
 
@@ -622,8 +626,10 @@ def org_detail(ein):
         contrib_search_clause = ""
         contrib_search_params: list[object] = []
         if contrib_search:
-            contrib_search_clause = " AND contributor_name LIKE ?"
-            contrib_search_params = [f"%{contrib_search}%"]
+            # Transactional table: the normalized substring (decision P2-2), not the token predicate.
+            predicate = normalized_substring_sql("contributor_name", contrib_search)
+            contrib_search_clause = f" AND {predicate[0]}" if predicate else " AND FALSE"
+            contrib_search_params = list(predicate[1]) if predicate else []
 
         contributions = conn.execute(
             f"""

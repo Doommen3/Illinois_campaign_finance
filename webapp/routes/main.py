@@ -11,7 +11,13 @@ import psycopg
 
 from database.committee_families import accepted_family_map
 from database.models import Committee, Report, Donor, Contribution, receipts_filter_sql
-from database.name_normalize import NAME_TSVECTOR_SQL, normalize_name, search_tsquery
+from database.name_normalize import (
+    NAME_TSVECTOR_SQL,
+    name_predicates,
+    normalize_name,
+    normalized_substring_sql,
+    search_tsquery,
+)
 from database.pg_compat import statement_timeout_scope
 from webapp.cache_backend import RouteCache
 from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
@@ -2534,6 +2540,16 @@ def investigate_workspace():
     export_format = request.args.get('format', '').strip().lower()
 
     like_param = f"%{query}%" if query else ""
+
+    def matching(sql_template: str, columns, *extra_params) -> list:
+        """Rows by name token, else the one substring fallback ({where} in the template; database/name_normalize.py)."""
+        rows = []
+        for where, params in name_predicates(columns, query):
+            rows = conn.execute(sql_template.format(where=where), (*params, *extra_params)).fetchall()
+            if rows:
+                break
+        return rows
+
     entity_rows: list[dict] = []
     matched_rows: list[dict] = []
     donor_committee_rows: list[dict] = []
@@ -2541,16 +2557,16 @@ def investigate_workspace():
     unusual_rows: list[dict] = []
 
     if query and _table_exists(conn, "analytics_donor_summary"):
-        rows = conn.execute(
+        rows = matching(
             """
             SELECT donor_key, donor_name, total_amount, contribution_count, committee_count
             FROM analytics_donor_summary
-            WHERE source = 'bulk_receipts' AND donor_name LIKE ?
+            WHERE source = 'bulk_receipts' AND {where}
             ORDER BY total_amount DESC
             LIMIT 8
             """,
-            (like_param,),
-        ).fetchall()
+            "donor_name",
+        )
         for row in rows:
             entity_rows.append(
                 {
@@ -2563,21 +2579,22 @@ def investigate_workspace():
                 }
             )
 
-    if query and _table_exists(conn, "fec_schedule_a_contributions"):
+    contributor_match = normalized_substring_sql("contributor_name", query)  # transactional (decision P2-2)
+    if contributor_match and _table_exists(conn, "fec_schedule_a_contributions"):
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 donor_entity_key,
                 COALESCE(MAX(contributor_name), donor_entity_key) AS contributor_name,
                 COALESCE(SUM(contribution_receipt_amount), 0) AS total_amount,
                 COUNT(*) AS contribution_count
             FROM fec_schedule_a_contributions
-            WHERE contributor_name LIKE ?
+            WHERE {contributor_match[0]}
             GROUP BY donor_entity_key
             ORDER BY total_amount DESC
             LIMIT 8
             """,
-            (like_param,),
+            tuple(contributor_match[1]),
         ).fetchall()
         for row in rows:
             entity_rows.append(
@@ -2592,16 +2609,16 @@ def investigate_workspace():
             )
 
     if query and _table_exists(conn, "lobbying_clients"):
-        rows = conn.execute(
+        rows = matching(
             """
             SELECT client_id, client_name
             FROM lobbying_clients
-            WHERE client_name LIKE ?
+            WHERE {where}
             ORDER BY client_name ASC
             LIMIT 8
             """,
-            (like_param,),
-        ).fetchall()
+            "client_name",
+        )
         for row in rows:
             entity_rows.append(
                 {
@@ -2615,17 +2632,17 @@ def investigate_workspace():
             )
 
     if query and _table_exists(conn, "irs527_organizations"):
-        rows = conn.execute(
+        rows = matching(
             """
             SELECT ein, COALESCE(MAX(org_name), ein) AS org_name
             FROM irs527_organizations
-            WHERE org_name LIKE ?
+            WHERE {where}
             GROUP BY ein
             ORDER BY org_name ASC
             LIMIT 8
             """,
-            (like_param,),
-        ).fetchall()
+            "org_name",
+        )
         for row in rows:
             entity_rows.append(
                 {
@@ -2645,19 +2662,45 @@ def investigate_workspace():
                 "donor_name": row["donor_name"] or row["donor_key"] or "Unknown Donor",
                 "score": float(row["score"] or 0.0),
             }
-            for row in conn.execute(
+            for row in matching(
                 """
                 SELECT client_name, donor_name, donor_key, score
                 FROM lobbying_donor_matches
-                WHERE client_name LIKE ? OR donor_name LIKE ?
+                WHERE {where}
                 ORDER BY score DESC, client_name ASC
                 LIMIT 12
                 """,
-                (like_param, like_param),
-            ).fetchall()
+                ("client_name", "donor_name"),
+            )
         ]
 
     if query and _table_exists(conn, "analytics_donor_committee_agg"):
+        # Donors are matched by name through analytics_donor_summary's GIN index and joined to the 1.3M-row aggregate on its
+        # key (decision P2-7: the aggregate has no name index); the donor_key path runs only when no name matched.
+        agg_rows = []
+        if _table_exists(conn, "analytics_donor_summary"):
+            agg_rows = matching(
+                """
+                SELECT a.donor_key, a.donor_name, a.committee_id, a.committee_name, a.total_amount, a.contribution_count
+                FROM analytics_donor_summary s
+                JOIN analytics_donor_committee_agg a ON a.source = s.source AND a.donor_key = s.donor_key
+                WHERE s.source = 'bulk_receipts' AND {where}
+                ORDER BY a.total_amount DESC
+                LIMIT 15
+                """,
+                "s.donor_name",
+            )
+        if not agg_rows:
+            agg_rows = conn.execute(
+                """
+                SELECT donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count
+                FROM analytics_donor_committee_agg
+                WHERE source = 'bulk_receipts' AND donor_key LIKE ?
+                ORDER BY total_amount DESC
+                LIMIT 15
+                """,
+                (like_param,),
+            ).fetchall()
         donor_committee_rows = [
             {
                 "donor_name": row["donor_name"] or row["donor_key"],
@@ -2665,16 +2708,7 @@ def investigate_workspace():
                 "total_amount": float(row["total_amount"] or 0.0),
                 "contribution_count": int(row["contribution_count"] or 0),
             }
-            for row in conn.execute(
-                """
-                SELECT donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count
-                FROM analytics_donor_committee_agg
-                WHERE source = 'bulk_receipts' AND (donor_name LIKE ? OR donor_key LIKE ?)
-                ORDER BY total_amount DESC
-                LIMIT 15
-                """,
-                (like_param, like_param),
-            ).fetchall()
+            for row in agg_rows
         ]
 
     if query and _table_exists(conn, "lobbying_donor_matches"):
@@ -2684,16 +2718,16 @@ def investigate_workspace():
                 "donor_name": row["donor_name"] or row["donor_key"] or "Unknown Donor",
                 "score": float(row["score"] or 0.0),
             }
-            for row in conn.execute(
+            for row in matching(
                 """
                 SELECT client_name, donor_name, donor_key, score
                 FROM lobbying_donor_matches
-                WHERE donor_name LIKE ? OR client_name LIKE ?
+                WHERE {where}
                 ORDER BY score DESC, client_name ASC
                 LIMIT 15
                 """,
-                (like_param, like_param),
-            ).fetchall()
+                ("donor_name", "client_name"),
+            )
         ]
 
     available_months = []
@@ -3259,21 +3293,29 @@ def person_intelligence():
     }
 
     if query and len(query) >= 2:
-        like_pattern = f"%{query}%"
+
+        def matching(sql_template: str, column: str) -> list:
+            """Rows by name token, else the one substring fallback ({where} in the template; database/name_normalize.py)."""
+            rows = []
+            for where, params in name_predicates(column, query):
+                rows = conn.execute(sql_template.format(where=where), tuple(params)).fetchall()
+                if rows:
+                    break
+            return rows
 
         # Donors
         if _table_exists(conn, "analytics_donor_summary"):
-            raw_donors = conn.execute(
+            raw_donors = matching(
                 """
                 SELECT donor_key, donor_name, donor_city, donor_state,
                        total_amount, contribution_count, committee_count
                 FROM analytics_donor_summary
-                WHERE source = 'bulk_receipts' AND donor_name LIKE ?
+                WHERE source = 'bulk_receipts' AND {where}
                 ORDER BY total_amount DESC
                 LIMIT 100
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "donor_name",
+            )
             results['donors'] = raw_donors
 
             # Group by normalized name for dedup display
@@ -3302,39 +3344,40 @@ def person_intelligence():
         # Fallback order: bulk_candidates_clean -> isbe_bulk_candidates_clean_compat -> isbe_candidates
         candidate_rows = []
         if _table_exists(conn, "bulk_candidates_clean"):
-            candidate_rows = conn.execute(
+            candidate_rows = matching(
                 """
                 SELECT candidate_id, candidate_full_name
                 FROM bulk_candidates_clean
-                WHERE LOWER(candidate_full_name) LIKE LOWER(?)
+                WHERE {where}
                 ORDER BY candidate_full_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "candidate_full_name",
+            )
         elif _table_exists(conn, "isbe_bulk_candidates_clean_compat"):
-            candidate_rows = conn.execute(
+            candidate_rows = matching(
                 """
                 SELECT candidate_id, candidate_full_name
                 FROM isbe_bulk_candidates_clean_compat
-                WHERE LOWER(candidate_full_name) LIKE LOWER(?)
+                WHERE {where}
                 ORDER BY candidate_full_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "candidate_full_name",
+            )
         elif _table_exists(conn, "isbe_candidates"):
-            candidate_rows = conn.execute(
+            # first_name || ' ' || last_name is the expression of idx_isbe_candidates_name_tsv (search Phase 1)
+            candidate_rows = matching(
                 """
                 SELECT id AS candidate_id,
                        TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) AS candidate_full_name
                 FROM isbe_candidates
-                WHERE LOWER(TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))) LIKE LOWER(?)
+                WHERE {where}
                 ORDER BY candidate_full_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "first_name || ' ' || last_name",
+            )
 
         if candidate_rows:
             candidate_ids = [row["candidate_id"] for row in candidate_rows if row["candidate_id"] is not None]
@@ -3481,57 +3524,58 @@ def person_intelligence():
 
         # 527 directors
         if _table_exists(conn, "irs527_directors"):
-            results['directors_527'] = conn.execute(
+            results['directors_527'] = matching(
                 """
                 SELECT DISTINCT ein, org_name, person_name, title, city, state
                 FROM irs527_directors
-                WHERE person_name LIKE ?
+                WHERE {where}
                 ORDER BY person_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "person_name",
+            )
 
         # Lobbying entities
         if _table_exists(conn, "lobbying_entities"):
-            results['lobbying_entities'] = conn.execute(
+            results['lobbying_entities'] = matching(
                 """
                 SELECT entity_id, entity_name
                 FROM lobbying_entities
-                WHERE entity_name LIKE ?
+                WHERE {where}
                 ORDER BY entity_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "entity_name",
+            )
 
         # Lobbying clients
         if _table_exists(conn, "lobbying_clients"):
-            results['lobbying_clients'] = conn.execute(
+            results['lobbying_clients'] = matching(
                 """
                 SELECT client_id, client_name
                 FROM lobbying_clients
-                WHERE client_name LIKE ?
+                WHERE {where}
                 ORDER BY client_name
                 LIMIT 25
                 """,
-                (like_pattern,),
-            ).fetchall()
+                "client_name",
+            )
 
-        # FEC contributors
-        if _table_exists(conn, "fec_schedule_a_contributions"):
+        # FEC contributors (a transactional table: the normalized substring, decision P2-2)
+        contributor_match = normalized_substring_sql("contributor_name", query)
+        if contributor_match and _table_exists(conn, "fec_schedule_a_contributions"):
             results['fec_contributors'] = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT contributor_name, contributor_city, contributor_state,
                        SUM(contribution_receipt_amount) AS total_amount,
                        COUNT(*) AS contribution_count
                 FROM fec_schedule_a_contributions
-                WHERE contributor_name LIKE ?
+                WHERE {contributor_match[0]}
                 GROUP BY contributor_name, contributor_city, contributor_state
                 ORDER BY total_amount DESC
                 LIMIT 25
                 """,
-                (like_pattern,),
+                tuple(contributor_match[1]),
             ).fetchall()
 
     return render_template('person_intelligence.html', **results)

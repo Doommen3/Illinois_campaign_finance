@@ -24,6 +24,7 @@ import re
 from datetime import date
 
 from database.connection import _table_exists
+from database.name_normalize import expand_token
 
 _SEPARATORS = re.compile(r"[,;/&]|\band\b", re.IGNORECASE)
 _KEY_PUNCTUATION = re.compile(r"[.,'\"]")
@@ -92,16 +93,26 @@ def split_candidate_names(text: str | None) -> list[str]:
 
 
 def candidate_name_key(text: str | None) -> tuple[str, str] | None:
-    """(first token, last token) of a name, . , ' " stripped and upper-cased; None below two tokens.
+    """(first token, last token) of a name, . , ' " stripped, a hyphen read as a space, upper-cased;
+    None below two tokens.
 
-    Trailing generational suffixes (JR, SR, II, III, IV, V) are dropped while more than two tokens
-    remain, so "John Barberis, Jr" (the candidate record) and "John Barberis" (the filing) share
-    one key, while "Pat Jr" stays (PAT, JR).
+    "J.B." stays JB and "O'Brien" stays OBRIEN (removed, not split), while "Mary Smith-Jones" keys as
+    (MARY, JONES), the same as "Mary Smith Jones" (M1). Trailing generational suffixes (JR, SR, II,
+    III, IV, V) are dropped while more than two tokens remain, so "John Barberis, Jr" (the candidate
+    record) and "John Barberis" (the filing) share one key, while "Pat Jr" stays (PAT, JR).
     """
-    tokens = _KEY_PUNCTUATION.sub("", text or "").upper().split()
+    tokens = _KEY_PUNCTUATION.sub("", text or "").replace("-", " ").upper().split()
     while len(tokens) > 2 and tokens[-1] in _GENERATIONAL_SUFFIXES:
         tokens.pop()
     return (tokens[0], tokens[-1]) if len(tokens) >= 2 else None
+
+
+def _first_name_aliases(first: str) -> set[str]:
+    """The first token and its aliases in the shared nickname map (database/name_normalize.NICKNAMES),
+    a two-word alias by its first word as the key reads a name ("JB" -> {JB, JAY}). Two first names
+    meet when these sets intersect: MIKE and MICHAEL directly, TED and ED through EDWARD; THEODORE and
+    ED do not (decision P2-3b)."""
+    return {alias.split()[0] for alias in expand_token(first)}
 
 
 def part9_cycle(day: date) -> int:
@@ -116,12 +127,16 @@ def attribute_part9_rows(rows, candidates) -> list[dict]:
 
     ``candidates`` carry ``key`` (candidate_name_key) and ``cycles``: the set of cycles a row's
     ``expended_date`` must fall in, or None for no gate. Candidates sharing a key all take the row.
+    A filed name meets a key when the last tokens are equal and the first tokens' alias sets
+    intersect (M2: "Mike" meets "Michael", "Ted" meets "Ed" through EDWARD; see _first_name_aliases).
     The inputs are not modified.
     """
-    by_key: dict[tuple[str, str], list[dict]] = {}
-    for candidate in candidates:
+    by_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
+    for position, candidate in enumerate(candidates):
         if candidate["key"] is not None:
-            by_key.setdefault(candidate["key"], []).append(candidate)
+            first, last = candidate["key"]
+            for alias in _first_name_aliases(first):
+                by_key.setdefault((alias, last), []).append((position, candidate))
     attributions = []
     for row in rows:
         names = split_candidate_names(row["candidate_name"])
@@ -129,7 +144,12 @@ def attribute_part9_rows(rows, candidates) -> list[dict]:
         cycle = part9_cycle(day) if day is not None else None
         matched: set[int] = set()
         for name in names:
-            for candidate in by_key.get(candidate_name_key(name), ()):
+            key = candidate_name_key(name)
+            matches = [] if key is None else sorted(  # the candidates' own order, whatever the alias set's
+                (entry for alias in _first_name_aliases(key[0]) for entry in by_key.get((alias, key[1]), ())),
+                key=lambda entry: entry[0],
+            )
+            for _position, candidate in matches:
                 if id(candidate) in matched:
                     continue
                 if candidate["cycles"] is not None and cycle not in candidate["cycles"]:

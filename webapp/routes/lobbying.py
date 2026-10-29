@@ -7,7 +7,7 @@ import hashlib
 import re
 
 from flask import Blueprint, render_template, request, current_app, abort, jsonify
-from webapp.utils.search_normalize import normalize_search_query
+from database.name_normalize import name_predicates
 from webapp.utils.time_scope import current_cycle, cycle_window, resolve_time_scope, scope_params
 
 lobbying_bp = Blueprint('lobbying', __name__)
@@ -688,29 +688,33 @@ def list_entities():
     page = request.args.get('page', 1, type=int)
     per_page = 50
     offset = (page - 1) * per_page
-    raw_query = request.args.get('q', '').strip()
-    query = normalize_search_query(raw_query) or raw_query.strip()
+    query = request.args.get('q', '').strip()
 
     # reg_year scopes snap to whole years; NULL reg_year rows are hidden under a bound.
-    conditions = []
-    params = []
-    if query:
-        conditions.append("e.entity_name LIKE ?")
-        params.append(f"%{query}%")
+    year_conditions = []
+    year_params = []
     if scope.start:
-        conditions.append("e.reg_year >= ?")
-        params.append(scope.start.year)
+        year_conditions.append("e.reg_year >= ?")
+        year_params.append(scope.start.year)
     if scope.end:
-        conditions.append("e.reg_year <= ?")
-        params.append(scope.end.year)
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
-    total = _scalar(
-        conn,
-        f"SELECT COUNT(*) FROM lobbying_entities e {where_clause}",
-        params,
-        default=0,
-    )
+        year_conditions.append("e.reg_year <= ?")
+        year_params.append(scope.end.year)
+    # By name token, else the one substring fallback when the token count is zero (database/name_normalize.py).
+    variants = [(None, [])]
+    if query:
+        variants = name_predicates("e.entity_name", query) or [("FALSE", [])]
+    for name_sql, name_params in variants:
+        conditions = ([name_sql] if name_sql else []) + year_conditions
+        params = list(name_params) + year_params
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        total = _scalar(
+            conn,
+            f"SELECT COUNT(*) FROM lobbying_entities e {where_clause}",
+            params,
+            default=0,
+        )
+        if total:
+            break
     total_pages = max(1, (total + per_page - 1) // per_page)
 
     # Clients count once each, over their registrations in the scope's years.
@@ -742,20 +746,18 @@ def list_entities():
 def suggest_entities():
     """Return up to 10 entity name suggestions for autocomplete."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     if len(q) < 2 or not _table_exists(conn, "lobbying_entities"):
         return jsonify([])
-    rows = conn.execute(
-        """
-        SELECT entity_id AS value, entity_name AS label
-        FROM lobbying_entities
-        WHERE entity_name LIKE ?
-        ORDER BY entity_name
-        LIMIT 10
-        """,
-        (f"%{q}%",),
-    ).fetchall()
+    rows = []
+    for where, params in name_predicates("entity_name", q):
+        rows = conn.execute(
+            f"SELECT entity_id AS value, entity_name AS label FROM lobbying_entities WHERE {where} "
+            "ORDER BY entity_name LIMIT 10",
+            tuple(params),
+        ).fetchall()
+        if rows:
+            break
     return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
 
 
@@ -763,20 +765,18 @@ def suggest_entities():
 def suggest_flow_clients():
     """Return up to 10 client name suggestions for the money flows filter."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     if len(q) < 2 or not _table_exists(conn, "lobbying_donor_matches"):
         return jsonify([])
-    rows = conn.execute(
-        """
-        SELECT DISTINCT client_name AS label
-        FROM lobbying_donor_matches
-        WHERE client_name LIKE ? AND score >= 0.80
-        ORDER BY client_name
-        LIMIT 10
-        """,
-        (f"%{q}%",),
-    ).fetchall()
+    rows = []
+    for where, params in name_predicates("client_name", q):
+        rows = conn.execute(
+            f"SELECT DISTINCT client_name AS label FROM lobbying_donor_matches WHERE {where} AND score >= 0.80 "
+            "ORDER BY client_name LIMIT 10",
+            tuple(params),
+        ).fetchall()
+        if rows:
+            break
     return jsonify([{"label": r["label"], "value": r["label"]} for r in rows])
 
 
@@ -986,8 +986,7 @@ def client_detail(client_id):
 @lobbying_bp.route('/flows')
 def flows():
     """Sankey diagram page: lobbying client -> committee money flows via matched donors."""
-    raw_client = request.args.get('client', '').strip()
-    client_filter = normalize_search_query(raw_client) or raw_client.strip()
+    client_filter = request.args.get('client', '').strip()
     scope = resolve_time_scope(default="cycle:current", axis="received")
     return render_template('lobbying/flows.html', client_filter=client_filter,
                            **_scope_context(scope))
@@ -1009,13 +1008,19 @@ def flows_data():
 
     _ensure_lobbying_flow_indexes(conn)
 
-    raw_client = request.args.get('client', '').strip()
-    client_filter = normalize_search_query(raw_client) or raw_client.strip()
+    client_filter = request.args.get('client', '').strip()
     where = ["score >= 0.80"]
     params = []
     if client_filter:
-        where.append("client_name LIKE ?")
-        params.append(f"%{client_filter}%")
+        # The client by name token, else the one substring fallback when no matched client has the tokens.
+        variants = name_predicates("client_name", client_filter) or [("FALSE", [])]
+        for name_sql, name_params in variants:
+            if conn.execute(
+                f"SELECT 1 FROM lobbying_donor_matches WHERE score >= 0.80 AND {name_sql} LIMIT 1", tuple(name_params)
+            ).fetchone():
+                break
+        where.append(name_sql)
+        params.extend(name_params)
 
     if has_time_window:
         date_clause = ""

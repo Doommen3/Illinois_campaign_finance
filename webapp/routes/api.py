@@ -17,7 +17,7 @@ from database.analytics import (
     get_time_series,
 )
 from database.models import Committee, Report, Donor, Contribution, ScrapeState
-from webapp.utils.search_normalize import normalize_search_query
+from database.name_normalize import name_predicates, normalize_name, normalized_substring_sql
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import resolve_time_scope
 
@@ -499,26 +499,33 @@ def _stable_entity_key(name: str) -> str:
 def analytics_network_suggest():
     """Autocomplete suggestions across donors, committees, candidates, vendors."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     limit = min(request.args.get('limit', 10, type=int), 50)
     entity_type = request.args.get('entity_type', 'all').strip().lower()
 
-    if len(q) < 2:
+    if len(normalize_name(q)) < 2:
         return jsonify([])
 
     results = []
-    pattern = f"%{q}%"
+
+    def matching(sql_template: str, columns: str) -> list:
+        """Rows by name token, else the one substring fallback (database/name_normalize.py); {where} in the template."""
+        rows = []
+        for where, params in name_predicates(columns, q):
+            rows = conn.execute(sql_template.format(where=where), (*params, limit)).fetchall()
+            if rows:
+                break
+        return rows
 
     # --- donors ---
     if entity_type in ('all', 'donor'):
         donor_found = False
         if _table_exists(conn, 'analytics_donor_summary'):
-            rows = conn.execute(
+            rows = matching(
                 "SELECT donor_key, donor_name FROM analytics_donor_summary "
-                "WHERE LOWER(donor_name) LIKE LOWER(?) ORDER BY total_amount DESC LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+                "WHERE {where} ORDER BY total_amount DESC LIMIT ?",
+                "donor_name",
+            )
             for r in rows:
                 donor_found = True
                 results.append({
@@ -527,10 +534,7 @@ def analytics_network_suggest():
                     "node_type": "donor",
                 })
         if not donor_found and _table_exists(conn, 'donors'):
-            rows = conn.execute(
-                "SELECT id, name FROM donors WHERE LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+            rows = matching("SELECT id, name FROM donors WHERE {where} ORDER BY name LIMIT ?", "name")
             for r in rows:
                 results.append({
                     "label": r["name"],
@@ -542,10 +546,7 @@ def analytics_network_suggest():
     if entity_type in ('all', 'committee'):
         cmte_found = False
         if _table_exists(conn, 'isbe_committees'):
-            rows = conn.execute(
-                "SELECT id, name FROM isbe_committees WHERE LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+            rows = matching("SELECT id, name FROM isbe_committees WHERE {where} ORDER BY name LIMIT ?", "name")
             for r in rows:
                 cmte_found = True
                 results.append({
@@ -554,11 +555,11 @@ def analytics_network_suggest():
                     "node_type": "committee",
                 })
         if not cmte_found and _table_exists(conn, 'bulk_committees_clean'):
-            rows = conn.execute(
+            rows = matching(
                 "SELECT committee_id_sbe AS id, committee_name AS name FROM bulk_committees_clean "
-                "WHERE LOWER(committee_name) LIKE LOWER(?) ORDER BY committee_name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+                "WHERE {where} ORDER BY committee_name LIMIT ?",
+                "committee_name",
+            )
             for r in rows:
                 cmte_found = True
                 results.append({
@@ -567,10 +568,7 @@ def analytics_network_suggest():
                     "node_type": "committee",
                 })
         if not cmte_found and _table_exists(conn, 'committees'):
-            rows = conn.execute(
-                "SELECT id, name FROM committees WHERE LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+            rows = matching("SELECT id, name FROM committees WHERE {where} ORDER BY name LIMIT ?", "name")
             for r in rows:
                 results.append({
                     "label": r["name"],
@@ -582,11 +580,11 @@ def analytics_network_suggest():
     if entity_type in ('all', 'candidate'):
         cand_found = False
         if _table_exists(conn, 'bulk_candidates_clean'):
-            rows = conn.execute(
+            rows = matching(
                 "SELECT DISTINCT candidate_id, candidate_full_name FROM bulk_candidates_clean "
-                "WHERE LOWER(candidate_full_name) LIKE LOWER(?) ORDER BY candidate_full_name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+                "WHERE {where} ORDER BY candidate_full_name LIMIT ?",
+                "candidate_full_name",
+            )
             for r in rows:
                 cand_found = True
                 results.append({
@@ -595,11 +593,11 @@ def analytics_network_suggest():
                     "node_type": "candidate",
                 })
         if not cand_found and _table_exists(conn, 'bulk_candidate_committee_finance_agg'):
-            rows = conn.execute(
+            rows = matching(
                 "SELECT DISTINCT candidate_id, candidate_full_name FROM bulk_candidate_committee_finance_agg "
-                "WHERE LOWER(candidate_full_name) LIKE LOWER(?) ORDER BY candidate_full_name LIMIT ?",
-                (pattern, limit),
-            ).fetchall()
+                "WHERE {where} ORDER BY candidate_full_name LIMIT ?",
+                "candidate_full_name",
+            )
             for r in rows:
                 results.append({
                     "label": r["candidate_full_name"],
@@ -607,16 +605,17 @@ def analytics_network_suggest():
                     "node_type": "candidate",
                 })
 
-    # --- vendors ---
+    # --- vendors (a transactional table: the normalized substring, decision P2-2) ---
     if entity_type in ('all', 'vendor'):
         if _table_exists(conn, 'bulk_expenditures_clean'):
+            payee_sql, payee_params = normalized_substring_sql("payee_last_or_business_name", q)
             rows = conn.execute(
                 "SELECT payee_last_or_business_name AS name, SUM(amount) AS total "
                 "FROM bulk_expenditures_clean "
-                "WHERE LOWER(payee_last_or_business_name) LIKE LOWER(?) AND amount > 0 "
+                f"WHERE {payee_sql} AND amount > 0 "
                 "GROUP BY payee_last_or_business_name "
                 "ORDER BY total DESC LIMIT ?",
-                (pattern, limit),
+                (*payee_params, limit),
             ).fetchall()
             for r in rows:
                 vname = r["name"]
@@ -1198,26 +1197,34 @@ def analytics_network_focus_sankey():
 def federal_network_suggest():
     """Autocomplete suggestions across FEC donors, candidates, committees, vendors."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     limit = min(request.args.get('limit', 10, type=int), 50)
     entity_type = request.args.get('entity_type', 'all').strip().lower()
 
-    if len(q) < 2:
+    if len(normalize_name(q)) < 2:
         return jsonify([])
 
     results = []
-    pattern = f"%{q}%"
 
-    # --- donors (Schedule A contributors) ---
+    def matching(sql_template: str, column: str) -> list:
+        """Rows by name token, else the one substring fallback (database/name_normalize.py); {where} in the template."""
+        rows = []
+        for where, params in name_predicates(column, q):
+            rows = conn.execute(sql_template.format(where=where), (*params, limit)).fetchall()
+            if rows:
+                break
+        return rows
+
+    # --- donors (Schedule A contributors; a transactional table: the normalized substring, decision P2-2) ---
     if entity_type in ('all', 'donor') and _table_exists(conn, 'fec_schedule_a_contributions'):
+        contributor_sql, contributor_params = normalized_substring_sql("contributor_name", q)
         rows = conn.execute(
             "SELECT donor_entity_key, contributor_name, SUM(contribution_receipt_amount) AS total "
             "FROM fec_schedule_a_contributions "
-            "WHERE contributor_name ILIKE ? AND contribution_receipt_amount > 0 "
+            f"WHERE {contributor_sql} AND contribution_receipt_amount > 0 "
             "GROUP BY donor_entity_key, contributor_name "
             "ORDER BY total DESC LIMIT ?",
-            (pattern, limit),
+            (*contributor_params, limit),
         ).fetchall()
         for r in rows:
             results.append({
@@ -1228,12 +1235,11 @@ def federal_network_suggest():
 
     # --- candidates (matched FEC candidates) ---
     if entity_type in ('all', 'candidate') and _table_exists(conn, 'fec_candidate_match'):
-        rows = conn.execute(
+        rows = matching(
             "SELECT fec_candidate_id, candidate_name FROM fec_candidate_match "
-            "WHERE match_status = 'matched' AND candidate_name ILIKE ? "
-            "ORDER BY candidate_name LIMIT ?",
-            (pattern, limit),
-        ).fetchall()
+            "WHERE match_status = 'matched' AND {where} ORDER BY candidate_name LIMIT ?",
+            "candidate_name",
+        )
         for r in rows:
             results.append({
                 "label": r["candidate_name"],
@@ -1243,11 +1249,11 @@ def federal_network_suggest():
 
     # --- committees (FEC candidate committees) ---
     if entity_type in ('all', 'committee') and _table_exists(conn, 'fec_candidate_committees'):
-        rows = conn.execute(
+        rows = matching(
             "SELECT DISTINCT committee_id, committee_name FROM fec_candidate_committees "
-            "WHERE committee_name ILIKE ? ORDER BY committee_name LIMIT ?",
-            (pattern, limit),
-        ).fetchall()
+            "WHERE {where} ORDER BY committee_name LIMIT ?",
+            "committee_name",
+        )
         for r in rows:
             results.append({
                 "label": r["committee_name"],
@@ -1255,15 +1261,16 @@ def federal_network_suggest():
                 "node_type": "fed_committee",
             })
 
-    # --- vendors (Schedule B payees) ---
+    # --- vendors (Schedule B payees; transactional: the normalized substring) ---
     if entity_type in ('all', 'vendor') and _table_exists(conn, 'fec_schedule_b_disbursements'):
+        recipient_sql, recipient_params = normalized_substring_sql("recipient_name", q)
         rows = conn.execute(
             "SELECT recipient_name, SUM(disbursement_amount) AS total "
             "FROM fec_schedule_b_disbursements "
-            "WHERE recipient_name ILIKE ? AND disbursement_amount > 0 "
+            f"WHERE {recipient_sql} AND disbursement_amount > 0 "
             "GROUP BY recipient_name "
             "ORDER BY total DESC LIMIT ?",
-            (pattern, limit),
+            (*recipient_params, limit),
         ).fetchall()
         for r in rows:
             vname = r["recipient_name"]

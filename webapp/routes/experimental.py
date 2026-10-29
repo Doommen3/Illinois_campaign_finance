@@ -14,6 +14,7 @@ from database.analytics import (
     get_network_graph,
     get_state_race_analytics,
 )
+from database.name_normalize import name_matches
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import TimeScope, current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
@@ -871,13 +872,21 @@ def _build_network_slice(
         initial_weighted_degree_map[source] += weight
         initial_weighted_degree_map[target] += weight
 
+    # Label search (decision P2-4): by name token, else -- when no label has the tokens -- the normalized substring.
+    searched_ids = None
+    if search_text:
+        labels = {node_id: meta["label"] or "" for node_id, meta in initial_node_lookup.items()}
+        searched_ids = {node_id for node_id, label in labels.items() if name_matches(search_text, label)}
+        if not searched_ids:
+            searched_ids = {node_id for node_id, label in labels.items() if name_matches(search_text, label, substring=True)}
+
     ranked_nodes = []
     for node_id, meta in initial_node_lookup.items():
         row_type = meta["node_type"]
         label = (meta["label"] or "").strip()
         if node_type != "all" and row_type != node_type:
             continue
-        if search_text and search_text not in label.lower():
+        if searched_ids is not None and node_id not in searched_ids:
             continue
         ranked_nodes.append(
             {

@@ -62,7 +62,7 @@ Part-9 rows (d2_part 9B, not archived unless noted; S = supporting, O = opposing
   70015  T5     703     2026-10-10  300,000.00 Pat Example              S    ARCHIVED
   70016  T6     701     2026-02-14  600,000.00 Pat Example              S    d2_part 1A, not Part 9
   70017  T7     702     2026-04-20  11,000.00  Pat Examples             S    near miss (substring of the last name)
-  70018  T8     703     2026-08-30  22,000.00  Patricia Example         O    same last name, other first name
+  70018  T8     703     2026-08-30  22,000.00  Patience Example         O    same last name, other first name
   70019  T9     701     2026-03-20  770.00     Pat Exemplar             S    920 has no candidacy => nobody
   70020  T10    702     2022-03-03  5,000.00   Pat Example              S    RAW ONLY: not in isbe_condensed_expenditures
                                                                             (a superseded filing); inside cycle 2022 so
@@ -198,7 +198,8 @@ PART9_ROWS = [
     _p9(70010, 703, "2026-04-10", 20000.00, "Rae Rival", "O", purpose="Television", payee="Prairie Media Group"),         # R1
     _p9(70015, 703, "2026-10-10", 300000.00, "Pat Example", "S", archived=True),                                          # T5
     _p9(70013, 701, "2026-02-02", 1500.50, "Nell Nullid", "S"),                                                           # N1
-    _p9(70018, 703, "2026-08-30", 22000.00, "Patricia Example", "O"),                                                     # T8
+    # T8 was "Patricia Example" until search Phase 2 M2 made PATRICIA an alias of PAT; "Patience" is in no alias set.
+    _p9(70018, 703, "2026-08-30", 22000.00, "Patience Example", "O"),                                                     # T8
     _p9(70011, 702, "2026-08-20", 10000.00, "Rae Rival", "O", purpose="Television", payee="Prairie Media Group"),         # R2
     _p9(70019, 701, "2026-03-20", 770.00, "Pat Exemplar", "S"),                                                           # T9
     _p9(70020, 702, "2022-03-03", 5000.00, "Pat Example", "S", condensed=False),                                          # T10
@@ -933,7 +934,7 @@ class TestMatcher:
     def test_filing_spellings_attach_and_near_misses_do_not(self):
         from database.outside_spending import attribute_part9_rows
         attached = ["Pat Example", "Pat M. Example", "PAT EXAMPLE", "pat  example.", "Pat Marie Louise Example"]
-        missed = ["Pat Examples", "Patricia Example", "Pat Exemplar", "Pat Rival", "Example", "Pat", "", "Rae Rival"]
+        missed = ["Pat Examples", "Patience Example", "Pat Exemplar", "Pat Rival", "Example", "Pat", "", "Rae Rival"]
         rows = [_row(number, name) for number, name in enumerate(attached + missed, start=1)]
         attributions = attribute_part9_rows(rows, [PAT_CAND])
         assert sorted(a["id"] for a in attributions) == [1, 2, 3, 4, 5]
@@ -1285,7 +1286,7 @@ PROFILE_WINDOWS = [
 class TestProfileSection:
     """Which wrong implementation still passes?  Killed here: an exact full-string match (misses 'Pat M. Example' and
     'PAT EXAMPLE'); counting the archived row, the Part 1A row, the raw-only superseded row, 'Pat Examples',
-    'Patricia Example' or the namesake's row; a cycle gate that is a min..max range (T4 lies between 900's cycles),
+    'Patience Example' or the namesake's row; a cycle gate that is a min..max range (T4 lies between 900's cycles),
     a missing gate (920 and 940) or the raw year instead of year + year % 2 (940's 2023 candidacy); the full
     amount of a multi-name row instead of the share; support and oppose collapsed into one figure; a by-spender
     table cut to one spender or ordered by id / name; figures that ignore the window, or whose bounds are
@@ -1648,7 +1649,7 @@ class TestRaceReconciliation:
     """Which wrong implementation still passes?  Killed here: the old two-column table (Candidate / Total Amount);
     a candidate listed once per committee row of the candidacy feed (Pat is in the feed twice: 901 and 902) and so
     counted twice; support and opposition folded into one figure; the exact-string match (misses 'Pat M. Example'
-    and 'PAT EXAMPLE') or substring match (takes 'Pat Examples', 'Patricia Example'); the archived, Part 1A and
+    and 'PAT EXAMPLE') or substring match (takes 'Pat Examples', 'Patience Example'); the archived, Part 1A and
     out-of-cycle rows counted; a row total that is the all-time or the page-window figure instead of the cycle
     window's; a multi-name row counted in full for both candidates (the card would overshoot the sum of the
     shares); a card that is not the sum of the rows; a link built from the page scope (`period=all`, or the raw
