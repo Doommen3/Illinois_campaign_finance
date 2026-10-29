@@ -28,7 +28,7 @@ from collections import Counter, defaultdict
 from datetime import date
 
 from database.analytics import _compute_graph_centrality
-from database.outside_spending import STRIPPED_NAME_SQL, attribute_part9_rows, candidate_name_key
+from database.outside_spending import STRIPPED_NAME_SQL, attribute_part9_rows, candidate_name_key, name_keys_match
 
 DEFAULT_CAPS = {"donors": 40, "vendors": 25, "transfers": 15, "ie_spenders": 15}
 
@@ -313,8 +313,9 @@ def _committee_names(conn, committee_ids) -> dict[int, str]:
 
 
 def _attributable_candidates(conn, candidate_ids, fallback_labels, labels) -> list[dict]:
-    """Candidates a Part-9 row can attach to, in entity order, one per name key (the first record of a person
-    registered twice carries the rows, as on the race page); sets the candidate nodes' labels."""
+    """Candidates a Part-9 row can attach to, in entity order, one per person: a record whose name key matches an
+    earlier one's (name_keys_match: same last name, first names equal or direct nickname aliases) is the same person
+    registered twice, and the first record carries the rows, as on the race page; sets the candidate nodes' labels."""
     if not candidate_ids:
         return []
     names = {
@@ -335,7 +336,7 @@ def _attributable_candidates(conn, candidate_ids, fallback_labels, labels) -> li
         name = names.get(candidate_id)
         labels[f"candidate:{candidate_id}"] = name or fallback_labels.get(candidate_id) or f"Candidate {candidate_id}"
         key = candidate_name_key(name)
-        if key is None or not cycles[candidate_id] or key in keys:
+        if key is None or not cycles[candidate_id] or any(name_keys_match(key, seen) for seen in keys):
             continue
         keys.add(key)
         attributable.append({"key": key, "cycles": cycles[candidate_id], "candidate_id": candidate_id})

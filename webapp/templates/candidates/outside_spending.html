@@ -36,7 +36,7 @@
     Total: <strong>{{ format_currency(summary.total) }}</strong> |
     {{ '{:,}'.format(summary.row_count) }} row{{ 's' if summary.row_count != 1 }}
 </p>
-<p class="help-text">Independent expenditures (D-2 Part 9) reported naming this candidate; matched on first and last name (case, periods, commas, apostrophes, quotes, middle names and trailing suffixes such as Jr or II ignored; a "Last, First" filing is read as one name); a row naming several candidates is split equally among them; rows filed by the candidate's own committees are not excluded. A name shared with another candidate in the same cycle, or one person running for several offices, gives each the same rows; Office (as filed) and Name (as filed) below show what the filer wrote. Amount is the filed amount; Share is that amount divided by the candidates the row names, and is what the totals add up.</p>
+<p class="help-text">Independent expenditures (D-2 Part 9) reported naming this candidate; matched on first and last name (case, periods, commas, apostrophes, quotes and hyphens, middle names and trailing suffixes such as Jr or II ignored; common nicknames such as Mike and Michael count as the same first name; a "Last, First" filing is read as one name); a row naming several candidates is split equally among them; rows filed by the candidate's own committees are not excluded. A name shared with another candidate in the same cycle, or one person running for several offices, gives each the same rows; Office (as filed) and Name (as filed) below show what the filer wrote. Amount is the filed amount; Share is that amount divided by the candidates the row names, and is what the totals add up.</p>
 
 <h2>Line items {{ scope_tag() }}</h2>
 <table class="data-table" data-server-sort>

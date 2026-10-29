@@ -15,7 +15,8 @@ Contract pinned, literally:
       fallback per section when the token path finds nothing and the query has >= 4 characters; the local candidate section also
       lists candidates WITHOUT a committee link (totals 0); committees reached through a matched candidate
       (isbe_candidate_committees + accepted committee_family members) are listed AFTER the name matches, once per committee id,
-      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn1".
+      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn2"
+      (search Phase 2, P2-23: the apostrophe rule R7 changed the matching, so "sn1" entries must not be served).
 
 The seed world (all names fictional; every expected value below is derived from it in a comment next to the fixture):
 
@@ -24,6 +25,7 @@ The seed world (all names fictional; every expected value below is derived from 
                103 Mike Exampleton (State Rep)           NO committee link at all
                104 Brad Exampleton (County Clerk)        the unrelated namesake, linked to committee 204
                301 Sean O'Neil-Smythe | 302 John Quillberis, Jr | 303 John Quillberis   (apostrophe / hyphen / suffix shapes, unlinked)
+               304 Neil Decoyworth (unlinked; a plain Neil: "O'Neil" must not reach it, "Neil" must)
   committees   201 Friends of Exampleton | 202 Mike Exampleton for County Board (unlinked) | 203 Exampleton for Auditor
                204 Prairie State Leadership Fund (Brad's) | 205 Exampleton Victory Fund (unlinked, ACCEPTED family with 201)
                206 Friends of Someone Else | 207 Harbor Pending Fund (PENDING family with 201) | 208 Ridge Rejected Fund
@@ -47,6 +49,10 @@ Readings of the contract chosen here (each is a decision the orchestrator can ov
       key-like query (contains | or :, or has >= 3 digits) feeds the donor-key and filed-doc sections with its raw text, so it
       keeps that text in the key.
   R6  Existing result order is preserved: local candidates and donors by total descending; name matches precede via-candidate rows.
+  R7  (search Phase 2, P2-23) A word-internal apostrophe (a letter on both sides, ' or ’) is the one mark the QUERY side reads:
+      "O'Neil" is the token O'NEIL and asks for the joined word or both halves, (oneil:* | (o:* & neil:*)), so it no longer
+      finds every Neil; "O' Neil", "'Neil" and "Neil" are unchanged ("Neil" still finds the O'Neils). The stored side and
+      the GIN index expression are untouched.
 
 Accepted holes (named, not pinned): order inside the name-match block and inside the via-candidate block (collation dependent);
 which of two matched candidates labels a joint committee; whether fec_name keeps being searched; accent folding (the contract
@@ -144,7 +150,7 @@ def test_normalize_name_is_idempotent():
 TOKEN_CASES = [
     ("Mike Exampleton", ["MIKE", "EXAMPLETON"]),
     ("Exampleton, Mike W.", ["EXAMPLETON", "MIKE"]),          # order kept, the initial is dropped (R1)
-    ("O'Neil-Smith", ["NEIL", "SMITH"]),                      # the O is a single letter too (R1)
+    ("O'Neil-Smith", ["O'NEIL", "SMITH"]),                   # R7: a word-internal apostrophe keeps O'NEIL whole (no lone O)
     ("Mike Exampleton Jr", ["MIKE", "EXAMPLETON"]),           # generational suffixes drop on the query side ...
     ("Mike Exampleton Jr.", ["MIKE", "EXAMPLETON"]),
     ("John Smith Sr", ["JOHN", "SMITH"]),
@@ -170,6 +176,82 @@ def test_name_tokens_cases():
         assert nn.name_tokens(text) == expected
 
     _each(TOKEN_CASES, check)
+
+
+NORMALIZE_QUERY_CASES = [
+    # (query, normalize_query(query)): normalize_name, except a word-internal apostrophe survives as "'" (R7)
+    ("O'Neil-Smythe", "O'NEIL SMYTHE"),
+    ("Smith O’Neil", "SMITH O'NEIL"),                         # the curly apostrophe becomes the straight one
+    ("Women's", "WOMEN S"),                                    # a possessive: one letter after the apostrophe, no compound
+    (None, ""),
+    ("   ", ""),
+    ("Mike Exampleton-Ruiz, Jr.", "MIKE EXAMPLETON RUIZ JR"),  # no apostrophe: exactly normalize_name
+]
+
+
+def test_normalize_query_keeps_a_word_internal_apostrophe():
+    """R7. Kills: keeping every apostrophe (a leading or spaced one is a separator), dropping it (O NEIL), keeping the curly
+    form, and drifting from normalize_name anywhere else."""
+
+    def check(case):
+        text, expected = case
+        assert nn.normalize_query(text) == expected
+        if text and "'" not in text and "’" not in text:
+            assert nn.normalize_query(text) == nn.normalize_name(text)
+
+    _each(NORMALIZE_QUERY_CASES, check)
+
+
+def test_apostrophe_tsquery_semantics_in_postgresql():
+    """R7 read by PostgreSQL itself (the stored side cuts O'Neil into O + NEIL; a filer may also write ONEIL): the compound
+    group finds both spellings and not the plain Neil. Kills a Python-only reading of the group (e.g. 'o neil:*', a phrase
+    query, or the halves ORed)."""
+    tsquery = nn.search_tsquery("O'Neil Smythe")
+    conn = get_db()
+
+    def check(case):
+        stored, expected = case
+        row = conn.execute(
+            f"SELECT ({CONTRACT_TSVECTOR.format(expr='CAST(? AS TEXT)')}) @@ to_tsquery('simple', ?) AS hit", (stored, tsquery)
+        ).fetchone()
+        assert row["hit"] is expected, f"{stored!r} vs {tsquery!r}"
+
+    _each([("SEAN O NEIL SMYTHE", True), ("SEAN ONEIL SMYTHE", True), ("NEIL SMYTHE", False)], check)
+
+
+APOSTROPHE_PHRASE_CASES = [
+    # (query, stored name, match?) -- read by PostgreSQL and by name_matches
+    ("O'Neil", "LAW OFFICE OF NEIL ADAMS", False),     # o is an exact lexeme: OFFICE / OF are not "O"
+    ("O'Neil", "NEIL O SMITH", False),                 # the halves are adjacent AND in order
+    ("O'Neil", "SEAN O NEIL SMYTHE", True),
+    ("O'Neil", "SEAN ONEIL SMYTHE", True),
+    ("O'Neil", "NEIL SMYTHE", False),
+    ("D'Angelo", "DBA ANGELO S PIZZA", False),         # d is exact: DBA is not "D"
+    ("Women's", "WOMEN S CAUCUS", True),               # a possessive keeps the sn1 recall (decision P2-M7) ...
+    ("Women's", "WOMENS CAUCUS", True),
+    ("Women's", "WOMEN OF ILLINOIS", True),
+    ("McDonald's", "MCDONALD, JOHN", True),
+    ("Harrah's", "HARRAHS CASINO", True),
+]
+
+
+def test_apostrophe_phrase_halves_and_possessive_semantics_in_postgresql():
+    """R7 as amended at P2-M7: a compound's halves are adjacent and in order (`o <-> neil:*`), a one-letter half is an exact
+    lexeme, and a possessive (one letter after the apostrophe) is no compound at all. Kills the M6 reading -- unordered prefix
+    halves (`o:* & neil:*` matches LAW OFFICE OF NEIL ADAMS) and possessives as compounds (Women's lost WOMEN OF ILLINOIS).
+    name_matches must agree on every case."""
+    conn = get_db()
+
+    def check(case):
+        query, stored, expected = case
+        tsquery = nn.search_tsquery(query)
+        row = conn.execute(
+            f"SELECT ({CONTRACT_TSVECTOR.format(expr='CAST(? AS TEXT)')}) @@ to_tsquery('simple', ?) AS hit", (stored, tsquery)
+        ).fetchone()
+        assert row["hit"] is expected, f"{stored!r} vs {query!r} ({tsquery})"
+        assert nn.name_matches(query, stored) is expected, f"name_matches({query!r}, {stored!r})"
+
+    _each(APOSTROPHE_PHRASE_CASES, check)
 
 
 # The contract's nickname list, nickname -> the full names it stands for ("X/Y <-> Z" = X and Y both alias Z).
@@ -276,7 +358,13 @@ def test_search_tsquery_groups_one_alternation_per_query_token():
 
 
 TSQUERY_EXACT = [
-    ("O'Neil-Smith", "neil:* & smith:*"),
+    ("O'Neil-Smith", "(oneil:* | (o <-> neil:*)) & smith:*"),   # R7: the joined word, or the halves adjacent and in order
+    ("D’Angelo", "(dangelo:* | (d <-> angelo:*))"),             # the curly apostrophe reads the same; a one-letter half is exact
+    ("Women's", "women:*"),                                      # R7: a possessive (one letter after) is no compound: sn1 reading
+    ("McDonald's", "mcdonald:*"),
+    ("I'm", "i:* & m:*"),                                        # no multi-letter token remains, so R1 keeps both letters
+    ("O' Neil", "neil:*"),                                       # not word-internal: a separator, the lone O drops (R1)
+    ("'Neil", "neil:*"),
     ("Jr", "jr:*"),
     ("Local 150", "local:* & 150:*"),
     ("Exampleton", "exampleton:*"),
@@ -285,8 +373,10 @@ TSQUERY_EXACT = [
 
 
 def test_search_tsquery_exact_strings_for_tokens_without_aliases():
-    """The contract's literal strings. Kills: a different joiner ("&&", no spaces), a missing prefix marker, hyphen or
-    apostrophe kept inside a lexeme, upper-case lexemes."""
+    """The contract's literal strings. Kills: a different joiner ("&&", no spaces), a missing prefix marker, a hyphen kept
+    inside a lexeme, upper-case lexemes; for R7, an apostrophe kept inside a lexeme ("o'neil:*", which to_tsquery would split),
+    the joined word or the halves alone, halves ANDed in any order or a one-letter half as a prefix ("o:*" matches OFFICE), a
+    possessive read as a compound ("Women's" -> "women:* & s:*"), and a leading or spaced apostrophe read as word-internal."""
 
     def check(case):
         query, expected = case
@@ -394,6 +484,10 @@ MATCH_CASES = [
     ("John Quillberis", "John Quillberis Jr", True),                  # the suffix is dropped on the QUERY side only
     ("Sean O'Neil-Smythe", "O'Neil Smythe", True),
     ("Sean O'Neil-Smythe", "Neil Smythe", True),
+    ("Sean O'Neil-Smythe", "O'Neil", True),                       # R7: both halves
+    ("Neil Decoyworth", "O'Neil", False),                         # R7: a plain Neil is not an O'Neil
+    ("Law Office of Neil Adams", "O'Neil", False),                # R7: a one-letter half is exact and adjacent (not OFFICE / OF)
+    ("Women of Illinois PAC", "Women's", True),                   # R7: a possessive keeps the sn1 recall
     ("Local 150 PAC", "Local 15", True),                          # numeric prefix
     ("Edward Ames", "Ted Ames", True),
     ("Ted Ames", "Ed Ames", False),                               # one hop: ED is not TED
@@ -403,7 +497,8 @@ MATCH_CASES = [
 def test_the_contract_predicate_matches_names_the_way_the_plan_says():
     """normalize + expand + the tsvector expression, end to end on PostgreSQL. Hand-derived expectations above; the False rows
     are as important as the True ones (they kill an OR instead of AND, surname-only matching, a transitive alias, a dropped
-    initial, a prefix that works inside a token)."""
+    initial, a prefix that works inside a token). name_matches, the Python twin the Viz Lab uses, must read every case the
+    same way (search Phase 2: it is kept in step with the tsquery, R7 included)."""
     conn = get_db()
 
     def check(case):
@@ -414,6 +509,7 @@ def test_the_contract_predicate_matches_names_the_way_the_plan_says():
             f"SELECT ({CONTRACT_TSVECTOR.format(expr='CAST(? AS TEXT)')}) @@ to_tsquery('simple', ?) AS hit", (stored, tsquery)
         ).fetchone()
         assert row["hit"] is expected, f"{stored!r} vs {query!r} ({tsquery})"
+        assert nn.name_matches(query, stored) is expected, f"name_matches({query!r}, {stored!r})"
 
     _each(MATCH_CASES, check)
 
@@ -572,7 +668,8 @@ def _seed_world(conn) -> None:
             (104, 'Brad', 'Exampleton', 'County Clerk', 'County', 'Cook', 'Democratic'),
             (301, 'Sean', 'O''Neil-Smythe', 'Alderman', 'Municipal', '7', NULL),
             (302, 'John', 'Quillberis, Jr', 'Trustee', 'Community College', '3', NULL),
-            (303, 'John', 'Quillberis', 'Trustee', 'Community College', '3', NULL)
+            (303, 'John', 'Quillberis', 'Trustee', 'Community College', '3', NULL),
+            (304, 'Neil', 'Decoyworth', 'Trustee', 'Park District', '2', NULL)
         """
     )
     conn.execute("CREATE TABLE isbe_candidate_committees (id INTEGER PRIMARY KEY, committee_id INTEGER, candidate_id INTEGER)")
@@ -1142,6 +1239,8 @@ SHAPE_CASES = [
     ("John Quillberis", {302, 303}),
     ("John Quillberis Jr", {302, 303}),
     ("Quillberis, John", {302, 303}),
+    ("O'Neil", {301}),                     # R7: the O'Neil, not the plain Neil (304)
+    ("Neil", {301, 304}),                  # R7: "Neil" still finds the O'Neils too
 ]
 
 
@@ -1255,7 +1354,7 @@ def _key(query: str, scope: str = "cycle:2026", search_type: str = "all") -> str
     return main_routes._search_results_cache_key(scope, query, search_type)
 
 
-def test_the_search_cache_key_starts_with_the_revision_sn1():
+def test_the_search_cache_key_starts_with_the_revision_sn2():
     """S4: the revision prefix makes every entry stored before the fix unreachable (the old key had no prefix). The revision is
     pinned by value; it must also survive a query with no token ('!!!!') without raising. Kills: no prefix; a different
     revision string; the prefix put in the middle."""
@@ -1264,12 +1363,21 @@ def test_the_search_cache_key_starts_with_the_revision_sn1():
         query, search_type = case
         key = _key(query, search_type=search_type)
         assert isinstance(key, str)
-        assert key.startswith("sn1"), key
+        assert key.startswith("sn2"), key
 
     _each(
         [(query, search_type) for query in ("Mike Exampleton", "Exampleton, Michael W.", "!!!!", "103") for search_type in ("all", "donors")],
         check,
     )
+
+
+def test_apostrophe_spellings_get_their_own_cache_keys():
+    """R7 makes "O'Neil", "O Neil" and "ONeil" three different searches, so three cache entries; the curly apostrophe is the
+    same search as the straight one. Kills a key still built from normalize_name (O'Neil and O Neil would share an entry and
+    serve each other's results)."""
+    keys = [_key("O'Neil"), _key("O Neil"), _key("ONeil")]
+    assert len(set(keys)) == 3, keys
+    assert _key("O'Neil") == _key("O’Neil")
 
 
 def test_spellings_with_one_normalised_form_share_a_cache_key():

@@ -11,6 +11,7 @@ from database.models import (
     CandidateCommitteeItemizedExpenditure,
     CandidateCommitteeItemizedReceipt,
 )
+from database.name_normalize import substring_fallback_sql
 from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import current_cycle, resolve_time_scope, scope_cache_key, scope_params
 
@@ -83,6 +84,17 @@ def list_candidate_finance():
             ):
                 cached = _candidate_finance_cache["payload"]
 
+    filters = dict(
+        search=query,
+        office=office,
+        candidate_party=candidate_party,
+        committee_party=committee_party,
+        start_date=start_date,
+        end_date=end_date,
+        cycle=cycle,
+        min_receipts=min_receipts,
+        min_expenditures=min_expenditures,
+    )
     rows = []
     total = 0
     total_pages = 0
@@ -90,34 +102,20 @@ def list_candidate_finance():
         rows = cached["rows"]
         total = cached["total"]
         total_pages = cached["total_pages"]
+        filters["substring"] = cached["substring"]
     elif table_available:
+        total = CandidateCommitteeFinanceAgg.count(conn, **filters)
+        # Names by token; the one substring fallback only when that counts nothing (database/name_normalize.py).
+        filters["substring"] = not total and substring_fallback_sql("candidate_full_name", query) is not None
+        if filters["substring"]:
+            total = CandidateCommitteeFinanceAgg.count(conn, **filters)
         rows = CandidateCommitteeFinanceAgg.get_all(
             conn,
             limit=per_page,
             offset=offset,
             sort_by=sort_by,
             sort_dir=sort_dir,
-            search=query,
-            office=office,
-            candidate_party=candidate_party,
-            committee_party=committee_party,
-            start_date=start_date,
-            end_date=end_date,
-            cycle=cycle,
-            min_receipts=min_receipts,
-            min_expenditures=min_expenditures,
-        )
-        total = CandidateCommitteeFinanceAgg.count(
-            conn,
-            search=query,
-            office=office,
-            candidate_party=candidate_party,
-            committee_party=committee_party,
-            start_date=start_date,
-            end_date=end_date,
-            cycle=cycle,
-            min_receipts=min_receipts,
-            min_expenditures=min_expenditures,
+            **filters,
         )
         total_pages = (total + per_page - 1) // per_page
         if cache_enabled:
@@ -126,6 +124,7 @@ def list_candidate_finance():
                     "rows": rows,
                     "total": total,
                     "total_pages": total_pages,
+                    "substring": filters["substring"],
                 }
                 _candidate_finance_cache["key"] = cache_key
                 _candidate_finance_cache["expires_at"] = now + float(cache_ttl)
@@ -140,15 +139,7 @@ def list_candidate_finance():
             offset=0,
             sort_by=sort_by,
             sort_dir=sort_dir,
-            search=query,
-            office=office,
-            candidate_party=candidate_party,
-            committee_party=committee_party,
-            start_date=start_date,
-            end_date=end_date,
-            cycle=cycle,
-            min_receipts=min_receipts,
-            min_expenditures=min_expenditures,
+            **filters,
         )
         output = StringIO()
         writer = csv.writer(output)

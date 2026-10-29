@@ -820,6 +820,10 @@ CREATE TABLE IF NOT EXISTS lobbying_entities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_lobbying_entities_name ON lobbying_entities(entity_name);
+-- Search Phase 2: the lobbying entity list / suggest / person-intelligence match names by token
+-- (database/name_normalize.py name_match_sql); the expression is NAME_TSVECTOR_SQL('entity_name') spelled out.
+CREATE INDEX IF NOT EXISTS idx_lobbying_entities_name_tsv
+    ON lobbying_entities USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(entity_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE IF NOT EXISTS lobbying_clients (
     client_id INTEGER PRIMARY KEY,
@@ -834,6 +838,9 @@ CREATE TABLE IF NOT EXISTS lobbying_clients (
 );
 
 CREATE INDEX IF NOT EXISTS idx_lobbying_clients_name ON lobbying_clients(client_name);
+-- NAME_TSVECTOR_SQL('client_name') spelled out, for the token predicate on lobbying client names.
+CREATE INDEX IF NOT EXISTS idx_lobbying_clients_name_tsv
+    ON lobbying_clients USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(client_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE IF NOT EXISTS lobbying_entity_clients (
     entity_id INTEGER NOT NULL,
@@ -1045,6 +1052,9 @@ CREATE INDEX IF NOT EXISTS idx_irs527_orgs_name ON irs527_organizations(org_name
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_state ON irs527_organizations(state);
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_form_id ON irs527_organizations(form_id);
 CREATE INDEX IF NOT EXISTS idx_irs527_orgs_ein ON irs527_organizations(ein);
+-- NAME_TSVECTOR_SQL('org_name') spelled out, for the token predicate on 527 organization names.
+CREATE INDEX IF NOT EXISTS idx_irs527_organizations_name_tsv
+    ON irs527_organizations USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(org_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE IF NOT EXISTS irs527_reports (
     form_id INTEGER NOT NULL,

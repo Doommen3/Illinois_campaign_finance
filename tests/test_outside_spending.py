@@ -62,7 +62,7 @@ Part-9 rows (d2_part 9B, not archived unless noted; S = supporting, O = opposing
   70015  T5     703     2026-10-10  300,000.00 Pat Example              S    ARCHIVED
   70016  T6     701     2026-02-14  600,000.00 Pat Example              S    d2_part 1A, not Part 9
   70017  T7     702     2026-04-20  11,000.00  Pat Examples             S    near miss (substring of the last name)
-  70018  T8     703     2026-08-30  22,000.00  Patricia Example         O    same last name, other first name
+  70018  T8     703     2026-08-30  22,000.00  Patience Example         O    same last name, other first name
   70019  T9     701     2026-03-20  770.00     Pat Exemplar             S    920 has no candidacy => nobody
   70020  T10    702     2022-03-03  5,000.00   Pat Example              S    RAW ONLY: not in isbe_condensed_expenditures
                                                                             (a superseded filing); inside cycle 2022 so
@@ -198,7 +198,8 @@ PART9_ROWS = [
     _p9(70010, 703, "2026-04-10", 20000.00, "Rae Rival", "O", purpose="Television", payee="Prairie Media Group"),         # R1
     _p9(70015, 703, "2026-10-10", 300000.00, "Pat Example", "S", archived=True),                                          # T5
     _p9(70013, 701, "2026-02-02", 1500.50, "Nell Nullid", "S"),                                                           # N1
-    _p9(70018, 703, "2026-08-30", 22000.00, "Patricia Example", "O"),                                                     # T8
+    # T8 was "Patricia Example" until search Phase 2 M2 made PATRICIA an alias of PAT; "Patience" is in no alias set.
+    _p9(70018, 703, "2026-08-30", 22000.00, "Patience Example", "O"),                                                     # T8
     _p9(70011, 702, "2026-08-20", 10000.00, "Rae Rival", "O", purpose="Television", payee="Prairie Media Group"),         # R2
     _p9(70019, 701, "2026-03-20", 770.00, "Pat Exemplar", "S"),                                                           # T9
     _p9(70020, 702, "2022-03-03", 5000.00, "Pat Example", "S", condensed=False),                                          # T10
@@ -767,7 +768,7 @@ class TestMatcher:
         ("Pat M. Example", ("PAT", "EXAMPLE")),
         ("Pat O'Brien", ("PAT", "OBRIEN")),                     # apostrophe stripped
         ("Dee M O'Brien", ("DEE", "OBRIEN")),                   # a candidate record: middle initial, apostrophe
-        ("Pat Smith-Jones", ("PAT", "SMITH-JONES")),            # only . , ' " are stripped: a hyphen survives
+        ("Pat Smith-Jones", ("PAT", "JONES")),                  # M1 (search Phase 2): a hyphen is a space; . , ' " are removed
     ])
     def test_candidate_name_key_normalises_spacing_case_and_punctuation(self, text, key):
         from database.outside_spending import candidate_name_key
@@ -933,7 +934,7 @@ class TestMatcher:
     def test_filing_spellings_attach_and_near_misses_do_not(self):
         from database.outside_spending import attribute_part9_rows
         attached = ["Pat Example", "Pat M. Example", "PAT EXAMPLE", "pat  example.", "Pat Marie Louise Example"]
-        missed = ["Pat Examples", "Patricia Example", "Pat Exemplar", "Pat Rival", "Example", "Pat", "", "Rae Rival"]
+        missed = ["Pat Examples", "Patience Example", "Pat Exemplar", "Pat Rival", "Example", "Pat", "", "Rae Rival"]
         rows = [_row(number, name) for number, name in enumerate(attached + missed, start=1)]
         attributions = attribute_part9_rows(rows, [PAT_CAND])
         assert sorted(a["id"] for a in attributions) == [1, 2, 3, 4, 5]
@@ -1052,6 +1053,96 @@ class TestMatcher:
         assert summary["oppose_total"] == 0
         assert summary["row_count"] == 0
         assert summary["spender_count"] == 0
+
+
+def _attributes(record: str, filing: str) -> bool:
+    """Whether a Part-9 row filed as ``filing`` attaches to the candidate whose record reads ``record`` (no cycle gate)."""
+    from database.outside_spending import attribute_part9_rows, candidate_name_key
+    candidate = {"key": candidate_name_key(record), "cycles": None, "candidate_id": 1, "name": record}
+    return len(attribute_part9_rows([_row(1, filing)], [candidate])) == 1
+
+
+class TestMatcherHyphensAndNicknames:
+    """Search program Phase 2, decisions M1 + M2 (P2-3) with the direct-alias rule P2-17: a hyphen is a space (key =
+    first + last token), and two first tokens match only when they are equal or one is a DIRECT alias of the other in the
+    ONE nickname map of database/name_normalize.py (MIKE / MICHAEL, PAT / PATRICIA, TED / EDWARD) -- never through a
+    shared third alias, so PATRICK and PATRICIA (both PAT) do not meet, nor TED and ED (both EDWARD), nor THEODORE and ED.
+    A two-word alias ("JAY ROBERT" for JB) is read by its first word, the way the name key itself reads a name, so JB
+    and JAY are direct aliases both ways. Periods and apostrophes are still removed, not split: "J.B."
+    stays JB and "O'Brien" stays OBRIEN (TestMatcher pins both), so the key does not go through normalize_name as a whole.
+    Kills: a hyphen removed ("SMITHJONES") or kept; a matcher-local nickname dict (the every-entry test binds to NICKNAMES);
+    nicknames applied to one side only; aliases that chain through a shared alias; an alias applied to the last name."""
+
+    @pytest.mark.parametrize("text, key", [
+        ("Rae Smith-Jones", ("RAE", "JONES")),
+        ("Rae-Lynn Smith-Jones", ("RAE", "JONES")),
+    ])
+    def test_a_hyphen_splits_a_name_into_tokens(self, text, key):
+        from database.outside_spending import candidate_name_key
+        assert candidate_name_key(text) == key
+
+    def test_a_hyphenated_filing_and_a_spaced_record_attach_both_ways(self):
+        assert _attributes("Rae Smith Jones", "Rae Smith-Jones")
+        assert _attributes("Rae Smith-Jones", "Rae Smith Jones")
+        assert _attributes("Rae Smith-Jones", "RAE SMITH - JONES")
+
+    def test_a_nickname_filing_attaches_to_the_full_name_record_and_back(self):
+        assert _attributes("Michael Farrow", "Mike Farrow")
+        assert _attributes("Mike Farrow", "Michael Farrow")
+
+    def test_ted_and_ed_each_meet_edward_but_not_each_other(self):
+        # P2-17 (b): TED -> EDWARD and ED -> EDWARD are direct aliases; TED and ED only share EDWARD.
+        for record, filing in [("Edward Example", "Ted Example"), ("Ted Example", "Edward Example"),
+                               ("Edward Example", "Ed Example"), ("Ed Example", "Edward Example")]:
+            assert _attributes(record, filing), (record, filing)
+        assert not _attributes("Ed Example", "Ted Example")
+        assert not _attributes("Ted Example", "Ed Example")
+
+    def test_an_alias_never_reaches_through_a_shared_alias_or_the_last_name(self):
+        assert not _attributes("Theodore Example", "Ed Example")
+        assert not _attributes("Ed Example", "Theodore Example")
+        # P2-17 (a): PATRICK and PATRICIA are both aliases of PAT, not of each other (no cycle gate here, so any cycle).
+        assert not _attributes("Patricia Example", "Patrick Example")
+        assert not _attributes("Patrick Example", "Patricia Example")
+        assert not _attributes("Michael Farrow", "Brad Farrow")
+        assert not _attributes("Michael Farrow", "Mike Farrowby")
+
+    def test_a_nickname_filing_attaches_to_every_record_it_is_a_direct_alias_of(self):
+        # P2-17 (c): "Pat" is a direct alias of both PATRICK and PATRICIA, so both records take the row, each with the
+        # row's one-name share (the shared-key rule, D4).
+        from database.outside_spending import attribute_part9_rows, candidate_name_key
+        records = [
+            {"key": candidate_name_key(name), "cycles": {2026}, "candidate_id": number, "name": name}
+            for number, name in [(1, "Patrick Example"), (2, "Patricia Example")]
+        ]
+        attributions = attribute_part9_rows([_row(1, "Pat Example", amount=1000.0)], records)
+        assert sorted(item["candidate"]["candidate_id"] for item in attributions) == [1, 2]
+        assert [(item["share"], item["named_count"]) for item in attributions] == [(1000.0, 1), (1000.0, 1)]
+
+    def test_the_suffix_rule_still_holds_with_a_nickname(self):
+        assert _attributes("Michael Farrow, Jr", "Mike Farrow")
+        assert _attributes("Mike Farrow Jr", "Michael Farrow")
+
+    def test_a_last_first_filing_with_a_nickname_still_reads_first_name_first(self):
+        assert _attributes("Michael Farrow", "Farrow, Mike")
+        assert _attributes("Michael Farrow", "Farrow, Mike W")
+
+    def test_jb_meets_jay_robert_and_its_dotted_spelling(self):
+        assert _attributes("Jay Robert Farrow", "J.B. Farrow")
+        assert _attributes("JB Farrow", "Jay Robert Farrow")
+        assert _attributes("J.B. Farrow", "JB Farrow")
+
+    def test_every_single_word_pair_of_the_shared_nickname_map_attaches_both_ways(self):
+        from database.name_normalize import NICKNAMES
+        pairs = [
+            (name, alias)
+            for name, aliases in NICKNAMES.items()
+            for alias in aliases
+            if " " not in name and " " not in alias
+        ]
+        assert pairs, "NICKNAMES has no single-word pair"
+        missing = [pair for pair in pairs if not _attributes(f"{pair[0]} Farrow", f"{pair[1]} Farrow")]
+        assert missing == [], f"{len(missing)} of {len(pairs)} NICKNAMES pairs do not attach: {missing[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -1211,7 +1302,7 @@ PROFILE_WINDOWS = [
 class TestProfileSection:
     """Which wrong implementation still passes?  Killed here: an exact full-string match (misses 'Pat M. Example' and
     'PAT EXAMPLE'); counting the archived row, the Part 1A row, the raw-only superseded row, 'Pat Examples',
-    'Patricia Example' or the namesake's row; a cycle gate that is a min..max range (T4 lies between 900's cycles),
+    'Patience Example' or the namesake's row; a cycle gate that is a min..max range (T4 lies between 900's cycles),
     a missing gate (920 and 940) or the raw year instead of year + year % 2 (940's 2023 candidacy); the full
     amount of a multi-name row instead of the share; support and oppose collapsed into one figure; a by-spender
     table cut to one spender or ordered by id / name; figures that ignore the window, or whose bounds are
@@ -1219,7 +1310,8 @@ class TestProfileSection:
     a candidate with nothing attached; a link that drops the window; a candidate whose last name carries a
     suffix ('Example, Jr') and so misses every filing written without it, or one fix side only (filings with the
     suffix miss), or a 'Last, First' filing that attaches to nobody or is split in two (halved amount).
-    Not pinned (accepted): the help text on the matching rule (copy, not an invariant), the position of the
+    Not pinned (accepted): the help text on the matching rule beyond its P2-18 phrases (pinned by
+    test_the_matching_note_names_hyphens_and_nicknames_on_every_page), the position of the
     block on the page and the spender links' query string.
     Pinned on a reading of the contract (flagged in the report): 'All N line items' has N = the rows of the
     WINDOW, because the link carries the window and an all-time N would misstate what it opens."""
@@ -1574,7 +1666,7 @@ class TestRaceReconciliation:
     """Which wrong implementation still passes?  Killed here: the old two-column table (Candidate / Total Amount);
     a candidate listed once per committee row of the candidacy feed (Pat is in the feed twice: 901 and 902) and so
     counted twice; support and opposition folded into one figure; the exact-string match (misses 'Pat M. Example'
-    and 'PAT EXAMPLE') or substring match (takes 'Pat Examples', 'Patricia Example'); the archived, Part 1A and
+    and 'PAT EXAMPLE') or substring match (takes 'Pat Examples', 'Patience Example'); the archived, Part 1A and
     out-of-cycle rows counted; a row total that is the all-time or the page-window figure instead of the cycle
     window's; a multi-name row counted in full for both candidates (the card would overshoot the sum of the
     shares); a card that is not the sum of the rows; a link built from the page scope (`period=all`, or the raw
@@ -1673,3 +1765,17 @@ class TestRaceReconciliation:
         assert urlsplit(hrefs[0]).path == "/candidates/985/outside-spending"
         followed = _get(suffix_app, hrefs[0])
         assert _summary(_head_before_line_items(followed)) == (4000.00, 0.00, 4000.00, 1)
+
+
+def test_the_matching_note_names_hyphens_and_nicknames_on_every_page(outside_app):
+    """P2-18: the visible matching note on the profile section, the line-item page and the race page says what search
+    Phase 2 changed (M1 hyphens, M2 nicknames)."""
+    pages = {
+        "profile": _get(outside_app, "/candidates/900"),
+        "line items": _get(outside_app, LINE_URL),
+        "race": _race_page(outside_app, "period=cycle:2026"),
+    }
+    for label, page in pages.items():
+        text = _visible_text(page)
+        assert "apostrophes, quotes and hyphens, middle names and trailing suffixes" in text, label
+        assert "common nicknames such as Mike and Michael count as the same first name" in text, label

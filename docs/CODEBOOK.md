@@ -773,7 +773,7 @@ pytest -q -m "not integration"
 | `test_app_performance.py` | Performance benchmarks |
 | `test_perf_schema_patterns.py` | Schema/index patterns |
 | `test_time_filter.py` | Global period filtering |
-| `test_search_normalize.py` | Search normalization |
+| `test_name_search_callers.py` | Name matching on every name-search caller (search Phase 2) |
 | `test_amount_parsing.py` | Amount string parsing |
 | `test_text_parsing.py` | Text extraction |
 | `test_redesign.py` | UI redesign tests |

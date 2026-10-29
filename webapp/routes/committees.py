@@ -9,7 +9,7 @@ from webapp.utils.data_through import latest_data_date
 from webapp.utils.time_scope import (
     TimeScope, current_cycle, cycle_window, resolve_time_scope, scope_params, scope_where,
 )
-from webapp.utils.search_normalize import normalize_search_query
+from database.name_normalize import name_match_sql, name_predicates, substring_fallback_sql
 
 committees_bp = Blueprint('committees', __name__)
 
@@ -731,35 +731,47 @@ def _committee_rows_by_family(conn, scope: TimeScope, query: str, sort_by: str, 
         with_sql, money_join, money = "WITH", "LEFT JOIN isbe_committee_money w ON w.committee_id = c.id", "COALESCE(w.total, 0)"
     else:
         with_sql, money_join, money = "WITH", "", "0"
-    having = ""
+    # A family row matches when the label or any member name does: by token, else (no group at all) by the one substring
+    # fallback, as /search (database/name_normalize.py).
+    havings = [("", [])]
     if query:
-        having = "HAVING BOOL_OR(c.name LIKE ?) OR MIN(fam.label) LIKE ?"
-        params += [f"%{query}%", f"%{query}%"]
-    grouped = f"""
-        {with_sql} fam AS (
-            SELECT DISTINCT ON (m.committee_id) m.committee_id, f.id AS family_id, f.label
-            FROM committee_family_member m
-            JOIN committee_family f ON f.id = m.family_id
-            WHERE f.status = 'accepted'
-            ORDER BY m.committee_id, f.id
-        ),
-        grouped AS (
-            SELECT (ARRAY_AGG(c.id ORDER BY c.active DESC NULLS LAST, c.id DESC))[1] AS id,
-                   COALESCE(MIN(fam.label), MIN(c.name)) AS name,
-                   MIN(c.type) AS type,
-                   CASE WHEN MIN(c.party) = MAX(c.party) THEN MIN(c.party) END AS party,
-                   BOOL_OR(c.active) AS active,
-                   MIN(fam.family_id) AS family_id,
-                   COUNT(*) AS member_count,
-                   SUM({money}) AS total_contributions
-            FROM isbe_committees c
-            LEFT JOIN fam ON fam.committee_id = c.id
-            {money_join}
-            GROUP BY fam.family_id, CASE WHEN fam.family_id IS NULL THEN c.id END
-            {having}
-        )
-    """
-    count_row = conn.execute(f"{grouped} SELECT COUNT(*) AS n FROM grouped", tuple(params)).fetchone()
+        havings = [
+            (f"HAVING BOOL_OR({member[0]}) OR {label[0]}", member[1] + label[1])
+            for member, label in (
+                (rule("c.name", query), rule("MIN(fam.label)", query)) for rule in (name_match_sql, substring_fallback_sql)
+            )
+            if member is not None
+        ] or [("HAVING FALSE", [])]
+    base_params = params
+    for having, having_params in havings:
+        params = base_params + having_params
+        grouped = f"""
+            {with_sql} fam AS (
+                SELECT DISTINCT ON (m.committee_id) m.committee_id, f.id AS family_id, f.label
+                FROM committee_family_member m
+                JOIN committee_family f ON f.id = m.family_id
+                WHERE f.status = 'accepted'
+                ORDER BY m.committee_id, f.id
+            ),
+            grouped AS (
+                SELECT (ARRAY_AGG(c.id ORDER BY c.active DESC NULLS LAST, c.id DESC))[1] AS id,
+                       COALESCE(MIN(fam.label), MIN(c.name)) AS name,
+                       MIN(c.type) AS type,
+                       CASE WHEN MIN(c.party) = MAX(c.party) THEN MIN(c.party) END AS party,
+                       BOOL_OR(c.active) AS active,
+                       MIN(fam.family_id) AS family_id,
+                       COUNT(*) AS member_count,
+                       SUM({money}) AS total_contributions
+                FROM isbe_committees c
+                LEFT JOIN fam ON fam.committee_id = c.id
+                {money_join}
+                GROUP BY fam.family_id, CASE WHEN fam.family_id IS NULL THEN c.id END
+                {having}
+            )
+        """
+        count_row = conn.execute(f"{grouped} SELECT COUNT(*) AS n FROM grouped", tuple(params)).fetchone()
+        if count_row and count_row["n"]:
+            break
     order = "total_contributions" if sort_by == "total_contributions" else "name"
     rows = conn.execute(
         f"{grouped} SELECT * FROM grouped ORDER BY {order} {direction}, id ASC LIMIT ? OFFSET ?",
@@ -794,8 +806,7 @@ def list_committees():
     per_page = 50
     offset = (page - 1) * per_page
 
-    raw_query = request.args.get('q', '').strip()
-    query = normalize_search_query(raw_query) or raw_query.strip()
+    query = request.args.get('q', '').strip()
 
     sort_by = request.args.get('sort', 'name')
     sort_dir = request.args.get('dir', 'asc')
@@ -816,17 +827,19 @@ def list_committees():
         scope_context["scope_query"] = {**scope_context["scope_query"], "by": "family"}
         rows, total = _committee_rows_by_family(conn, scope, query, sort_by, direction, per_page, offset)
     elif has_isbe:
-        where_clause = ""
-        params: list = []
+        # By name token, else the one substring fallback when the token count is zero (database/name_normalize.py).
+        variants = [("", [])]
         if query:
-            where_clause = "WHERE c.name LIKE ?"
-            params.append(f"%{query}%")
-
-        count_row = conn.execute(
-            f"SELECT COUNT(*) AS count FROM isbe_committees c {where_clause}",
-            tuple(params),
-        ).fetchone()
-        total = count_row["count"] if count_row else 0
+            variants = [(f"WHERE {sql}", list(sql_params)) for sql, sql_params in name_predicates("c.name", query)]
+            variants = variants or [("WHERE FALSE", [])]
+        for where_clause, params in variants:
+            count_row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM isbe_committees c {where_clause}",
+                tuple(params),
+            ).fetchone()
+            total = count_row["count"] if count_row else 0
+            if total:
+                break
 
         bounded = bool(scope.start or scope.end)
         windowed = _windowed_receipts_cte(conn, scope) if bounded else None
@@ -930,20 +943,17 @@ def list_committees():
 def suggest_committees():
     """Return up to 10 committee name suggestions for autocomplete."""
     conn = current_app.get_database()
-    raw = request.args.get('q', '').strip()
-    q = normalize_search_query(raw)
+    q = request.args.get('q', '').strip()
     if len(q) < 2 or not _table_exists(conn, "isbe_committees"):
         return jsonify([])
-    rows = conn.execute(
-        """
-        SELECT id AS value, name AS label
-        FROM isbe_committees
-        WHERE name LIKE ?
-        ORDER BY name
-        LIMIT 10
-        """,
-        (f"%{q}%",),
-    ).fetchall()
+    rows = []
+    for where, params in name_predicates("name", q):
+        rows = conn.execute(
+            f"SELECT id AS value, name AS label FROM isbe_committees WHERE {where} ORDER BY name LIMIT 10",
+            tuple(params),
+        ).fetchall()
+        if rows:
+            break
     return jsonify([{"label": r["label"], "value": r["value"]} for r in rows])
 
 

@@ -8,6 +8,7 @@ from typing import Optional, List, ClassVar
 import sqlite3
 
 from .identifiers import make_source_identifier, normalize_source_url
+from .name_normalize import name_match_sql, substring_fallback_sql
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -3406,23 +3407,20 @@ class CandidateCommitteeFinanceAgg:
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
+        substring: bool = False,
     ) -> tuple[str, List[object]]:
         clauses: List[str] = []
         params: List[object] = []
 
         search_term = (search or "").strip()
         if search_term:
-            clauses.append(
-                """
-                (
-                    COALESCE(candidate_full_name, '') LIKE ?
-                    OR COALESCE(committee_name, '') LIKE ?
-                    OR COALESCE(office_sought, '') LIKE ?
-                )
-                """
-            )
-            like_term = f"%{search_term}%"
-            params.extend([like_term, like_term, like_term])
+            # Candidate and committee names by token (or, with ``substring``, the one fallback the caller asks for when
+            # the token count is zero; database/name_normalize.py); office_sought stays a plain substring.
+            rule = substring_fallback_sql if substring else name_match_sql
+            names = [rule(column, search_term) for column in ("candidate_full_name", "committee_name")]
+            alternatives = [sql for sql, _ in filter(None, names)] + ["COALESCE(office_sought, '') LIKE ?"]
+            clauses.append("(" + " OR ".join(alternatives) + ")")
+            params.extend([param for name in filter(None, names) for param in name[1]] + [f"%{search_term}%"])
 
         office_term = (office or "").strip()
         if office_term:
@@ -3519,6 +3517,7 @@ class CandidateCommitteeFinanceAgg:
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
+        substring: bool = False,
     ) -> int:
         """Count rows in the candidate-committee finance aggregate table."""
         source_type, table_expr = cls._resolve_source(conn)
@@ -3540,6 +3539,7 @@ class CandidateCommitteeFinanceAgg:
             cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
+            substring=substring,
         )
         query = f"SELECT COUNT(*) AS count FROM {table_expr}{where_sql}"
 
@@ -3564,6 +3564,7 @@ class CandidateCommitteeFinanceAgg:
         cycle: Optional[int] = None,
         min_receipts: Optional[float] = None,
         min_expenditures: Optional[float] = None,
+        substring: bool = False,
     ) -> List["CandidateCommitteeFinanceAgg"]:
         """Fetch paginated candidate-committee aggregate rows with sorting."""
         source_type, table_expr = cls._resolve_source(conn)
@@ -3630,6 +3631,7 @@ class CandidateCommitteeFinanceAgg:
             cycle=cycle,
             min_receipts=min_receipts,
             min_expenditures=min_expenditures,
+            substring=substring,
         )
         query += where_sql
 
