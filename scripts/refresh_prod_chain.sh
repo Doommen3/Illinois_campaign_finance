@@ -1,5 +1,7 @@
 #!/bin/bash
 # Prod refresh chain — orchestrates the weekly data refresh on the Hetzner box.
+# Runs nightly under scripts/nightly_refresh.sh (systemd ilcf-nightly-refresh.timer), which
+# records the run in data_refresh_runs; the usage below is the by-hand form.
 #
 # Usage (run on the server, inside tmux):
 #   LOG=/srv/illinois_campaign_finance/shared/refresh_$(date +%Y%m%d_%H%M%S).log
@@ -26,7 +28,7 @@ fail() { log "STEP_FAILED $1 (exit=$2)"; log "CHAIN_FAILED"; exit "$2"; }
 
 trap 'rc=$?; [ $rc -ne 0 ] && echo "[$(ts)] CHAIN_TRAP exit=$rc" >> "$LOG"' EXIT
 
-log "CHAIN_START host=$(hostname) python=$PYTHON"
+log "CHAIN_START host=$(hostname) python=$PYTHON run_id=${REFRESH_RUN_ID:-none}"
 
 log "STEP1_START snapshot_row_counts"
 mkdir -p Bulk_download
@@ -63,6 +65,17 @@ if ! $PYTHON run.py sync-fec-il-federal --refresh-cache >> "$LOG" 2>&1; then
   fail "sync_fec_il_federal" 5
 fi
 log "STEP5_END sync_fec_il_federal"
+
+# City of Chicago Socrata pull (non-fatal; needs SOCRATA_APP_TOKEN in shared/.env).
+if [ -n "${SOCRATA_APP_TOKEN:-}" ]; then
+  log "STEP5B_START import_chicago_phase1"
+  if ! $PYTHON run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert >> "$LOG" 2>&1; then
+    log "STEP5B_WARN import_chicago_phase1 failed (non-fatal; Chicago tables keep their previous rows)"
+  fi
+  log "STEP5B_END import_chicago_phase1"
+else
+  log "STEP5B_SKIPPED import_chicago_phase1 (SOCRATA_APP_TOKEN not set)"
+fi
 
 log "STEP6_START run_cross_matching (long ~30-60min)"
 if ! $PYTHON run.py run-cross-matching --only all >> "$LOG" 2>&1; then

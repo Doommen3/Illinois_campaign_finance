@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the ILCF nightly data refresh at 05:00 Chicago time
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 America/Chicago
+Persistent=true
+Unit=ilcf-nightly-check.service
+
+[Install]
+WantedBy=timers.target

@@ -73,7 +73,7 @@ DATASETS: tuple[Dataset, ...] = (
     ),
     Dataset(
         "fec_b", "FEC Schedule B (disbursements)", "semi", "monthly, started by hand",
-        "backfill-fec-schedule-b",
+        "scripts/manual_load.sh fec_b - (runs scripts/fec-schedule-b-catchup.sh)",
         (("fec_schedule_b_disbursements", "disbursement_date"),),
         notes="The backfill is automatable but not on a timer: Devin starts it.",
     ),

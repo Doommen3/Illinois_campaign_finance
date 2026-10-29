@@ -1,0 +1,10 @@
+[Unit]
+Description=ILCF 05:00 check of the nightly data refresh (scripts/nightly_check.py)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/srv/illinois_campaign_finance/shared/.env
+WorkingDirectory=/srv/illinois_campaign_finance/app
+ExecStart=/srv/illinois_campaign_finance/shared/venv/bin/python3 /srv/illinois_campaign_finance/app/scripts/nightly_check.py --report-dir /srv/illinois_campaign_finance/shared/refresh_runs
+TimeoutStartSec=15min
