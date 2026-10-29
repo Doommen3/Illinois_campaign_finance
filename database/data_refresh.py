@@ -75,7 +75,6 @@ DATASETS: tuple[Dataset, ...] = (
         "fec_b", "FEC Schedule B (disbursements)", "auto", "weekly, Wednesday nightly run",
         "scripts/fec-schedule-b-catchup.sh (backfill-fec-schedule-b --refresh-cache)",
         (("fec_schedule_b_disbursements", "disbursement_date"),),
-        notes="Also by hand any day: scripts/manual_load.sh fec_b -",
     ),
     Dataset(
         "fec_e", "FEC Schedule E (independent expenditures)", "auto", "hourly",
@@ -264,3 +263,42 @@ def dataset_status(conn, as_of: date | None = None) -> list[dict]:
             "stale": stale,
         })
     return rows
+
+
+def summarize_diff(diff: dict) -> list[str]:
+    """One line per dataset a run changed: rows added over its tables, and the new latest date of
+    its main table when that advanced (e.g. "FEC Schedule A (contributions) +1,204, latest 2026-10-27")."""
+    lines = []
+    for dataset in DATASETS:
+        entries = [diff[table] for table, _ in dataset.tables if table in diff]
+        if not entries:
+            continue
+        added = sum(e.get("rows_added") or 0 for e in entries)
+        main = diff.get(dataset.table) or {}
+        new_date = main.get("max_date_after") if main.get("new_max_date") else None
+        if added == 0 and not new_date:
+            continue
+        lines.append(f"{dataset.label} {added:+,}" + (f", latest {new_date}" if new_date else ""))
+    return lines
+
+
+def recent_runs(conn, limit: int = 14) -> list[dict]:
+    """The latest runs, newest first, with minutes and the diff summary; [] before init-db made the table."""
+    if not _table_exists(conn, "data_refresh_runs"):
+        return []
+    rows = conn.execute(
+        "SELECT id, kind, started_at, finished_at, status, exit_code, check_status, notes, diff "
+        "FROM data_refresh_runs ORDER BY started_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    runs = []
+    for r in rows:
+        minutes = None
+        if r["finished_at"] is not None:
+            minutes = round((r["finished_at"] - r["started_at"]).total_seconds() / 60, 1)
+        runs.append({
+            "id": r["id"], "kind": r["kind"], "started_at": r["started_at"], "finished_at": r["finished_at"],
+            "minutes": minutes, "status": r["status"], "exit_code": r["exit_code"],
+            "check_status": r["check_status"], "notes": r["notes"], "changes": summarize_diff(r["diff"] or {}),
+        })
+    return runs

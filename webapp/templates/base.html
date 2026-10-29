@@ -129,6 +129,7 @@
             {% if global_data_status.is_any_stale %}
             <p class="stat-detail">At least one source appears stale for its expected cadence (staleness uses the federal last-sync timestamp).</p>
             {% endif %}
+            <p><a href="{{ url_for('data_status.index') }}">Data status</a></p>
         </section>
         {% endif %}
 

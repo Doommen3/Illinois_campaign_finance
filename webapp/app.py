@@ -507,6 +507,7 @@ def create_app(config=None):
     from webapp.routes.experimental import experimental_bp
     from webapp.routes.viz_lab import viz_lab_bp
     from webapp.routes.candidates import candidates_bp
+    from webapp.routes.data_status import data_status_bp
     from webapp.routes.entity_analytics import bp as entity_analytics_bp
     from webapp.routes import viz_lab as viz_lab_routes
 
@@ -530,6 +531,7 @@ def create_app(config=None):
     app.register_blueprint(openbook_bp, url_prefix='/openbook')
     app.register_blueprint(experimental_bp, url_prefix='/experimental')
     app.register_blueprint(viz_lab_bp, url_prefix='/experimental/viz-lab')
+    app.register_blueprint(data_status_bp)  # /data-status
 
     @app.errorhandler(404)
     def not_found(error):
