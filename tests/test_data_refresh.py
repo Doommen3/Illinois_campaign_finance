@@ -60,7 +60,11 @@ def test_datasets_match_the_plan_and_the_schema(tmp_path):
         if d.automation == "manual":
             assert d.folder == f"data/manual/{d.key}"
     irs527 = next(d for d in DATASETS if d.key == "irs527")
-    assert "P-3" in irs527.notes and "irs527_data.md" in irs527.notes  # import blocked on loader idempotency
+    assert "loader fix" in irs527.notes  # import blocked on loader idempotency (P-3, in the runbook only)
+    # Notes are public on /data-status: no internal paths, runbook items or commands.
+    for d in DATASETS:
+        for internal in ("docs/", "scripts/", ".md", "P-3", "run.py"):
+            assert internal not in (d.notes or ""), (d.key, internal)
     # Every non-ISBE source table named in DATASETS exists in schema.sql (ISBE tables come from the ETL).
     conn = _conn(tmp_path)
     try:
