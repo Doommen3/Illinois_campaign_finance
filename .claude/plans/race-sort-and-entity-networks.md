@@ -157,6 +157,8 @@ Steps 1–2 (ask 1) are independent of the rest and can ship alone.
 
 ## Test-speed program (Devin, 2026-10-28: "why is it 17 minutes" → "lets do all of these")
 
+**T1 + T2 MERGED into `main` 2026-10-29 02:12Z** (`bc99643`, contained in `ddd5867`); the documented full-suite command is now `pytest -q -p no:cacheprovider -n auto --dist loadfile -m "not integration"` (2,947 passed / 6 skipped / 63 xfailed in 3:08 at the merge gate). T3 next on branch `test-speed-t3`.
+
 Routing: LOOP — acceptance is mechanical (identical passed / skipped / xfailed counts per module and for the full suite; wall-clock before/after recorded; every converted module green alone, in full, and when only its second half runs). Branch `test-speed` off `entity-analytics-tabs` (scratch clone `speed-clone`); merges after PR #1. Baseline (local, M3 Pro, 2026-10-28): old suite 2,283 cases 9 min 23 s; entity suites 581 cases ≈ 3 min 40 s (0.3–0.5 s each — the autouse per-test schema + `init_db` running all of `database/schema.sql` dominates); full suite ≈ 13 min.
 
 | id | decision | alternative not taken | reversible? | status |
