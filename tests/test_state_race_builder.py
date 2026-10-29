@@ -1827,6 +1827,27 @@ def test_two_candidates_with_the_same_name_in_one_race_count_once_and_the_first_
 
 
 @pytest.mark.parametrize("path", PATHS)
+def test_a_filing_that_only_meets_the_folded_alias_twin_still_counts_once(race_conn, path):
+    """Follow-up FB-M2 (P2-31): race R lists Ed Example (611) before Edward Example (612), so Edward folds into Ed
+    (name_keys_match: ED is a direct alias of EDWARD).  Part-9 rows in the window: "Ted Example" 100 supporting (TED's
+    direct aliases are THEODORE and EDWARD, not ED: it meets only the folded twin) and "Edward Example" 50 supporting
+    (meets both).  Ed carries both rows (150 over 2 rows), the twin none, total 150.0.
+    Kills: keeping only the first record's key (the Ted row is dropped: 50 over 1 row), un-folding the twin (Edward takes
+    the rows too: 300), attaching the Edward row twice through the two keys (200 over 3 rows)."""
+    _add_candidacy(race_conn, 9611, 611, "Ed Example", RACE_R, 771)
+    _add_candidacy(race_conn, 9612, 612, "Edward Example", RACE_R, 772)
+    _add_part9(race_conn, "Ted Example", 100.0, "2025-06-01")
+    _add_part9(race_conn, "Edward Example", 50.0, "2025-06-02")
+
+    race = _race(race_conn, path)
+
+    outside = _outside_by_name(race)
+    assert list(outside) == ["Ed Example"]
+    _assert_outside_row(outside["Ed Example"], candidate_id="611", support=150.0, oppose=0.0, count=2)
+    assert race["outside_spending_total"] == 150.0
+
+
+@pytest.mark.parametrize("path", PATHS)
 def test_two_candidates_whose_first_names_are_direct_aliases_count_once_in_one_race(race_conn, path):
     """Search Phase 2, B1: since P2-17 a filing "Jim Example" reaches both "Jim Example" and "James Example" (JIM is a
     direct alias of JAMES), so D4's one-person-two-ids rule must fold alias twins as it folds exact-key twins (real case:
