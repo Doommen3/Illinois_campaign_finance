@@ -188,7 +188,13 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   WHERE r.committee_id = <id> AND r.archived = FALSE AND r.amount > 0 AND (COALESCE(r.d2_part,'') = '' OR r.d2_part LIKE '1%');
   ```
   If a figure differs, rerun with `FROM isbe_receipts r` (raw rows, not archived) to tell a condensed-picker or
-  amendment difference from a page defect.
+  amendment difference from a page defect. D4 (fixed 2026-10-29 in the ETL; prod after its matview rebuild): the
+  condensed views' per-period picker preferred a later empty A-1 / Letter / B-1, or a dated archived original, over
+  the filing with a live D-2 (ties resolved by plan), and `isbe_most_recent_filings` could pick an undated Raffle
+  Report / Final / Notification of Self Funding (453 committees with a NULL cutoff). Measured locally on live part-1
+  receipts, all committees: 42,088 rows / $38.8M enter across 518 committees and 760 rows / $148K leave across 20,
+  net +$38.7M. A committee's total far below its sworn D-2 total before the rebuild is most likely D4, not a page
+  defect.
 - **Tolerance:** counts exact; dollars ± $0.01.
 - **Sample rule:** manual run: 3 committees, 1 of the 5 largest by receipt rows, 1 party committee (for example
   6239) and 1 random committee with ≥ 50 donors. Batch: n = 60 committees, 20 top / 20 middle / 20 small by
