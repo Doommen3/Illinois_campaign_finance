@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 import json
 
-from database.entity_network import EDGE_TYPE_DEFINITIONS, money_flow, vendor_network
+from database.entity_network import EDGE_TYPE_DEFINITIONS, ego_force, money_flow, vendor_network
 from tests.graph_js_harness import check_syntax, run_graph_js, small_ego_payload
 
 MONEY_SCRIPTS = ["graph_legend.js", "entity_views/focus_panel.js", "entity_views/money_flow.js"]
@@ -25,10 +25,12 @@ HREFS = {"committee:1": "/committees/1", "committee:2": "/committees/2", "commit
          "committee:9": "/committees/9", "candidate:5": "/candidates/5", "donor:ann|lee": "/donors/key/ann|lee",
          "vendor:acme": None}
 DONORS_TAB_URL = "/candidates/5/donors?period=all"
+ROWS_URL = "/candidates/5/network/rows.json?period=all"
+EGO_SCRIPTS = ["graph_legend.js", "entity_views/focus_panel.js", "entity_views/ego_force.js"]
 
 PRELUDE = """
 const container = dom.document.createElement("div"), keyBox = dom.document.createElement("div"), focusBox = dom.document.createElement("div");
-const ctx = { keyBox, focusBox, hrefs: %(hrefs)s, definitions: %(definitions)s, donorsTabUrl: %(donors)s };
+const ctx = { keyBox, focusBox, hrefs: %(hrefs)s, definitions: %(definitions)s, donorsTabUrl: %(donors)s, rowsUrl: %(rows)s };
 const render = (data) => sandbox.EntityViews[%(view)s](container, data, ctx);
 const nodes = () => all(container).filter((n) => n.tag === "g");
 const bands = () => all(container).filter((n) => n.tag === %(band)s);
@@ -66,9 +68,11 @@ CLEAR = {"heading": None, "note": None, "noteLinks": [], "columns": [], "rows": 
 def _run(view: str, data: dict, steps: str, **more: dict):
     """Render ``data`` with ``EntityViews[view]``, then run ``steps`` (JavaScript; ``DATA`` and each ``more`` name are
     bound to their JSON) and return ``log``."""
-    scripts, band = (MONEY_SCRIPTS, "path") if view == "money_flow" else (VENDOR_SCRIPTS, "line")
+    scripts, band = {"money_flow": (MONEY_SCRIPTS, "path"), "vendor_network": (VENDOR_SCRIPTS, "line"),
+                     "ego": (EGO_SCRIPTS, "line")}[view]
     body = PRELUDE % {"hrefs": json.dumps(HREFS), "definitions": json.dumps(EDGE_TYPE_DEFINITIONS),
-                      "donors": json.dumps(DONORS_TAB_URL), "view": json.dumps(view), "band": json.dumps(band)}
+                      "donors": json.dumps(DONORS_TAB_URL), "view": json.dumps(view), "band": json.dumps(band),
+                      "rows": json.dumps(ROWS_URL)}
     for name, value in {"DATA": data, **more}.items():
         body += f"const {name} = {json.dumps(value)};\n"
     return run_graph_js(scripts, body + "render(DATA);\n" + steps + "\nresult = log;\n")
@@ -266,3 +270,119 @@ def test_the_shared_focus_panel_script_parses():
     """``node --check`` of the new helper; the three view scripts are checked by tests/test_ego_focus_js.py."""
     done = check_syntax("entity_views/focus_panel.js")
     assert done.returncode == 0, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# Rows buttons (.claude/plans/inkind-rows-and-readable-ego.md, D3): a panel row that stands for ego edges of a
+# supported type opens the filed rows behind it (network/rows.json) in a nested table under it.
+# ---------------------------------------------------------------------------
+
+# A fetch stand-in whose promise settles synchronously, so the harness's single pass sees the rendered rows.
+FETCH = """
+const fetched = [];
+const settled = (value) => ({ then(ok) { try { const next = ok(value); return next && next.then ? next : settled(next); }
+                                         catch (error) { return failed(error); } },
+                              catch() { return this; } });
+const failed = (error) => ({ then() { return this; }, catch(handle) { handle(error); return settled(undefined); } });
+let answer = { ok: true, body: null };
+sandbox.fetch = (url) => { fetched.push(url); return settled({ ok: answer.ok, status: answer.ok ? 200 : 500, json: () => answer.body }); };
+const bodyRows = () => { const body = all(focusBox).find((n) => n.tag === "tbody"); return body ? body.children : []; };
+const buttonOf = (label) => { const tr = bodyRows().find((row) => row.children[0].textContent === label);
+                              return tr ? all(tr).find((n) => n.tag === "button") || null : null; };
+const detail = () => bodyRows().filter((tr) => tr.classList.contains("edge-rows-detail")).map((tr) => ({
+    after: bodyRows()[bodyRows().indexOf(tr) - 1].children[0].textContent,
+    columns: all(tr).filter((n) => n.tag === "th").map((n) => n.textContent),
+    rows: all(tr).filter((n) => n.tag === "tbody").flatMap((b) => b.children).map((row) => row.children.map((td) => {
+        const link = all(td).find((n) => n.tag === "a"); return link ? [td.textContent, link.attrs.href] : td.textContent; })),
+    notes: all(tr).filter((n) => n.tag === "p").map((n) => n.textContent),
+}));
+"""
+
+ROWS = {"rows": [
+    {"date": "2026-03-05", "amount": 2000.0, "d2_part": "5A", "description": "Mailing", "counterparty": "Ann Lee",
+     "committee_id": 1, "committee_name": "Friends of Pat", "filed_doc_id": 77, "filing_href": "/committees/filing/77"},
+    {"date": "2026-02-10", "amount": 30.5, "d2_part": "5A", "description": None, "counterparty": "Ann Lee",
+     "committee_id": 1, "committee_name": "Friends of Pat", "filed_doc_id": None, "filing_href": None},
+], "total_amount": 2030.5, "total_count": 2, "truncated": False}
+
+
+def _in_kind_payload():
+    payload = _two_donor_payload()
+    payload["edges"].append(_edge("donor:ann|lee", "committee:1", "in_kind_donor_committee", 2030.5, 2))
+    return payload
+
+
+def test_a_members_rows_cell_is_a_button_that_lists_its_filed_rows_and_a_second_click_collapses_them():
+    """Item 8a: "Inside In-kind contributions" -> Ann Lee, "2 rows" -> the two filed rows (date, amount, part,
+    description, a link to the filing when there is one) under her row. The URL is the page's rows_url plus the member,
+    no target (her rows into every committee) and the aggregate's edge type. Kills: a Rows cell that is plain text; a
+    fetch without the page's scope; a target on a member request; a nested table in the wrong place; a toggle that only
+    opens."""
+    log = _run("money_flow", money_flow(_in_kind_payload()), FETCH + """
+click("class:in_kind");
+answer.body = ROWS_BODY;
+log.button = buttonOf("Ann Lee") && [buttonOf("Ann Lee").textContent, buttonOf("Ann Lee").attrs["aria-expanded"]];
+buttonOf("Ann Lee").fire("click");
+log.open = { fetched: fetched.slice(), detail: detail(), expanded: buttonOf("Ann Lee").attrs["aria-expanded"],
+             heading: all(focusBox).find((n) => n.tag === "h3").textContent };
+buttonOf("Ann Lee").fire("click");
+log.closed = { fetched: fetched.length, detail: detail(), expanded: buttonOf("Ann Lee").attrs["aria-expanded"] };
+""", ROWS_BODY=ROWS)
+    assert log["button"] == ["2 rows", "false"]
+    assert log["open"]["fetched"] == [ROWS_URL + "&source=donor%3Aann%7Clee&edge_type=in_kind_donor_committee"]
+    assert log["open"]["heading"] == "Inside In-kind contributions", "a click inside the panel must not clear the focus"
+    assert log["open"]["expanded"] == "true"
+    assert log["open"]["detail"] == [{
+        "after": "Ann Lee",
+        "columns": ["Date", "Amount", "Type", "Description", "Filing"],
+        "rows": [["2026-03-05", "$2,000.00", "5A", "Mailing", ["Filing", "/committees/filing/77"]],
+                 ["2026-02-10", "$30.50", "5A", "", ""]],
+        "notes": [],
+    }]
+    assert log["closed"] == {"fetched": 1, "detail": [], "expanded": "false"}
+
+
+def test_truncated_unsupported_and_failed_row_requests_say_so_in_one_line():
+    """Kills: a capped list shown as complete; a silent failure; a broken panel after an error."""
+    log = _run("money_flow", money_flow(_in_kind_payload()), FETCH + """
+click("class:in_kind");
+answer.body = Object.assign({}, ROWS_BODY, { rows: ROWS_BODY.rows.slice(0, 1), total_count: 250, truncated: true });
+buttonOf("Ann Lee").fire("click"); log.truncated = detail()[0].notes; buttonOf("Ann Lee").fire("click");
+answer.body = { rows: [], unsupported: true };
+buttonOf("Ann Lee").fire("click"); log.unsupported = detail()[0].notes; buttonOf("Ann Lee").fire("click");
+answer.ok = false;
+buttonOf("Ann Lee").fire("click"); log.failed = detail()[0].notes;
+""", ROWS_BODY=ROWS)
+    assert log["truncated"] == ["Showing 1 of 250 rows."]
+    assert log["unsupported"] == ["Row detail is not available for this relationship."]
+    assert log["failed"] == ["The rows could not be loaded."]
+
+
+def test_rows_buttons_appear_only_where_a_panel_row_is_ego_edges_of_a_supported_type():
+    """Members of donor classes, in-kind, Other transfers and Other vendors, and every vendor-network or ego-list row of a
+    contribution, in-kind, transfer or vendor edge, get a button; independent expenditures and "raises for candidate"
+    (Phase B) and flows to or from an aggregate node do not. Vendor-network and ego rows name both ends."""
+    flow = _run("money_flow", money_flow(_in_kind_payload()), FETCH + """
+click("class:individual"); log.individual = ["Ann Lee", "Kai Moss"].map((name) => !!buttonOf(name));
+click("committee:1"); log.committee = bodyRows().map((tr) => [tr.children[0].textContent, !!all(tr).find((n) => n.tag === "button")]);
+""")
+    assert flow["individual"] == [True, True]
+    assert dict(flow["committee"]) == {"Individual donors": False, "In-kind contributions": False, "Acme Print": True}, \
+        "a flow to a class or Other node is not one edge; a kept vendor's flow is"
+    vendor = _run("vendor_network", vendor_network(small_ego_payload()), FETCH + """
+answer.body = { rows: [], total_amount: 0, total_count: 0, truncated: false };
+click("vendor:acme"); buttonOf("Friends of Pat").fire("click"); log.fetched = fetched.slice();
+click("candidate:5"); log.spenders = ["Pro Pat PAC", "Stop Pat PAC"].map((name) => !!buttonOf(name));
+""")
+    assert vendor["fetched"] == [ROWS_URL + "&source=vendor%3Aacme&target=committee%3A1&edge_type=committee_vendor"]
+    assert vendor["spenders"] == [False, False]
+    ego = _run("ego", ego_force(small_ego_payload()), FETCH + """
+answer.body = { rows: [], total_amount: 0, total_count: 0, truncated: false };
+click("committee:1");
+log.columns = all(focusBox).filter((n) => n.tag === "th").map((n) => n.textContent);
+log.buttons = bodyRows().map((tr) => [tr.children[0].textContent, !!all(tr).find((n) => n.tag === "button")]);
+buttonOf("Ann Lee").fire("click"); log.fetched = fetched.slice();
+""")
+    assert ego["columns"] == ["Name", "Relationship", "Amount", "Rows"]
+    assert ego["buttons"] == [["Ann Lee", True], ["Pat Roe", False], ["Acme Print", True]]
+    assert ego["fetched"] == [ROWS_URL + "&source=committee%3A1&target=donor%3Aann%7Clee&edge_type=donor_committee"]

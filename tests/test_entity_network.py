@@ -1779,3 +1779,196 @@ def test_money_flow_a_folded_spender_on_both_sides_is_two_members_and_a_folded_v
         "other:spenders": _members(payload, [("committee:950", 400.0, 2, "S"), ("committee:950", 100.0, 1, "O")]),
         "other:vendors": _members(payload, [("vendor:elm", 50.0, 3)]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Edge rows (plan .claude/plans/inkind-rows-and-readable-ego.md, D1): the condensed rows behind an ego edge
+# ---------------------------------------------------------------------------
+#
+# ``edge_rows(conn, payload, *, source, target=None, edge_type, date_from, date_to, limit=200)`` reads the rows of the
+# payload's edges of ``edge_type`` between ``source`` and ``target`` (either direction; ``target=None``: every edge of
+# that type at ``source``) with the predicates the ego build used. The module is read through its attribute so the
+# rest of this file still runs before the function exists.
+
+import database.entity_network as entity_network_module  # noqa: E402
+
+ROW_TYPES = (DC, IK, TI, CV)
+RECEIPT_ROW_KEYS = {"date", "amount", "d2_part", "description", "counterparty", "committee_id", "committee_name",
+                    "filed_doc_id", "filing_href"}
+EXPENDITURE_ROW_KEYS = RECEIPT_ROW_KEYS - {"description"} | {"purpose"}
+ROWS_RESULT_KEYS = {"rows", "total_amount", "total_count", "truncated"}
+ENTITY_WINDOWS = [
+    pytest.param(RACE_ENTITY, WIN, id="race-window"),
+    pytest.param(CANDIDATE_ENTITY, WIN, id="candidate-window"),
+    pytest.param(RACE_ENTITY, (None, None), id="race-all-time"),
+]
+
+
+def _rows(conn, payload, window, **kwargs):
+    return entity_network_module.edge_rows(conn, payload, date_from=window[0], date_to=window[1], **kwargs)
+
+
+def _entity_side(edge, payload) -> int:
+    own = {node["id"] for node in payload["nodes"] if node.get("role") == "entity"}
+    side = edge["target"] if edge["edge_type"] != CV else edge["source"]
+    assert side in own
+    return int(side.split(":", 1)[1])
+
+
+@pytest.mark.parametrize("entity, window", ENTITY_WINDOWS)
+def test_edge_rows_of_every_supported_edge_sum_to_its_weight_and_count(world, entity, window):
+    """Criterion 1: for each 1A, 5A, 2A and vendor edge, the rows are exactly the edge's: their amounts sum to the weight
+    (to the cent), there are ``count`` of them, each is on the edge's committee and inside the window. Kills: a rows
+    query whose predicates drift from ``_grouped`` (archived, amount <= 0, part, window, the payee / payer / donor key);
+    a vendor or transfer hash looked up on the wrong name."""
+    payload = _call(world, entity, date_from=window[0], date_to=window[1])
+    checked = Counter()
+    for edge in payload["edges"]:
+        if edge["edge_type"] not in ROW_TYPES:
+            continue
+        result = _rows(world, payload, window, source=edge["source"], target=edge["target"], edge_type=edge["edge_type"])
+        label = (edge["edge_type"], edge["source"], edge["target"])
+        assert result is not None, label
+        assert set(result) == ROWS_RESULT_KEYS, label
+        assert result["total_amount"] == pytest.approx(edge["weight"], abs=0.005), label
+        assert result["total_count"] == edge["count"], label
+        assert result["truncated"] is False, label
+        assert len(result["rows"]) == edge["count"], label
+        assert round(sum(row["amount"] for row in result["rows"]), 2) == pytest.approx(edge["weight"], abs=0.005), label
+        assert {row["committee_id"] for row in result["rows"]} == {_entity_side(edge, payload)}, label
+        for row in result["rows"]:
+            assert row["amount"] > 0, label
+            if window[0] is not None:
+                assert window[0].isoformat() <= row["date"] <= window[1].isoformat(), label
+        checked[edge["edge_type"]] += 1
+    assert set(checked) == set(ROW_TYPES), f"the fixture must exercise every row edge type: {checked}"
+
+
+@pytest.mark.parametrize("entity, window", ENTITY_WINDOWS)
+def test_edge_rows_without_a_target_cover_every_committee_the_neighbour_touches(world, entity, window):
+    """``target=None``: a money-flow member's listed amount is its total over the entity's committees, so its rows are
+    every edge of that type at the neighbour. Kills: only the first committee's rows; rows of a committee the neighbour
+    has no edge to (committee 300 receives from the same donors and pays the same vendor)."""
+    payload = _call(world, entity, date_from=window[0], date_to=window[1])
+    totals: dict[tuple, list] = defaultdict(lambda: [0.0, 0])
+    for edge in payload["edges"]:
+        if edge["edge_type"] in ROW_TYPES:
+            neighbour = edge["target"] if edge["edge_type"] == CV else edge["source"]
+            totals[(neighbour, edge["edge_type"])][0] += edge["weight"]
+            totals[(neighbour, edge["edge_type"])][1] += edge["count"]
+    assert any(count > 1 for _, count in totals.values())
+    for (neighbour, edge_type), (weight, count) in totals.items():
+        result = _rows(world, payload, window, source=neighbour, edge_type=edge_type)
+        assert result["total_amount"] == pytest.approx(weight, abs=0.005), (neighbour, edge_type)
+        assert result["total_count"] == count, (neighbour, edge_type)
+        assert len(result["rows"]) == count, (neighbour, edge_type)
+
+
+def test_edge_rows_list_the_current_rows_only_newest_first_with_their_filed_fields(world):
+    """The hand-summed cases: Dana Donor's two live 1A rows into committee 100 (the archived 3,000 twin, the -500 refund and
+    the rows outside the window never appear); Acme Union Local 9's one 750 in-kind row; the Prairie State Leadership
+    Fund (resolved to committee 400) into 100 and 200; the twin-named payer; Prairie Print Co paid by 100 and 101 (the
+    archived 9,999 and the -80 refund never appear; 102 is not in the race). Kills: archived or non-positive rows in the
+    list; a list that is not date-descending; a counterparty that is not the filed name."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+
+    def listed(**kwargs):
+        result = _rows(world, payload, WIN, **kwargs)
+        return [(row["date"], row["amount"], row["committee_id"], row["counterparty"], row["d2_part"])
+                for row in result["rows"]]
+
+    assert listed(source=D["D1"], target=C100, edge_type=DC) == [
+        ("2026-03-05", 2000.0, 100, "Dana Donor", "1A"), ("2026-02-10", 3000.0, 100, "Dana Donor", "1A")]
+    assert listed(source=D["O1"], target=C100, edge_type=IK) == [("2026-02-15", 750.0, 100, "Acme Union Local 9", "5A")]
+    assert listed(source=C400, edge_type=TI) == [
+        ("2026-04-02", 700.0, 200, "Prairie State Leadership Fund", "2A"),
+        ("2026-03-12", 2000.0, 100, "PRAIRIE STATE LEADERSHIP FUND", "2A")]
+    assert listed(source=T_TWIN, target=C100, edge_type=TI) == [("2026-02-02", 500.0, 100, "Twin Name Committee", "2A")]
+    assert listed(source=V_A, edge_type=CV) == [
+        ("2026-03-08", 500.0, 101, "PRAIRIE PRINT CO", "2A"), ("2026-02-12", 600.0, 100, "Prairie Print Co", "2A")]
+    # The edge's direction does not matter: the vendor edge read from the committee's end is the same rows.
+    assert listed(source=C100, target=V_A, edge_type=CV) == [("2026-02-12", 600.0, 100, "Prairie Print Co", "2A")]
+
+    first = _rows(world, payload, WIN, source=D["D1"], target=C100, edge_type=DC)["rows"][0]
+    assert set(first) == RECEIPT_ROW_KEYS
+    assert first["committee_name"] == "Friends of Ada Example"
+    vendor_row = _rows(world, payload, WIN, source=V_A, edge_type=CV)["rows"][0]
+    assert set(vendor_row) == EXPENDITURE_ROW_KEYS
+    assert vendor_row["purpose"] == "Services"
+    json.dumps(_rows(world, payload, WIN, source=V_A, edge_type=CV))
+
+
+@pytest.mark.parametrize("kwargs", [
+    pytest.param({"source": "donor:nobody|here", "edge_type": DC}, id="unknown-source"),
+    pytest.param({"source": D["D1"], "target": "committee:999999", "edge_type": DC}, id="unknown-target"),
+    pytest.param({"source": D["D1"], "target": C200, "edge_type": DC}, id="no-edge-between-known-nodes"),
+    pytest.param({"source": D["D1"], "target": C100, "edge_type": TI}, id="edge-of-another-type"),
+    pytest.param({"source": D["D1"], "target": C100, "edge_type": "donor_committee; DROP TABLE x"}, id="bad-edge-type"),
+    pytest.param({"source": C300, "edge_type": DC}, id="node-outside-the-payload"),
+])
+def test_edge_rows_of_an_edge_the_payload_does_not_hold_is_none(world, kwargs):
+    """D1: nodes and edge types come from the cached payload only; anything else is None (the route's 404). Kills: a
+    request value reaching SQL; rows for a committee pair that has no edge in the graph."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    assert _rows(world, payload, WIN, **kwargs) is None
+
+
+@pytest.mark.parametrize("source, target, edge_type", [
+    pytest.param(C900, CAND1, IE, id="independent-expenditure"),
+    pytest.param(C100, CAND1, CC, id="committee-candidate"),
+])
+def test_edge_rows_of_phase_b_edge_types_are_unsupported(world, source, target, edge_type):
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    assert any(edge["edge_type"] == edge_type and {edge["source"], edge["target"]} == {source, target}
+               for edge in payload["edges"])
+    assert _rows(world, payload, WIN, source=source, target=target, edge_type=edge_type) == {"rows": [], "unsupported": True}
+
+
+def test_edge_rows_past_the_limit_are_truncated_but_the_totals_are_the_edge_s(world):
+    """Kills: totals computed from the listed rows only; a cap that drops the newest rows."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    result = _rows(world, payload, WIN, source=D["D1"], target=C100, edge_type=DC, limit=1)
+    assert result["truncated"] is True
+    assert [row["amount"] for row in result["rows"]] == [2000.0]
+    assert (result["total_amount"], result["total_count"]) == (5000.0, 2)
+
+
+@pytest.mark.parametrize("donor", sorted(REDACTED))
+def test_edge_rows_of_a_redacted_donor_carry_no_address_field(world, donor):
+    """D4 keeps its street address in the row (only the flag is set) and D5 its city and zip: neither reaches the rows.
+    Kills: a ``SELECT t.*``; any address column in a row."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    edges = [edge for edge in payload["edges"] if edge["source"] == D[donor]]
+    assert edges
+    for edge in edges:
+        result = _rows(world, payload, WIN, source=edge["source"], target=edge["target"], edge_type=edge["edge_type"])
+        assert result["rows"]
+        text = json.dumps(result["rows"])
+        for row in result["rows"]:
+            assert set(row) == RECEIPT_ROW_KEYS
+            assert row["counterparty"] == donor_label(DONORS[donor])
+        for part in ("a1", "a2", "city", "zipcode"):
+            value = DONORS[donor][part]
+            if value and value != "Redaction Requested":
+                assert value not in text, f"{donor}: {part} leaked into the rows"
+
+
+def test_edge_rows_link_their_filing_and_carry_the_description(reference):
+    """filing_href is the filing page of the row's filed_doc_id (None without one); description and purpose are as
+    filed. Kills: a link built from another id; a dropped description."""
+    reference.execute(
+        "INSERT INTO isbe_condensed_receipts (id, committee_id, filed_doc_id, last_name, first_name, received_date, amount,"
+        " d2_part, description, archived) VALUES (1, 100, 4242, 'Gifter', 'Gail', '2026-03-01', 125.5, '5A',"
+        " 'Printing services', FALSE), (2, 100, NULL, 'Gifter', 'Gail', '2026-03-02', 10.0, '5A', NULL, FALSE)")
+    reference.execute(
+        "INSERT INTO isbe_condensed_expenditures (id, committee_id, filed_doc_id, last_name, expended_date, amount,"
+        " d2_part, purpose, archived) VALUES (1, 100, 5151, 'Oakline Signs', '2026-03-03', 80.0, '2A', 'Yard signs', FALSE)")
+    reference.commit()
+    payload = _call(reference, BULK_ENTITY)
+    gail = next(node["id"] for node in payload["nodes"] if node["label"] == "Gail Gifter")
+    rows = entity_network_module.edge_rows(reference, payload, source=gail, edge_type=IK)["rows"]
+    assert [(row["date"], row["filed_doc_id"], row["filing_href"], row["description"]) for row in rows] == [
+        ("2026-03-02", None, None, None), ("2026-03-01", 4242, "/committees/filing/4242", "Printing services")]
+    vendor = vendor_id("Oakline Signs")
+    spent = entity_network_module.edge_rows(reference, payload, source=vendor, edge_type=CV)["rows"]
+    assert [(row["filing_href"], row["purpose"]) for row in spent] == [("/committees/filing/5151", "Yard signs")]
