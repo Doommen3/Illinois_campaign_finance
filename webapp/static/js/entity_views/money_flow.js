@@ -13,6 +13,11 @@
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
     var escapeHandler = null;  // the one document-level Escape listener; the next render replaces it
+    // The ego edge type of an aggregate's members, for their Rows buttons (none for independent spenders: Phase B).
+    var MEMBER_EDGE_TYPE = { "class:individual": "donor_committee", "class:organization": "donor_committee",
+                             "class:in_kind": "in_kind_donor_committee", "other:transfers": "transfer_in",
+                             "other:vendors": "committee_vendor" };
+    var AGGREGATE = /^(class|other):/;
     // Group nodes: [singular, plural] for the cap note, and the ``truncated`` class whose dropped count it reports.
     var DONOR_GROUPS = { "class:individual": ["individual donor", "individual donors"],
                          "class:organization": ["organization donor", "organization donors"],
@@ -134,7 +139,9 @@
             });
             if (!id) { window.EntityViews.clearFocus(focusBox); return; }
             var members = (data.members || {})[id];
+            var rowsUrl = ctx && ctx.rowsUrl;
             if (members) {
+                var memberType = MEMBER_EDGE_TYPE[id];
                 var sided = id === "other:spenders", cap = capNote(id, members, data.truncated, ctx && ctx.donorsTabUrl);
                 window.EntityViews.focusPanel(focusBox, {
                     heading: "Inside " + byId[id].label, note: cap.note, link: cap.link,
@@ -142,8 +149,10 @@
                     rows: members.map(function (member) {
                         var side = member.support_oppose === "S" ? "for" : member.support_oppose === "O" ? "against" : "";
                         return { label: member.label, href: hrefs[member.id],
-                                 cells: [money(member.amount), rowText(member.count)].concat(sided ? [side] : []) };
-                    })
+                                 cells: [money(member.amount), rowText(member.count)].concat(sided ? [side] : []),
+                                 drill: window.EntityViews.drill(memberType, member.id, null, 1) };
+                    }),
+                    rowsUrl: rowsUrl
                 });
                 return;
             }
@@ -157,8 +166,11 @@
                 rows: flows.map(function (flow) {
                     return { label: labels[flow.other], href: hrefs[flow.other],
                              cells: [money(flow.link.weight), rowText(flow.link.count),
-                                     window.GraphKey.entry(window.GraphKey.styleKey(flow.link), definitions).label] };
-                })
+                                     window.GraphKey.entry(window.GraphKey.styleKey(flow.link), definitions).label],
+                             drill: AGGREGATE.test(flow.other) ? null
+                                 : window.EntityViews.drill(flow.link.edge_type, id, flow.other, 1) };
+                }),
+                rowsUrl: rowsUrl
             });
         }
 

@@ -125,8 +125,10 @@
                 rows: flows.map(function (flow) {
                     return { label: labels[flow.other], href: hrefs[flow.other],
                              cells: [money(flow.edge.weight), rowText(flow.edge.count),
-                                     window.GraphKey.entry(window.GraphKey.styleKey(flow.edge), definitions).label] };
-                })
+                                     window.GraphKey.entry(window.GraphKey.styleKey(flow.edge), definitions).label],
+                             drill: window.EntityViews.drill(flow.edge.edge_type, id, flow.other, 1) };
+                }),
+                rowsUrl: ctx && ctx.rowsUrl
             });
         }
 

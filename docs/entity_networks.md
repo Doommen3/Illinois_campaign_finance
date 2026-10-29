@@ -4,6 +4,7 @@ The Network tab (`/candidates/<id>/network`, `/analytics/state-races/<race_key>/
 around one entity's committees. This page describes the data contract, the three views, the click drill-down panel
 and the cache rules. Code: `database/entity_network.py` (payload and projections), `webapp/routes/entity_analytics.py`
 (routes and caching), `webapp/templates/entity/network.html` and `webapp/static/js/entity_views/*.js` (rendering).
+The panel's Rows buttons open the filed rows behind an edge (see "Edge rows" below).
 
 ## The ego payload
 
@@ -76,9 +77,11 @@ Flow names come from the graph key's labels (`js/graph_legend.js`), for example 
 | Vendor network | a vendor | Paid to *label* | Name, Amount, Rows, Flow |
 | Vendor network | a committee or spender | Spending by *label* | Name, Amount, Rows, Flow |
 | Vendor network | a candidate | Independent spending on *label* | Name, Amount, Rows, Flow |
-| Ego graph | any node | Connected to *label* | Name, Relationship, Amount |
+| Ego graph | any node | Connected to *label* | Name, Relationship, Amount, Rows |
 
-Rows are sorted by dollars, ties by name. Row counts read "1 row" / "3 rows".
+Rows are sorted by dollars, ties by name. Row counts read "1 row" / "3 rows". Where a panel row stands for ego
+edges of a contribution, in-kind, transfer or vendor type, its row count is a button that lists those edges' filed
+rows (see "Edge rows").
 
 **Notes.** A note appears only when there is something to say:
 
@@ -109,8 +112,52 @@ through it, and a new view must use it too.
 - `EntityViews.clearFocus(focusBox)` empties the panel.
 - `EntityViews.markFocus(element, focused, dimmed)` sets or clears the `focused` / `dimmed` classes and the 0.15
   opacity.
+- A row with `drill: {source, target, edge_type, cell}` and a `spec.rowsUrl` shows `cells[drill.cell]` as a button
+  (class `edge-rows-toggle`, `aria-expanded`). `EntityViews.drill(edgeType, source, target, cell)` builds the drill,
+  or returns null for the independent-expenditure and committee-candidate types.
 
 The view scripts draw without `focus_panel.js`, but clicking needs it.
+
+## Edge rows
+
+`edge_rows(conn, payload, *, source, target=None, edge_type, date_from=, date_to=, limit=200)` in
+`database/entity_network.py` returns the condensed rows behind the cached ego payload's edges of `edge_type` between
+`source` and `target`. The edge's direction does not matter. With `target=None` it covers every edge of that type at
+`source`, so a money-flow member's rows add up to its listed amount across the entity's committees.
+
+- **Same predicates as the graph.** Contribution (1A), in-kind (5A) and transfer (2A) edges read
+  `isbe_condensed_receipts`. Vendor edges read `isbe_condensed_expenditures`. Each type uses the part filter and
+  neighbour key that the graph build uses: the donor key, the payer name or the payee name. Archived rows and amounts
+  of zero or less never appear. So the rows' amounts sum to the edge weight, and their number is the edge `count`
+  (`tests/test_entity_network.py`).
+- **Result.** `{rows, total_amount, total_count, truncated}`. Rows come newest first, at most `limit`, and the totals
+  cover every row. Each row has `date`, `amount`, `d2_part`, `description` (receipts) or `purpose` (expenditures),
+  `counterparty` (the name as filed), `committee_id`, `committee_name`, `filed_doc_id` and `filing_href`
+  (`/committees/filing/<id>`, or null). No address field is ever returned, so a redacted donor's address never shows.
+- **Phase B types.** Independent-expenditure and committee-candidate edges return `{rows: [], unsupported: true}`.
+- **Unknown input.** A node the payload does not hold, or no such edge between the two nodes, returns `None`. Request
+  values only select payload edges. The SQL is built from the payload's own ids.
+
+Routes: `/candidates/<id>/network/rows.json` and `/analytics/state-races/<race_key>/network/rows.json`. They take
+`source`, `target` (optional) and `edge_type` plus the page's scope query. A missing `source`, an unknown `edge_type`,
+an unknown entity, or `None` from `edge_rows` is a 404. The route reads the `network:ego` cache entry and caches the
+result under tab `network:rows`. The key carries the caps, the 200-row limit, `edge_type`, `source` and `target`. TTL,
+`?refresh_cache=1` gating and headers are the same as `network.json`. The page passes the URL, with its scope and the
+race's election cycle, as `rows_url` in `entity-network-meta`, read as `ctx.rowsUrl`.
+
+In the panel, a click on a Rows button fetches `rows_url` plus `source`, `target` and `edge_type`. It inserts a nested
+table under the row with the columns Date, Amount, Type, Description and Filing. A second click collapses it. Rows
+buttons appear on:
+
+- members of the donor classes, in-kind, Other transfers and Other vendors (no target);
+- money-flow flows between two ego nodes (not flows to or from a group node);
+- every vendor-network panel row and every ego "Connected to" row of a supported type (both ends given).
+
+Each of three cases shows one line instead of, or above, the table:
+
+- a capped list: "Showing N of M rows."
+- an unsupported type: "Row detail is not available for this relationship."
+- a failed request: "The rows could not be loaded."
 `tests/test_network_drilldown_js.py` and `tests/test_ego_focus_js.py` run the scripts under node with it loaded.
 
 ## Cache and static-file rules
@@ -121,11 +168,10 @@ The view scripts draw without `focus_panel.js`, but clicking needs it.
   `network:vendor_network` plus the HTML tab's own entry. The projections and the HTML tab read the `network:ego`
   entry, so the page and its three views build the graph once.
 - **Script stamps.** `entity/network.html` loads each script with a `?v=YYYYMMDD-N` stamp. Bump the stamp of every
-  script you change, so browsers fetch the new file. The four `entity_views` scripts are at `20261029-1`, and
+  script you change, so browsers fetch the new file. The four `entity_views` scripts are at `20261029-2`, and
   `graph_legend.js` is at `20261028-2`.
 
 ## Not covered
 
-- Clicking a vendor lists the committees that paid it and the totals. It does not list the individual payment line
-  items; the committee's `/committees/<id>/payees` page lists a committee's payees.
+- Independent-expenditure and committee-candidate edges have no rows drill-down (Phase B).
 - The global `/analytics/networks` and `/analytics/relationships` pages have no drill-down panel.

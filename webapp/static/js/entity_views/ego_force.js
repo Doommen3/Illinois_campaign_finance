@@ -136,12 +136,15 @@
             window.EntityViews.focusPanel(focusBox, {
                 heading: "Connected to " + byId[id].label,
                 empty: "No connections in this window.",
-                columns: ["Name", "Relationship", "Amount"],
+                columns: ["Name", "Relationship", "Amount", "Rows"],
                 rows: rows.map(function (row) {
+                    var count = row.edge.count;
                     return { label: row.other.label, href: hrefs[row.other.id],
                              cells: [window.GraphKey.entry(window.GraphKey.styleKey(row.edge), ctx && ctx.definitions).label,
-                                     money(row.edge.weight)] };
-                })
+                                     money(row.edge.weight), count + (count === 1 ? " row" : " rows")],
+                             drill: window.EntityViews.drill(row.edge.edge_type, id, row.other.id, 2) };
+                }),
+                rowsUrl: ctx && ctx.rowsUrl
             });
         }
 
