@@ -10,6 +10,7 @@ from flask import Blueprint, Response, render_template, request, current_app, g
 import psycopg
 
 from database.models import Committee, Report, Donor, Contribution, receipts_filter_sql
+from database.name_normalize import NAME_TSVECTOR_SQL, normalize_name, search_tsquery
 from database.pg_compat import statement_timeout_scope
 from webapp.cache_backend import RouteCache
 from webapp.utils.text_dates import text_date_window_clause as _text_date_window_clause
@@ -858,131 +859,196 @@ def _bulk_donor_name_sql(alias: str = "r") -> str:
     )
 
 
-def _search_local_candidates(conn, query: str, limit: int = 30) -> list[dict]:
-    output = []
-    found_ids = set()
+def _substring_fallback_pattern(query: str) -> str | None:
+    """The LIKE pattern of the one substring fallback a name section may run (decision S2): only when the token query found
+    nothing, and only for a normalized query of 4+ characters, so a short fragment never scans a table. None otherwise.
+    (The compat layer runs LIKE as ILIKE, so the match is case-insensitive; the pattern holds only A-Z, 0-9 and spaces.)"""
+    normalized = normalize_name(query)
+    return f"%{normalized}%" if len(normalized) >= 4 else None
 
-    # Primary: search via agg table (candidates with committees + financials)
-    if _table_exists(conn, "bulk_candidate_committee_finance_agg"):
+
+def _search_local_candidates(conn, query: str, limit: int = 30) -> list[dict]:
+    """Candidates by name tokens: the finance aggregate (candidates with committees, with their totals) followed by the
+    candidates of isbe_candidates that have no aggregate row (committee-less, totals 0). The numeric id path and the single
+    substring fallback are separate predicates -- OR-ed into the token predicate they would defeat its GIN index."""
+    has_agg = _table_exists(conn, "bulk_candidate_committee_finance_agg")
+    has_candidates = _table_exists(conn, "isbe_candidates")
+    if not (has_agg or has_candidates):
+        return []
+
+    tsquery = search_tsquery(query)
+    fallback_pattern = _substring_fallback_pattern(query)
+    id_pattern = f"%{query}%"
+    agg_name_tsv = NAME_TSVECTOR_SQL("candidate_full_name")
+    candidate_name_tsv = NAME_TSVECTOR_SQL("first_name || ' ' || last_name")
+
+    if has_agg:
         has_office = _column_exists(conn, "bulk_candidate_committee_finance_agg", "office_sought")
         has_period_end = _column_exists(conn, "bulk_candidate_committee_finance_agg", "period_end_date")
         office_expr = "MAX(COALESCE(office_sought, '')) AS office_sought" if has_office else "NULL AS office_sought"
         latest_expr = "MAX(period_end_date) AS latest_period_end" if has_period_end else "NULL AS latest_period_end"
+    # A candidate without an aggregate row has no committee money to show; with no aggregate at all, nobody has.
+    no_aggregate_row = (
+        "AND NOT EXISTS (SELECT 1 FROM bulk_candidate_committee_finance_agg a WHERE a.candidate_id = c.id)"
+        if has_agg
+        else ""
+    )
 
-        rows = conn.execute(
-            f"""
-            SELECT
-                candidate_id,
-                candidate_full_name,
-                {office_expr},
-                COUNT(DISTINCT committee_id_sbe) AS committee_count,
-                COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0) AS total_receipts,
-                {latest_expr}
-            FROM bulk_candidate_committee_finance_agg
-            WHERE
-                COALESCE(candidate_full_name, '') LIKE ?
-                OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
-            GROUP BY candidate_id, candidate_full_name
-            ORDER BY total_receipts DESC, candidate_full_name ASC
-            LIMIT ?
-            """,
-            (f"%{query}%", f"%{query}%", limit),
-        ).fetchall()
+    def fetch(predicates):
+        """(aggregate rows, committee-less candidate rows) for (aggregate predicate, params, candidate predicate, params)."""
+        with_finance, without = [], []
+        for agg_where, agg_params, candidate_where, candidate_params in predicates:
+            if has_agg:
+                with_finance.extend(
+                    conn.execute(
+                        f"""
+                        SELECT
+                            candidate_id,
+                            candidate_full_name,
+                            {office_expr},
+                            COUNT(DISTINCT committee_id_sbe) AS committee_count,
+                            COALESCE(SUM(CAST(NULLIF(TRIM(CAST(sum_total_receipts AS TEXT)), '') AS REAL)), 0) AS total_receipts,
+                            {latest_expr}
+                        FROM bulk_candidate_committee_finance_agg
+                        WHERE {agg_where}
+                        GROUP BY candidate_id, candidate_full_name
+                        ORDER BY total_receipts DESC, candidate_full_name ASC
+                        LIMIT ?
+                        """,
+                        (*agg_params, limit),
+                    ).fetchall()
+                )
+            if has_candidates:
+                without.extend(
+                    conn.execute(
+                        f"""
+                        SELECT c.id, c.first_name, c.last_name, c.office
+                        FROM isbe_candidates c
+                        WHERE ({candidate_where}) {no_aggregate_row}
+                        ORDER BY c.last_name, c.first_name, c.id
+                        LIMIT ?
+                        """,
+                        (*candidate_params, limit),
+                    ).fetchall()
+                )
+        return with_finance, without
 
-        for row in rows:
-            candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
-            found_ids.add(row["candidate_id"])
-            output.append(
-                {
-                    "scope": "local",
-                    "candidate_id": row["candidate_id"],
-                    "candidate_name": candidate_name,
-                    "office": row["office_sought"] or "",
-                    "committee_count": int(row["committee_count"] or 0),
-                    "total_receipts": float(row["total_receipts"] or 0.0),
-                    "latest_period_end": row["latest_period_end"],
-                    "provenance": {
-                        "source_table": "bulk_candidate_committee_finance_agg",
-                        "source_filing_link": None,
-                        "import_batch": "ISBE bulk import aggregate",
-                        "sync_timestamp": row["latest_period_end"] or "not available",
-                        "normalization_notes": "Candidate names are deduped by candidate_id in aggregate rows.",
-                    },
-                }
-            )
+    predicates = []
+    if tsquery:
+        token_predicate = "@@ to_tsquery('simple', ?)"
+        predicates.append((f"{agg_name_tsv} {token_predicate}", (tsquery,), f"{candidate_name_tsv} {token_predicate}", (tsquery,)))
+    if query.isdigit():  # a candidate id is all digits: the id path can match nothing else
+        predicates.append(
+            ("COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?", (id_pattern,), "CAST(c.id AS TEXT) LIKE ?", (id_pattern,))
+        )
+    with_finance, without = fetch(predicates)
+    if not with_finance and not without and fallback_pattern:
+        with_finance, without = fetch(
+            [
+                (
+                    "COALESCE(candidate_full_name, '') LIKE ? OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?",
+                    (fallback_pattern, id_pattern),
+                    "(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')) LIKE ? OR CAST(c.id AS TEXT) LIKE ?",
+                    (fallback_pattern, id_pattern),
+                )
+            ]
+        )
 
-    # Fallback: search bulk_candidates_clean for candidates without committees
-    if len(output) < limit and _table_exists(conn, "bulk_candidates_clean"):
-        remaining = limit - len(output)
-        fallback_rows = conn.execute(
-            """
-            SELECT
-                candidate_id,
-                candidate_full_name,
-                office_sought
-            FROM bulk_candidates_clean
-            WHERE
-                COALESCE(candidate_full_name, '') LIKE ?
-                OR COALESCE(CAST(candidate_id AS TEXT), '') LIKE ?
-            ORDER BY candidate_full_name ASC
-            LIMIT ?
-            """,
-            (f"%{query}%", f"%{query}%", remaining + len(found_ids)),
-        ).fetchall()
+    output = []
+    seen_finance = set()
+    for row in with_finance:
+        if (row["candidate_id"], row["candidate_full_name"]) in seen_finance:
+            continue
+        seen_finance.add((row["candidate_id"], row["candidate_full_name"]))
+        candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
+        output.append(
+            {
+                "scope": "local",
+                "candidate_id": row["candidate_id"],
+                "candidate_name": candidate_name,
+                "office": row["office_sought"] or "",
+                "committee_count": int(row["committee_count"] or 0),
+                "total_receipts": float(row["total_receipts"] or 0.0),
+                "latest_period_end": row["latest_period_end"],
+                "provenance": {
+                    "source_table": "bulk_candidate_committee_finance_agg",
+                    "source_filing_link": None,
+                    "import_batch": "ISBE bulk import aggregate",
+                    "sync_timestamp": row["latest_period_end"] or "not available",
+                    "normalization_notes": "Candidate names are deduped by candidate_id in aggregate rows.",
+                },
+            }
+        )
+    seen_without = set()
+    for row in without:
+        if row["id"] in seen_without:
+            continue
+        seen_without.add(row["id"])
+        candidate_name = " ".join(part.strip() for part in (row["first_name"], row["last_name"]) if part and part.strip())
+        output.append(
+            {
+                "scope": "local",
+                "candidate_id": row["id"],
+                "candidate_name": candidate_name or f"Candidate {row['id']}",
+                "office": row["office"] or "",
+                "committee_count": 0,
+                "total_receipts": 0.0,
+                "latest_period_end": None,
+                "provenance": {
+                    "source_table": "isbe_candidates",
+                    "source_filing_link": None,
+                    "import_batch": "ISBE sunshine import",
+                    "sync_timestamp": "not available",
+                    "normalization_notes": "Candidate without committee link; no financial data available.",
+                },
+            }
+        )
 
-        for row in fallback_rows:
-            if row["candidate_id"] in found_ids:
-                continue
-            if len(output) >= limit:
-                break
-            candidate_name = row["candidate_full_name"] or f"Candidate {row['candidate_id']}"
-            output.append(
-                {
-                    "scope": "local",
-                    "candidate_id": row["candidate_id"],
-                    "candidate_name": candidate_name,
-                    "office": row["office_sought"] or "",
-                    "committee_count": 0,
-                    "total_receipts": 0.0,
-                    "latest_period_end": None,
-                    "provenance": {
-                        "source_table": "bulk_candidates_clean",
-                        "source_filing_link": None,
-                        "import_batch": "ISBE sunshine import",
-                        "sync_timestamp": "not available",
-                        "normalization_notes": "Candidate without committee link; no financial data available.",
-                    },
-                }
-            )
-
-    return output
+    return output[:limit]
 
 
 def _search_federal_candidates(conn, query: str, limit: int = 20) -> list[dict]:
     if not _table_exists(conn, "fec_candidate_match"):
         return []
-    rows = conn.execute(
-        """
-        SELECT
-            candidate_name,
-            fec_candidate_id,
-            fec_name,
-            office,
-            district,
-            party,
-            cycle,
-            match_status,
-            updated_at
-        FROM fec_candidate_match
-        WHERE
-            COALESCE(candidate_name, '') LIKE ?
-            OR COALESCE(fec_name, '') LIKE ?
-            OR COALESCE(fec_candidate_id, '') LIKE ?
-        ORDER BY COALESCE(cycle, 0) DESC, updated_at DESC
-        LIMIT ?
-        """,
-        (f"%{query}%", f"%{query}%", f"%{query}%", limit),
-    ).fetchall()
+    tsquery = search_tsquery(query)
+    fallback_pattern = _substring_fallback_pattern(query)
+    id_pattern = f"%{query}%"
+
+    def fetch(where_sql, params):
+        return conn.execute(
+            f"""
+            SELECT
+                candidate_name,
+                fec_candidate_id,
+                fec_name,
+                office,
+                district,
+                party,
+                cycle,
+                match_status,
+                updated_at
+            FROM fec_candidate_match
+            WHERE {where_sql}
+            ORDER BY COALESCE(cycle, 0) DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+
+    rows = []
+    if tsquery:
+        # ~130 rows: the id path may share the statement here (cf. the big tables, where it must not).
+        rows = fetch(
+            f"{NAME_TSVECTOR_SQL('candidate_name')} @@ to_tsquery('simple', ?) "
+            f"OR {NAME_TSVECTOR_SQL('fec_name')} @@ to_tsquery('simple', ?) "
+            "OR COALESCE(fec_candidate_id, '') LIKE ?",
+            (tsquery, tsquery, id_pattern),
+        )
+    if not rows and fallback_pattern:
+        rows = fetch(
+            "COALESCE(candidate_name, '') LIKE ? OR COALESCE(fec_name, '') LIKE ? OR COALESCE(fec_candidate_id, '') LIKE ?",
+            (fallback_pattern, fallback_pattern, id_pattern),
+        )
 
     output = []
     for row in rows:
@@ -1009,6 +1075,25 @@ def _search_federal_candidates(conn, query: str, limit: int = 20) -> list[dict]:
     return output
 
 
+def _isbe_committee_result(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"] or "",
+        "source_table": "isbe_committees",
+        "committee_type": row["type"] or "",
+        "party": row["party"] or "",
+        "city": row["city"] or "",
+        "state": row["state"] or "",
+        "provenance": {
+            "source_table": "isbe_committees",
+            "source_filing_link": None,
+            "import_batch": "ISBE sunshine import",
+            "sync_timestamp": row["status_date"] or "not available",
+            "normalization_notes": "Committee names from ISBE bulk data.",
+        },
+    }
+
+
 def _search_committees_source_aware(
     conn,
     query: str,
@@ -1018,36 +1103,28 @@ def _search_committees_source_aware(
 ) -> list[dict]:
     """Search committees from active data sources (ISBE, then legacy fallback)."""
     output: list[dict] = []
+    tsquery = search_tsquery(query)
+    fallback_pattern = _substring_fallback_pattern(query)
 
-    # Primary: isbe_committees
+    # Primary: isbe_committees, by name tokens; one substring fallback when that finds nothing
     if _table_exists(conn, "isbe_committees"):
-        rows = conn.execute(
-            """
-            SELECT id, name, type, party, city, state, status_date
-            FROM isbe_committees
-            WHERE name LIKE ?
-            ORDER BY name
-            LIMIT ?
-            """,
-            (f"%{query}%", limit),
-        ).fetchall()
-        for row in rows:
-            output.append({
-                "id": row["id"],
-                "name": row["name"] or "",
-                "source_table": "isbe_committees",
-                "committee_type": row["type"] or "",
-                "party": row["party"] or "",
-                "city": row["city"] or "",
-                "state": row["state"] or "",
-                "provenance": {
-                    "source_table": "isbe_committees",
-                    "source_filing_link": None,
-                    "import_batch": "ISBE sunshine import",
-                    "sync_timestamp": row["status_date"] or "not available",
-                    "normalization_notes": "Committee names from ISBE bulk data.",
-                },
-            })
+
+        def fetch(where_sql, param):
+            return conn.execute(
+                f"""
+                SELECT id, name, type, party, city, state, status_date
+                FROM isbe_committees
+                WHERE {where_sql}
+                ORDER BY name
+                LIMIT ?
+                """,
+                (param, limit),
+            ).fetchall()
+
+        rows = fetch(f"{NAME_TSVECTOR_SQL('name')} @@ to_tsquery('simple', ?)", tsquery) if tsquery else []
+        if not rows and fallback_pattern:
+            rows = fetch("name LIKE ?", fallback_pattern)
+        output.extend(_isbe_committee_result(row) for row in rows)
 
     # Fallback: legacy committees table
     if len(output) < limit and _table_exists(conn, "committees"):
@@ -1097,29 +1174,38 @@ def _search_donors_source_aware(
 ) -> list[dict]:
     """Search donors from active data sources (analytics_donor_summary, then legacy fallback)."""
     output: list[dict] = []
+    tsquery = search_tsquery(query)
+    fallback_pattern = _substring_fallback_pattern(query)
 
-    # Primary: analytics_donor_summary (materialized donor directory)
+    # Primary: analytics_donor_summary (materialized donor directory), by name tokens; one substring fallback (served by the
+    # trigram index on donor_name) when that finds nothing
     if _table_exists(conn, "analytics_donor_summary"):
-        rows = conn.execute(
-            """
-            SELECT
-                source,
-                donor_key,
-                donor_name,
-                donor_address,
-                donor_city,
-                donor_state,
-                total_amount,
-                contribution_count,
-                committee_count,
-                updated_at
-            FROM analytics_donor_summary
-            WHERE donor_name LIKE ?
-            ORDER BY total_amount DESC, donor_name ASC
-            LIMIT ?
-            """,
-            (f"%{query}%", limit),
-        ).fetchall()
+
+        def fetch(where_sql, param):
+            return conn.execute(
+                f"""
+                SELECT
+                    source,
+                    donor_key,
+                    donor_name,
+                    donor_address,
+                    donor_city,
+                    donor_state,
+                    total_amount,
+                    contribution_count,
+                    committee_count,
+                    updated_at
+                FROM analytics_donor_summary
+                WHERE {where_sql}
+                ORDER BY total_amount DESC, donor_name ASC
+                LIMIT ?
+                """,
+                (param, limit),
+            ).fetchall()
+
+        rows = fetch(f"{NAME_TSVECTOR_SQL('donor_name')} @@ to_tsquery('simple', ?)", tsquery) if tsquery else []
+        if not rows and fallback_pattern:
+            rows = fetch("donor_name LIKE ?", fallback_pattern)
         for row in rows:
             output.append({
                 "source_table": "analytics_donor_summary",

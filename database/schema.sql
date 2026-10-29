@@ -333,6 +333,12 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_name_trgm
     ON analytics_donor_summary USING gin (donor_name gin_trgm_ops);
 
+-- The search donors section matches names by token, in any order, with nicknames and prefixes
+-- (database/name_normalize.py): the expression below is NAME_TSVECTOR_SQL('donor_name') spelled out, and the planner uses
+-- the index only for a predicate with the identical expression. The trigram index above still serves the substring fallback.
+CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_name_tsv
+    ON analytics_donor_summary USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(donor_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
+
 -- One row per donor per election cycle (cycle = year + year % 2 of received_date), rebuilt by
 -- refresh_analytics_materialized with the live /donors/ list predicate (receipts_filter_sql,
 -- J-S2). /donors/ reads it when the window is exactly one cycle and the cycle has rows (J-S16).
@@ -484,6 +490,9 @@ CREATE TABLE IF NOT EXISTS fec_candidate_match (
 
 CREATE INDEX IF NOT EXISTS idx_fec_match_candidate_id ON fec_candidate_match(fec_candidate_id);
 CREATE INDEX IF NOT EXISTS idx_fec_match_status ON fec_candidate_match(match_status);
+-- NAME_TSVECTOR_SQL('candidate_name') spelled out, for the /search federal candidates section.
+CREATE INDEX IF NOT EXISTS idx_fec_candidate_match_name_tsv
+    ON fec_candidate_match USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(candidate_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE IF NOT EXISTS fec_candidate_committees (
     candidate_id TEXT NOT NULL,

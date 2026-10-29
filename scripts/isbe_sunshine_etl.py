@@ -213,6 +213,9 @@ CREATE TABLE isbe_committees (
     party           TEXT,
     purpose         TEXT
 );
+-- /search matches committee names by token (database/name_normalize.py NAME_TSVECTOR_SQL spelled out: the planner uses this
+-- index only for a predicate with the identical expression).
+CREATE INDEX idx_isbe_committees_name_tsv ON isbe_committees USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE isbe_candidates (
     id                  INTEGER PRIMARY KEY,
@@ -230,6 +233,7 @@ CREATE TABLE isbe_candidates (
     party               TEXT,
     redaction_requested BOOLEAN DEFAULT FALSE
 );
+CREATE INDEX idx_isbe_candidates_name_tsv ON isbe_candidates USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(first_name || ' ' || last_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
 
 CREATE TABLE isbe_filed_docs (
     id                      INTEGER PRIMARY KEY,
