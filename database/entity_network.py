@@ -315,7 +315,8 @@ def _committee_names(conn, committee_ids) -> dict[int, str]:
 def _attributable_candidates(conn, candidate_ids, fallback_labels, labels) -> list[dict]:
     """Candidates a Part-9 row can attach to, in entity order, one per person: a record whose name key matches an
     earlier one's (name_keys_match: same last name, first names equal or direct nickname aliases) is the same person
-    registered twice, and the first record carries the rows, as on the race page; sets the candidate nodes' labels."""
+    registered twice, and the first record carries the rows, as on the race page (the twin's key joins its alias_keys, so
+    a filing that meets only the twin still reaches it, P2-31); sets the candidate nodes' labels."""
     if not candidate_ids:
         return []
     names = {
@@ -331,15 +332,20 @@ def _attributable_candidates(conn, candidate_ids, fallback_labels, labels) -> li
         (candidate_ids,),
     ).fetchall():
         cycles[row["candidate_id"]].add(row["election_year"] + row["election_year"] % 2)
-    attributable, keys = [], set()
+    attributable, keys = [], {}
     for candidate_id in candidate_ids:
         name = names.get(candidate_id)
         labels[f"candidate:{candidate_id}"] = name or fallback_labels.get(candidate_id) or f"Candidate {candidate_id}"
         key = candidate_name_key(name)
-        if key is None or not cycles[candidate_id] or any(name_keys_match(key, seen) for seen in keys):
+        if key is None or not cycles[candidate_id]:
             continue
-        keys.add(key)
-        attributable.append({"key": key, "cycles": cycles[candidate_id], "candidate_id": candidate_id})
+        kept = next((record for seen, record in keys.items() if name_keys_match(key, seen)), None)
+        if kept is not None:
+            if key != kept["key"] and key not in kept["alias_keys"]:
+                kept["alias_keys"].append(key)
+            continue
+        keys[key] = {"key": key, "alias_keys": [], "cycles": cycles[candidate_id], "candidate_id": candidate_id}
+        attributable.append(keys[key])
     return attributable
 
 

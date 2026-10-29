@@ -2947,12 +2947,13 @@ def _build_state_race_analytics_rows(
     # under two candidate ids, e.g. "Margaret Croke" / "Margaret Noble Croke") gets none, so no
     # row counts twice in the race total (plan D4, reversed 2026-10-28).  Keys match as the
     # matcher matches names: first names that are direct nickname aliases ("Jim Moustis" /
-    # "James Moustis") are one person too (name_keys_match; search Phase 2, B1).  No cycle gate:
-    # the date window above is the race's cycle.
+    # "James Moustis") are one person too (name_keys_match; search Phase 2, B1); the twin's key
+    # joins the kept record's alias_keys, so a filing that meets only the twin still reaches it
+    # (P2-31).  No cycle gate: the date window above is the race's cycle.
     outside_candidates: list[dict] = []
     for race_key_value, race in races.items():
         tokens_seen: set[str] = set()
-        keys_seen: set[tuple[str, str]] = set()
+        keys_seen: dict[tuple[str, str], dict] = {}
         for candidate_id, candidate_name, committee_id, _committee_name in race["candidate_links"]:
             candidate_token = candidate_id or candidate_name.upper() or committee_id
             if candidate_token in tokens_seen:
@@ -2960,18 +2961,22 @@ def _build_state_race_analytics_rows(
             tokens_seen.add(candidate_token)
             name_key = candidate_name_key(candidate_name)
             if name_key is not None:
-                if any(name_keys_match(name_key, seen) for seen in keys_seen):
+                kept = next((record for seen, record in keys_seen.items() if name_keys_match(name_key, seen)), None)
+                if kept is not None:
+                    if name_key != kept["key"] and name_key not in kept["alias_keys"]:
+                        kept["alias_keys"].append(name_key)
                     continue
-                keys_seen.add(name_key)
-            outside_candidates.append(
-                {
-                    "key": name_key,
-                    "cycles": None,
-                    "race_key": race_key_value,
-                    "candidate_id": candidate_id,
-                    "candidate_name": candidate_name,
-                }
-            )
+            record = {
+                "key": name_key,
+                "alias_keys": [],
+                "cycles": None,
+                "race_key": race_key_value,
+                "candidate_id": candidate_id,
+                "candidate_name": candidate_name,
+            }
+            if name_key is not None:
+                keys_seen[name_key] = record
+            outside_candidates.append(record)
     # The detail lookup scans only rows whose stripped name holds a last name of the
     # race; past 15 last names the pattern list underperforms the full-cycle scan.
     last_name_patterns: list[str] = []
