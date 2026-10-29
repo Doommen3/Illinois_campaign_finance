@@ -486,7 +486,7 @@ def org_detail(ein):
     )
     contrib_date_params: list[object] = [ein, *contrib_date_window_params]
 
-    # First / last transaction dates override the reports' period; only ISO or compact dates count (A11 / A18).
+    # First / last transaction dates widen the reports' period (a union); only ISO or compact dates count (A11 / A18).
     transaction_dates: list[str] = []
     if _table_exists(conn, "irs527_expenditures"):
         exp_totals = conn.execute(
@@ -531,8 +531,8 @@ def org_detail(ein):
                 transaction_dates.append(str(contrib_totals["last_date"])[:10])
 
     if transaction_dates:
-        financial["earliest_period"] = min(transaction_dates)
-        financial["latest_period"] = max(transaction_dates)
+        financial["earliest_period"] = min(filter(None, [financial["earliest_period"], *transaction_dates]))
+        financial["latest_period"] = max(filter(None, [financial["latest_period"], *transaction_dates]))
 
     directors = conn.execute(
         """
