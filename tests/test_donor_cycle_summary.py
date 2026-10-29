@@ -53,8 +53,8 @@ Committees 100 and 200, filed docs 5001 (committee 100) and 5002 (committee 200)
                         first, so physical order is the reverse of the name order)   -        1200 / 1 / 1 each
                                                                        (cells are total / contributions / committees)
   EXCLUDED (never in the table): Ada Archived (archived receipt 999), Pat Transfer (part 2A, 888); Bob's refund
-  and zero rows.  INCLUDED by the list predicate although analytics_donor_summary (D-2 EXISTS, part '1%') drops
-  them: Una Blankpart (part NULL, 777), Nora NoDtwo (doc 5099, no D-2 at all, 666), Sam Superseded (doc 5004,
+  and zero rows.  INCLUDED by the list predicate (and, since fix-8b F1, by analytics_donor_summary too):
+  Una Blankpart (part NULL, 777), Nora NoDtwo (doc 5099, no D-2 at all, 666), Sam Superseded (doc 5004,
   only an archived D-2, 555) -- the A-1 receipt shape (J-S2 / J-S16).
   => cycle 2024: 2 rows (Alice, Edgar).  cycle 2026: 11 rows (Whale, Alice, Bob, Tie x4, Una, Nora, Sam, Edgar).
 
@@ -72,7 +72,7 @@ import re
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import NamedTuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import psycopg
 import pytest
@@ -86,7 +86,8 @@ from tests.test_isbe_rewire import (
     _seed_isbe_tables,
 )
 from webapp.app import create_app
-from webapp.utils.time_scope import cycle_window
+from webapp.routes.committees import committee_donor_rollup
+from webapp.utils.time_scope import cycle_window, resolve_time_scope
 
 SOURCE = "bulk_receipts"
 TABLE = "analytics_donor_cycle_summary"
@@ -219,7 +220,7 @@ BASE_ROWS = {
     (2026, "Tie Charlie"): (1200.0, 1, 1),
     (2026, "Tie Delta"): (1200.0, 1, 1),
     (2026, "Willa Whale"): (50123456.78, 1, 1),
-    # Plan J-S2 / J-S16: the list predicate keeps blank-part and no-D-2 receipts (the summary's predicate does not).
+    # Plan J-S2 / J-S16: the list predicate keeps blank-part and no-D-2 receipts (since fix-8b F1 the summary's does too).
     (2026, "Una Blankpart"): (777.0, 1, 1),
     (2026, "Nora NoDtwo"): (666.0, 1, 1),
     (2026, "Sam Superseded"): (555.0, 1, 1),
@@ -488,11 +489,12 @@ def test_totals_are_exact_to_the_cent_for_a_very_large_donor(env):
 
 def test_cycle_rows_agree_with_the_all_time_summary_builder(env):
     """Same donor keys and descriptive columns as analytics_donor_summary where both hold the donor, the cycle totals
-    add back up to it, and the only cycle-only donors are the three the summary's stricter predicate drops.
+    add back up to it, and no donor is cycle-only: since fix-8b F1 both tables use the contributions predicate.
+    (Before F1 this test pinned Una, Nora and Sam as cycle-only, i.e. it pinned the D-2 EXISTS bug of to-do 8b.)
 
     Kills: a different donor_key expression (cycle rows no longer match /donors/key/<key> links and the all-time
-    list); the summary builder's predicate (Una, Nora and Sam would vanish) or any other predicate drift (the
-    per-donor sums would drift apart); descriptive columns taken from the wrong donor.  The address punctuation is deliberately not pinned (the summary builder
+    list); a stricter all-time predicate (Una, Nora and Sam would be cycle-only again) or any other predicate drift
+    (the per-donor sums would drift apart); descriptive columns taken from the wrong donor.  The address punctuation is deliberately not pinned (the summary builder
     writes 'IL, 60601', branch A writes 'IL 60601'): either is accepted, anything else fails.
     The large donor is skipped in the sum check: the summary stores it as float4 (see the previous test)."""
     conn = env.conn()
@@ -501,9 +503,9 @@ def test_cycle_rows_agree_with_the_all_time_summary_builder(env):
         "SELECT * FROM analytics_donor_summary WHERE source = ?", (SOURCE,)).fetchall()}
     people = {w.key: w for w in (ALICE, BOB, EDGAR, WHALE, TIE_ALPHA, TIE_BRAVO, TIE_CHARLIE, TIE_DELTA, UNA, NORA, SAM)}
     assert rows, "precondition: the cycle table is empty"
-    # Plan J-S2 / J-S16: list predicate here, D-2 EXISTS in the all-time summary -- exactly these three differ.
+    # fix-8b F1: the same contributions predicate in both tables, so every cycle donor is in the all-time summary.
     cycle_only = {row["donor_key"] for row in rows if row["donor_key"] not in summary}
-    assert cycle_only == {UNA.key, NORA.key, SAM.key}
+    assert cycle_only == set()
 
     cycle_totals: dict[str, float] = {}
     cycle_counts: dict[str, int] = {}
@@ -522,6 +524,66 @@ def test_cycle_rows_agree_with_the_all_time_summary_builder(env):
         assert cycle_counts[key] == summary[key]["contribution_count"], key
         if key != WHALE.key:
             assert round(total, 2) == round(float(summary[key]["total_amount"]), 2), key
+
+
+def _all_time_agg(conn, committee_id: str | None = None) -> dict:
+    """analytics_donor_committee_agg rows: (donor_key, committee_id) -> (total, contributions)."""
+    rows = conn.execute(
+        "SELECT donor_key, committee_id, total_amount, contribution_count FROM analytics_donor_committee_agg"
+        " WHERE source = ?", (SOURCE,)).fetchall()
+    return {(r["donor_key"], r["committee_id"]): (round(float(r["total_amount"]), 2), int(r["contribution_count"]))
+            for r in rows if committee_id is None or r["committee_id"] == committee_id}
+
+
+def test_all_time_donor_tables_count_a1_blank_part_and_superseded_d2_receipts(env):
+    """fix-8b F1 (to-do 8b, finding I2): analytics_donor_committee_agg and analytics_donor_summary use the live
+    contributions predicate.  A receipt on a filed doc without any live D-2 report counts: Nora (doc 5099, no D-2 at
+    all, the A-1 large-contribution shape) and Sam (doc 5004, only an archived D-2).  So does Una (blank part).  An
+    archived receipt (Ada) and a transfer in (Pat, 2A) do not.
+
+    Kills: the old EXISTS on a non-archived D-2 report (Nora and Sam vanish); part LIKE '1%' without the blank case
+    (Una vanishes); dropping the archived or the part filter (Ada or Pat appear)."""
+    conn = env.conn()
+    agg = _all_time_agg(conn)
+    summary = {r["donor_key"]: (round(float(r["total_amount"]), 2), int(r["contribution_count"]),
+                                int(r["committee_count"]))
+               for r in conn.execute("SELECT * FROM analytics_donor_summary WHERE source = ?", (SOURCE,)).fetchall()}
+
+    for who, amount in ((UNA, 777.0), (NORA, 666.0), (SAM, 555.0)):
+        assert agg.get((who.key, "100")) == (amount, 1), who.name
+        assert summary.get(who.key) == (amount, 1, 1), who.name
+    for who in (ADA, PAT):
+        assert all(key != who.key for key, _ in agg), who.name
+        assert who.key not in summary, who.name
+
+
+def test_committee_donors_page_and_the_all_time_agg_agree_for_every_donor(env):
+    """fix-8b F1: for committee 100, all time, the committee donors page (``committee_donor_rollup``, the live
+    ``receipts_filter_sql`` path) and analytics_donor_committee_agg hold the same donors with the same totals and
+    counts -- including Nora's no-D-2 receipt.  The large donor is compared on its count only: the agg stores
+    total_amount as float4 (see test_totals_are_exact_to_the_cent_for_a_very_large_donor).
+
+    Kills: any predicate drift between the committee page and the all-time donor tables (the I2 contradiction:
+    the committee page lists a donor's receipt that the donor's own page does not)."""
+    conn = env.conn()
+    scope = resolve_time_scope(default="all", axis="received", args={})
+    page = {row["donor_key"]: (round(row["total_amount"], 2), row["contribution_count"])
+            for row in committee_donor_rollup(conn, 100, scope, limit=500)}
+    agg = {key: value for (key, _), value in _all_time_agg(conn, "100").items()}
+
+    assert NORA.key in page, "precondition: the committee page lists the no-D-2 receipt"
+    assert page.pop(WHALE.key)[1] == agg.pop(WHALE.key)[1] == 1
+    assert agg == page
+
+
+def test_all_time_donor_page_shows_a_donor_whose_only_receipt_has_no_d2(prod_env):
+    """fix-8b F1: /donors/key/<key> (All time, the default) reads analytics_donor_summary.  Nora's only receipt is on a
+    filed doc without a D-2 report; before F1 the summary had no row for her and the page was a 404.
+
+    Kills: the old D-2 EXISTS in the summary builder."""
+    html = prod_env.get(f"/donors/key/{quote(NORA.key, safe='')}?source={SOURCE}")
+
+    assert "$666.00" in html
 
 
 def test_every_row_carries_a_real_recent_updated_at(env):
