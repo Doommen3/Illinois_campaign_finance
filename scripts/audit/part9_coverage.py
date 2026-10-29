@@ -14,6 +14,7 @@ Opens the session READ ONLY; writes nothing. Run it from the checkout whose matc
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -41,6 +42,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--by-nickname", action="store_true", help="list the attributions made through a nickname")
     args = parser.parse_args()
+    if not (os.environ.get("DATABASE_URL") or "").startswith("postgresql"):
+        # get_db() would otherwise fall back to the deprecated SQLite path and create data/campaign_finance.db
+        sys.exit("Set DATABASE_URL to the PostgreSQL database to measure, e.g. postgresql://devin@localhost/ilcf")
 
     conn = get_db()
     conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")

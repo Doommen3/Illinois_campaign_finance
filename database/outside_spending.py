@@ -24,7 +24,7 @@ import re
 from datetime import date
 
 from database.connection import _table_exists
-from database.name_normalize import expand_token
+from database.name_normalize import NICKNAMES
 
 _SEPARATORS = re.compile(r"[,;/&]|\band\b", re.IGNORECASE)
 _KEY_PUNCTUATION = re.compile(r"[.,'\"]")
@@ -107,12 +107,27 @@ def candidate_name_key(text: str | None) -> tuple[str, str] | None:
     return (tokens[0], tokens[-1]) if len(tokens) >= 2 else None
 
 
+def _first_word_aliases() -> dict[str, set[str]]:
+    """NICKNAMES read on first words, both ways: "JB" <-> "JAY ROBERT" becomes JB <-> JAY."""
+    aliases: dict[str, set[str]] = {}
+    for name, alias_names in NICKNAMES.items():
+        for alias in alias_names:
+            first, other = name.split()[0], alias.split()[0]
+            aliases.setdefault(first, set()).add(other)
+            aliases.setdefault(other, set()).add(first)
+    return aliases
+
+
+_FIRST_WORD_ALIASES = _first_word_aliases()
+
+
 def _first_name_aliases(first: str) -> set[str]:
-    """The first token and its aliases in the shared nickname map (database/name_normalize.NICKNAMES),
-    a two-word alias by its first word as the key reads a name ("JB" -> {JB, JAY}). Two first names
-    meet when these sets intersect: MIKE and MICHAEL directly, TED and ED through EDWARD; THEODORE and
-    ED do not (decision P2-3b)."""
-    return {alias.split()[0] for alias in expand_token(first)}
+    """The first token and its DIRECT aliases in the shared nickname map (database/name_normalize.NICKNAMES),
+    a two-word alias by its first word as the key reads a name ("JB" -> {JB, JAY}; "JAY" -> {JAY, JB}).
+    A filed name meets a record whose first token is in this set of the filed first token (decision P2-17):
+    MIKE and MICHAEL, PAT and PATRICIA, TED and EDWARD meet; PATRICK and PATRICIA (both PAT), TED and ED
+    (both EDWARD), THEODORE and ED do not -- no match through a shared third alias."""
+    return {first, *_FIRST_WORD_ALIASES.get(first, ())}
 
 
 def part9_cycle(day: date) -> int:
@@ -127,16 +142,14 @@ def attribute_part9_rows(rows, candidates) -> list[dict]:
 
     ``candidates`` carry ``key`` (candidate_name_key) and ``cycles``: the set of cycles a row's
     ``expended_date`` must fall in, or None for no gate. Candidates sharing a key all take the row.
-    A filed name meets a key when the last tokens are equal and the first tokens' alias sets
-    intersect (M2: "Mike" meets "Michael", "Ted" meets "Ed" through EDWARD; see _first_name_aliases).
+    A filed name meets a key when the last tokens are equal and the key's first token is the filed
+    first token or a direct alias of it (M2 / P2-17: "Mike" meets "Michael"; see _first_name_aliases).
     The inputs are not modified.
     """
     by_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for position, candidate in enumerate(candidates):
-        if candidate["key"] is not None:
-            first, last = candidate["key"]
-            for alias in _first_name_aliases(first):
-                by_key.setdefault((alias, last), []).append((position, candidate))
+        if candidate["key"] is not None:  # under its own key only; the filed name's aliases are looked up below
+            by_key.setdefault(candidate["key"], []).append((position, candidate))
     attributions = []
     for row in rows:
         names = split_candidate_names(row["candidate_name"])
