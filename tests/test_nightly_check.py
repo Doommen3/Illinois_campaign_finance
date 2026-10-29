@@ -227,7 +227,8 @@ def test_earlier_run_never_finished_is_noted(tmp_path):
     finally:
         conn.close()
     assert code == 0
-    assert f"run {stuck}" in report.read_text() and "never finished" in report.read_text()
+    text = report.read_text()
+    assert f"run {stuck}" in text and "abandoned" in text
 
 
 def test_nightly_refresh_runs_the_check_after_finish():
@@ -251,12 +252,18 @@ def test_chain_order_swap_with_service_stopped_and_freshness_gate_last():
         assert chain.count(needle) == 1, needle
         return chain.index(needle)
 
-    import_at = at("run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap")
+    # ilcf-web is down for the whole ISBE load + swap (the ETL's DROP block deadlocks too), one stop and
+    # one start that every path reaches, bracketed by the step markers so the report shows the window.
+    window_open = at('log "STEP4_START sunshine_import')
     stop_at = at("systemctl stop ilcf-web.service")
+    import_at = at("run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap")
     swap_at = at("scripts/swap_bulk_to_isbe.py")
     start_at = at("systemctl start ilcf-web.service")
+    window_close = at('log "STEP4B_END compat_swap')
     fec_at = at("run.py sync-fec-il-federal --refresh-cache")
-    assert import_at < stop_at < swap_at < start_at < fec_at
+    assert window_open < stop_at < import_at < swap_at < start_at < window_close < fec_at
+    # Neither failure exits before the start line.
+    assert chain.index('fail "sunshine_import"') > start_at and chain.index('fail "compat_swap"') > start_at
     assert at("scripts/fec-schedule-b-catchup.sh") > fec_at  # weekly Schedule B backfill
     analytics_at = at("run.py refresh-analytics --with-snapshot")
     restart_at = at("systemctl restart ilcf-web.service")
