@@ -506,7 +506,10 @@ CREATE MATERIALIZED VIEW isbe_condensed_receipts AS (
         id AS filed_doc_id
       FROM isbe_filed_docs
       WHERE doc_name != 'Pre-election'
-      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC NULLS LAST
+      -- D4: a live D-2 first (a later empty A-1 / archived original no longer wins), then latest received, id breaks ties.
+      ORDER BY reporting_period_begin, reporting_period_end, committee_id,
+        EXISTS (SELECT 1 FROM isbe_d2_reports d WHERE d.filed_doc_id = isbe_filed_docs.id AND d.archived = FALSE) DESC,
+        received_datetime DESC NULLS LAST, id DESC
     ) AS f USING(filed_doc_id)
   )
 );
@@ -536,7 +539,10 @@ CREATE MATERIALIZED VIEW isbe_condensed_expenditures AS (
         id AS filed_doc_id
       FROM isbe_filed_docs
       WHERE doc_name != 'Pre-election'
-      ORDER BY reporting_period_begin, reporting_period_end, committee_id, received_datetime DESC NULLS LAST
+      -- D4: a live D-2 first (a later empty A-1 / archived original no longer wins), then latest received, id breaks ties.
+      ORDER BY reporting_period_begin, reporting_period_end, committee_id,
+        EXISTS (SELECT 1 FROM isbe_d2_reports d WHERE d.filed_doc_id = isbe_filed_docs.id AND d.archived = FALSE) DESC,
+        received_datetime DESC NULLS LAST, id DESC
     ) AS f USING(filed_doc_id)
   )
 );
