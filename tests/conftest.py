@@ -7,11 +7,20 @@ including those that did ``from database.connection import get_db`` at module
 load time — are transparently redirected to PostgreSQL.
 
 Teardown drops the schema with CASCADE.
+
+Creating a schema and dropping it are the only things the suite does that do not scale across ``pytest-xdist``
+workers: both hold a lock per object until they commit (about 800 to create, 1,050 to drop) and PostgreSQL's lock table
+holds ``max_locks_per_transaction`` (64) x ``max_connections`` (100) = 6,400. A dozen workers inside those phases at
+once fail with "out of shared memory", so ``ddl_slot`` lets at most ``_DDL_SLOTS`` processes in at a time.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
+import tempfile
+import time
 import uuid
 
 import psycopg
@@ -25,6 +34,33 @@ _TEST_DSN = os.environ.get(
 
 def _short_uuid() -> str:
     return uuid.uuid4().hex[:12]
+
+
+_DDL_SLOTS = 4  # 4 x 1,050 locks stays well inside the 6,400 of a default PostgreSQL
+
+
+@contextlib.contextmanager
+def ddl_slot():
+    """Hold one of ``_DDL_SLOTS`` cross-process slots (an flock on a file in the temp dir; the OS releases it if the
+    process dies) while a schema is created or dropped. Costs about 0.1 ms when nobody else is waiting."""
+    stem = os.path.join(tempfile.gettempdir(), f"ilcf_test_ddl_{os.getuid()}_")  # per user: a lock file is not shareable
+    handles = [open(f"{stem}{slot}.lock", "a") for slot in range(_DDL_SLOTS)]
+    try:
+        while True:
+            for handle in handles:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+                return
+            time.sleep(0.01)
+    finally:
+        for handle in handles:
+            handle.close()
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +91,8 @@ def pg_test_schema(monkeypatch, tmp_path):
             return
         c = conn_mod.get_db(db_path)
         try:
-            conn_mod.ensure_schema(c)
+            with ddl_slot():
+                conn_mod.ensure_schema(c)
             _schema_initialized = True
         finally:
             conn_mod.close_db(c)
@@ -84,6 +121,7 @@ def pg_test_schema(monkeypatch, tmp_path):
     admin_conn = psycopg.connect(_TEST_DSN)
     admin_conn.autocommit = True
     try:
-        admin_conn.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
+        with ddl_slot():
+            admin_conn.execute(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
     finally:
         admin_conn.close()

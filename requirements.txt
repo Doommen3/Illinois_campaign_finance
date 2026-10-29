@@ -22,6 +22,7 @@ networkx>=3.2.0
 # Testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+pytest-xdist>=3.5
 
 # Visualization + profiling
 numpy>=1.26.0
