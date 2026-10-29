@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{r.spec.label} is {r.status.upper()} (latest {_fmt(r.max_date)}, limit {r.spec.max_age_days} days)"
             for r in freshness if r.spec.table in _GATE_TABLES and not r.ok
         ]
-        notes = [f"run {r['id']} started {_fmt(r['started_at'])} never finished (its wrapper was killed?)"
+        notes = [f"run {r['id']} started {_fmt(r['started_at'])} never finished: abandoned (its wrapper died; set its status by hand)"
                  for r in _stuck_runs(conn, day)]
         if run is not None:
             check = "running" if run["status"] == "running" else ("failed" if problems else "ok")

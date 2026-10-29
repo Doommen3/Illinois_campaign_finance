@@ -53,24 +53,25 @@ if ! python3 scripts/check_row_counts.py >> "$LOG" 2>&1; then
 fi
 log "STEP3_END sanity_check OK"
 
-log "STEP4_START sunshine_import"
-if ! $PYTHON run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap >> "$LOG" 2>&1; then
-  fail "sunshine_import" 4
-fi
-log "STEP4_END sunshine_import"
-
-# The compat swap deadlocks or times out against live readers (CLAUDE.md "Data Refresh Schedule",
-# 2026-10-27): run it with ilcf-web stopped (about 15 s down). Under SKIP_RESTART=1 the site is
-# already offline, so the service is left alone.
-log "STEP4B_START compat_swap"
+# The ETL's DROP block and the compat swap both deadlock or time out against live readers
+# (CLAUDE.md "Data Refresh Schedule", deployment.md 2026-10-27): ilcf-web is stopped for the whole
+# load + swap (about 20 min) and started again before either failure exits. STEP4_START .. STEP4B_END
+# bracket the downtime. Under SKIP_RESTART=1 the site is already offline, so the service is left alone.
+log "STEP4_START sunshine_import (ilcf-web.service down until STEP4B_END)"
 [ "${SKIP_RESTART:-0}" = "1" ] || systemctl stop ilcf-web.service
-$PYTHON scripts/swap_bulk_to_isbe.py >> "$LOG" 2>&1
-swap_rc=$?
-[ "${SKIP_RESTART:-0}" = "1" ] || systemctl start ilcf-web.service
-if [ $swap_rc -ne 0 ]; then
-  fail "compat_swap" 10
+$PYTHON run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap >> "$LOG" 2>&1
+import_rc=$?
+swap_rc=1
+if [ $import_rc -eq 0 ]; then
+  log "STEP4_END sunshine_import"
+  log "STEP4B_START compat_swap"
+  $PYTHON scripts/swap_bulk_to_isbe.py >> "$LOG" 2>&1
+  swap_rc=$?
 fi
-log "STEP4B_END compat_swap"
+[ "${SKIP_RESTART:-0}" = "1" ] || systemctl start ilcf-web.service
+[ $import_rc -eq 0 ] || fail "sunshine_import" 4
+[ $swap_rc -eq 0 ] || fail "compat_swap" 10
+log "STEP4B_END compat_swap (ilcf-web.service started)"
 
 log "STEP5_START sync_fec_il_federal"
 # --refresh-cache is required: without it the sync replays the payload cache and refreshes nothing (CLAUDE.md "FEC silent no-op").
