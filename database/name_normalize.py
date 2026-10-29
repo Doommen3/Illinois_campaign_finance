@@ -13,8 +13,9 @@ from __future__ import annotations
 import re
 
 _NOT_ALNUM = re.compile(r"[^A-Z0-9 ]")
-# A word-internal apostrophe, straight or curly: the one punctuation mark the QUERY side reads (search Phase 2, P2-23).
-_INNER_APOSTROPHE = re.compile(r"(?<=[A-Za-z])['’](?=[A-Za-z])")
+# A word-internal apostrophe, straight or curly, with TWO or more letters after it: the one punctuation mark the QUERY side
+# reads (search Phase 2, P2-23 / P2-M7). One letter after it is a possessive or contraction ("Women's", "I'm"): a separator.
+_INNER_APOSTROPHE = re.compile(r"(?<=[A-Za-z])['’](?=[A-Za-z]{2,})")
 
 # Generational suffixes. A query keeps them only when dropping them would leave a single token ("Pat Jr").
 _SUFFIXES = frozenset({"JR", "SR", "II", "III", "IV", "V"})
@@ -39,9 +40,11 @@ def normalize_name(text: str | None) -> str:
 
 
 def normalize_query(text: str | None) -> str:
-    """normalize_name, except a word-internal apostrophe (a letter on both sides, ' or ’) survives as "'" -- the one mark
-    the query side reads: "O'Neil-Smythe" -> "O'NEIL SMYTHE", "Smith O’Neil" -> "SMITH O'NEIL". The stored side stays on
-    normalize_name / NAME_TSVECTOR_SQL (apostrophe = separator); search_tsquery turns such a token into a compound group."""
+    """normalize_name, except a word-internal apostrophe (' or ’, a letter before it and two or more after it) survives as
+    "'" -- the one mark the query side reads: "O'Neil-Smythe" -> "O'NEIL SMYTHE", "Smith O’Neil" -> "SMITH O'NEIL". A
+    possessive or contraction (one letter after: "Women's", "McDonald's", "I'm") is a separator, as on the stored side, so
+    it keeps the plain reading ("WOMEN S"; name_tokens then drops the lone S). The stored side stays on normalize_name /
+    NAME_TSVECTOR_SQL (apostrophe = separator); search_tsquery turns a kept apostrophe into a compound group."""
     return "'".join(normalize_name(piece) for piece in _INNER_APOSTROPHE.split(text or ""))
 
 
@@ -126,15 +129,16 @@ def _lexeme(alias: str) -> str:
 def search_tsquery(text: str | None) -> str | None:
     """A to_tsquery('simple', ...) string for a typed name: one group per query token, ANDed, each group the token's prefix
     lexeme and its aliases ORed -- "Frerichs, Mike W." gives "frerichs:* & (mike:* | michael:*)". A compound token (a
-    word-internal apostrophe, normalize_query) asks for the joined word or both halves, with no aliases: "O'Neil" gives
-    "(oneil:* | (o:* & neil:*))", matching a stored "O'Neil" (cut into O + NEIL) or "ONeil", not every Neil. None when no
+    word-internal apostrophe, normalize_query) asks for the joined word or its halves ADJACENT and in order, a one-letter half
+    as an exact lexeme, with no aliases: "O'Neil" gives "(oneil:* | (o <-> neil:*))", matching a stored "O'Neil" (cut into O +
+    NEIL) or "ONeil", not every Neil and not "Law Office of Neil". A possessive ("Women's") is no compound: "women:*". None when no
     token remains. Lexemes are [a-z0-9] only (the apostrophe never reaches the tsquery), so nothing the user typed can act
     as a tsquery operator."""
     groups = []
     for token in name_tokens(text):
         if "'" in token:
             joined = _lexeme(token.replace("'", ""))
-            halves = " & ".join(_lexeme(part) for part in token.split("'"))
+            halves = " <-> ".join(part.lower() if len(part) == 1 else f"{part.lower()}:*" for part in token.split("'"))
             groups.append(f"({joined} | ({halves}))")
             continue
         options = [_lexeme(token)] + [_lexeme(alias) for alias in sorted(expand_token(token) - {token})]
@@ -214,9 +218,16 @@ def name_matches(query: str | None, label: str | None, *, substring: bool = Fals
     def prefixes(word: str) -> bool:
         return any(token.startswith(word) for token in label_tokens)
 
+    def half_matches(label_token: str, part: str) -> bool:
+        return label_token == part if len(part) == 1 else label_token.startswith(part)
+
     def token_matches(token: str) -> bool:
-        if "'" in token:  # a compound, as search_tsquery reads it: the joined word, or every half
-            return prefixes(token.replace("'", "")) or all(prefixes(part) for part in token.split("'"))
+        if "'" in token:  # a compound, as search_tsquery reads it: the joined word, or the halves on consecutive tokens
+            parts = token.split("'")
+            return prefixes(token.replace("'", "")) or any(
+                all(half_matches(label_tokens[start + offset], part) for offset, part in enumerate(parts))
+                for start in range(len(label_tokens) - len(parts) + 1)
+            )
         return any(all(prefixes(word) for word in alias.split()) for alias in expand_token(token))
 
     return all(token_matches(token) for token in query_tokens)
