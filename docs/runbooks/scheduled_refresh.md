@@ -6,8 +6,9 @@ included. Plan: `.claude/plans/scheduled-refresh.md`. Code: `database/data_refre
 snapshots, status), `scripts/nightly_refresh.sh`, `scripts/refresh_prod_chain.sh`, `scripts/nightly_check.py`,
 `scripts/data_refresh_cli.py`, `scripts/manual_load.sh`, units in `docs/systemd/ilcf-nightly-*`.
 
-> Status (2026-10-29): built and tested locally on branch `scheduled-refresh`. Not installed on prod: section 1 is
-> Devin's install.
+> Status (2026-10-29): merged and deployed 13:30Z (`cbdf4c5`); first prod run started by hand 13:32–14:46Z, ok (73.5 min,
+> exit 0, check OK, run row on `/data-status`; see the deployment runbook's 13:30Z block). Timers not installed on prod:
+> section 1 is Devin's install.
 
 ---
 
