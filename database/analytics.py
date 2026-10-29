@@ -6,10 +6,13 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import logging
 import re
 import sqlite3
+import time
 from typing import Optional
 
+from database.local_donor_entities import rebuild_local_donor_entities
 from database.models import Donor, _normalized_date_sql, receipts_filter_sql
 from database.outside_spending import (
     STRIPPED_NAME_SQL,
@@ -24,6 +27,9 @@ try:
     import networkx as nx
 except Exception:  # pragma: no cover - optional dependency fallback
     nx = None
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -4139,8 +4145,37 @@ def refresh_analytics_materialized(conn: sqlite3.Connection) -> dict:
     # import: database/ takes no import-time dependency on webapp/.
     from webapp.cache_backend import flush_all_route_caches
 
-    flush_all_route_caches()
+    try:
+        # Last, after the aggregates are committed (fix-8b F6): the all-time /donors/ directory
+        # reads donor_entity_local, which is built from analytics_donor_summary. A failure is
+        # logged and re-raised; the committed aggregates stay. The flush follows the rebuild.
+        stats["local_donor_entities"] = _rebuild_local_donor_entities_step(conn)
+    finally:
+        flush_all_route_caches()
     return stats
+
+
+def _rebuild_local_donor_entities_step(conn: sqlite3.Connection) -> dict:
+    """Rebuild donor_entity_local with `run.py rebuild-local-donor-entities`'s default arguments."""
+    if not all(_table_exists(conn, name) for name in
+               ("analytics_donor_summary", "donor_entity_local", "donor_entity_local_member")):
+        return {"status": "skipped", "reason": "donor entity tables not found"}
+    started = time.monotonic()
+    try:
+        result = rebuild_local_donor_entities(
+            conn, source="bulk_receipts", medium_threshold=0.70, high_threshold=0.82, auto_threshold=0.90,
+            max_group_size=400, dry_run=False, preview_limit=25,
+        )
+    except Exception:
+        _LOGGER.exception("refresh-analytics: rebuilding the local donor entities failed; the aggregates are committed")
+        raise
+    step = {
+        "entity_rows_written": int(result.get("entity_rows_written", 0)),
+        "member_rows_written": int(result.get("member_rows_written", 0)),
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+    }
+    _LOGGER.info("refresh-analytics: local donor entities rebuilt: %s", step)
+    return step
 
 
 def _full_dashboard_snapshot_key(params: dict) -> str:
