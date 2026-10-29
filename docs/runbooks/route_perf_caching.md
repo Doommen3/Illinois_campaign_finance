@@ -111,6 +111,41 @@ Endpoint: `/experimental/viz-lab/data/network_slice`.
   - Local candidates: the finance aggregate rows (with totals), then the `isbe_candidates` rows that have no aggregate row (totals 0).
   - Template links use `donor_detail_by_key` for materialized donors, `donor_detail` for legacy.
 
+## Name search outside /search (search Phase 2, 2026-10-29)
+
+Every other name filter and suggest matches the way `/search` does, through `database/name_normalize.py`:
+
+- **Entity tables** (committees, candidates, donors, lobbying entities / clients / donor matches, 527 organizations / directors, FEC candidate match / committees, the legacy `donors` / `committees` / `bulk_committees_clean`): run `name_match_sql(col, q)` -- `NAME_TSVECTOR_SQL(col) @@ to_tsquery('simple', ?)`, the GIN index expression verbatim, `search_tsquery(q)` bound -- and only when that returns **zero rows** the one `substring_fallback_sql(col, q)` -- `col LIKE ?` (no `UPPER()`: the compat layer runs ILIKE, and the trigram index on `donor_name` serves only the bare column) with `'%' + normalize_name(q) + '%'`, for 4+ normalized characters. Paged lists decide on the token COUNT (committees, lobbying entities); the 527 list and `/lobbying/flows/data` decide with a `SELECT 1 ... LIMIT 1` probe because the filter sits inside a CTE / join. `name_predicates(columns, q)` returns those variants in order, ORed over several columns (`lobbying_donor_matches` client OR donor name); callers loop `for where, params in name_predicates(...): rows = run(...); if rows: break`. A query with no letter or digit lists nothing (`WHERE FALSE`).
+- **Transactional tables** (FEC Schedule A `contributor_name`, Schedule B `recipient_name`, `irs527_contributions.contributor_name`, the expenditure payee in the network suggest): `normalized_substring_sql(col, q)` only -- `UPPER(col) LIKE ?` with the normalized tokens joined by `%` ("Farrow, Michael" → `%FARROW%MICHAEL%`, so FEC's stored "FARROW, MICHAEL" still matches); no token statement, no new index.
+- **In memory** (the Viz Lab label search): `name_matches(q, label)`, then `name_matches(q, label, substring=True)` only when no label matched.
+- **Candidate-finance** (`/candidate-finance/`): the route counts first; a zero count re-runs the filter with `substring=True` (`CandidateCommitteeFinanceAgg._build_filter_sql`: candidate and committee names by token, `office_sought` stays a plain substring), and the decision is cached with the 3-minute in-process payload so the CSV export uses the same rule.
+- **Plan trap -- `source =` plus `ORDER BY total_amount`.** On `analytics_donor_summary` the planner estimates ~22k rows for any one-token tsquery and, given `WHERE source = 'bulk_receipts' ... ORDER BY total_amount DESC LIMIT n`, walks `idx_analytics_donor_summary_source_amount` and filters row by row (5.3 s locally for one surname). The `/investigate` and `/person-intelligence` donor sections therefore wrap the match in a `MATERIALIZED` CTE (GIN first, then sort). The `/investigate` donor→committee section matches donors that way and probes `analytics_donor_committee_agg` per donor (`CROSS JOIN LATERAL (... WHERE x.source = 'bulk_receipts' AND x.donor_key = m.donor_key ORDER BY x.total_amount DESC LIMIT 15)`, served by `idx_analytics_donor_committee_source_donor`); a plain join was planned as an ordered walk or a hash join over all 1.3M rows (0.5-20 s). Its `donor_key LIKE` path runs only when no name matched. `/search` and the network suggest have no `source =` filter and are not affected.
+- **Indexes** (`database/schema.sql`, created by `init-db`): `idx_lobbying_entities_name_tsv`, `idx_lobbying_clients_name_tsv`, `idx_irs527_organizations_name_tsv` (local: all three plus ANALYZE in 0.26 s). Prod, before the restart:
+  ```sql
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lobbying_entities_name_tsv ON lobbying_entities USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(entity_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_lobbying_clients_name_tsv ON lobbying_clients USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(client_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_irs527_organizations_name_tsv ON irs527_organizations USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(org_name, '')), '[^A-Z0-9 ]', ' ', 'g')));
+  ANALYZE lobbying_entities; ANALYZE lobbying_clients; ANALYZE irs527_organizations;
+  ```
+- **Measured** (local `ilcf`, read-only, name-predicate statement time, median of 3 warm runs after 1 cold, range over the queries "Mike Frerichs" / "Frerichs" / "Illinois" / "rerich"; ms, before → after):
+
+  | section | before | after |
+  |---|---|---|
+  | committee list filter | 94-151 | 43-75 |
+  | committees `?by=family` | 138-161 | 163-207 |
+  | committees suggest | 17-18 | 1-14 |
+  | network suggest: donors / committees / candidates | 622-1,261 / 26-142 / 33-79 | 2-5 / 1-14 / 37-49 |
+  | network suggest: vendors (transactional) | 1,406-2,335 | 489-1,091 |
+  | federal suggest: Schedule A / the rest | 43-54 / ≤ 8 | 43-47 / ≤ 7 |
+  | candidate-finance filter (locally a plain view; prod reads the matview) | 1,110-2,073 | 808-1,310 |
+  | `/investigate` donor section / donor→committee aggregate | 3-11 / 1-2,039 (cold 12,560) | 1-14 / 1-153 (cold ≤ 160) |
+  | `/person-intelligence` donor section / candidates / 527 directors | 2-12 / 16 / 2 | 1-8 / 38-49 / 9-10 |
+  | lobbying list, suggests; 527 list, suggest | ≤ 10 | ≤ 11 |
+  | `lobbying_donor_matches` sections (3,100 rows, no name index) | 1-6 | 3-34 |
+  | 527 contributor search (org with 91,719 rows) | 12 | 14-16 |
+
+  Still over the 700 ms section budget: the vendor substring (a scan of `bulk_expenditures_clean`, 4.85M rows; out of Phase 2 scope) and candidate-finance on the local view.
+
 ## Required indexes for cached routes
 
 Created automatically by `isbe_sunshine_etl.py` matview/schema DDL and `database/schema.sql`:
@@ -120,6 +155,7 @@ Created automatically by `isbe_sunshine_etl.py` matview/schema DDL and `database
 - 527 perf: `idx_irs527_contributions_name_amount`, `idx_irs527_contributions_date_amount`, `idx_irs527_expenditures_date_amount`
 - Analytics graphs: `idx_irs527_orgs_ein`, `idx_irs527_committee_matches_ein`, `idx_irs527_exp_recipient_matches_ein`, `idx_irs527_director_donor_matches_ein` (EIN lookups for 527 ecosystem graph); `idx_lobbying_donor_matches_client_id`, `idx_lobbying_exp_matches_source` (lobbying influence graph); `idx_isbe_condensed_exp_committee_id` (vendor network)
 - Load-time plan (2026-10-28): `idx_isbe_condensed_receipts_donor_name_norm` (expression index on the normalized donor name; `/lobbying/<id>` receipt activity, L3), `idx_isbe_condensed_expenditures_part9_date` (partial: `d2_part LIKE '9%' AND archived = FALSE`; the race pages' Part-9 block and the candidate outside-spending pages), `idx_isbe_filed_docs_received_datetime` (freshness gate) — all matview/ETL DDL, prod gets them with `CREATE INDEX CONCURRENTLY` at deploy; `idx_analytics_donor_summary_name_trgm` (GIN `gin_trgm_ops`; the search donors substring fallback, L6) and `idx_analytics_donor_committee_agg_geo (source, donor_state_key, donor_city_key, total_amount DESC)` (all-time geo drill-down, L4) in `database/schema.sql`; the three btree indexes of the materialized `bulk_candidate_committee_finance_agg` (swap script; its name GIN is the next bullet).
+- Search Phase 2 name matching: `idx_lobbying_entities_name_tsv`, `idx_lobbying_clients_name_tsv`, `idx_irs527_organizations_name_tsv` (`database/schema.sql`; prod statements in "Name search outside /search" above).
 - Search name matching: GIN expression indexes on `to_tsvector('simple', regexp_replace(upper(coalesce(<name>, '')), '[^A-Z0-9 ]', ' ', 'g'))` -- `idx_isbe_committees_name_tsv` and `idx_isbe_candidates_name_tsv` (ETL DDL), `idx_analytics_donor_summary_name_tsv` and `idx_fec_candidate_match_name_tsv` (`database/schema.sql`), `idx_bulk_cand_cmte_finance_agg_name_tsv` (swap script; the aggregate now has four indexes). Prod builds them with `CREATE INDEX CONCURRENTLY` BEFORE the restart: without the donors one the token statement is a 1.2 s sequential scan (local) and the donors section times out. Local builds: committees 0.3 s / 1.5 MB, candidates 0.1 s / 1.3 MB, donors 4.4 s / 17 MB, FEC match < 0.1 s / 16 kB, aggregate 0.2 s / 1.7 MB.
 - Committee profile and see-all lists: `idx_isbe_condensed_expenditures_committee_date (committee_id, expended_date)` (matview DDL; prod needs the one-time `CREATE INDEX IF NOT EXISTS` from `deployment.md`) and `idx_analytics_donor_committee_agg_source_committee (source, committee_id)` (`database/schema.sql`); the per-cycle `/donors/` list reads `analytics_donor_cycle_summary` (`idx_analytics_donor_cycle_summary_total`)
 

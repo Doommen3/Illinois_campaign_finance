@@ -557,6 +557,14 @@ def test_candidate_finance_matches_committee_names_by_token_and_keeps_office_as_
     assert "michael j farrow" in text and "brad" not in text
 
 
+@pytest.mark.parametrize("url", ["/committees/?period=all&q={q}", "/investigate?q={q}"], ids=["committees-list", "investigate"])
+def test_a_query_without_a_letter_or_digit_renders_an_empty_list(shared_client, url):
+    """P2-15: "***" has no token and no fallback, so the page renders (200) and lists nothing -- never the unfiltered rows.
+    Kills a caller that drops the name filter when name_predicates returns no variant."""
+    text = _text(shared_client, url, "***")
+    assert "farrow" not in text, "a query with no token listed rows"
+
+
 # ---------------------------------------------------------------------------
 # (4) The Viz Lab label search (Python-side, P2-4)
 # ---------------------------------------------------------------------------

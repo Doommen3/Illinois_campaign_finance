@@ -2557,11 +2557,16 @@ def investigate_workspace():
     unusual_rows: list[dict] = []
 
     if query and _table_exists(conn, "analytics_donor_summary"):
+        # MATERIALIZED: with `source =` in the WHERE, the planner otherwise walks the (source, total_amount) index and
+        # applies the name predicate row by row (5 s locally for one surname) instead of the GIN index first.
         rows = matching(
             """
-            SELECT donor_key, donor_name, total_amount, contribution_count, committee_count
-            FROM analytics_donor_summary
-            WHERE source = 'bulk_receipts' AND {where}
+            WITH matched AS MATERIALIZED (
+                SELECT donor_key, donor_name, total_amount, contribution_count, committee_count
+                FROM analytics_donor_summary
+                WHERE source = 'bulk_receipts' AND {where}
+            )
+            SELECT * FROM matched
             ORDER BY total_amount DESC
             LIMIT 8
             """,
@@ -2679,12 +2684,23 @@ def investigate_workspace():
         # key (decision P2-7: the aggregate has no name index); the donor_key path runs only when no name matched.
         agg_rows = []
         if _table_exists(conn, "analytics_donor_summary"):
+            # The matched donors first (MATERIALIZED, through the GIN index), then each donor's top rows by key (LATERAL
+            # with a LIMIT, so it stays a per-donor index probe): a plain join is planned as a walk of the aggregate in
+            # total_amount order or a hash join over all 1.3M rows (0.5-20 s locally).
             agg_rows = matching(
                 """
+                WITH matched AS MATERIALIZED (
+                    SELECT s.donor_key FROM analytics_donor_summary s WHERE s.source = 'bulk_receipts' AND {where}
+                )
                 SELECT a.donor_key, a.donor_name, a.committee_id, a.committee_name, a.total_amount, a.contribution_count
-                FROM analytics_donor_summary s
-                JOIN analytics_donor_committee_agg a ON a.source = s.source AND a.donor_key = s.donor_key
-                WHERE s.source = 'bulk_receipts' AND {where}
+                FROM matched m
+                CROSS JOIN LATERAL (
+                    SELECT donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count
+                    FROM analytics_donor_committee_agg x
+                    WHERE x.source = 'bulk_receipts' AND x.donor_key = m.donor_key
+                    ORDER BY x.total_amount DESC
+                    LIMIT 15
+                ) a
                 ORDER BY a.total_amount DESC
                 LIMIT 15
                 """,
@@ -3305,12 +3321,16 @@ def person_intelligence():
 
         # Donors
         if _table_exists(conn, "analytics_donor_summary"):
+            # MATERIALIZED for the reason given in /investigate's donor section: the GIN index first, then the sort.
             raw_donors = matching(
                 """
-                SELECT donor_key, donor_name, donor_city, donor_state,
-                       total_amount, contribution_count, committee_count
-                FROM analytics_donor_summary
-                WHERE source = 'bulk_receipts' AND {where}
+                WITH matched AS MATERIALIZED (
+                    SELECT donor_key, donor_name, donor_city, donor_state,
+                           total_amount, contribution_count, committee_count
+                    FROM analytics_donor_summary
+                    WHERE source = 'bulk_receipts' AND {where}
+                )
+                SELECT * FROM matched
                 ORDER BY total_amount DESC
                 LIMIT 100
                 """,
