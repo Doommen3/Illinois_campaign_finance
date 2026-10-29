@@ -34,8 +34,8 @@ _MAX_AGE_BY_TABLE = {spec.table: spec.max_age_days for spec in DEFAULT_SPECS}
 @dataclass(frozen=True)
 class Dataset:
     """One loaded source. ``tables`` are (table, natural-date SQL expression); the first is the
-    one whose latest date is the dataset's age. ``automation`` is auto (a timer loads it), semi
-    (an automatable command Devin starts) or manual (a file Devin downloads)."""
+    one whose latest date is the dataset's age. ``automation`` is auto (a timer or the nightly
+    chain loads it) or manual (Devin downloads a file or starts the load)."""
 
     key: str
     label: str
@@ -72,10 +72,10 @@ DATASETS: tuple[Dataset, ...] = (
         nightly=True,
     ),
     Dataset(
-        "fec_b", "FEC Schedule B (disbursements)", "semi", "monthly, started by hand",
-        "scripts/manual_load.sh fec_b - (runs scripts/fec-schedule-b-catchup.sh)",
+        "fec_b", "FEC Schedule B (disbursements)", "auto", "weekly, Wednesday nightly run",
+        "scripts/fec-schedule-b-catchup.sh (backfill-fec-schedule-b --refresh-cache)",
         (("fec_schedule_b_disbursements", "disbursement_date"),),
-        notes="The backfill is automatable but not on a timer: Devin starts it.",
+        notes="Also by hand any day: scripts/manual_load.sh fec_b -",
     ),
     Dataset(
         "fec_e", "FEC Schedule E (independent expenditures)", "auto", "hourly",
@@ -99,11 +99,12 @@ DATASETS: tuple[Dataset, ...] = (
         notes="The extract has no per-row date: the date is when the newest registration first loaded.",
     ),
     Dataset(
-        "irs527", "IRS 527 political organizations", "manual", "monthly",
+        "irs527", "IRS 527 political organizations", "manual", "monthly (the IRS rebuilds the file every Saturday)",
         "import-irs527 --file <FullDataFile.txt> --illinois-only",
         (("irs527_reports", _clean_text_date("period_end")), ("irs527_expenditures", _clean_text_date("date"))),
         folder="data/manual/irs527",
-        notes="Download automation is assessed in docs/runbooks/irs527_data.md.",
+        notes=("Download scriptable weekly; import blocked on loader idempotency "
+               "(docs/runbooks/irs527_data.md P-3: a re-run doubles five tables)."),
     ),
     Dataset(
         "openbook", "IL Comptroller OpenBook contracts", "manual", "as needed",

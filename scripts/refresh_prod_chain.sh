@@ -54,10 +54,23 @@ fi
 log "STEP3_END sanity_check OK"
 
 log "STEP4_START sunshine_import"
-if ! $PYTHON run.py sunshine-import --bulk-dir Bulk_download >> "$LOG" 2>&1; then
+if ! $PYTHON run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap >> "$LOG" 2>&1; then
   fail "sunshine_import" 4
 fi
 log "STEP4_END sunshine_import"
+
+# The compat swap deadlocks or times out against live readers (CLAUDE.md "Data Refresh Schedule",
+# 2026-10-27): run it with ilcf-web stopped (about 15 s down). Under SKIP_RESTART=1 the site is
+# already offline, so the service is left alone.
+log "STEP4B_START compat_swap"
+[ "${SKIP_RESTART:-0}" = "1" ] || systemctl stop ilcf-web.service
+$PYTHON scripts/swap_bulk_to_isbe.py >> "$LOG" 2>&1
+swap_rc=$?
+[ "${SKIP_RESTART:-0}" = "1" ] || systemctl start ilcf-web.service
+if [ $swap_rc -ne 0 ]; then
+  fail "compat_swap" 10
+fi
+log "STEP4B_END compat_swap"
 
 log "STEP5_START sync_fec_il_federal"
 # --refresh-cache is required: without it the sync replays the payload cache and refreshes nothing (CLAUDE.md "FEC silent no-op").
@@ -75,6 +88,17 @@ if [ -n "${SOCRATA_APP_TOKEN:-}" ]; then
   log "STEP5B_END import_chicago_phase1"
 else
   log "STEP5B_SKIPPED import_chicago_phase1 (SOCRATA_APP_TOKEN not set)"
+fi
+
+# FEC Schedule B has no timer: backfill it weekly, on Wednesdays (non-fatal; the script has its own lock and log).
+if [ "$(date +%u)" = "3" ]; then
+  log "STEP5C_START fec_schedule_b_catchup"
+  if ! bash scripts/fec-schedule-b-catchup.sh >> "$LOG" 2>&1; then
+    log "STEP5C_WARN fec_schedule_b_catchup failed (non-fatal)"
+  fi
+  log "STEP5C_END fec_schedule_b_catchup"
+else
+  log "STEP5C_SKIPPED fec_schedule_b_catchup (weekly, Wednesdays)"
 fi
 
 log "STEP6_START run_cross_matching (long ~30-60min)"
@@ -112,5 +136,12 @@ if [ "$HTTP" != "200" ]; then
 fi
 log "STEP8_END restart_service http=$HTTP"
 fi
+
+# Gate: fails the run when a refresh advanced no data (the FEC silent no-op), after the restart.
+log "STEP9_START validate_freshness"
+if ! $PYTHON run.py validate-freshness >> "$LOG" 2>&1; then
+  fail "validate_freshness" 11
+fi
+log "STEP9_END validate_freshness"
 
 log "CHAIN_END"

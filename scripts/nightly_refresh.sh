@@ -56,7 +56,7 @@ done
 
 if [ -f "$FEC_LOCK" ]; then
     log "NIGHTLY_FAILED $FEC_LOCK still present after ${FEC_LOCK_WAIT_MINUTES} min"
-    rc=10
+    rc=20  # the chain's own exit codes are 2-11
 else
     REFRESH_RUN_ID="${RUN_ID:-}" bash "${APP_DIR}/scripts/refresh_prod_chain.sh" "$LOG"
     rc=$?
