@@ -16,6 +16,11 @@ Conventions that apply to every ISBE money table:
   Canonical helper: `receipts_filter_sql(alias, parts=…)` in `database/models.py` (plan S-PA).
 - **Donor identity** = `donor_key = LOWER(TRIM(first|last|addr1|addr2|city|state|zip))` joined by `|`
   (`Donor._bulk_donor_key_sql`, `database/models.py:787`); merges in `donor_entity_local_member`.
+- **Row counts: never read `pg_stat_user_tables.n_live_tup` as a count.** On a local `ilcf` restored by
+  `sync-prod-db` (pg_restore, no ANALYZE afterwards) it is 0 for every restored table until autovacuum or
+  an explicit ANALYZE reaches it — on 2026-10-29 it showed 0 for lobbying_*, irs527_*, donors, committees and
+  fec_schedule_* while `COUNT(*)` gave 1,822 / 2,343 / 561 / 344 / 89,789 rows. Use `COUNT(*)` (or
+  `reltuples` only after ANALYZE), and ANALYZE restored tables before trusting local plans or timings.
 
 ## isbe_committees
 - **Where:** table, loaded by `scripts/isbe_sunshine_etl.py` from `Committees.txt` (dropped + reloaded every `sunshine-import`)
