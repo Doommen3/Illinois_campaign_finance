@@ -1063,15 +1063,15 @@ def _attributes(record: str, filing: str) -> bool:
 
 
 class TestMatcherHyphensAndNicknames:
-    """Search program Phase 2, decisions M1 + M2 (P2-3): a hyphen is a space (key = first + last token), and the first
-    token matches through the ONE nickname map of database/name_normalize.py on both sides -- directly (MIKE / MICHAEL) or
-    through one shared alias (TED and ED share EDWARD). Reading chosen here: two first names match when their alias sets
-    (the name plus its NICKNAMES entries) intersect, so THEODORE and ED (whose sets are {THEODORE, TED} and {ED, EDWARD})
-    do NOT match; a canonical-per-connected-component key would join them. A two-word alias ("JAY ROBERT" for JB) keys by
-    its first word, the way the name key itself reads a name. Periods and apostrophes are still removed, not split: "J.B."
+    """Search program Phase 2, decisions M1 + M2 (P2-3) with the direct-alias rule P2-17: a hyphen is a space (key =
+    first + last token), and two first tokens match only when they are equal or one is a DIRECT alias of the other in the
+    ONE nickname map of database/name_normalize.py (MIKE / MICHAEL, PAT / PATRICIA, TED / EDWARD) -- never through a
+    shared third alias, so PATRICK and PATRICIA (both PAT) do not meet, nor TED and ED (both EDWARD), nor THEODORE and ED.
+    A two-word alias ("JAY ROBERT" for JB) is read by its first word, the way the name key itself reads a name, so JB
+    and JAY are direct aliases both ways. Periods and apostrophes are still removed, not split: "J.B."
     stays JB and "O'Brien" stays OBRIEN (TestMatcher pins both), so the key does not go through normalize_name as a whole.
     Kills: a hyphen removed ("SMITHJONES") or kept; a matcher-local nickname dict (the every-entry test binds to NICKNAMES);
-    nicknames applied to one side only; aliases that chain without limit; an alias applied to the last name."""
+    nicknames applied to one side only; aliases that chain through a shared alias; an alias applied to the last name."""
 
     @pytest.mark.parametrize("text, key", [
         ("Rae Smith-Jones", ("RAE", "JONES")),
@@ -1090,18 +1090,34 @@ class TestMatcherHyphensAndNicknames:
         assert _attributes("Michael Farrow", "Mike Farrow")
         assert _attributes("Mike Farrow", "Michael Farrow")
 
-    def test_ted_edward_and_ed_meet_on_one_key(self):
-        from itertools import permutations
-        pairs = list(permutations(["Ted Example", "Edward Example", "Ed Example"], 2))
-        missing = [pair for pair in pairs if not _attributes(*pair)]
-        assert missing == [], f"record / filing pairs that do not attach: {missing}"
+    def test_ted_and_ed_each_meet_edward_but_not_each_other(self):
+        # P2-17 (b): TED -> EDWARD and ED -> EDWARD are direct aliases; TED and ED only share EDWARD.
+        for record, filing in [("Edward Example", "Ted Example"), ("Ted Example", "Edward Example"),
+                               ("Edward Example", "Ed Example"), ("Ed Example", "Edward Example")]:
+            assert _attributes(record, filing), (record, filing)
+        assert not _attributes("Ed Example", "Ted Example")
+        assert not _attributes("Ted Example", "Ed Example")
 
-    def test_an_alias_reaches_no_further_than_one_shared_alias_and_never_the_last_name(self):
-        # (guard) none of these attach today; the nickname rule must not make them.
+    def test_an_alias_never_reaches_through_a_shared_alias_or_the_last_name(self):
         assert not _attributes("Theodore Example", "Ed Example")
         assert not _attributes("Ed Example", "Theodore Example")
+        # P2-17 (a): PATRICK and PATRICIA are both aliases of PAT, not of each other (no cycle gate here, so any cycle).
+        assert not _attributes("Patricia Example", "Patrick Example")
+        assert not _attributes("Patrick Example", "Patricia Example")
         assert not _attributes("Michael Farrow", "Brad Farrow")
         assert not _attributes("Michael Farrow", "Mike Farrowby")
+
+    def test_a_nickname_filing_attaches_to_every_record_it_is_a_direct_alias_of(self):
+        # P2-17 (c): "Pat" is a direct alias of both PATRICK and PATRICIA, so both records take the row, each with the
+        # row's one-name share (the shared-key rule, D4).
+        from database.outside_spending import attribute_part9_rows, candidate_name_key
+        records = [
+            {"key": candidate_name_key(name), "cycles": {2026}, "candidate_id": number, "name": name}
+            for number, name in [(1, "Patrick Example"), (2, "Patricia Example")]
+        ]
+        attributions = attribute_part9_rows([_row(1, "Pat Example", amount=1000.0)], records)
+        assert sorted(item["candidate"]["candidate_id"] for item in attributions) == [1, 2]
+        assert [(item["share"], item["named_count"]) for item in attributions] == [(1000.0, 1), (1000.0, 1)]
 
     def test_the_suffix_rule_still_holds_with_a_nickname(self):
         assert _attributes("Michael Farrow, Jr", "Mike Farrow")
@@ -1294,7 +1310,8 @@ class TestProfileSection:
     a candidate with nothing attached; a link that drops the window; a candidate whose last name carries a
     suffix ('Example, Jr') and so misses every filing written without it, or one fix side only (filings with the
     suffix miss), or a 'Last, First' filing that attaches to nobody or is split in two (halved amount).
-    Not pinned (accepted): the help text on the matching rule (copy, not an invariant), the position of the
+    Not pinned (accepted): the help text on the matching rule beyond its P2-18 phrases (pinned by
+    test_the_matching_note_names_hyphens_and_nicknames_on_every_page), the position of the
     block on the page and the spender links' query string.
     Pinned on a reading of the contract (flagged in the report): 'All N line items' has N = the rows of the
     WINDOW, because the link carries the window and an all-time N would misstate what it opens."""
@@ -1748,3 +1765,17 @@ class TestRaceReconciliation:
         assert urlsplit(hrefs[0]).path == "/candidates/985/outside-spending"
         followed = _get(suffix_app, hrefs[0])
         assert _summary(_head_before_line_items(followed)) == (4000.00, 0.00, 4000.00, 1)
+
+
+def test_the_matching_note_names_hyphens_and_nicknames_on_every_page(outside_app):
+    """P2-18: the visible matching note on the profile section, the line-item page and the race page says what search
+    Phase 2 changed (M1 hyphens, M2 nicknames)."""
+    pages = {
+        "profile": _get(outside_app, "/candidates/900"),
+        "line items": _get(outside_app, LINE_URL),
+        "race": _race_page(outside_app, "period=cycle:2026"),
+    }
+    for label, page in pages.items():
+        text = _visible_text(page)
+        assert "apostrophes, quotes and hyphens, middle names and trailing suffixes" in text, label
+        assert "common nicknames such as Mike and Michael count as the same first name" in text, label
