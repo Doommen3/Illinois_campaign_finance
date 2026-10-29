@@ -79,6 +79,10 @@ a fail.
 | MT-025 | Search | Name search Phase 2: apostrophe surnames precise, possessives unchanged, nicknames on list pages, race total not doubled | 2026-10-29 | ⭐ |
 | MT-026 | Donors | In-kind panel members link only where a donor page lists them; donor page says its totals are itemized only | 2026-10-29 |  |
 | MT-027 | Search | Investigate and search substring branches: apostrophes and typed wildcards | 2026-10-29 | ⭐ |
+| MT-028 | Committees | A committee's receipts come from its current filing (D4 picker) | 2026-10-29 | ⭐ |
+| MT-029 | Network tab | Rows behind a drill-down member (rows.json) | 2026-10-29 |  |
+| MT-030 | Network tab | The ego graph is readable (N8 probe criteria) | 2026-10-29 |  |
+| MT-031 | Data status | Data status page and the nightly runs | 2026-10-29 | ⭐ |
 
 ## Tests
 
@@ -657,3 +661,91 @@ a fail.
 
 | Date | Site | Tests run | Result | Notes |
 |---|---|---|---|---|
+
+### MT-028 — A committee's receipts come from its current filing (D4)
+
+- **Area:** Committees
+- **Created:** 2026-10-29
+- **Source commit:** f178610
+- **Precondition:** prod has run the D4 matview rebuild (commands below) and `refresh-analytics --with-snapshot`
+  after the deploy that carries f178610.
+- **Why:** For each filing period the condensed receipts kept the rows of one filed doc, picked by the latest
+  `received_datetime` alone. A later empty A-1, Letter/Correspondence or B-1 with the same period then beat the live
+  quarterly; a dated archived original beat a live amendment filed without a received time; and ties went to
+  whichever doc the plan met first. `isbe_most_recent_filings` could also pick an undated Raffle Report, Final or
+  Notification of Self Funding. The committee's own receipts vanished from its totals. Locally the fix brings back
+  42,088 live itemized receipts ($38.8M) across 518 committees and drops 760 rows ($148K) across 20. It guards
+  against the picker returning to an empty or superseded filing.
+- **Steps:**
+  1. Open `/committees/37277`. Set the window to All time and read the Receipts Summary total.
+  2. Open `/committees/37277/donors`. Set the window to All time and read the total on the summary line.
+- **Pass:** Step 1: the Receipts Summary total is within a few percent of, and not above, the committee's sworn
+  D-2 total receipts (locally $42,024,283 against a sworn $42,025,818; prod is about a month fresher, so the figures
+  will differ). Step 2: the donors total is about $4.83M locally.
+- **Fail:** Step 1 far below the sworn total (locally the pre-fix figure was $1,004,335) or above it; step 2 still
+  about $1.0M (the pre-fix figure was $1,000,000.00).
+
+---
+
+### MT-029 — Network tab: rows behind a drill-down member
+
+- **Area:** Network tab
+- **Created:** 2026-10-29
+- **Source commit:** 8016b40
+- **Precondition:** JavaScript enabled; candidate 13505 has in-kind donors.
+- **Why:** The drill-down panel's member rows now open the filed receipt or expenditure rows behind an edge
+  (`/candidates/<id>/network/rows.json`); this guards against row lists that do not add up to the member's amount, dead
+  filing links and a nested table that will not collapse (to-do item 8a).
+- **Steps:**
+  1. Open `/candidates/13505/network` (Money flow is drawn by default) and click the "In-kind contributions" node.
+  2. In the panel, click one member's "N rows" button and read the nested table.
+  3. Click one row's Filing link, then go back.
+  4. Click the same "N rows" button again, then press Escape.
+  5. Switch to "Ego graph", click the "Friends of Frerichs" node, then click a donor's Rows button in the "Connected to" list.
+- **Pass:** Step 2: a nested table with exactly N rows (Date, Amount, Type, Description, Filing) whose amounts sum to the
+  member's Amount. Step 3: the link opens `/committees/filing/<id>` for that row. Step 4: the second click collapses the
+  table; Escape empties the panel. Step 5: the same nested table appears under the donor.
+- **Fail:** Rows that do not sum to the member's amount; a Filing link that 404s; a table that stays open after the
+  second click; an error line in the panel.
+
+### MT-030 — Network tab: the ego graph is readable
+
+- **Area:** Network tab
+- **Created:** 2026-10-29
+- **Source commit:** a712ae4
+- **Precondition:** JavaScript enabled; a window at least 1200 px wide.
+- **Why:** The ego view moved to a force renderer whose readability the N8 probe enforces (no overlapping labels,
+  nothing outside the frame, hover reveals a label, click highlights the connected network, legend chips filter).
+- **Steps:**
+  1. Open `/candidates/13505/network?view=ego` and look at the drawing at load.
+  2. Hover an unlabelled node. Scroll to zoom in.
+  3. Click a node. Press Escape.
+  4. In the key, click the "Donor" chip; click it again.
+  5. Click a row of the "Network edges" table below the graph.
+- **Pass:** Step 1: no two labels overlap and every node sits inside the frame. Step 2: the hovered node shows its
+  name; zooming in shows more labels at the same text size. Step 3: the node and its neighbours stay bright, the rest
+  dims, "Connected to" lists the neighbours and the node's rows in the edges table highlight; Escape clears all of it.
+  Step 4: donor nodes and their lines disappear, then return. Step 5: the row's node focuses.
+- **Fail:** Overlapping labels or a node outside the frame at load; no label on hover; the focus not clearing on
+  Escape; a chip that hides nothing.
+
+### MT-031 — Data status page and the nightly runs
+
+- **Area:** Data status
+- **Created:** 2026-10-29
+- **Source commit:** 09f9d38
+- **Precondition:** none (the "Recent refresh runs" table fills after the first installed nightly run).
+- **Why:** `/data-status` shows every dataset's age (automated and hand-loaded) and the nightly refresh runs with
+  what changed; it guards against a stale dataset nobody notices and a run that failed silently (to-do item 4).
+- **Steps:**
+  1. Open `/data-status`, or follow the "Data status" link at the bottom of any page's Data Status strip.
+  2. Read the Datasets table.
+  3. Read the "Recent refresh runs" table.
+- **Pass:** Step 2: eight datasets (ISBE, FEC Schedule A, FEC Schedule B, FEC Schedule E, City of Chicago, IL SOS
+  lobbying, IRS 527, OpenBook), each with Automated or By hand, a cadence, a latest data date, a last load (Central), an
+  age in days and Stale / Current / No threshold; the ISBE and FEC Schedule A dates match the homepage strip. Step 3:
+  before any run, "No refresh runs recorded yet."; after the first night, that night's run with a start near 03:00–03:05
+  Central, minutes, status ok or failed (with the exit code), check ok / running / failed, and a "What changed" line per
+  dataset. No server paths or commands anywhere on the page.
+- **Fail:** A missing dataset; a date that disagrees with the strip; a run row without a status; a path or command on
+  the page.
