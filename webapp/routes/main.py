@@ -15,6 +15,7 @@ from database.name_normalize import (
     NAME_TSVECTOR_SQL,
     name_predicates,
     normalize_name,
+    normalize_query,
     normalized_substring_sql,
     search_tsquery,
 )
@@ -207,14 +208,15 @@ def _is_donor_key_query(query: str) -> bool:
 
 # Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, so the six-hour cache cannot
 # serve results computed under the old rules.
-SEARCH_CACHE_REVISION = "sn1"
+SEARCH_CACHE_REVISION = "sn2"
 
 
 def _search_results_cache_key(scope_token: str, query: str, search_type: str) -> str:
     raw = query.strip().lower()
     # Spellings that normalize to one form are one search ("Mike-Exampleton", "mike  exampleton"). A key-like query is the
     # exception: its raw text also feeds the donor-key and filed-doc sections, where the spellings answer differently.
-    form = raw if _is_donor_key_query(query) else (normalize_name(query) or raw)
+    # normalize_query, not normalize_name: "O'Neil", "O Neil" and "ONeil" answer differently since the apostrophe rule.
+    form = raw if _is_donor_key_query(query) else (normalize_query(query) or raw)
     return f"{SEARCH_CACHE_REVISION}:{scope_token}:{search_type}:{form}"
 
 

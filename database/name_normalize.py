@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 
 _NOT_ALNUM = re.compile(r"[^A-Z0-9 ]")
+# A word-internal apostrophe, straight or curly: the one punctuation mark the QUERY side reads (search Phase 2, P2-23).
+_INNER_APOSTROPHE = re.compile(r"(?<=[A-Za-z])['’](?=[A-Za-z])")
 
 # Generational suffixes. A query keeps them only when dropping them would leave a single token ("Pat Jr").
 _SUFFIXES = frozenset({"JR", "SR", "II", "III", "IV", "V"})
@@ -36,12 +38,19 @@ def normalize_name(text: str | None) -> str:
     return " ".join(_NOT_ALNUM.sub(" ", _upper(text)).split())
 
 
+def normalize_query(text: str | None) -> str:
+    """normalize_name, except a word-internal apostrophe (a letter on both sides, ' or ’) survives as "'" -- the one mark
+    the query side reads: "O'Neil-Smythe" -> "O'NEIL SMYTHE", "Smith O’Neil" -> "SMITH O'NEIL". The stored side stays on
+    normalize_name / NAME_TSVECTOR_SQL (apostrophe = separator); search_tsquery turns such a token into a compound group."""
+    return "'".join(normalize_name(piece) for piece in _INNER_APOSTROPHE.split(text or ""))
+
+
 def name_tokens(text: str | None) -> list[str]:
     """The normalized tokens of a QUERY. Two kinds of token are noise in a query and are dropped so they cannot hide the
     records filed without them: a generational suffix (unless that would leave a single token: "Pat Jr" keeps JR) and a
     single-letter initial (while a multi-letter token remains). Only query tokens are ever required, so the stored name's
     own extra tokens never matter."""
-    tokens = normalize_name(text).split()
+    tokens = normalize_query(text).split()
     without_suffix = [token for token in tokens if token not in _SUFFIXES]
     if len(without_suffix) > 1:
         tokens = without_suffix
@@ -116,10 +125,18 @@ def _lexeme(alias: str) -> str:
 
 def search_tsquery(text: str | None) -> str | None:
     """A to_tsquery('simple', ...) string for a typed name: one group per query token, ANDed, each group the token's prefix
-    lexeme and its aliases ORed -- "Frerichs, Mike W." gives "frerichs:* & (mike:* | michael:*)". None when no token remains.
-    Tokens are [A-Z0-9] only, so nothing the user typed can act as a tsquery operator."""
+    lexeme and its aliases ORed -- "Frerichs, Mike W." gives "frerichs:* & (mike:* | michael:*)". A compound token (a
+    word-internal apostrophe, normalize_query) asks for the joined word or both halves, with no aliases: "O'Neil" gives
+    "(oneil:* | (o:* & neil:*))", matching a stored "O'Neil" (cut into O + NEIL) or "ONeil", not every Neil. None when no
+    token remains. Lexemes are [a-z0-9] only (the apostrophe never reaches the tsquery), so nothing the user typed can act
+    as a tsquery operator."""
     groups = []
     for token in name_tokens(text):
+        if "'" in token:
+            joined = _lexeme(token.replace("'", ""))
+            halves = " & ".join(_lexeme(part) for part in token.split("'"))
+            groups.append(f"({joined} | ({halves}))")
+            continue
         options = [_lexeme(token)] + [_lexeme(alias) for alias in sorted(expand_token(token) - {token})]
         groups.append(options[0] if len(options) == 1 else "(" + " | ".join(options) + ")")
     return " & ".join(groups) or None
@@ -197,6 +214,9 @@ def name_matches(query: str | None, label: str | None, *, substring: bool = Fals
     def prefixes(word: str) -> bool:
         return any(token.startswith(word) for token in label_tokens)
 
-    return all(
-        any(all(prefixes(word) for word in alias.split()) for alias in expand_token(token)) for token in query_tokens
-    )
+    def token_matches(token: str) -> bool:
+        if "'" in token:  # a compound, as search_tsquery reads it: the joined word, or every half
+            return prefixes(token.replace("'", "")) or all(prefixes(part) for part in token.split("'"))
+        return any(all(prefixes(word) for word in alias.split()) for alias in expand_token(token))
+
+    return all(token_matches(token) for token in query_tokens)
