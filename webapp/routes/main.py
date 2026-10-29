@@ -199,8 +199,17 @@ def _is_donor_key_query(query: str) -> bool:
     return digit_count >= 3
 
 
+# Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, so the six-hour cache cannot
+# serve results computed under the old rules.
+SEARCH_CACHE_REVISION = "sn1"
+
+
 def _search_results_cache_key(scope_token: str, query: str, search_type: str) -> str:
-    return f"{scope_token}:{search_type}:{query.strip().lower()}"
+    raw = query.strip().lower()
+    # Spellings that normalize to one form are one search ("Mike-Exampleton", "mike  exampleton"). A key-like query is the
+    # exception: its raw text also feeds the donor-key and filed-doc sections, where the spellings answer differently.
+    form = raw if _is_donor_key_query(query) else (normalize_name(query) or raw)
+    return f"{SEARCH_CACHE_REVISION}:{scope_token}:{search_type}:{form}"
 
 
 def _get_cached_search_results(scope_token: str, query: str, search_type: str) -> dict | None:
