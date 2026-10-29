@@ -1238,6 +1238,78 @@ def test_network_tab_links_committee_and_donor_nodes(client, fakes):
     assert "/committees/901" in donor_paths, donor_row["links"]
 
 
+DEE_KEY = "dee|inkind|3 oak st||springfield|il|62701"
+MAX_KEY = "max|mixed|4 elm st||springfield|il|62701"
+UNMATCHED_PAYER = "transfer:0123456789abcdef"
+
+
+def _in_kind_network(entity, n):
+    """network_payload plus an in-kind-only donor (Dee, 5A), a donor with itemized AND in-kind rows (Max, 1A + 5A) and
+    a 2A transfer from a payer that matches no committee (a ``transfer:`` node)."""
+    from database.entity_network import EDGE_TYPE_DEFINITIONS
+
+    def edge(edge_type, source, weight, count):
+        return {"source": source, "target": "committee:901", "edge_type": edge_type, "weight": weight, "count": count,
+                "source_table": "isbe_condensed_receipts", **EDGE_TYPE_DEFINITIONS[edge_type]}
+
+    result = network_payload(entity, n)
+    result["nodes"] += [
+        {"id": f"donor:{DEE_KEY}", "label": "Dee Inkind", "node_type": "donor", "role": "donor",
+         "group_label": GROUP_A, "total_amount": 9000.0},
+        {"id": f"donor:{MAX_KEY}", "label": "Max Mixed", "node_type": "donor", "role": "donor",
+         "group_label": GROUP_A, "total_amount": 3000.0},
+        {"id": UNMATCHED_PAYER, "label": "Unmatched Payer Fund", "node_type": "committee", "role": "transfer",
+         "group_label": GROUP_A, "total_amount": 5000.0},
+    ]
+    result["edges"] += [
+        edge("in_kind_donor_committee", f"donor:{DEE_KEY}", 9000.0, 3),
+        edge("donor_committee", f"donor:{MAX_KEY}", 1000.0, 1),
+        edge("in_kind_donor_committee", f"donor:{MAX_KEY}", 2000.0, 1),
+        edge("transfer_in", UNMATCHED_PAYER, 5000.0, 2),
+    ]
+    result["summary"] = dict(result["summary"], edge_type_definitions=EDGE_TYPE_DEFINITIONS)
+    return result
+
+
+def _network_meta(markup: str) -> dict:
+    found = re.search(r'<script id="entity-network-meta" type="application/json">(.*?)</script>', markup, re.S)
+    assert found, "the Network tab carries its meta JSON"
+    return json.loads(found.group(1))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_in_kind_only_donor_nodes_and_panel_members_carry_no_donor_page_link(client, fakes, kind):
+    """fix-8b F2a (to-do 8b, finding I1): /donors/key/<key> lists itemized (part 1) contributions only, and the Donors
+    tab lists no in-kind rows (only a per-group in-kind total), so a donor whose only rows into this entity are in-kind
+    (5A) gets NO link -- in the edge table, in the graph's ``hrefs`` and therefore in the money-flow In-kind panel,
+    whose member rows read ``hrefs[member.id]``.  A donor with itemized (1A) rows keeps /donors/key/<key> (that page
+    lists the entity's committee); an unmatched transfer payer has no page.
+
+    Kills: every donor node linked to /donors/key (the I1 dead end); the rule applied to the edge table but not to the
+    hrefs the panel reads, or the reverse; a mixed donor losing its link."""
+    fakes.payloads = {**FULL, "get_entity_network": _in_kind_network}
+    response = client.get(url_of(kind, "network"))
+    assert response.status_code == 200
+    markup = response.get_data(as_text=True)
+    hrefs = _network_meta(markup)["hrefs"]
+
+    assert hrefs.get(f"donor:{DEE_KEY}") is None, hrefs
+    assert hrefs.get(UNMATCHED_PAYER) is None, hrefs
+    assert unquote(urlsplit(hrefs[f"donor:{PAT_KEY}"]).path) == f"/donors/key/{PAT_KEY}"
+    assert unquote(urlsplit(hrefs[f"donor:{MAX_KEY}"]).path) == f"/donors/key/{MAX_KEY}"
+
+    page = Page(markup)
+    donor_paths = {page.anchor_path(anchor) for anchor in page.anchors if page.anchor_path(anchor).startswith("/donors/key/")}
+    assert donor_paths == {f"/donors/key/{PAT_KEY}", f"/donors/key/{MAX_KEY}"}, donor_paths
+    assert "Dee Inkind" in page.text, "the in-kind donor is still listed, as plain text"
+
+    flow = client.get(url_of(kind, "network.json", "view=money_flow")).get_json()
+    members = {member["id"] for member in flow["members"]["class:in_kind"]}
+    assert members == {f"donor:{DEE_KEY}", f"donor:{MAX_KEY}"}, flow["members"]
+    assert {member: hrefs.get(member) is not None for member in members} == {
+        f"donor:{DEE_KEY}": False, f"donor:{MAX_KEY}": True}
+
+
 IVY_KEY = "ivy|flagged|9 pine rd||peoria|il|61602"
 
 

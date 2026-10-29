@@ -586,6 +586,16 @@ def test_all_time_donor_page_shows_a_donor_whose_only_receipt_has_no_d2(prod_env
     assert "$666.00" in html
 
 
+def test_donor_page_says_its_totals_exclude_in_kind_and_transfers(prod_env):
+    """fix-8b F4: the /donors/key page's totals are itemized monetary contributions only; one sentence says so.
+
+    Kills: a page whose totals silently differ from the in-kind / transfer amounts a network panel links from."""
+    html = prod_env.get(f"/donors/key/{quote(ALICE.key, safe='')}?source={SOURCE}")
+
+    assert ("Itemized monetary contributions (Schedule A, part 1). In-kind contributions and transfers are not"
+            " included.") in " ".join(html.split())
+
+
 def test_every_row_carries_a_real_recent_updated_at(env):
     """`updated_at` is a timestamp set by the refresh: a parsed datetime within the last hour on every row, not NULL and
     not a constant in the past.  (The window is checked in SQL so it holds for timestamp and timestamptz alike.)
