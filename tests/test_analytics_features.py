@@ -1110,7 +1110,9 @@ def test_vendor_network_supports_bulk_committees_clean_sbe_schema(analytics_conn
     assert vendor_edge["weight_unit"] == "usd"
 
 
-def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
+def test_bulk_materialization_uses_live_part1_rows_only(tmp_path: Path):
+    """fix-8b F1: archived and part-5 receipts are excluded; receipts on a doc with no D-2 (MissingD2, the A-1
+    shape) or only an archived D-2 (ArchivedD2) count. Before F1 this test pinned their exclusion (the 8b bug)."""
     db_path = str(tmp_path / "analytics_bulk_filter.db")
     init_db(db_path)
     conn = get_db(db_path)
@@ -1197,7 +1199,7 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
         stats = refresh_analytics_materialized(conn)
         assert stats["source"] == "bulk_receipts"
         assert stats["materialization_version"] >= 2
-        assert stats["donor_summary_rows"] == 1
+        assert stats["donor_summary_rows"] == 3
 
         donor_rows = conn.execute(
             """
@@ -1207,10 +1209,11 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
             ORDER BY donor_name
             """
         ).fetchall()
-        assert len(donor_rows) == 1
-        assert donor_rows[0]["donor_name"] == "Alice Included"
-        assert donor_rows[0]["total_amount"] == 100.0
-        assert donor_rows[0]["contribution_count"] == 1
+        assert [(r["donor_name"], r["total_amount"], r["contribution_count"]) for r in donor_rows] == [
+            ("Alice Included", 100.0, 1),
+            ("Dina ArchivedD2", 600.0, 1),
+            ("Mia MissingD2", 700.0, 1),
+        ]
 
         meta_row = conn.execute(
             """
@@ -1221,7 +1224,7 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
         ).fetchone()
         assert meta_row is not None
         assert int(meta_row["materialization_version"]) >= 2
-        assert "active_non_archived_d2_part1" in (meta_row["materialization_notes"] or "")
+        assert "non_archived_part1_or_blank_contributions" in (meta_row["materialization_notes"] or "")
     finally:
         conn.close()
 

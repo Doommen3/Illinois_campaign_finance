@@ -599,26 +599,19 @@ BULK_RECEIPTS_MATERIALIZATION_VERSION = 2
 ISBE_RECEIPTS_MATERIALIZATION_VERSION = 3
 CONTRIBUTIONS_MATERIALIZATION_VERSION = 1
 
-_BULK_DONOR_RECEIPT_FILTER_SQL = (
-    "NOT COALESCE(r.is_archived::boolean, FALSE) AND "
-    "COALESCE(r.d2_part_code, '') LIKE '1%' AND "
-    "EXISTS ("
-    "SELECT 1 "
-    "FROM bulk_d2_totals_clean d2 "
-    "WHERE d2.filed_doc_id = r.filed_doc_id "
-    "  AND NOT COALESCE(d2.is_archived::boolean, FALSE)"
-    ")"
-)
+# The analytics donor predicate is the live contributions predicate (fix-8b F1): amount > 0, not archived,
+# D-2 part blank or '1%', and NO requirement that the filed doc have a D-2 report. No D-2 check is needed for
+# de-duplication: isbe_condensed_receipts (scripts/isbe_sunshine_etl.py) already holds each receipt once -- the
+# receipts dated after the committee's latest quarterly's period end (e.g. A-1 large contributions not yet
+# re-listed) UNION the receipts of the one doc picked per (period begin, period end, committee), Pre-election
+# reports excluded. The old EXISTS dropped every not-yet-re-listed A-1 receipt (to-do 8b, finding I2).
+_BULK_DONOR_RECEIPT_FILTER_SQL = receipts_filter_sql("r")
 
+# The same clauses on isbe_condensed_receipts' native columns (bulk_receipts_clean is that view renamed).
 _ISBE_DONOR_RECEIPT_FILTER_SQL = (
+    "COALESCE(r.amount, 0) > 0 AND "
     "r.archived = FALSE AND "
-    "r.d2_part LIKE '1%' AND "
-    "EXISTS ("
-    "SELECT 1 "
-    "FROM isbe_d2_reports d2 "
-    "WHERE d2.filed_doc_id = r.filed_doc_id "
-    "  AND d2.archived = FALSE"
-    ")"
+    "(COALESCE(r.d2_part, '') = '' OR r.d2_part LIKE '1%')"
 )
 
 _MATERIALIZED_SOURCE_TABLES = {
@@ -3634,7 +3627,7 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
             large_inserted,
             float(large_threshold),
             ISBE_RECEIPTS_MATERIALIZATION_VERSION,
-            "isbe_direct_active_non_archived_d2_part1_with_active_d2_filing",
+            "isbe_direct_non_archived_part1_or_blank_contributions",
         ),
     )
 
@@ -3878,7 +3871,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
             large_inserted,
             float(large_threshold),
             BULK_RECEIPTS_MATERIALIZATION_VERSION,
-            "active_non_archived_d2_part1_with_active_d2_filing",
+            "non_archived_part1_or_blank_contributions",
         ),
     )
 

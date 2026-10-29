@@ -69,7 +69,7 @@ Kill list (what each family of checks repels; accepted holes are listed in the r
   ascending AND descending, so an arbitrary-but-stable tie order cannot match both); donor_name ordered without LOWER or by the
   database collation instead of code points ("al smith"/"Al Smith" kill the case-sensitive orders, "Ana Muñoz" vs "Ana Muzzy"
   kills the locale order); page clamp lost; empty cell page not echoed; Decimal / non-JSON values in the payload; windowed path
-  that drops the archived / part-1 / active-D-2 / positive-amount predicates or an inclusive bound; fallback rows missing from the
+  that drops the archived / part-1 / positive-amount predicates or an inclusive bound; fallback rows missing from the
   windowed path; keys filled only for rows with a city; keys not added to an existing table, or DDL that init-db cannot run twice;
   an agg built before the columns existed answering with an empty page, or backfilling inside the GET; the index added but unused;
   a cache keyed too coarsely, per worker, outside the namespace refresh-analytics flushes (a 6 h TTL would then serve pre-refresh
@@ -280,7 +280,7 @@ SPEC = {donor.label: donor for donor in DONORS}
 FILTERED_OUT = [
     ("Zed", "Zimmer", ALPHA, 5001, "1A", True, 9999.0),    # archived receipt
     ("Yan", "Yost", BETA, 5002, "5A", False, 8888.0),      # D-2 part 5, not a contribution part
-    ("Xia", "Xu", GAMMA, 5099, "1A", False, 7777.0),       # its D-2 report (filed_doc 5099) is archived
+    ("Xia", "Xu", GAMMA, 5003, "2A", False, 7777.0),       # transfer in (part 2A), not a contribution part
 ]
 FILTERED_OUT_NAMES = {"Zed Zimmer", "Yan Yost", "Xia Xu"}
 
@@ -505,7 +505,7 @@ def _seed_geo_dataset(conn) -> None:
     )
     conn.executemany(
         "INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, archived) VALUES (?, ?, ?, ?)",
-        [(9001, ALPHA, 5001, False), (9002, BETA, 5002, False), (9003, GAMMA, 5003, False), (9099, ALPHA, 5099, True)],
+        [(9001, ALPHA, 5001, False), (9002, BETA, 5002, False), (9003, GAMMA, 5003, False)],
     )
     conn.execute(
         """
@@ -901,7 +901,7 @@ def test_a_page_past_the_end_is_clamped_and_an_empty_cell_keeps_the_requested_pa
 
 
 def test_filtered_out_receipts_are_never_counted_on_either_path(geo_conn):
-    """An archived receipt (9,999), a D-2 part-5 receipt (8,888) and a receipt whose D-2 report is archived (7,777), all dated
+    """An archived receipt (9,999), a D-2 part-5 receipt (8,888) and a part-2A transfer in (7,777), all dated
     inside the window and all from Chicago, appear nowhere; neither does the -40 refund (C01 keeps 900 / 600).
 
     Kills: a windowed rewrite that drops _ISBE_DONOR_RECEIPT_FILTER_SQL or `amount > 0`; an agg rebuilt without them."""
