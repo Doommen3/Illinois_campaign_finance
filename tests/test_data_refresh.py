@@ -52,13 +52,15 @@ def test_datasets_match_the_plan_and_the_schema(tmp_path):
     assert keys == ["isbe", "fec_a", "fec_b", "fec_e", "chicago", "lobbying", "irs527", "openbook"]
     automation = {d.key: d.automation for d in DATASETS}
     assert automation == {
-        "isbe": "auto", "fec_a": "auto", "fec_b": "semi", "fec_e": "auto", "chicago": "auto",
+        "isbe": "auto", "fec_a": "auto", "fec_b": "auto", "fec_e": "auto", "chicago": "auto",
         "lobbying": "manual", "irs527": "manual", "openbook": "manual",
     }
     for d in DATASETS:
         assert d.label and d.cadence and d.loader and d.tables
         if d.automation == "manual":
             assert d.folder == f"data/manual/{d.key}"
+    irs527 = next(d for d in DATASETS if d.key == "irs527")
+    assert "P-3" in irs527.notes and "irs527_data.md" in irs527.notes  # import blocked on loader idempotency
     # Every non-ISBE source table named in DATASETS exists in schema.sql (ISBE tables come from the ETL).
     conn = _conn(tmp_path)
     try:

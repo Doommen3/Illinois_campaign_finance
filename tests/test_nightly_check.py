@@ -200,3 +200,24 @@ def test_unfinished_run_gets_its_diff_and_fails(tmp_path):
 def test_shell_scripts_parse(script):
     result = subprocess.run(["bash", "-n", str(REPO / "scripts" / script)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_chain_order_swap_with_service_stopped_and_freshness_gate_last():
+    """refresh_prod_chain.sh: the compat swap runs with ilcf-web stopped (it deadlocks against live
+    readers, 2026-10-27), the FEC sync forces a live pull, and validate-freshness gates the end."""
+    chain = (REPO / "scripts" / "refresh_prod_chain.sh").read_text()
+
+    def at(needle):
+        assert chain.count(needle) == 1, needle
+        return chain.index(needle)
+
+    import_at = at("run.py sunshine-import --bulk-dir Bulk_download --skip-compat-swap")
+    stop_at = at("systemctl stop ilcf-web.service")
+    swap_at = at("scripts/swap_bulk_to_isbe.py")
+    start_at = at("systemctl start ilcf-web.service")
+    fec_at = at("run.py sync-fec-il-federal --refresh-cache")
+    assert import_at < stop_at < swap_at < start_at < fec_at
+    assert at("scripts/fec-schedule-b-catchup.sh") > fec_at  # weekly Schedule B backfill
+    analytics_at = at("run.py refresh-analytics --with-snapshot")
+    restart_at = at("systemctl restart ilcf-web.service")
+    assert at("run.py validate-freshness") > max(analytics_at, restart_at)
