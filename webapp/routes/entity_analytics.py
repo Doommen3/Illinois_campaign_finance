@@ -183,6 +183,15 @@ def _json_url(kind: str, key, ctx: dict, view: str) -> str:
     return url_for(endpoint, view=view, election_cycle=ctx["cycle_arg"], **key_arg, **scope_params(ctx["scope"]))
 
 
+def _donors_tab_url(kind: str, key, ctx: dict) -> str:
+    """The entity's Donors tab with the page's scope, built as entity/_subnav.html builds it (the drill-down panel's
+    "See all donors" link, plan D5)."""
+    if kind == "race":
+        return url_for("entity_analytics.race_tab", race_key=key, tab="donors", election_cycle=ctx["cycle_arg"],
+                       **scope_params(ctx["scope"]))
+    return url_for("entity_analytics.candidate_tab", candidate_id=key, tab="donors", **scope_params(ctx["scope"]))
+
+
 def _tab_page(kind: str, key, tab: str):
     if tab not in ENTITY_TABS:
         abort(404)
@@ -204,6 +213,7 @@ def _tab_page(kind: str, key, tab: str):
         context["nodes_by_id"] = nodes
         context["node_href"] = {node_id: _node_href(node) for node_id, node in nodes.items()}
         context["network_sources"] = {view: _json_url(kind, key, ctx, view) for view in NETWORK_VIEWS}
+        context["donors_tab_url"] = _donors_tab_url(kind, key, ctx)
     return render_template(f"entity/{tab}.html", **context)
 
 

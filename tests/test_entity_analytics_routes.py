@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import json
 import inspect
 import re
 import threading
@@ -1332,7 +1333,7 @@ def test_network_tab_graph_placeholder_points_at_the_json_with_the_scope(client,
 
 
 PHASE_A_VIEWS = {
-    "money_flow": {"view", "nodes", "links", "totals", "folded", "truncated"},
+    "money_flow": {"view", "nodes", "links", "totals", "folded", "truncated", "members"},
     "vendor_network": {"view", "nodes", "edges", "shared_vendors"},
 }
 
@@ -1358,6 +1359,9 @@ def test_network_json_phase_a_views_are_projections_of_the_ego_payload(client, f
         assert {node["id"]: node["column"] for node in body["nodes"]} == {"class:individual": 0, "committee:901": 1,
                                                                            VENDOR_ID: 2}
         assert body["totals"] == {"committee_vendor": 12345.67, "donor_committee": 25000.0, "support": 0.0, "oppose": 0.0}
+        # drill-down members (.claude/plans/money-flow-drilldown.md D1): who is inside the donor-class node
+        assert body["members"] == {"class:individual": [{"id": f"donor:{PAT_KEY}", "label": "Pat Largegiver #1",
+                                                         "node_type": "donor", "amount": 25000.0, "count": 2}]}
     else:
         assert {edge["edge_type"] for edge in body["edges"]} == {"committee_vendor"}
         assert {node["id"] for node in body["nodes"]} == {"committee:901", VENDOR_ID}
@@ -1365,6 +1369,33 @@ def test_network_json_phase_a_views_are_projections_of_the_ego_payload(client, f
         assert vendor["shared"] is False
         assert vendor["committee_ids"] == ["committee:901"]
         assert body["shared_vendors"] == []
+
+
+@pytest.mark.parametrize("kind, query", [
+    pytest.param("candidate", "period=cycle:2024", id="candidate"),
+    pytest.param("race", "period=cycle:2024&election_cycle=2024", id="race"),
+])
+def test_network_tab_meta_names_the_donors_tab_for_the_drilldown_cap_note(client, fakes, kind, query):
+    """.claude/plans/money-flow-drilldown.md D5: a capped donor class's panel links "See all donors" to this entity's
+    Donors tab, passed to the scripts as ``donors_tab_url`` in the ``entity-network-meta`` JSON. It is the subnav's
+    Donors link: same entity, the page's scope and (races) the election cycle. Kills: a link to the global donors list;
+    a URL without the scope (the Donors tab would open on another window than the graph)."""
+    response = client.get(url_of(kind, "network", query))
+    assert response.status_code == 200
+    markup = response.get_data(as_text=True)
+    found = re.search(r'<script id="entity-network-meta" type="application/json">(.*?)</script>', markup, re.S)
+    assert found, "the Network tab carries its meta JSON"
+    meta = json.loads(found.group(1))
+    subnav = [anchor for anchor in Page(markup).anchors
+              if "analytics-subnav-link" in anchor["classes"] and anchor["text"] == "Donors"]
+    assert len(subnav) == 1
+    assert meta.get("donors_tab_url") == subnav[0]["href"]
+    parts = urlsplit(meta["donors_tab_url"])
+    assert unquote(parts.path) == f"{parent_path(kind)}/donors"
+    args, request_args = dict(parse_qsl(parts.query)), dict(parse_qsl(query))
+    assert window_of(args) == window_of(request_args, default=page_default(kind, request_args))
+    if "election_cycle" in request_args:
+        assert args.get("election_cycle") == request_args["election_cycle"]
 
 
 @pytest.mark.parametrize("kind", KINDS)

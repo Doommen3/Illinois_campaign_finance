@@ -1367,7 +1367,7 @@ def test_money_flow_links_regroup_the_race_edges_by_class_and_keep_every_dollar(
     problems = _edge_problems(_link_map(view), RACE_MONEY_FLOW_LINKS)
     assert not problems, "\n".join(problems)
     assert view["view"] == "money_flow"
-    assert set(view) == {"view", "nodes", "links", "totals", "folded", "truncated"}
+    assert set(view) == {"view", "nodes", "links", "totals", "folded", "truncated", "members"}
 
 
 def test_money_flow_totals_reconcile_to_the_ego_edges_for_every_entity_and_window(world):
@@ -1485,7 +1485,8 @@ def test_projections_leave_the_payload_untouched_and_serialise_to_json(world, pr
     view = projection(payload)
     assert payload == pristine
     json.dumps(view)
-    for item in view["nodes"] + view.get("edges", view.get("links", [])):
+    members = [member for listed in view.get("members", {}).values() for member in listed]
+    for item in view["nodes"] + view.get("edges", view.get("links", [])) + members:
         for value in item.values():
             assert not isinstance(value, float) or value == round(value, 2)
     view["nodes"][0]["label"] = "changed"
@@ -1500,6 +1501,7 @@ def test_projections_of_an_empty_graph_are_empty(world, projection):
     if projection is money_flow:
         assert view["totals"] == {"support": 0.0, "oppose": 0.0}
         assert view["folded"] == {"vendors": 0, "transfers": 0, "spenders": 0, "internal": {"count": 0, "amount": 0.0}}
+        assert view["members"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1599,3 +1601,126 @@ def test_money_flow_leaves_money_between_the_entitys_own_committees_out_of_the_s
         incident[link["target"]] += link["weight"]
     for node in view["nodes"]:
         assert node["amount"] == pytest.approx(incident[node["id"]], abs=0.005), node
+
+
+# ---------------------------------------------------------------------------
+# Drill-down members (.claude/plans/money-flow-drilldown.md, decision D1): ``money_flow()["members"]`` lists, for every
+# aggregate node (``class:*`` / ``other:*``), the ego nodes folded into it -- each with that aggregate's dollars and rows
+# summed over the entity's committees, sorted by amount desc, then label, then id. Plain nodes have no entry.
+# Spender members carry ``support_oppose`` and a spender folded on both sides is two members, one per side (the links
+# split the same way).
+# ---------------------------------------------------------------------------
+
+def _members(payload, rows):
+    """Expected member dicts from (ego id, amount, count[, support_oppose]) literals; label / node_type are the ego
+    node's own (the contract: a member is an ego node)."""
+    by_id = {node["id"]: node for node in payload["nodes"]}
+    expected = []
+    for node_id, amount, count, *side in rows:
+        member = {"id": node_id, "label": by_id[node_id]["label"], "node_type": by_id[node_id]["node_type"],
+                  "amount": amount, "count": count}
+        if side:
+            member["support_oppose"] = side[0]
+        expected.append(member)
+    return expected
+
+
+def test_money_flow_members_list_who_is_inside_each_donor_class_and_the_in_kind_node(world):
+    """RACE_WIN regrouped by donor: D1 gives 5,000 (2 rows) to 100 and 1,000 to 101 -> one member, 6,000 in 3 rows; O1
+    is in both the organization class (its 1A 4,000) and the in-kind node (its 5A 750), each with that money only.
+    Kills: members per (donor, committee) instead of per donor; in-kind dollars merged into the class; members for the
+    plain transfer / spender / vendor / committee nodes; an order other than dollars desc."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    members = money_flow(payload)["members"]
+    assert set(members) == {CLASS_INDIVIDUAL, CLASS_ORGANIZATION, CLASS_IN_KIND}
+    assert members[CLASS_INDIVIDUAL] == _members(payload, [
+        (D["D1"], 6000.0, 3), (D["D1b"], 2500.0, 1), (D["D3"], 1200.0, 1), (D["D2a"], 1000.0, 2), (D["D4"], 900.0, 1),
+        (D["D5"], 400.0, 1), (D["B2"], 200.0, 1), (D["B1"], 100.0, 1), (D["Penny"], 0.3, 3)])
+    assert members[CLASS_ORGANIZATION] == _members(payload, [(D["O1"], 4000.0, 1), (D["O3"], 3000.0, 2), (D["O2"], 2500.0, 1)])
+    assert members[CLASS_IN_KIND] == _members(payload, [(D["O1"], 750.0, 1), (D["Ina"], 300.0, 1)])
+
+
+@pytest.mark.parametrize("entity, window, caps", [
+    pytest.param(RACE_ENTITY, WIN, {}, id="race-two-committee-groups"),
+    pytest.param(CANDIDATE_ENTITY, WIN, {}, id="candidate-three-committees"),
+    pytest.param(RACE_ENTITY, (None, None), {}, id="race-all-time"),
+    pytest.param(RACE_ENTITY, WIN, {"max_vendors": 1, "max_transfers": 1, "max_spenders": 1}, id="race-folded"),
+])
+def test_money_flow_members_reconcile_to_every_aggregate_node_to_the_cent(world, entity, window, caps):
+    """Success criterion 1: ``members`` has an entry for every aggregate node and for no other node; each list's
+    amounts sum to the node's amount to the cent and its counts to the rows of the node's links; every member is an
+    ego node id; lists are sorted (-amount, label, id). Kills: a member list that drops or double-counts a committee's
+    share; an entry for a plain node; a member id invented by the projection (a class id, a link key)."""
+    payload = _call(world, entity, date_from=window[0], date_to=window[1])
+    view = money_flow(payload, **caps)
+    aggregates = {node["id"]: node for node in view["nodes"] if node["id"].startswith(("class:", "other:"))}
+    assert aggregates, "the fixture must exercise at least one aggregate node"
+    assert set(view["members"]) == set(aggregates)
+    rows = defaultdict(int)
+    for link in view["links"]:
+        for end in (link["source"], link["target"]):
+            if end in aggregates:
+                rows[end] += link["count"]
+    ego_ids = {node["id"] for node in payload["nodes"]}
+    for aggregate_id, node in aggregates.items():
+        members = view["members"][aggregate_id]
+        assert members, aggregate_id
+        assert round(sum(member["amount"] for member in members), 2) == node["amount"], aggregate_id
+        assert sum(member["count"] for member in members) == rows[aggregate_id], aggregate_id
+        assert {member["id"] for member in members} <= ego_ids, aggregate_id
+        assert members == sorted(members, key=lambda member: (-member["amount"], member["label"], member["id"]))
+
+
+def test_money_flow_other_members_are_exactly_the_folded_ids(world):
+    """Caps of one keep Prairie Print Co, committee 400 and spender 900; the rest fold. ``other:*`` members are those
+    folded ids with their own dollars, nothing kept. Kills: a kept node listed under Other too; an Other list built
+    from the ranking (all ids) instead of the fold; a spender member without its side."""
+    payload = _call(world, RACE_ENTITY, date_from=WIN[0], date_to=WIN[1])
+    members = money_flow(payload, max_vendors=1, max_transfers=1, max_spenders=1)["members"]
+    assert set(members) == {CLASS_INDIVIDUAL, CLASS_ORGANIZATION, CLASS_IN_KIND, "other:vendors", "other:transfers",
+                            "other:spenders"}
+    assert members["other:vendors"] == _members(payload, [(V_B, 900.0, 1), (V_P, 300.0, 1)])
+    assert members["other:transfers"] == _members(payload, [(T_INC, 800.0, 1), (T_TWIN, 500.0, 1)])
+    assert members["other:spenders"] == _members(payload, [(C905, 50.0, 1, "S")])
+
+
+def test_money_flow_a_donor_in_a_class_and_in_kind_is_a_member_of_each_with_that_edge_types_dollars():
+    """Ada gives 300.10 (2 rows) to 901 and 200.20 to 902 in cash and 150 in kind to 901; Acme Corp (no first name)
+    gives 50 cash and 25.50 in kind to 902. Each list carries that edge type's money, summed over both committees and
+    rounded to cents. Kills: a donor listed once with both kinds of money; float noise (500.29999...) in an amount."""
+    ada, acme = "donor:ada|giver|1 elm st||springfield|il|62701", "donor:|acme corp|9 main st||peoria|il|61602"
+    nodes = [_ego_node("committee:901", "committee", "entity"), _ego_node("committee:902", "committee", "entity"),
+             _ego_node(ada, "donor", "donor", "Ada Giver"), _ego_node(acme, "donor", "donor", "Acme Corp")]
+    edges = [_ego_edge(DC, ada, "committee:901", 300.1, 2), _ego_edge(DC, ada, "committee:902", 200.2, 1),
+             _ego_edge(IK, ada, "committee:901", 150.0, 1), _ego_edge(DC, acme, "committee:902", 50.0, 1),
+             _ego_edge(IK, acme, "committee:902", 25.5, 1)]
+    payload = _ego(nodes, edges)
+    view = money_flow(payload)
+    assert view["members"] == {
+        CLASS_INDIVIDUAL: _members(payload, [(ada, 500.3, 3)]),
+        CLASS_ORGANIZATION: _members(payload, [(acme, 50.0, 1)]),
+        CLASS_IN_KIND: _members(payload, [(ada, 150.0, 1), (acme, 25.5, 1)]),
+    }
+
+
+def test_money_flow_a_folded_spender_on_both_sides_is_two_members_and_a_folded_vendor_sums_its_payers():
+    """Spender 950 spends 400 (2 rows) for and 100 against candidate 1 and folds (cap 1 keeps 951, whose 900 is larger); vendor
+    Elm Media is paid 30 by 901 and 20 (2 rows) by 902 and folds (cap 1 keeps Oak Print, 1,000). No donors, so no
+    class entries; the kept spender, the kept vendor, the committees and the candidate have none. Kills: one spender
+    member whose side is the last edge's; a vendor member per paying committee; members for plain nodes."""
+    nodes = [_ego_node("committee:901", "committee", "entity"), _ego_node("committee:902", "committee", "entity"),
+             _ego_node("candidate:1", "candidate", "candidate"),
+             _ego_node("committee:950", "committee", "ie_spender", "Lakeview Action PAC"),
+             _ego_node("committee:951", "committee", "ie_spender", "Ridge Voters PAC"),
+             _ego_node("vendor:oak", "vendor", "vendor", "Oak Print"), _ego_node("vendor:elm", "vendor", "vendor", "Elm Media")]
+    edges = [_ego_edge(IE, "committee:950", "candidate:1", 400.0, 2, "S"),
+             _ego_edge(IE, "committee:950", "candidate:1", 100.0, 1, "O"),
+             _ego_edge(IE, "committee:951", "candidate:1", 900.0, 3, "S"),
+             _ego_edge(CV, "committee:901", "vendor:oak", 700.0, 1), _ego_edge(CV, "committee:902", "vendor:oak", 300.0, 2),
+             _ego_edge(CV, "committee:901", "vendor:elm", 30.0, 1), _ego_edge(CV, "committee:902", "vendor:elm", 20.0, 2)]
+    payload = _ego(nodes, edges)
+    view = money_flow(payload, max_spenders=1, max_vendors=1)
+    assert view["members"] == {
+        "other:spenders": _members(payload, [("committee:950", 400.0, 2, "S"), ("committee:950", 100.0, 1, "O")]),
+        "other:vendors": _members(payload, [("vendor:elm", 50.0, 3)]),
+    }
