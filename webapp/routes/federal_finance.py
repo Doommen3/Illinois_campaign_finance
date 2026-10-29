@@ -1314,9 +1314,13 @@ def federal_race_outside_spending(office_code: str, district_code: str):
     conn = current_app.get_database()
     window = _parse_federal_window()
     cycle_filter, cycle, _analysis_office, _analysis_district = _parse_shared_filters(window)
-    date_from = window['date_from'] or None
-    date_to = window['date_to'] or None
     race_cycle = cycle_filter if cycle_filter is not None else cycle
+    # Schedule E's `cycle` is the cycle the backfill fetched under, not the expenditure's two-year period (locally one
+    # value, 2026, over expenditures dated 2000..2026; MT-015), so the race's cycle bounds the rows by date --
+    # (cycle-1)-01-01 .. cycle-12-31 -- narrowed by the page window, as the page's "shows the N cycle" text says.
+    cycle_from, cycle_to = f"{race_cycle - 1}-01-01", f"{race_cycle}-12-31"
+    date_from = max(window['date_from'], cycle_from) if window['date_from'] else cycle_from
+    date_to = min(window['date_to'], cycle_to) if window['date_to'] else cycle_to
     output_format = request.args.get('format', 'html', type=str).strip().lower()
 
     page = max(request.args.get('page', 1, type=int), 1)
