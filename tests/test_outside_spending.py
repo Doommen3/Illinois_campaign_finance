@@ -767,7 +767,7 @@ class TestMatcher:
         ("Pat M. Example", ("PAT", "EXAMPLE")),
         ("Pat O'Brien", ("PAT", "OBRIEN")),                     # apostrophe stripped
         ("Dee M O'Brien", ("DEE", "OBRIEN")),                   # a candidate record: middle initial, apostrophe
-        ("Pat Smith-Jones", ("PAT", "SMITH-JONES")),            # only . , ' " are stripped: a hyphen survives
+        ("Pat Smith-Jones", ("PAT", "JONES")),                  # M1 (search Phase 2): a hyphen is a space; . , ' " are removed
     ])
     def test_candidate_name_key_normalises_spacing_case_and_punctuation(self, text, key):
         from database.outside_spending import candidate_name_key
@@ -1052,6 +1052,80 @@ class TestMatcher:
         assert summary["oppose_total"] == 0
         assert summary["row_count"] == 0
         assert summary["spender_count"] == 0
+
+
+def _attributes(record: str, filing: str) -> bool:
+    """Whether a Part-9 row filed as ``filing`` attaches to the candidate whose record reads ``record`` (no cycle gate)."""
+    from database.outside_spending import attribute_part9_rows, candidate_name_key
+    candidate = {"key": candidate_name_key(record), "cycles": None, "candidate_id": 1, "name": record}
+    return len(attribute_part9_rows([_row(1, filing)], [candidate])) == 1
+
+
+class TestMatcherHyphensAndNicknames:
+    """Search program Phase 2, decisions M1 + M2 (P2-3): a hyphen is a space (key = first + last token), and the first
+    token matches through the ONE nickname map of database/name_normalize.py on both sides -- directly (MIKE / MICHAEL) or
+    through one shared alias (TED and ED share EDWARD). Reading chosen here: two first names match when their alias sets
+    (the name plus its NICKNAMES entries) intersect, so THEODORE and ED (whose sets are {THEODORE, TED} and {ED, EDWARD})
+    do NOT match; a canonical-per-connected-component key would join them. A two-word alias ("JAY ROBERT" for JB) keys by
+    its first word, the way the name key itself reads a name. Periods and apostrophes are still removed, not split: "J.B."
+    stays JB and "O'Brien" stays OBRIEN (TestMatcher pins both), so the key does not go through normalize_name as a whole.
+    Kills: a hyphen removed ("SMITHJONES") or kept; a matcher-local nickname dict (the every-entry test binds to NICKNAMES);
+    nicknames applied to one side only; aliases that chain without limit; an alias applied to the last name."""
+
+    @pytest.mark.parametrize("text, key", [
+        ("Rae Smith-Jones", ("RAE", "JONES")),
+        ("Rae-Lynn Smith-Jones", ("RAE", "JONES")),
+    ])
+    def test_a_hyphen_splits_a_name_into_tokens(self, text, key):
+        from database.outside_spending import candidate_name_key
+        assert candidate_name_key(text) == key
+
+    def test_a_hyphenated_filing_and_a_spaced_record_attach_both_ways(self):
+        assert _attributes("Rae Smith Jones", "Rae Smith-Jones")
+        assert _attributes("Rae Smith-Jones", "Rae Smith Jones")
+        assert _attributes("Rae Smith-Jones", "RAE SMITH - JONES")
+
+    def test_a_nickname_filing_attaches_to_the_full_name_record_and_back(self):
+        assert _attributes("Michael Farrow", "Mike Farrow")
+        assert _attributes("Mike Farrow", "Michael Farrow")
+
+    def test_ted_edward_and_ed_meet_on_one_key(self):
+        from itertools import permutations
+        pairs = list(permutations(["Ted Example", "Edward Example", "Ed Example"], 2))
+        missing = [pair for pair in pairs if not _attributes(*pair)]
+        assert missing == [], f"record / filing pairs that do not attach: {missing}"
+
+    def test_an_alias_reaches_no_further_than_one_shared_alias_and_never_the_last_name(self):
+        # (guard) none of these attach today; the nickname rule must not make them.
+        assert not _attributes("Theodore Example", "Ed Example")
+        assert not _attributes("Ed Example", "Theodore Example")
+        assert not _attributes("Michael Farrow", "Brad Farrow")
+        assert not _attributes("Michael Farrow", "Mike Farrowby")
+
+    def test_the_suffix_rule_still_holds_with_a_nickname(self):
+        assert _attributes("Michael Farrow, Jr", "Mike Farrow")
+        assert _attributes("Mike Farrow Jr", "Michael Farrow")
+
+    def test_a_last_first_filing_with_a_nickname_still_reads_first_name_first(self):
+        assert _attributes("Michael Farrow", "Farrow, Mike")
+        assert _attributes("Michael Farrow", "Farrow, Mike W")
+
+    def test_jb_meets_jay_robert_and_its_dotted_spelling(self):
+        assert _attributes("Jay Robert Farrow", "J.B. Farrow")
+        assert _attributes("JB Farrow", "Jay Robert Farrow")
+        assert _attributes("J.B. Farrow", "JB Farrow")
+
+    def test_every_single_word_pair_of_the_shared_nickname_map_attaches_both_ways(self):
+        from database.name_normalize import NICKNAMES
+        pairs = [
+            (name, alias)
+            for name, aliases in NICKNAMES.items()
+            for alias in aliases
+            if " " not in name and " " not in alias
+        ]
+        assert pairs, "NICKNAMES has no single-word pair"
+        missing = [pair for pair in pairs if not _attributes(f"{pair[0]} Farrow", f"{pair[1]} Farrow")]
+        assert missing == [], f"{len(missing)} of {len(pairs)} NICKNAMES pairs do not attach: {missing[:8]}"
 
 
 # ---------------------------------------------------------------------------

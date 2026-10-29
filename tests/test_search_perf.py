@@ -628,6 +628,29 @@ def test_schema_applies_the_extension_and_the_table_before_the_trigram_index():
     assert table_at < index_at, "the index must come after CREATE TABLE analytics_donor_summary"
 
 
+# Search program Phase 2 (decision P2-2): the entity tables the lobbying / 527 list filters now match by token get the GIN
+# expression index on the contract expression (NAME_TSVECTOR_SQL spelled out), created after their table.
+PHASE2_NAME_TSVECTOR = "to_tsvector('simple', regexp_replace(upper(coalesce({expr}, '')), '[^A-Z0-9 ]', ' ', 'g'))"
+PHASE2_NAME_INDEXES = [
+    ("idx_lobbying_entities_name_tsv", "lobbying_entities", "entity_name"),
+    ("idx_lobbying_clients_name_tsv", "lobbying_clients", "client_name"),
+    ("idx_irs527_organizations_name_tsv", "irs527_organizations", "org_name"),
+]
+
+
+@pytest.mark.parametrize("name, table, column", PHASE2_NAME_INDEXES, ids=[spec[0] for spec in PHASE2_NAME_INDEXES])
+def test_schema_has_the_phase2_name_index_after_its_table(name, table, column):
+    """Pattern test: the exact statement (IF NOT EXISTS, GIN, the contract expression on the bare column). Kills a btree
+    index, an index on lower(col) or to_tsvector(col) (the predicate could not use it), a misnamed index, an index above
+    its CREATE TABLE (schema.sql runs top to bottom)."""
+    code = _schema_code()
+    statement = f"CREATE INDEX IF NOT EXISTS {name} ON {table} USING gin ({PHASE2_NAME_TSVECTOR.format(expr=column)});"
+    index_at = code.find(statement)
+    table_at = code.find(f"CREATE TABLE IF NOT EXISTS {table} (")
+    assert index_at != -1, f"schema.sql lacks: {statement}"
+    assert table_at != -1 and table_at < index_at, f"{name} must come after CREATE TABLE {table}"
+
+
 @pytest.mark.integration
 def test_trigram_index_is_built_by_the_schema_and_serves_the_donor_name_search(pg_test_schema):
     """Needs pg_trgm in the test database (skipped where it cannot be had; CI runs `-m "not integration"`).
