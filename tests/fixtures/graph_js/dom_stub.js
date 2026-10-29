@@ -1,6 +1,6 @@
 // Minimal DOM stand-in for the graph scripts (graph_legend.js, entity_views/*.js) when run under `node` by
-// tests/test_graph_key.py: elements keep attributes, classes, children, text and listeners (events bubble to the
-// parent unless stopPropagation() is called); no layout, no CSS.
+// tests/test_graph_key.py and tests/test_ego_focus_js.py: elements keep attributes, classes, children, text and
+// listeners (events bubble to the parent unless stopPropagation() is called); no layout, no CSS.
 class FakeNode {
     constructor(tag) { this.tag = tag; this.attrs = {}; this.children = []; this.parentNode = null; this.listeners = {}; this.own = ""; this.style = {}; this.clientWidth = 900; }
     setAttribute(name, value) { this.attrs[name] = String(value); }

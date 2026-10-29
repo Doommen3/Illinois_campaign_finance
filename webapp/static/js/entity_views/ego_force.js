@@ -3,11 +3,18 @@
    every neighbour on an outer ring grouped by role. This is the Phase A stand-in: plan step 7 replaces the body
    of this renderer with the shared readable force renderer (webapp/static/js/network_graph.js) and keeps the
    container (#entity-network-graph) and the data contract. Line and node colours come from the site-wide style map
-   (js/graph_legend.js); the key under the graph (ctx.keyBox) explains them. */
+   (js/graph_legend.js); the key under the graph (ctx.keyBox) explains them.
+
+   Click a node to focus it (plan N19): the node, its edges and its neighbours stay at full opacity with a "focused"
+   class, everything else dims, and a "Connected to <node>" list (ctx.focusBox) names the neighbours by edge weight,
+   linking them through ctx.hrefs (node id -> page, as the Network tab's edge table links them). Clicking the focused
+   node again, the background or pressing Escape clears the focus. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
     var ROLE_ORDER = ["donor", "transfer_source", "ie_spender", "vendor"];
+    var DIM = 0.15;
+    var escapeHandler = null;  // the one document-level Escape listener; the next render replaces it
 
     function el(name, attrs, text) {
         var node = document.createElementNS(NS, name);
@@ -24,8 +31,9 @@
 
     window.EntityViews.ego = function (container, data, ctx) {
         container.innerHTML = "";
-        var keyBox = ctx && ctx.keyBox;
+        var keyBox = ctx && ctx.keyBox, focusBox = ctx && ctx.focusBox, hrefs = (ctx && ctx.hrefs) || {};
         window.renderGraphKey(keyBox);  // no options: empties the key until the graph below has drawn
+        if (focusBox) { focusBox.textContent = ""; }
         if (!data.nodes || !data.nodes.length) {
             container.textContent = "No network in this window.";
             return;
@@ -55,8 +63,8 @@
 
         var svg = el("svg", { viewBox: "0 0 " + width + " " + height, width: "100%", height: height, role: "img",
                               "aria-label": "Ego network of the entity's committees" });
-        var labels = {};
-        data.nodes.forEach(function (node) { labels[node.id] = node.label; });
+        var labels = {}, byId = {}, incident = {}, edgeEls = [], nodeEls = {}, focus = null;
+        data.nodes.forEach(function (node) { labels[node.id] = node.label; byId[node.id] = node; incident[node.id] = []; });
         data.edges.forEach(function (edge) {
             var s = pos[edge.source], t = pos[edge.target];
             if (!s || !t) { return; }
@@ -70,13 +78,23 @@
             line.appendChild(el("title", {}, labels[edge.source] + " → " + labels[edge.target] + ": " + money(edge.weight)
                 + " (" + edge.edge_label + side + ")"));
             svg.appendChild(line);
+            edgeEls.push({ edge: edge, line: line });
+            incident[edge.source].push(edge);
+            incident[edge.target].push(edge);
         });
         data.nodes.forEach(function (node) {
             var p = pos[node.id];
             var r = 4 + 12 * Math.sqrt((node.total_amount || 0) / maxAmount);
-            var g = el("g", { "class": "ego-node ego-" + node.role });
-            g.appendChild(el("circle", { cx: p.x, cy: p.y, r: r, fill: window.GraphKey.nodeStyle(node).color,
-                                         stroke: node.role === "entity" ? "#1a365d" : "#fff", "stroke-width": node.role === "entity" ? 2.5 : 1 }));
+            var g = el("g", { "class": "ego-node ego-" + node.role, "data-node-id": node.id });
+            var stroke = node.role === "entity" ? "#1a365d" : "#fff", strokeWidth = node.role === "entity" ? 2.5 : 1;
+            var circle = el("circle", { cx: p.x, cy: p.y, r: r, fill: window.GraphKey.nodeStyle(node).color,
+                                        stroke: stroke, "stroke-width": strokeWidth });
+            g.appendChild(circle);
+            nodeEls[node.id] = { g: g, circle: circle, stroke: stroke, strokeWidth: strokeWidth };
+            g.addEventListener("click", function (event) {
+                event.stopPropagation();
+                setFocus(focus === node.id ? null : node.id);
+            });
             if (labelled[node.id]) {
                 var outside = p.angle !== undefined, right = !outside || Math.cos(p.angle) >= 0;
                 var caption = node.label.length > 28 ? node.label.slice(0, 27) + "…" : node.label;
@@ -88,10 +106,93 @@
         });
         container.appendChild(svg);
 
+        // Focus: the node, its incident edges and its neighbours keep full opacity (class "focused"); the rest dims.
+        function mark(element, focused, dimmed) {
+            element.classList.remove("focused");
+            element.classList.remove("dimmed");
+            if (focused) { element.classList.add("focused"); }
+            if (dimmed) { element.classList.add("dimmed"); }
+            if (focused || dimmed) { element.setAttribute("opacity", dimmed ? DIM : 1); } else { element.removeAttribute("opacity"); }
+        }
+
+        function setFocus(id) {
+            focus = id;
+            var near = {};
+            if (id) {
+                near[id] = true;
+                incident[id].forEach(function (edge) { near[edge.source] = true; near[edge.target] = true; });
+            }
+            data.nodes.forEach(function (node) {
+                var item = nodeEls[node.id];
+                mark(item.g, id && near[node.id], id && !near[node.id]);
+                item.circle.setAttribute("stroke", id === node.id ? "#1a202c" : item.stroke);
+                item.circle.setAttribute("stroke-width", id === node.id ? 3 : item.strokeWidth);
+            });
+            edgeEls.forEach(function (item) {
+                var touches = item.edge.source === id || item.edge.target === id;
+                mark(item.line, id && touches, id && !touches);
+            });
+            showList(id);
+        }
+
+        function showList(id) {
+            if (!focusBox) { return; }
+            focusBox.textContent = "";
+            if (!id) { return; }
+            var heading = document.createElement("h3");
+            heading.textContent = "Connected to " + byId[id].label;
+            focusBox.appendChild(heading);
+            if (!incident[id].length) {
+                var none = document.createElement("p");
+                none.setAttribute("class", "help-text");
+                none.textContent = "No connections in this window.";
+                focusBox.appendChild(none);
+                return;
+            }
+            var rows = incident[id].map(function (edge) { return { edge: edge, other: byId[edge.source === id ? edge.target : edge.source] }; })
+                .sort(function (a, b) { return (b.edge.weight - a.edge.weight) || String(a.other.label).localeCompare(String(b.other.label)); });
+            var table = document.createElement("table"), head = document.createElement("tr"), body = document.createElement("tbody");
+            var thead = document.createElement("thead");
+            table.setAttribute("class", "data-table");
+            ["Name", "Relationship", "Amount"].forEach(function (title) {
+                var cell = document.createElement("th");
+                cell.textContent = title;
+                head.appendChild(cell);
+            });
+            thead.appendChild(head);
+            table.appendChild(thead);
+            rows.forEach(function (row) {
+                var tr = document.createElement("tr"), name = document.createElement("td");
+                if (hrefs[row.other.id]) {
+                    var link = document.createElement("a");
+                    link.setAttribute("href", hrefs[row.other.id]);
+                    link.textContent = row.other.label;
+                    name.appendChild(link);
+                } else {
+                    name.textContent = row.other.label;
+                }
+                var kind = document.createElement("td"), amount = document.createElement("td");
+                kind.textContent = window.GraphKey.entry(window.GraphKey.styleKey(row.edge), ctx && ctx.definitions).label;
+                amount.textContent = money(row.edge.weight);
+                tr.appendChild(name);
+                tr.appendChild(kind);
+                tr.appendChild(amount);
+                body.appendChild(tr);
+            });
+            table.appendChild(body);
+            focusBox.appendChild(table);
+        }
+
+        svg.addEventListener("click", function () { setFocus(null); });
+        if (escapeHandler) { document.removeEventListener("keydown", escapeHandler); }
+        escapeHandler = function (event) { if (event.key === "Escape" && focus) { setFocus(null); } };
+        document.addEventListener("keydown", escapeHandler);
+
         var note = document.createElement("p");
         note.className = "help-text";
         note.textContent = data.nodes.length + " nodes, " + data.edges.length + " edges; the entity's committees and candidates on the inner ring,"
-            + " neighbours on the outer ring (donors, transfer sources, independent spenders, vendors). Hover a node or edge for its figures.";
+            + " neighbours on the outer ring (donors, transfer sources, independent spenders, vendors). Hover a node or edge for its figures;"
+            + " click a node to highlight its connections and list them below (click it again, click the background or press Esc to clear).";
         container.appendChild(note);
         window.renderGraphKey(keyBox, { edgeTypes: window.GraphKey.styleKeys(data.edges), nodeTypes: data.nodes.map(window.GraphKey.nodeKey),
                                         definitions: ctx && ctx.definitions });

@@ -21,7 +21,7 @@ import pytest
 
 from database.analytics import _EDGE_TYPE_SEMANTICS
 from database.entity_network import EDGE_TYPE_DEFINITIONS, ego_force, money_flow, vendor_network
-from tests.graph_js_harness import JS_DIR, ROOT, run_graph_js
+from tests.graph_js_harness import JS_DIR, ROOT, run_graph_js, small_ego_payload
 
 TEMPLATES = ROOT / "webapp" / "templates"
 # template -> (renderer scripts, key container ids the renderers fill). The networks heatmap has no key: it draws a
@@ -119,30 +119,6 @@ def test_render_graph_key_with_nothing_to_list_empties_the_container():
     assert result == 0
 
 
-def _ego():
-    def edge(source, target, edge_type, weight, **extra):
-        return {"source": source, "target": target, "edge_type": edge_type, "weight": weight, "count": 1,
-                **EDGE_TYPE_DEFINITIONS[edge_type], **extra}
-
-    def node(node_id, node_type, role, total, label):
-        return {"id": node_id, "label": label, "node_type": node_type, "role": role, "total_amount": total}
-
-    edges = [
-        edge("donor:ann|lee", "committee:1", "donor_committee", 900.0),
-        edge("committee:1", "vendor:acme", "committee_vendor", 400.0),
-        edge("committee:9", "candidate:5", "independent_expenditure", 700.0, support_oppose="S", signed_weight=700.0),
-        edge("committee:8", "candidate:5", "independent_expenditure", 300.0, support_oppose="O", signed_weight=-300.0),
-        edge("committee:1", "candidate:5", "committee_candidate", 900.0),
-    ]
-    nodes = [
-        node("committee:1", "committee", "entity", 2200.0, "Friends of Pat"), node("candidate:5", "candidate", "candidate", 1900.0, "Pat Roe"),
-        node("donor:ann|lee", "donor", "donor", 900.0, "Ann Lee"), node("vendor:acme", "vendor", "vendor", 400.0, "Acme Print"),
-        node("committee:9", "committee", "ie_spender", 700.0, "Pro Pat PAC"), node("committee:8", "committee", "ie_spender", 300.0, "Stop Pat PAC"),
-    ]
-    summary = {"truncated": {"donors": 0, "vendors": 0, "transfers": 0, "ie_spenders": 0}, "edge_type_definitions": EDGE_TYPE_DEFINITIONS}
-    return {"nodes": nodes, "edges": edges, "summary": summary}
-
-
 # view -> (projection, script, key rows its payload must produce, rows it must not)
 VIEWS = {
     "money_flow": (money_flow, "entity_views/money_flow.js", ["contribution", "payment to vendor"], ["raises for candidate"]),
@@ -157,7 +133,7 @@ def test_entity_views_draw_opposing_spending_with_the_shared_style_and_fill_the_
     key that lists a type the view did not draw (in-kind and transfers are absent from the payload; the money flow
     leaves the committee_candidate link out and the vendor network keeps only vendor and independent-spending edges)."""
     project, script, present, absent = VIEWS[view]
-    data = project(_ego())
+    data = project(small_ego_payload())
     result = run_graph_js(["graph_legend.js", script], f"""
         const container = dom.document.createElement("div"), keyBox = dom.document.createElement("div");
         sandbox.EntityViews[{json.dumps(view)}](container, {json.dumps(data)}, {{ keyBox, definitions: {json.dumps(EDGE_TYPE_DEFINITIONS)} }});

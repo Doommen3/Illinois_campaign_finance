@@ -2154,3 +2154,18 @@ h2 {
 .graph-key-meaning {
     color: #64748b;
 }
+
+/* Ego graph click-to-focus (plan race-sort-and-entity-networks, N19): clickable nodes, the "Connected to" list under the key */
+.entity-network-graph .ego-node {
+    cursor: pointer;
+}
+
+.graph-focus:empty {
+    display: none;
+}
+
+.graph-focus h3 {
+    margin: 0.5rem 0 0.4rem;
+    font-size: 0.95rem;
+    color: #0f172a;
+}
