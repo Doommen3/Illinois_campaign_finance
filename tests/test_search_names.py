@@ -143,8 +143,8 @@ def test_normalize_name_is_idempotent():
 
 TOKEN_CASES = [
     ("Mike Exampleton", ["MIKE", "EXAMPLETON"]),
-    ("Exampleton, Mike W.", ["EXAMPLETON", "MIKE", "W"]),     # order kept, the initial is a token
-    ("O'Neil-Smith", ["O", "NEIL", "SMITH"]),
+    ("Exampleton, Mike W.", ["EXAMPLETON", "MIKE"]),          # order kept, the initial is dropped (R1)
+    ("O'Neil-Smith", ["NEIL", "SMITH"]),                      # the O is a single letter too (R1)
     ("Mike Exampleton Jr", ["MIKE", "EXAMPLETON"]),           # generational suffixes drop on the query side ...
     ("Mike Exampleton Jr.", ["MIKE", "EXAMPLETON"]),
     ("John Smith Sr", ["JOHN", "SMITH"]),
@@ -276,7 +276,7 @@ def test_search_tsquery_groups_one_alternation_per_query_token():
 
 
 TSQUERY_EXACT = [
-    ("O'Neil-Smith", "o:* & neil:* & smith:*"),
+    ("O'Neil-Smith", "neil:* & smith:*"),
     ("Jr", "jr:*"),
     ("Local 150", "local:* & 150:*"),
     ("Exampleton", "exampleton:*"),
@@ -374,7 +374,7 @@ MATCH_CASES = [
     ("Michael W Exampleton", "Exampleton Mike", True),            # any order
     ("Michael W Exampleton", "Exampleton, Michael W.", True),     # "Last, First M."
     ("Michael W Exampleton", "mike w. exampleton", True),
-    ("Michael Exampleton", "Mike W. Exampleton", False),          # R1: the initial is a required token
+    ("Michael Exampleton", "Mike W. Exampleton", True),           # R1: the initial is optional
     ("Mike Exampleton", "Michael Exampleton", True),              # aliases both ways
     ("Brad Exampleton", "Mike Exampleton", False),                # the surname alone is not enough
     ("Thomas Exampleton", "Mike Exampleton", False),
