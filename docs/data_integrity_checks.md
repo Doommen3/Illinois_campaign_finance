@@ -15,7 +15,7 @@ why). A batch flips the **Status** of each check it runs, in its section and in 
 `pass (2026-11-02)`. A failed check stays `fail` until the fix is deployed and the check passes again; it is never
 deleted.
 
-**Progress:** Checks: 34 total — 31 proposed, 3 in progress, 0 pass, 0 fail, 0 blocked (2026-10-29). Each batch
+**Progress:** Checks: 38 total — 29 proposed, 0 in progress, 4 pass, 5 fail, 0 blocked (2026-10-29, after batch 1). Each batch
 updates this line.
 
 ## How a batch runs
@@ -62,7 +62,7 @@ how many members it touches (a measured count, not an estimate), and the check s
 
 | Batch | Classes (C-NN) | Why this order | Status | Report |
 |---|---|---|---|---|
-| 1 | C-01 | Most-read entity pages; the known 8b defect (donor page omits a committee) lives here | in progress | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
+| 1 | C-01 | Most-read entity pages; the known 8b defect (donor page omits a committee) lives here | done (2026-10-29): live paths pass; all-time precomputed paths fail: I1, I2, E — fixes F1/F2a/F4/F6 proposed to terminal 1 | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
 | 2 | C-02, C-03 | Candidate profiles and their tabs are the next most-read entity pages | proposed | — |
 | 3 | C-04, C-05, S-02 | Committee profiles, filings and the committee directory; the D-2 is the sworn ground truth later batches lean on | proposed | — |
 | 4 | S-01, S-03, C-06 | Home and candidate directory cards restate classes 1–3; candidate-finance shares their D-2 source | proposed | — |
@@ -79,12 +79,12 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 | ID | Class | Figure | Status |
 |---|---|---|---|
-| DI-001 | C-01 | Donor profile total, count and "Who They Donated To" | in progress |
-| DI-002 | C-01 | Committee donor ledger: donor count and total in the window | in progress |
-| DI-003 | C-01 | Donor directory top rows for the default cycle | in progress |
+| DI-001 | C-01 | Donor profile total, count and "Who They Donated To" | fail (2026-10-29, I2 + I1; batch 1 report) |
+| DI-002 | C-01 | Committee donor ledger: donor count and total in the window | pass (2026-10-29, 10 / 10; batch 1 report) |
+| DI-003 | C-01 | Donor directory top rows for the default cycle | pass (2026-10-29, 10 / 10; batch 1 report) |
 | DI-004 | C-02 | Candidate "Money raised" per cycle | proposed |
 | DI-005 | C-02 | Candidate outside spending (D-2 Part 9) supporting / opposing | proposed |
-| DI-006 | C-03 | Entity Donors tab: top donors and total | proposed |
+| DI-006 | C-03 | Entity Donors tab: totals (itemized, in-kind) and top donors | pass (2026-10-29, 5 / 5; batch 1 report) |
 | DI-007 | C-03 | Network tab edge amount and its drill-down rows | proposed |
 | DI-008 | C-04 | Committee Receipts Summary (window and This cycle) | proposed |
 | DI-009 | C-04 | Committee Expenditures Summary and payee ledger total | proposed |
@@ -108,11 +108,15 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 | DI-027 | C-16 | Analytics JSON payload values | proposed |
 | DI-028 | C-17 | Viz Lab race-money prototype value | proposed |
 | DI-029 | S-01 | Home stat cards | proposed |
-| DI-030 | S-01 | Home Top Donors | proposed |
+| DI-030 | S-01 | Home Top Donors | fail (2026-10-29, all time 2 / 5, I2; cycle 5 / 5 pass; batch 1 report) |
 | DI-031 | S-02 | Committee directory windowed receipts | proposed |
 | DI-032 | S-03 | Candidate directory stat cards | proposed |
 | DI-033 | S-04 | Compare stat cards | proposed |
 | DI-034 | admin | Federal receipt / disbursement audit pages | proposed |
+| DI-035 | C-01 | Donor page All time agrees with its own This cycle (I2 detector) | fail (2026-10-29, I2; batch 1 report) |
+| DI-036 | C-01 | All-time donor directory freshness (`donor_entity_local`) | fail (2026-10-29, E, local; prod unknown; batch 1 report) |
+| DI-037 | C-01 | Network in-kind links land on a page showing the in-kind money | fail (2026-10-29, I1, 52.5 % of rendered links; batch 1 report) |
+| DI-038 | C-01 | Network 1A donor links land on a page listing the committee | pass (2026-10-29, 917 / 917; batch 1 report) |
 
 ## Conventions
 
@@ -136,7 +140,11 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-01
 - **Created:** 2026-10-29
-- **Status:** in progress (batch 1)
+- **Status:** fail (2026-10-29, mechanisms I2 and I1; see batch 1 report). I2: 1A rows filed on an A-1 or on any
+  filing with no live D-2 are missing from the all-time page (for example the top committee donor on
+  `/committees/6239/donors`, whose $1.55M gift is not on its own page; detector DI-035). I1: in-kind (5A) giving
+  never appears, so in-kind network links land on a page without the committee (DI-037). Fixes F1, F2a and F4
+  proposed to terminal 1.
 - **Figure:** `/donors/key/<donor_key>`: "Total Contributed", "Number of Contributions", "Committees Supported"
   and the "Who They Donated To" table (committee, amount).
 - **Independent recomputation:**
@@ -159,39 +167,47 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 - **Pass:** the sums equal "Number of Contributions" and "Total Contributed", the row count equals "Committees
   Supported", and every committee and amount in the table appears in the query result.
 - **Fail:** any total off by more than a cent, a committee present in one list and not the other (for example the
-  committee whose donors page you started from is missing), or a count mismatch.
+  committee whose donors page you started from is missing), or a count mismatch. A gap equal to the donor's rows on
+  filings with no live D-2 (`on_no_d2_filings` in DI-035) is I2; a missing committee that only shows up in the 5A
+  query is I1. Any other gap is a new mechanism: record it.
 
 ### DI-002 — Committee donor ledger count and total
 
 - **Class:** C-01
 - **Created:** 2026-10-29
-- **Status:** in progress (batch 1)
-- **Figure:** `/committees/<id>/donors`: "N total donors", "Total Contributions" and the "This cycle" subtotal.
-- **Independent recomputation:**
+- **Status:** pass (2026-10-29, 10 / 10 committees, count, total and cycle exact; see batch 1 report). Batch 1's
+  first-row check also passed 10 / 10 (the top donor's page lists the committee); committee 6239's top row is the
+  known I2 exception (DI-001, DI-035).
+- **Figure:** `/committees/<id>/donors` subtitle "N unique donors, $T | This cycle: $C" (All time).
+- **Independent recomputation** (batch 1's query, adopted):
   ```sql
-  SELECT COUNT(DISTINCT LOWER(TRIM(COALESCE(r.first_name,'') || '|' || COALESCE(r.last_name,'') || '|' || COALESCE(r.address1,'') || '|' || COALESCE(r.address2,'') || '|' || COALESCE(r.city,'') || '|' || COALESCE(r.state,'') || '|' || COALESCE(r.zipcode,'')))) AS donors,
-         SUM(r.amount) AS total
-  FROM isbe_receipts r
-  WHERE r.committee_id = <id>
-    AND r.archived = FALSE AND r.amount > 0 AND (COALESCE(r.d2_part,'') = '' OR r.d2_part LIKE '1%')
-    AND r.received_date BETWEEN '<start>' AND '<end>';
+  SELECT COUNT(DISTINCT LOWER(TRIM(COALESCE(r.first_name,'')||'|'||COALESCE(r.last_name,'')||'|'||COALESCE(r.address1,'')||'|'||COALESCE(r.address2,'')||'|'||COALESCE(r.city,'')||'|'||COALESCE(r.state,'')||'|'||COALESCE(r.zipcode,'')))) AS unique_donors,
+         ROUND(SUM(r.amount)::numeric, 2) AS total,
+         ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.received_date BETWEEN '2025-01-01' AND '2026-12-31'), 0)::numeric, 2) AS this_cycle
+  FROM isbe_condensed_receipts r
+  WHERE r.committee_id = <id> AND r.archived = FALSE AND r.amount > 0 AND (COALESCE(r.d2_part,'') = '' OR r.d2_part LIKE '1%');
   ```
-  Run once for the page window and once for `'2025-01-01'`..`'2026-12-31'` (This cycle).
-- **Tolerance:** donor count exact; totals to the cent.
-- **Sample rule:** n = 60 committees, 20 top / 20 middle / 20 small by all-time receipts.
+  If a figure differs, rerun with `FROM isbe_receipts r` (raw rows, not archived) to tell a condensed-picker or
+  amendment difference from a page defect.
+- **Tolerance:** counts exact; dollars ± $0.01.
+- **Sample rule:** manual run: 3 committees, 1 of the 5 largest by receipt rows, 1 party committee (for example
+  6239) and 1 random committee with ≥ 50 donors. Batch: n = 60 committees, 20 top / 20 middle / 20 small by
+  all-time receipts (batch 1 measured n = 10).
 - **Steps:**
   1. Open `/committees/<id>/donors` for a sampled committee (start with `/committees/6239/donors`).
-  2. Read the donor count, the total and "This cycle".
-  3. Run the query for both windows.
-- **Pass:** all three figures match.
-- **Fail:** any mismatch; record whether `isbe_condensed_receipts` with the same clauses matches the page (picker
-  or amendment difference) or not (page defect).
+  2. Read the three numbers in the subtitle.
+  3. Run the query with the id.
+- **Pass:** all three match.
+- **Fail:** any differs. Record the committee id and the three pairs of numbers.
 
 ### DI-003 — Donor directory top rows
 
 - **Class:** C-01
 - **Created:** 2026-10-29
-- **Status:** in progress (batch 1)
+- **Status:** pass (2026-10-29, default 2026-cycle window, 10 / 10 rows equal their donor page and the
+  recomputation; see batch 1 report). The all-time directory (`/donors/?period=all`) is a different data path: it
+  lists merged entities from `donor_entity_local` and failed there (mechanism E, plus I2); that path is checked by
+  DI-036.
 - **Figure:** `/donors/` in its default window (2026 cycle): the top 10 rows' totals, contribution counts and
   committee counts.
 - **Independent recomputation:**
@@ -271,10 +287,20 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-03
 - **Created:** 2026-10-29
-- **Status:** proposed
-- **Figure:** `/candidates/<id>/donors` (and `/analytics/state-races/<race_key>/donors`): the "Top donors" table
-  (top 10 amounts) and the tab total.
-- **Independent recomputation:**
+- **Status:** pass (2026-10-29, 5 / 5 candidates, itemized Total and In-kind exact; see batch 1 report). Batch 2
+  extends the sample to n = 30 and adds the Top donors rows.
+- **Figure:** `/candidates/<id>/donors` (and `/analytics/state-races/<race_key>/donors`): "Concentration by group",
+  **Total** and **In-kind** on the "All committees" row (or the single group row); the "Top donors" table (top 10
+  amounts).
+- **Independent recomputation:** totals (batch 1's query, adopted):
+  ```sql
+  SELECT ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.d2_part LIKE '1%'),0)::numeric,2) AS itemized,
+         ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.d2_part = '5A'),0)::numeric,2) AS in_kind
+  FROM isbe_condensed_receipts r
+  WHERE r.archived = FALSE AND r.amount > 0
+    AND r.committee_id IN (SELECT committee_id FROM isbe_candidate_committees WHERE candidate_id = <candidate_id>);
+  ```
+  Top donors rows (kept: it checks the per-donor rows the totals query does not):
   ```sql
   SELECT LOWER(TRIM(COALESCE(r.first_name,'') || '|' || COALESCE(r.last_name,'') || '|' || COALESCE(r.address1,'') || '|' || COALESCE(r.address2,'') || '|' || COALESCE(r.city,'') || '|' || COALESCE(r.state,'') || '|' || COALESCE(r.zipcode,''))) AS donor_key,
          SUM(r.amount) AS total
@@ -286,14 +312,16 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   ```
   The tab uses `d2_part LIKE '1%'` (blank excluded); rerun with the contributions clause to measure the gap with
   the committee ledger and record it.
-- **Tolerance:** to the cent per row; same order.
-- **Sample rule:** n = 30 entities, 15 candidates and 15 races, top / middle / small by raised.
+- **Tolerance:** ± $0.01 per figure and per row; same order.
+- **Sample rule:** manual run: 2 candidates, 13505 and one random candidate with a committee. Batch: n = 30
+  entities, 15 candidates and 15 races, top / middle / small by raised (batch 1 measured 5 candidates).
 - **Steps:**
-  1. Open `/candidates/13505/donors`.
-  2. Read the top 10 rows and the total.
-  3. Run the query (for a race, take the linked committees of every candidacy in the race).
-- **Pass:** rows and total match.
-- **Fail:** any row or total mismatch with no named cause.
+  1. Open `/candidates/13505/donors` (All time).
+  2. Read Total and In-kind on the "All committees" row, and the top 10 donor rows.
+  3. Run both queries (for a race, take the linked committees of every candidacy in the race).
+- **Pass:** Total, In-kind and every sampled row match.
+- **Fail:** any differs with no named cause. An accepted committee family adds committees that are not in
+  `isbe_candidate_committees`, so check `/admin/committee-families` before recording a failure.
 
 ### DI-007 — Network edge and drill-down rows
 
@@ -844,16 +872,19 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** S-01
 - **Created:** 2026-10-29
-- **Status:** proposed
-- **Figure:** `/` "Top Donors" table (top 10 amounts).
-- **Independent recomputation:** DI-003's query for the home page's window.
-- **Tolerance:** as DI-003.
-- **Sample rule:** the 10 rows.
+- **Status:** fail (2026-10-29, mechanism I2; see batch 1 report). Default 2026 cycle passes 5 / 5; all time
+  (`/?period=all`) fails 2 / 5, each gap equal to the donor's rows on filings with no live D-2 (one $65,000,000
+  row; two rows totalling $1,990,754.92). Fix F1 proposed to terminal 1.
+- **Figure:** the "Top Donors" total and count on `/` (default 2026 cycle) and on `/?period=all`.
+- **Independent recomputation:** the DI-035 query for each row's `<key>`. Compare with `live_cycle` for the default
+  view and `live_all_time` for `period=all`. The count is `COUNT(*)` under the same WHERE clause.
+- **Tolerance:** ± $0.01; counts exact.
+- **Sample rule:** manual run: the top 3 rows of each view. Batch: the top 5 of each view (batch 1 measured 5 + 5).
 - **Steps:**
-  1. Open `/`; note the Top Donors rows (by rank).
-  2. Run DI-003's query.
-- **Pass:** rows match, or differ only by DI-003's known semantic.
-- **Fail:** any other difference.
+  1. Open both views; click each of the top 3 names to get `<key>` from the URL.
+  2. Run the DI-035 query per key; compare.
+- **Pass:** all match.
+- **Fail:** an all-time gap equal to `on_no_d2_filings` is I2. Record any other gap as new.
 
 ### DI-031 — Committee directory windowed receipts
 
@@ -918,8 +949,104 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 - **Pass:** every figure matches.
 - **Fail:** any mismatch.
 
+### DI-035 — Donor page All time agrees with its own This cycle (the I2 check)
+
+- **Class:** C-01
+- **Created:** 2026-10-29 (batch 1, provisional id DI-B1-02)
+- **Status:** fail (2026-10-29, mechanism I2; see batch 1 report). Example: the top committee donor on
+  `/committees/6239/donors` (a $1.55M receipt filed on an A-1). Since 2025-01-01, $99.0M of $297.7M (33 %) of
+  itemized contribution dollars sit on filings with no live D-2 and are missing from every all-time donor page.
+  Fix F1 proposed to terminal 1.
+- **Figure:** "Total Contributed (All time)", "This cycle" and the "Who They Donated To" list on
+  `/donors/key/<donor_key>`.
+- **Independent recomputation:**
+  ```sql
+  SELECT ROUND(SUM(r.amount)::numeric,2) AS live_all_time,
+         ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.received_date BETWEEN '2025-01-01' AND '2026-12-31'),0)::numeric,2) AS live_cycle,
+         ROUND(COALESCE(SUM(r.amount) FILTER (WHERE NOT EXISTS (SELECT 1 FROM isbe_d2_reports d WHERE d.filed_doc_id = r.filed_doc_id AND d.archived = FALSE)),0)::numeric,2) AS on_no_d2_filings
+  FROM isbe_condensed_receipts r
+  WHERE md5(LOWER(TRIM(COALESCE(r.first_name,'')||'|'||COALESCE(r.last_name,'')||'|'||COALESCE(r.address1,'')||'|'||COALESCE(r.address2,'')||'|'||COALESCE(r.city,'')||'|'||COALESCE(r.state,'')||'|'||COALESCE(r.zipcode,'')))) = md5('<key>')
+    AND r.archived = FALSE AND r.amount > 0 AND (COALESCE(r.d2_part,'') = '' OR r.d2_part LIKE '1%');
+  ```
+- **Tolerance:** ± $0.01.
+- **Sample rule:** 5 keys per run, taken from the first rows of `/donors/` (2026 cycle) and from
+  `/committees/6239/donors`.
+- **Steps:** open the donor page (All time) and note the total, This cycle and the committee list; run the query;
+  compare.
+- **Pass:** All time = `live_all_time`; This cycle = `live_cycle`; the listed committees sum to All time.
+- **Fail:** All time = `live_all_time − on_no_d2_filings` is I2. Any other gap is a new mechanism: record it.
+
+### DI-036 — The all-time donor directory is fresh (the E check)
+
+- **Class:** C-01
+- **Created:** 2026-10-29 (batch 1, provisional id DI-B1-03)
+- **Status:** fail (2026-10-29, local only, mechanism E; see batch 1 report). Locally `donor_entity_local` was
+  built 2026-02-13, eight months before the analytics tables (2026-10-26); 22,609 of 246,900 entities (9.2 %) store
+  a total that differs from their members' current totals ($33.3M absolute gap). Prod unknown: run the first two
+  queries on prod. Fix F6 proposed to terminal 1.
+- **Figure:** the total on the first 10 rows of `/donors/?period=all`, and the age of the table they come from.
+- **Independent recomputation:**
+  ```sql
+  SELECT MAX(updated_at) AS entities_built FROM donor_entity_local WHERE source = 'bulk_receipts';
+  SELECT MAX(updated_at) AS analytics_built FROM analytics_donor_summary WHERE source = 'bulk_receipts';
+  SELECT e.entity_id, e.total_amount AS shown,
+         (SELECT SUM(s.total_amount) FROM donor_entity_local_member m JOIN analytics_donor_summary s
+            ON s.source = m.source AND s.donor_key = m.donor_key WHERE m.source = e.source AND m.entity_id = e.entity_id) AS current
+  FROM donor_entity_local e WHERE e.source = 'bulk_receipts' ORDER BY e.total_amount DESC LIMIT 10;
+  ```
+- **Tolerance:** build dates within 1 day of each other; `shown` = `current` ± $0.01.
+- **Sample rule:** the top 10 every run, because staleness concentrates in the largest, most active donors.
+- **Steps:** run the three queries; open `/donors/?period=all` and check that the first rows' totals equal `shown`.
+- **Pass:** the dates are within a day, and all 10 have `shown = current`.
+- **Fail:** the entity table is older than the analytics tables, or any row differs. Record the dates and the
+  number of differing rows.
+
+### DI-037 — Network in-kind links land on a page showing the in-kind money (the I1 check)
+
+- **Class:** C-01
+- **Created:** 2026-10-29 (batch 1, provisional id DI-B1-04)
+- **Status:** fail (2026-10-29, mechanism I1; see batch 1 report). 83 of 158 rendered in-kind links (52.5 %) fail:
+  61 land on a 404 and 22 on a page without the clicked committee. Over all link pairs, 70.3 % of in-kind pairs
+  (35,237 of 50,152; $337.9M) fail. Fixes F2a and F4 proposed to terminal 1.
+- **Figure:** on `/candidates/<id>/network`, money-flow view, the "In-kind contributions" panel: each member's
+  amount, and the page its link opens.
+- **Independent recomputation:**
+  ```sql
+  SELECT md5(LOWER(TRIM(COALESCE(r.first_name,'')||'|'||COALESCE(r.last_name,'')||'|'||COALESCE(r.address1,'')||'|'||COALESCE(r.address2,'')||'|'||COALESCE(r.city,'')||'|'||COALESCE(r.state,'')||'|'||COALESCE(r.zipcode,'')))) AS key_md5,
+         MIN(TRIM(COALESCE(r.first_name,'')||' '||COALESCE(r.last_name,''))) AS donor, COUNT(*) AS rows, ROUND(SUM(r.amount)::numeric,2) AS in_kind
+  FROM isbe_condensed_receipts r
+  WHERE r.committee_id IN (SELECT committee_id FROM isbe_candidate_committees WHERE candidate_id = <candidate_id>)
+    AND r.archived = FALSE AND r.amount > 0 AND r.d2_part = '5A'
+  GROUP BY 1 ORDER BY 4 DESC LIMIT 10;
+  ```
+- **Tolerance:** amounts ± $0.01. The landing page must list the candidate's committee.
+- **Sample rule:** 2 candidates per run: 13505 (Frerichs) and one of the 25 with the most receipt rows. Check the
+  3 largest in-kind members of each.
+- **Steps:** open the Network tab; click the In-kind node; compare the members' amounts with the query; click each
+  of the 3 largest members.
+- **Pass:** the amounts match, and every link opens a page that lists the candidate's committee with the in-kind
+  amount.
+- **Fail:** the link 404s, or the page does not list the committee (I1). Record the candidate, the member and the
+  outcome.
+
+### DI-038 — Network 1A donor links land on a page listing the committee
+
+- **Class:** C-01
+- **Created:** 2026-10-29 (batch 1, provisional id DI-B1-05)
+- **Status:** pass (2026-10-29, 917 / 917 rendered links: 385 individual, 532 organization; see batch 1 report).
+  Over all link pairs 0.46 % of 1A pairs fail by I2, none of them in the rendered sample.
+- **Figure:** members of the "Individual donors" and "Organization donors" panels, and their links.
+- **Independent recomputation:** the DI-037 query with `r.d2_part = '1A'`. Then, on the landing page, the
+  committee row's amount must be ≥ the panel amount.
+- **Tolerance:** ± $0.01.
+- **Sample rule:** the same 2 candidates as DI-037, 3 members from each panel.
+- **Steps:** as DI-037.
+- **Pass:** every link opens a 200 page that lists the committee.
+- **Fail:** a 404 or a missing committee. Check the row's filing with the DI-035 query (I2 if it is on a no-D-2
+  filing).
+
 ## Batch log
 
 | Date | Batch | Agent | Classes | Sample | Result | Report |
 |---|---|---|---|---|---|---|
-| 2026-10-29 | 1 | opus-engineer (lane 10-B) | C-01 | n = 60 planned | in progress | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
+| 2026-10-29 | 1 | opus-engineer 10-B | C-01 | n = 30 directory rows, 10 committee ledgers, 5 Donors tabs, 1,075 rendered network links, 10 home rows | live paths pass; all-time precomputed paths fail: I1, I2, E — fixes F1/F2a/F4/F6 proposed to terminal 1 | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
