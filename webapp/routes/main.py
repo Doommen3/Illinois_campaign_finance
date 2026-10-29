@@ -9,6 +9,7 @@ import time
 from flask import Blueprint, Response, render_template, request, current_app, g
 import psycopg
 
+from database.committee_families import accepted_family_map
 from database.models import Committee, Report, Donor, Contribution, receipts_filter_sql
 from database.name_normalize import NAME_TSVECTOR_SQL, normalize_name, search_tsquery
 from database.pg_compat import statement_timeout_scope
@@ -1075,8 +1076,9 @@ def _search_federal_candidates(conn, query: str, limit: int = 20) -> list[dict]:
     return output
 
 
-def _isbe_committee_result(row) -> dict:
-    return {
+def _isbe_committee_result(row, via_candidate: str | None = None) -> dict:
+    notes = "Committee names from ISBE bulk data."
+    result = {
         "id": row["id"],
         "name": row["name"] or "",
         "source_table": "isbe_committees",
@@ -1089,9 +1091,81 @@ def _isbe_committee_result(row) -> dict:
             "source_filing_link": None,
             "import_batch": "ISBE sunshine import",
             "sync_timestamp": row["status_date"] or "not available",
-            "normalization_notes": "Committee names from ISBE bulk data.",
+            "normalization_notes": notes,
         },
     }
+    if via_candidate:
+        result["via_candidate"] = via_candidate
+        result["provenance"]["normalization_notes"] = (
+            f"{notes} Listed because it is linked to candidate {via_candidate} "
+            "(directly or through an accepted committee family)."
+        )
+    return result
+
+
+def _committees_through_candidates(conn, tsquery: str | None, exclude_ids: set, limit: int) -> list[dict]:
+    """Decision S3: the ISBE committees linked to the candidates the query names -- isbe_candidate_committees plus the members
+    of the ACCEPTED committee families of those committees -- each marked with the candidate it was reached through, name order,
+    without the committees already listed by name (exclude_ids)."""
+    if not tsquery or limit <= 0:
+        return []
+    if not all(_table_exists(conn, table) for table in ("isbe_candidates", "isbe_candidate_committees", "isbe_committees")):
+        return []
+
+    candidates = conn.execute(
+        f"""
+        SELECT id, first_name, last_name
+        FROM isbe_candidates
+        WHERE {NAME_TSVECTOR_SQL("first_name || ' ' || last_name")} @@ to_tsquery('simple', ?)
+        ORDER BY last_name, first_name, id
+        LIMIT ?
+        """,
+        (tsquery, limit),
+    ).fetchall()
+    if not candidates:
+        return []
+    names = {
+        row["id"]: " ".join(part.strip() for part in (row["first_name"], row["last_name"]) if part and part.strip())
+        or f"Candidate {row['id']}"
+        for row in candidates
+    }
+
+    via: dict[int, str] = {}  # committee id -> the candidate it was reached through (the first one wins)
+    for row in conn.execute(
+        """
+        SELECT candidate_id, committee_id
+        FROM isbe_candidate_committees
+        WHERE candidate_id = ANY(?) AND committee_id IS NOT NULL
+        ORDER BY candidate_id, committee_id
+        """,
+        (list(names),),
+    ).fetchall():
+        via.setdefault(row["committee_id"], names[row["candidate_id"]])
+    if via and _table_exists(conn, "committee_family"):
+        family_candidate: dict[int, str] = {}
+        for committee_id, (family_id, _label) in accepted_family_map(conn, list(via)).items():
+            family_candidate.setdefault(family_id, via[committee_id])
+        if family_candidate:
+            for row in conn.execute(
+                "SELECT family_id, committee_id FROM committee_family_member WHERE family_id = ANY(?)",
+                (sorted(family_candidate),),
+            ).fetchall():
+                via.setdefault(row["committee_id"], family_candidate[row["family_id"]])
+
+    wanted = [committee_id for committee_id in via if committee_id not in exclude_ids]
+    if not wanted:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, name, type, party, city, state, status_date
+        FROM isbe_committees
+        WHERE id = ANY(?)
+        ORDER BY name
+        LIMIT ?
+        """,
+        (wanted, limit),
+    ).fetchall()
+    return [_isbe_committee_result(row, via_candidate=via[row["id"]]) for row in rows]
 
 
 def _search_committees_source_aware(
@@ -1101,7 +1175,8 @@ def _search_committees_source_aware(
     transaction_date_from: str | None = None,
     transaction_date_to: str | None = None,
 ) -> list[dict]:
-    """Search committees from active data sources (ISBE, then legacy fallback)."""
+    """Search committees from active data sources (ISBE, then legacy fallback), then the ISBE committees linked to the
+    candidates the query names (marked via_candidate)."""
     output: list[dict] = []
     tsquery = search_tsquery(query)
     fallback_pattern = _substring_fallback_pattern(query)
@@ -1161,6 +1236,16 @@ def _search_committees_source_aware(
                     "normalization_notes": c.source_identifier or "source identifier not present",
                 },
             })
+
+    # Through candidates (decision S3): after every committee found by name
+    output.extend(
+        _committees_through_candidates(
+            conn,
+            tsquery,
+            {c["id"] for c in output if c["source_table"] == "isbe_committees"},
+            limit - len(output),
+        )
+    )
 
     return output
 
