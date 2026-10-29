@@ -434,7 +434,10 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
     committees: it would join two column-1 nodes and is money moving between the entity's own accounts, so it is
     counted in ``folded["internal"]`` (rows, dollars) instead. Every other ego edge lands in exactly one link, so
     ``totals`` per edge type equal the ego's. The ego graph holds only the top donors (``summary.truncated``, passed
-    through as ``truncated``); when donors were dropped the donor-class nodes are labelled "Top N ... donors"."""
+    through as ``truncated``); when donors were dropped the donor-class nodes are labelled "Top N ... donors".
+    ``members`` lists, per aggregate node (``class:*`` and every ``other:*``), the ego nodes folded into it with that
+    aggregate's dollars and rows summed over the entity's committees, sorted by amount desc, label, id; a spender
+    folded on both sides is two members, one per ``support_oppose`` (the drill-down panel's data, plan D1)."""
     nodes_by_id = {node["id"]: node for node in payload["nodes"]}
     entity_committees = [node["id"] for node in payload["nodes"] if node.get("role") == "entity"]
     own = set(entity_committees)
@@ -466,8 +469,10 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
 
     links: dict[tuple, dict] = {}
     kinds: dict[str, str] = {}
+    folded_into: dict[str, dict[tuple, list]] = defaultdict(dict)  # aggregate id -> (member id, side) -> [amount, rows]
     for edge in edges:
         edge_type = edge["edge_type"]
+        member = edge["target"] if edge_type == COMMITTEE_VENDOR else edge["source"]
         if edge_type == DONOR_COMMITTEE:
             source, target = f"class:{donor_class(edge['source'])}", edge["target"]
             kinds[source] = "donor_class"
@@ -495,6 +500,11 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
             links[key] = link
         link["weight"] += float(edge["weight"])
         link["count"] += int(edge["count"])
+        aggregate = source if source != edge["source"] else target if target != edge["target"] else None
+        if aggregate is not None:
+            totals_of = folded_into[aggregate].setdefault((member, edge.get("support_oppose")), [0.0, 0])
+            totals_of[0] += float(edge["weight"])
+            totals_of[1] += int(edge["count"])
     for committee_id in entity_committees:
         kinds[committee_id] = "committee"
 
@@ -539,7 +549,22 @@ def money_flow(payload, *, max_vendors=10, max_transfers=10, max_spenders=10):
                    "support": round(support, 2), "oppose": round(oppose, 2)},
         "folded": {**folded, "internal": {"count": internal_rows, "amount": round(internal_amount, 2)}},
         "truncated": truncated,
+        "members": {aggregate: _member_list(rows, nodes_by_id) for aggregate, rows in folded_into.items()},
     }
+
+
+def _member_list(rows: dict[tuple, list], nodes_by_id: dict) -> list[dict]:
+    """(member id, side) -> [amount, rows] as member dicts, sorted by amount desc, then label, id and side."""
+    members = []
+    for (node_id, side), (amount, count) in rows.items():
+        node = nodes_by_id.get(node_id, {})
+        member = {"id": node_id, "label": node.get("label") or node_id, "node_type": node.get("node_type"),
+                  "amount": round(amount, 2), "count": count}
+        if side:
+            member["support_oppose"] = side
+        members.append(member)
+    members.sort(key=lambda member: (-member["amount"], member["label"], member["id"], member.get("support_oppose") or ""))
+    return members
 
 
 def vendor_network(payload):

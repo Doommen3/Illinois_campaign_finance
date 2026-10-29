@@ -59,7 +59,7 @@ CLEAR = {"nodes": [0, 0, 0], "edges": [0, 0, 0], "focusedIds": [], "heading": No
 
 
 def test_clicking_a_node_focuses_it_dims_the_rest_and_lists_its_neighbours_by_weight():
-    log = run_graph_js(["graph_legend.js", "entity_views/ego_force.js"], HARNESS)
+    log = run_graph_js(["graph_legend.js", "entity_views/focus_panel.js", "entity_views/ego_force.js"], HARNESS)
 
     assert log["initial"] == CLEAR
     # candidate:5 touches three edges (the committee's raise, one for, one against); the donor and the vendor are dimmed
@@ -75,7 +75,7 @@ def test_clicking_a_node_focuses_it_dims_the_rest_and_lists_its_neighbours_by_we
 
 
 def test_the_list_links_donors_and_committees_and_leaves_unlinked_nodes_as_text_with_ties_by_label():
-    log = run_graph_js(["graph_legend.js", "entity_views/ego_force.js"], HARNESS)
+    log = run_graph_js(["graph_legend.js", "entity_views/focus_panel.js", "entity_views/ego_force.js"], HARNESS)
     committee = log["committee"]
     assert committee["heading"] == "Connected to Friends of Pat"
     assert committee["rows"] == [
@@ -87,7 +87,7 @@ def test_the_list_links_donors_and_committees_and_leaves_unlinked_nodes_as_text_
 
 
 def test_a_second_click_the_background_and_escape_each_clear_the_focus_and_the_list():
-    log = run_graph_js(["graph_legend.js", "entity_views/ego_force.js"], HARNESS)
+    log = run_graph_js(["graph_legend.js", "entity_views/focus_panel.js", "entity_views/ego_force.js"], HARNESS)
     assert log["again"] == CLEAR, "clicking the focused node again"
     assert log["background"] == CLEAR, "clicking the svg background"
     assert log["vendor"]["heading"] == "Connected to Acme Print" and log["vendor"]["nodes"] == [2, 4, 4]
@@ -95,7 +95,7 @@ def test_a_second_click_the_background_and_escape_each_clear_the_focus_and_the_l
 
 
 def test_a_click_on_another_node_replaces_the_focus_and_the_list_and_the_tooltips_and_key_stay():
-    log = run_graph_js(["graph_legend.js", "entity_views/ego_force.js"], HARNESS)
+    log = run_graph_js(["graph_legend.js", "entity_views/focus_panel.js", "entity_views/ego_force.js"], HARNESS)
     switched = log["switched"]
     assert switched["heading"] == "Connected to Pro Pat PAC"
     assert switched["focusedIds"] == ["candidate:5", "committee:9"] and switched["rows"] == [

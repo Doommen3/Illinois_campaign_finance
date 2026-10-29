@@ -67,19 +67,20 @@
 {% endblock %}
 
 {% block extra_js %}
-{% set graph_meta = {"definitions": payload.summary.edge_type_definitions or {}, "hrefs": node_href} %}
+{% set graph_meta = {"definitions": payload.summary.edge_type_definitions or {}, "hrefs": node_href, "donors_tab_url": donors_tab_url} %}
 <script id="entity-network-meta" type="application/json">{{ graph_meta|tojson }}</script>
 <script src="{{ url_for('static', filename='js/graph_legend.js', v='20261028-2') }}"></script>
-<script src="{{ url_for('static', filename='js/entity_views/money_flow.js', v='20261028-2') }}"></script>
-<script src="{{ url_for('static', filename='js/entity_views/vendor_network.js', v='20261028-2') }}"></script>
-<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261028-3') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/focus_panel.js', v='20261029-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/money_flow.js', v='20261029-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/vendor_network.js', v='20261029-1') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261029-1') }}"></script>
 <script>
 (function () {
     var box = document.getElementById("entity-network-graph");
     var views = window.EntityViews || {};
     if (!box || !window.fetch) { return; }
     var meta = JSON.parse((document.getElementById("entity-network-meta") || {}).textContent || "{}");
-    var ctx = { definitions: meta.definitions || {}, hrefs: meta.hrefs || {},
+    var ctx = { definitions: meta.definitions || {}, hrefs: meta.hrefs || {}, donorsTabUrl: meta.donors_tab_url || null,
                 keyBox: document.getElementById("entity-network-key"), focusBox: document.getElementById("entity-network-focus") };
     var sources = { ego: box.dataset.src, money_flow: box.dataset.srcMoneyFlow, vendor_network: box.dataset.srcVendorNetwork };
     var buttons = Array.prototype.slice.call(document.querySelectorAll(".view-switch-button"));

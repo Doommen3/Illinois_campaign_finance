@@ -8,12 +8,12 @@
    Click a node to focus it (plan N19): the node, its edges and its neighbours stay at full opacity with a "focused"
    class, everything else dims, and a "Connected to <node>" list (ctx.focusBox) names the neighbours by edge weight,
    linking them through ctx.hrefs (node id -> page, as the Network tab's edge table links them). Clicking the focused
-   node again, the background or pressing Escape clears the focus. */
+   node again, the background or pressing Escape clears the focus. The list is drawn by entity_views/focus_panel.js
+   (loaded first), which the money flow and vendor network views share. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
     var ROLE_ORDER = ["donor", "transfer_source", "ie_spender", "vendor"];
-    var DIM = 0.15;
     var escapeHandler = null;  // the one document-level Escape listener; the next render replaces it
 
     function el(name, attrs, text) {
@@ -107,13 +107,7 @@
         container.appendChild(svg);
 
         // Focus: the node, its incident edges and its neighbours keep full opacity (class "focused"); the rest dims.
-        function mark(element, focused, dimmed) {
-            element.classList.remove("focused");
-            element.classList.remove("dimmed");
-            if (focused) { element.classList.add("focused"); }
-            if (dimmed) { element.classList.add("dimmed"); }
-            if (focused || dimmed) { element.setAttribute("opacity", dimmed ? DIM : 1); } else { element.removeAttribute("opacity"); }
-        }
+        var mark = window.EntityViews.markFocus;
 
         function setFocus(id) {
             focus = id;
@@ -136,51 +130,19 @@
         }
 
         function showList(id) {
-            if (!focusBox) { return; }
-            focusBox.textContent = "";
-            if (!id) { return; }
-            var heading = document.createElement("h3");
-            heading.textContent = "Connected to " + byId[id].label;
-            focusBox.appendChild(heading);
-            if (!incident[id].length) {
-                var none = document.createElement("p");
-                none.setAttribute("class", "help-text");
-                none.textContent = "No connections in this window.";
-                focusBox.appendChild(none);
-                return;
-            }
+            if (!id) { window.EntityViews.clearFocus(focusBox); return; }
             var rows = incident[id].map(function (edge) { return { edge: edge, other: byId[edge.source === id ? edge.target : edge.source] }; })
                 .sort(function (a, b) { return (b.edge.weight - a.edge.weight) || String(a.other.label).localeCompare(String(b.other.label)); });
-            var table = document.createElement("table"), head = document.createElement("tr"), body = document.createElement("tbody");
-            var thead = document.createElement("thead");
-            table.setAttribute("class", "data-table");
-            ["Name", "Relationship", "Amount"].forEach(function (title) {
-                var cell = document.createElement("th");
-                cell.textContent = title;
-                head.appendChild(cell);
+            window.EntityViews.focusPanel(focusBox, {
+                heading: "Connected to " + byId[id].label,
+                empty: "No connections in this window.",
+                columns: ["Name", "Relationship", "Amount"],
+                rows: rows.map(function (row) {
+                    return { label: row.other.label, href: hrefs[row.other.id],
+                             cells: [window.GraphKey.entry(window.GraphKey.styleKey(row.edge), ctx && ctx.definitions).label,
+                                     money(row.edge.weight)] };
+                })
             });
-            thead.appendChild(head);
-            table.appendChild(thead);
-            rows.forEach(function (row) {
-                var tr = document.createElement("tr"), name = document.createElement("td");
-                if (hrefs[row.other.id]) {
-                    var link = document.createElement("a");
-                    link.setAttribute("href", hrefs[row.other.id]);
-                    link.textContent = row.other.label;
-                    name.appendChild(link);
-                } else {
-                    name.textContent = row.other.label;
-                }
-                var kind = document.createElement("td"), amount = document.createElement("td");
-                kind.textContent = window.GraphKey.entry(window.GraphKey.styleKey(row.edge), ctx && ctx.definitions).label;
-                amount.textContent = money(row.edge.weight);
-                tr.appendChild(name);
-                tr.appendChild(kind);
-                tr.appendChild(amount);
-                body.appendChild(tr);
-            });
-            table.appendChild(body);
-            focusBox.appendChild(table);
         }
 
         svg.addEventListener("click", function () { setFocus(null); });

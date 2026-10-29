@@ -32,7 +32,7 @@ from database.analytics import (
 from database.committee_families import accepted_family_map
 
 ENTITY_KINDS = ("candidate", "race")
-ENTITY_CACHE_REV = "ea1"
+ENTITY_CACHE_REV = "ea2"
 
 _DEFAULT_TOP_N = 25
 _LARGE_FLOOR = 5000.0

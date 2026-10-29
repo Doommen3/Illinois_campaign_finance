@@ -2,10 +2,24 @@
    network.json?view=money_flow -- sources (donor classes, in-kind, transfer sources, independent spenders) on the
    left, the entity's committees and the candidates named by independent spending in the middle, vendors on the
    right. Band width and node height are proportional to dollars on one shared scale. Band colour and dash come from the
-   site-wide style map (js/graph_legend.js), and the key under the graph (ctx.keyBox) explains them. */
+   site-wide style map (js/graph_legend.js), and the key under the graph (ctx.keyBox) explains them.
+
+   Click a node to drill down (plan .claude/plans/money-flow-drilldown.md, D1-D5; the panel is entity_views/
+   focus_panel.js in ctx.focusBox): a group node (a donor class, in-kind, an "Other" node) lists who is inside it from
+   data.members, saying when the ego graph's caps (data.truncated) left more out and linking a capped donor group to
+   the Donors tab (ctx.donorsTabUrl); any other node lists its flows. Its bands get class "focused", the rest dim.
+   Clicking it again, the background or pressing Escape clears the panel. */
 (function () {
     window.EntityViews = window.EntityViews || {};
     var NS = "http://www.w3.org/2000/svg";
+    var escapeHandler = null;  // the one document-level Escape listener; the next render replaces it
+    // Group nodes: [singular, plural] for the cap note, and the ``truncated`` class whose dropped count it reports.
+    var DONOR_GROUPS = { "class:individual": ["individual donor", "individual donors"],
+                         "class:organization": ["organization donor", "organization donors"],
+                         "class:in_kind": ["in-kind donor", "in-kind donors"] };
+    var OTHER_GROUPS = { "other:vendors": ["vendor", "vendors", "vendors"],
+                         "other:transfers": ["transfer source", "transfer sources", "transfers"],
+                         "other:spenders": ["independent spender", "independent spenders", "ie_spenders"] };
 
     function el(name, attrs, text) {
         var node = document.createElementNS(NS, name);
@@ -20,16 +34,36 @@
         return "$" + Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function rowText(count) {
+        return count + (count === 1 ? " row" : " rows");
+    }
+
+    // The cap note of a group node: how many the graph holds and how many more the ego graph's caps left out.
+    function capNote(id, members, truncated, donorsTabUrl) {
+        var shown = Object.keys(members.reduce(function (seen, member) { seen[member.id] = true; return seen; }, {})).length;
+        var donor = DONOR_GROUPS[id], other = OTHER_GROUPS[id];
+        var dropped = Number((truncated || {})[donor ? "donors" : other ? other[2] : ""]) || 0;
+        if (!dropped) { return {}; }
+        var noun = (donor || other)[shown === 1 ? 0 : 1];
+        if (donor) {
+            return { note: "Top " + shown + " " + noun + " in this graph; " + dropped + " more donor" + (dropped === 1 ? "" : "s") + " not shown.",
+                     link: donorsTabUrl ? { text: "See all donors", href: donorsTabUrl } : null };
+        }
+        return { note: shown + " " + noun + " grouped here; " + dropped + " more " + other[dropped === 1 ? 0 : 1] + " not in this graph." };
+    }
+
     window.EntityViews.money_flow = function (container, data, ctx) {
         container.innerHTML = "";
         var keyBox = ctx && ctx.keyBox, definitions = ctx && ctx.definitions;
+        var focusBox = ctx && ctx.focusBox, hrefs = (ctx && ctx.hrefs) || {};
         window.renderGraphKey(keyBox);  // no options: empties the key until the graph below has drawn
+        if (focusBox) { focusBox.textContent = ""; }
         if (!data.links || !data.links.length) {
             container.textContent = "No money flows in this window.";
             return;
         }
-        var labels = {};
-        data.nodes.forEach(function (node) { labels[node.id] = node.label; });
+        var labels = {}, byId = {}, bands = [], focus = null;
+        data.nodes.forEach(function (node) { labels[node.id] = node.label; byId[node.id] = node; });
 
         var width = Math.max(container.clientWidth || 900, 640), height = 540, pad = 28, nodeW = 14, gap = 10;
         var columns = [[], [], []];
@@ -72,9 +106,14 @@
             path.appendChild(el("title", {}, labels[link.source] + " → " + labels[link.target] + ": " + money(link.weight)
                 + " (" + link.edge_label + side + ", " + link.count + " rows)"));
             svg.appendChild(path);
+            bands.push({ link: link, path: path });
         });
         data.nodes.forEach(function (node) {
-            var p = pos[node.id], g = el("g", { "class": "money-flow-node money-flow-" + node.kind });
+            var p = pos[node.id], g = el("g", { "class": "money-flow-node money-flow-" + node.kind, "data-node-id": node.id });
+            g.addEventListener("click", function (event) {
+                event.stopPropagation();
+                setFocus(focus === node.id ? null : node.id);
+            });
             g.appendChild(el("rect", { x: p.x, y: p.y, width: nodeW, height: p.h, rx: 2,
                                        fill: node.column === 1 ? "#2d3748" : "#a0aec0" }));
             var anchor = node.column === 2 ? "end" : "start";
@@ -86,6 +125,47 @@
             svg.appendChild(g);
         });
         container.appendChild(svg);
+
+        function setFocus(id) {
+            focus = id;
+            bands.forEach(function (item) {
+                var touches = item.link.source === id || item.link.target === id;
+                window.EntityViews.markFocus(item.path, id && touches, id && !touches);
+            });
+            if (!id) { window.EntityViews.clearFocus(focusBox); return; }
+            var members = (data.members || {})[id];
+            if (members) {
+                var sided = id === "other:spenders", cap = capNote(id, members, data.truncated, ctx && ctx.donorsTabUrl);
+                window.EntityViews.focusPanel(focusBox, {
+                    heading: "Inside " + byId[id].label, note: cap.note, link: cap.link,
+                    columns: ["Name", "Amount", "Rows"].concat(sided ? ["Side"] : []),
+                    rows: members.map(function (member) {
+                        var side = member.support_oppose === "S" ? "for" : member.support_oppose === "O" ? "against" : "";
+                        return { label: member.label, href: hrefs[member.id],
+                                 cells: [money(member.amount), rowText(member.count)].concat(sided ? [side] : []) };
+                    })
+                });
+                return;
+            }
+            var flows = bands.map(function (item) { return item.link; })
+                .filter(function (link) { return link.source === id || link.target === id; })
+                .map(function (link) { return { link: link, other: link.source === id ? link.target : link.source }; })
+                .sort(function (a, b) { return (b.link.weight - a.link.weight) || String(labels[a.other]).localeCompare(String(labels[b.other])); });
+            window.EntityViews.focusPanel(focusBox, {
+                heading: "Flows of " + byId[id].label, empty: "No flows in this window.",
+                columns: ["Name", "Amount", "Rows", "Flow"],
+                rows: flows.map(function (flow) {
+                    return { label: labels[flow.other], href: hrefs[flow.other],
+                             cells: [money(flow.link.weight), rowText(flow.link.count),
+                                     window.GraphKey.entry(window.GraphKey.styleKey(flow.link), definitions).label] };
+                })
+            });
+        }
+
+        svg.addEventListener("click", function () { setFocus(null); });
+        if (escapeHandler) { document.removeEventListener("keydown", escapeHandler); }
+        escapeHandler = function (event) { if (event.key === "Escape" && focus) { setFocus(null); } };
+        document.addEventListener("keydown", escapeHandler);
 
         var legend = document.createElement("p");
         legend.className = "help-text";
@@ -117,7 +197,9 @@
             notes.push(internal.count + " row" + (internal.count === 1 ? "" : "s") + " (" + money(internal.amount)
                 + ") moving money between this entity's own committees not drawn");
         }
-        legend.textContent = parts.join("; ") + (notes.length ? ". " + notes.join(". ") + "." : ".");
+        legend.textContent = parts.join("; ") + (notes.length ? ". " + notes.join(". ") + "." : ".")
+            + " Click a node to list who is inside a group or the flows of any other node"
+            + " (click it again, click the background or press Esc to clear).";
         container.appendChild(legend);
         window.renderGraphKey(keyBox, { edgeTypes: window.GraphKey.styleKeys(data.links), definitions: definitions });
     };
