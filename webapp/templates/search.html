@@ -69,6 +69,9 @@
                         <a href="{{ url_for('committees.legacy_committee_detail', committee_id=committee.id) if committee.source_table == 'committees' else url_for('committees.committee_detail', committee_id=committee.id) }}">
                             {{ committee.name }}
                         </a>
+                        {% if committee.via_candidate %}
+                        <br><small>via candidate {{ committee.via_candidate }}</small>
+                        {% endif %}
                         <details class="provenance-panel">
                             <summary>Provenance</summary>
                             <p><strong>Source table:</strong> {{ committee.provenance.source_table }}</p>

@@ -111,6 +111,8 @@ CANDIDATE_FINANCE_AGG_INDEX_SQL = [
     "CREATE INDEX idx_bulk_candidate_committee_finance_agg_candidate ON bulk_candidate_committee_finance_agg (candidate_id);",
     "CREATE INDEX idx_bulk_candidate_committee_finance_agg_committee ON bulk_candidate_committee_finance_agg (committee_id_sbe);",
     "CREATE INDEX idx_bulk_candidate_committee_finance_agg_cycle ON bulk_candidate_committee_finance_agg (election_cycle);",
+    # /search matches candidate names by token (database/name_normalize.py NAME_TSVECTOR_SQL spelled out).
+    "CREATE INDEX idx_bulk_cand_cmte_finance_agg_name_tsv ON bulk_candidate_committee_finance_agg USING gin (to_tsvector('simple', regexp_replace(upper(coalesce(candidate_full_name, '')), '[^A-Z0-9 ]', ' ', 'g')));",
 ]
 
 # information_schema.tables does not list materialized views, so relation kinds come from pg_class:

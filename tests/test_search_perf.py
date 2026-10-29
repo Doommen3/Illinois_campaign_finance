@@ -102,6 +102,8 @@ AGG_INDEXES = {
     "idx_bulk_candidate_committee_finance_agg_committee": "committee_id_sbe",
     "idx_bulk_candidate_committee_finance_agg_cycle": "election_cycle",
 }
+# The fourth index (search program, decision S2): the GIN expression index /search's candidate-name predicate uses.
+AGG_NAME_INDEX = "idx_bulk_cand_cmte_finance_agg_name_tsv"
 
 # SHA-256 of the SELECT body of CANDIDATE_FINANCE_AGG_VIEW_SQL as committed before P6: the text from
 # "WITH filing_periods AS (" to the end of the constant, whitespace collapsed to single spaces, trailing ";" dropped.
@@ -494,8 +496,8 @@ def test_main_leaves_a_populated_materialized_view_whatever_was_there_before(wor
 
 
 @pytest.mark.parametrize("prior", ["nothing", "plain-view"])
-def test_main_builds_exactly_the_three_indexes_and_analyzes(world, monkeypatch, prior):
-    """Kills: a missing, misnamed or mis-targeted index (names and columns pinned exactly); an extra index (exact set);
+def test_main_builds_exactly_the_four_indexes_and_analyzes(world, monkeypatch, prior):
+    """Three btree indexes plus the name GIN. Kills: a missing, misnamed or mis-targeted index (names and columns pinned exactly); an extra index (exact set);
     an index built on the OLD relation (it would vanish with it); no ANALYZE, or an ANALYZE of the old relation or
     before the CREATE (pg_stats holds one row per column only after ANALYZE ran on the NEW matview: 19)."""
     conn, schema = world
@@ -504,9 +506,11 @@ def test_main_builds_exactly_the_three_indexes_and_analyzes(world, monkeypatch, 
     _run_swap(monkeypatch, schema)
 
     definitions = _index_definitions(conn)
-    assert set(definitions) == set(AGG_INDEXES)
+    assert set(definitions) == set(AGG_INDEXES) | {AGG_NAME_INDEX}
     for name, column in AGG_INDEXES.items():
         assert definitions[name].endswith(f" USING btree ({column})"), definitions[name]
+    assert " USING gin (to_tsvector(" in definitions[AGG_NAME_INDEX], definitions[AGG_NAME_INDEX]
+    assert "candidate_full_name" in definitions[AGG_NAME_INDEX], definitions[AGG_NAME_INDEX]
     assert _stats_column_count(conn) == len(AGG_COLUMNS) == 19
 
 
@@ -541,7 +545,7 @@ def test_main_rerun_rebuilds_from_the_current_source_rows(world, monkeypatch):
     assert birch[0]["period_start_date"] == "2023-11-20"
     assert birch[0]["period_end_date"] == "2023-12-01"
     assert len(_agg_rows(conn)) == 5
-    assert set(_index_definitions(conn)) == set(AGG_INDEXES)
+    assert set(_index_definitions(conn)) == set(AGG_INDEXES) | {AGG_NAME_INDEX}
     assert _stats_column_count(conn) == 19
 
 
