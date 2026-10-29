@@ -9,9 +9,13 @@ and N16 (race tabs derive the candidate cycle the way the race detail page does)
     GET /candidates/<int:candidate_id>/network.json?view=    the Network tab's lazily fetched JSON (N5)
     GET /analytics/state-races/<race_key>/<tab>              race tabs (default window: the race's cycle)
     GET /analytics/state-races/<race_key>/network.json?view=
+    GET /candidates/<int:candidate_id>/network/rows.json?source=&target=&edge_type=   the rows behind an edge
+    GET /analytics/state-races/<race_key>/network/rows.json?source=&target=&edge_type=
 
 ``tab`` is one of ENTITY_TABS; anything else, an unknown entity or an unknown ``view`` is a 404 before any
-builder runs. The builders are imported by name so the route tests can replace them on this module.
+builder runs; so is a rows request without ``source`` or with an unknown ``edge_type``, and one naming a node or edge
+the cached ego payload does not hold (``edge_rows`` returns None). The builders are imported by name so the route tests
+can replace them on this module.
 """
 from __future__ import annotations
 
@@ -26,7 +30,16 @@ from database.entity_analytics import (
     get_entity_risk,
     resolve_entity,
 )
-from database.entity_network import DEFAULT_CAPS, DONOR_COMMITTEE, get_entity_network, money_flow, vendor_network
+from database.entity_network import (
+    DEFAULT_CAPS,
+    DONOR_COMMITTEE,
+    EDGE_TYPE_DEFINITIONS,
+    ROWS_LIMIT,
+    edge_rows,
+    get_entity_network,
+    money_flow,
+    vendor_network,
+)
 from webapp.cache_backend import RouteCache
 from webapp.routes.analytics import ANALYTICS_CACHE_TTL_FALLBACK_SECONDS, _cached_build, _state_race_cycle
 from webapp.utils.data_through import latest_data_date
@@ -109,8 +122,9 @@ def _site_threshold(conn, *, ttl: int, enabled: bool, refresh: bool):
                          cache_enabled=enabled, refresh=refresh)
 
 
-def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None):
-    """The tab's payload through its RouteCache (``entity_<tab>``; the JSON views under tab ``network:<view>``)."""
+def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None, rows: tuple | None = None):
+    """The tab's payload through its RouteCache (``entity_<tab>``; the JSON views under tab ``network:<view>``; the rows
+    of one edge, ``rows`` = (source, target, edge_type), under ``network:rows``, read from the cached ego payload)."""
     conn, entity, scope = ctx["conn"], ctx["entity"], ctx["scope"]
     window = {"date_from": scope.start, "date_to": scope.end}
     ttl, enabled, refresh = _request_settings()
@@ -129,6 +143,13 @@ def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None):
         if view in PROJECTIONS:
             def builder():
                 return PROJECTIONS[view](cached_ego())
+        elif view == "rows":
+            source, target, edge_type = rows
+            params = (*NETWORK_CAPS, ROWS_LIMIT, edge_type, source, target)
+
+            def builder():
+                return edge_rows(conn, cached_ego(), source=source, target=target, edge_type=edge_type, **window,
+                                 limit=ROWS_LIMIT)
         elif view is None:
             # The HTML tab is its own entry, but reads the ego payload through the JSON route's ``network:ego`` entry,
             # so a cold page and the ego request it triggers build the graph once.
@@ -187,6 +208,13 @@ def _json_url(kind: str, key, ctx: dict, view: str) -> str:
     return url_for(endpoint, view=view, election_cycle=ctx["cycle_arg"], **key_arg, **scope_params(ctx["scope"]))
 
 
+def _rows_url(kind: str, key, ctx: dict) -> str:
+    """The rows route with the page's scope (and race cycle); the panel adds source, target and edge_type."""
+    endpoint = "entity_analytics.candidate_network_rows" if kind == "candidate" else "entity_analytics.race_network_rows"
+    key_arg = {"candidate_id": key} if kind == "candidate" else {"race_key": key}
+    return url_for(endpoint, election_cycle=ctx["cycle_arg"], **key_arg, **scope_params(ctx["scope"]))
+
+
 def _donors_tab_url(kind: str, key, ctx: dict) -> str:
     """The entity's Donors tab with the page's scope, built as entity/_subnav.html builds it (the drill-down panel's
     "See all donors" link, plan D5)."""
@@ -219,6 +247,7 @@ def _tab_page(kind: str, key, tab: str):
         context["node_href"] = {node_id: _node_href(node, itemized) for node_id, node in nodes.items()}
         context["network_sources"] = {view: _json_url(kind, key, ctx, view) for view in NETWORK_VIEWS}
         context["donors_tab_url"] = _donors_tab_url(kind, key, ctx)
+        context["rows_url"] = _rows_url(kind, key, ctx)
     return render_template(f"entity/{tab}.html", **context)
 
 
@@ -229,6 +258,17 @@ def _network_json(kind: str, key):
     ctx = _resolve(kind, key)
     payload = _build(ctx, kind, key, "network", view=view)
     return jsonify(dict(payload, view=view))
+
+
+def _network_rows_json(kind: str, key):
+    source, target, edge_type = request.args.get("source"), request.args.get("target") or None, request.args.get("edge_type")
+    if not source or edge_type not in EDGE_TYPE_DEFINITIONS:
+        abort(404)
+    ctx = _resolve(kind, key)
+    result = _build(ctx, kind, key, "network", view="rows", rows=(source, target, edge_type))
+    if result is None:
+        abort(404)
+    return jsonify(result)
 
 
 @bp.route("/candidates/<int:candidate_id>/<tab>")
@@ -249,3 +289,13 @@ def race_tab(race_key: str, tab: str):
 @bp.route("/analytics/state-races/<race_key>/network.json")
 def race_network_json(race_key: str):
     return _network_json("race", race_key)
+
+
+@bp.route("/candidates/<int:candidate_id>/network/rows.json")
+def candidate_network_rows(candidate_id: int):
+    return _network_rows_json("candidate", candidate_id)
+
+
+@bp.route("/analytics/state-races/<race_key>/network/rows.json")
+def race_network_rows(race_key: str):
+    return _network_rows_json("race", race_key)

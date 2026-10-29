@@ -111,6 +111,11 @@ _REDACTED_SQL = (
     "BOOL_OR(COALESCE(t.redaction_requested, FALSE) OR COALESCE(t.address1 = 'Redaction Requested', FALSE))"
 )
 _PAYER_OR_DONOR_KEY_SQL = f"CASE WHEN t.d2_part = '5A' THEN {_DONOR_KEY_SQL} ELSE LOWER({_NAME_SQL}) END"
+_PAYEE_KEY_SQL = f"LOWER({_NAME_SQL})"
+# The D-2 parts each edge type reads (shared by the graph build and edge_rows).
+_PART_1A_SQL = "t.d2_part like '1%' AND t.d2_part = '1A'"
+_PARTS_5A_2A_SQL = "t.d2_part IN ('5A', '2A')"
+_PAYEE_PARTS_SQL = "(t.d2_part IS NULL OR NOT (t.d2_part like '9%'))"
 _PART9_ROWS_SQL = f"""
     SELECT e.id, e.committee_id, e.candidate_name, e.amount, e.supporting, e.opposing, e.expended_date
     FROM isbe_condensed_expenditures e
@@ -154,8 +159,8 @@ def get_entity_network(conn, entity, *, date_from=None, date_to=None, caps=None)
 
     # --- receipts: 1A donors (partial index idx_isbe_condensed_receipts_active_part1), then 5A / 2A
     raised: dict[int, list] = defaultdict(lambda: [0.0, 0])   # committee -> [1A total, 1A rows]
-    for row in _grouped(conn, "isbe_condensed_receipts", "received_date",
-                        "t.d2_part like '1%' AND t.d2_part = '1A'", _DONOR_KEY_SQL, committee_ids, window):
+    for row in _grouped(conn, "isbe_condensed_receipts", "received_date", _PART_1A_SQL, _DONOR_KEY_SQL,
+                        committee_ids, window):
         donor = "donor:" + row["node_key"]
         labels.setdefault(donor, row["label"])
         if row["redacted"]:
@@ -165,7 +170,7 @@ def get_entity_network(conn, entity, *, date_from=None, date_to=None, caps=None)
         raised[row["committee_id"]][1] += int(row["n"])
 
     transfers = []
-    for row in _grouped(conn, "isbe_condensed_receipts", "received_date", "t.d2_part IN ('5A', '2A')",
+    for row in _grouped(conn, "isbe_condensed_receipts", "received_date", _PARTS_5A_2A_SQL,
                         _PAYER_OR_DONOR_KEY_SQL, committee_ids, window):
         if row["d2_part"] == "2A":
             transfers.append(row)
@@ -198,8 +203,7 @@ def get_entity_network(conn, entity, *, date_from=None, date_to=None, caps=None)
         add(TRANSFER_IN, payer, f"committee:{row['committee_id']}", row["amount"], row["n"], "transfers", payer)
 
     # --- expenditures: everything but Part 9 is a payee; Part 9 is attributed to candidates below
-    for row in _grouped(conn, "isbe_condensed_expenditures", "expended_date",
-                        "(t.d2_part IS NULL OR NOT (t.d2_part like '9%'))", f"LOWER({_NAME_SQL})",
+    for row in _grouped(conn, "isbe_condensed_expenditures", "expended_date", _PAYEE_PARTS_SQL, _PAYEE_KEY_SQL,
                         committee_ids, window):
         vendor = "vendor:" + _hash16(row["node_key"])
         labels.setdefault(vendor, row["label"])
@@ -305,6 +309,109 @@ def _grouped(conn, table, date_column, filter_sql, key_sql, committee_ids, windo
         """,
         [committee_ids, *params],
     ).fetchall()
+
+
+ROWS_LIMIT = 200
+# Edge type -> (table, date column, part filter, neighbour key, text column): the predicates the graph build reads.
+_ROW_SPECS = {
+    DONOR_COMMITTEE: ("isbe_condensed_receipts", "received_date", _PART_1A_SQL, _DONOR_KEY_SQL, "description"),
+    IN_KIND_DONOR_COMMITTEE: ("isbe_condensed_receipts", "received_date", f"{_PARTS_5A_2A_SQL} AND t.d2_part = '5A'",
+                              _DONOR_KEY_SQL, "description"),
+    TRANSFER_IN: ("isbe_condensed_receipts", "received_date", f"{_PARTS_5A_2A_SQL} AND t.d2_part = '2A'",
+                  _PAYEE_KEY_SQL, "description"),
+    COMMITTEE_VENDOR: ("isbe_condensed_expenditures", "expended_date", _PAYEE_PARTS_SQL, _PAYEE_KEY_SQL, "purpose"),
+}
+
+
+def edge_rows(conn, payload, *, source, target=None, edge_type, date_from=None, date_to=None, limit=ROWS_LIMIT):
+    """The condensed rows behind the ego ``payload``'s edges of ``edge_type`` between ``source`` and ``target`` (either
+    direction; ``target=None``: every such edge at ``source``), read with the predicates the build used over the
+    window, so their amounts sum to the edges' weights. Returns ``{"rows", "total_amount", "total_count",
+    "truncated"}`` (rows newest first, at most ``limit``; the totals are over every row), ``{"rows": [], "unsupported":
+    True}`` for the Phase B edge types, or None when the payload holds no such node or edge. Request values only
+    select payload edges; the SQL is built from the payload's ids. Rows carry no address field."""
+    node_ids = {node["id"] for node in payload["nodes"]}
+    if source not in node_ids or (target is not None and target not in node_ids):
+        return None
+    edges = [edge for edge in payload["edges"] if edge["edge_type"] == edge_type
+             and source in (edge["source"], edge["target"])
+             and (target is None or {edge["source"], edge["target"]} == {source, target})]
+    if not edges:
+        return None
+    if edge_type not in _ROW_SPECS:
+        return {"rows": [], "unsupported": True}
+    table, date_column, filter_sql, key_sql, text_column = _ROW_SPECS[edge_type]
+    window = (date_from, date_to)
+    # The entity's committee receives a receipt edge and pays a vendor edge; the other end is the neighbour.
+    pairs = [(edge["source"], edge["target"]) if edge_type == COMMITTEE_VENDOR else (edge["target"], edge["source"])
+             for edge in edges]
+    committee_ids = sorted({int(committee.partition(":")[2]) for committee, _ in pairs})
+    keys = _neighbour_keys(conn, {neighbour for _, neighbour in pairs}, table, date_column, filter_sql, key_sql,
+                           committee_ids, window)
+    by_committee: dict[int, set] = defaultdict(set)
+    for committee, neighbour in pairs:
+        by_committee[int(committee.partition(":")[2])].update(keys.get(neighbour, ()))
+    clauses, pair_params = [], []
+    for committee_id, neighbour_keys in sorted(by_committee.items()):
+        if neighbour_keys:
+            clauses.append(f"(t.committee_id = ? AND {key_sql} = ANY(?))")
+            pair_params += [committee_id, sorted(neighbour_keys)]
+    if not clauses:
+        return {"rows": [], "total_amount": 0.0, "total_count": 0, "truncated": False}
+    window_sql, window_params = _window(f"t.{date_column}", window)
+    found = conn.execute(
+        f"""
+        SELECT t.{date_column} AS day, t.amount, t.d2_part, t.{text_column} AS text, {_NAME_SQL} AS counterparty,
+               t.committee_id, t.filed_doc_id, SUM(t.amount) OVER () AS total_amount, COUNT(*) OVER () AS total_count
+        FROM {table} t
+        WHERE t.archived = FALSE AND t.amount > 0 AND {filter_sql}{window_sql} AND ({" OR ".join(clauses)})
+        ORDER BY t.{date_column} DESC NULLS LAST, t.amount DESC, t.id
+        LIMIT ?
+        """,
+        [*window_params, *pair_params, int(limit)],
+    ).fetchall()
+    labels = {node["id"]: node["label"] for node in payload["nodes"]}
+    rows = [{
+        "date": row["day"].isoformat() if row["day"] else None,
+        "amount": round(float(row["amount"]), 2),
+        "d2_part": row["d2_part"],
+        text_column: row["text"],
+        "counterparty": row["counterparty"],
+        "committee_id": row["committee_id"],
+        "committee_name": labels.get(f"committee:{row['committee_id']}"),
+        "filed_doc_id": row["filed_doc_id"],
+        "filing_href": f"/committees/filing/{row['filed_doc_id']}" if row["filed_doc_id"] is not None else None,
+    } for row in found]
+    total_count = int(found[0]["total_count"]) if found else 0
+    return {"rows": rows, "total_amount": round(float(found[0]["total_amount"]), 2) if found else 0.0,
+            "total_count": total_count, "truncated": total_count > len(rows)}
+
+
+def _neighbour_keys(conn, neighbours, table, date_column, filter_sql, key_sql, committee_ids, window) -> dict[str, set]:
+    """Node id -> the key values (``key_sql``) of its rows: a donor id holds its key; a resolved transfer payer is the
+    committee's normalised name; a ``vendor:`` / ``transfer:`` hash is looked up among the committees' own keys."""
+    keys: dict[str, set] = {}
+    hashed = set()
+    payer_ids = []
+    for node_id in neighbours:
+        prefix, _, rest = node_id.partition(":")
+        if prefix == "donor":
+            keys[node_id] = {rest}
+        elif prefix == "committee":
+            payer_ids.append(int(rest))
+        else:
+            hashed.add(rest)
+    if payer_ids:   # the build's resolution rule: the payer name equals LOWER(TRIM(isbe_committees.name))
+        for row in conn.execute("SELECT id, LOWER(TRIM(name)) AS norm FROM isbe_committees WHERE id = ANY(?)",
+                                (sorted(payer_ids),)).fetchall():
+            keys[f"committee:{row['id']}"] = {row["norm"]}
+    if hashed:
+        prefix = "vendor:" if table == "isbe_condensed_expenditures" else "transfer:"
+        for row in _grouped(conn, table, date_column, filter_sql, key_sql, committee_ids, window):
+            digest = _hash16(row["node_key"])
+            if digest in hashed:
+                keys.setdefault(prefix + digest, set()).add(row["node_key"])
+    return keys
 
 
 def _committee_names(conn, committee_ids) -> dict[int, str]:

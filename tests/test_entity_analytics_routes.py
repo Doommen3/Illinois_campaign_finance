@@ -775,20 +775,22 @@ def test_entity_tabs_and_blueprint_name_are_pinned():
     assert entity_routes.bp.name == "entity_analytics"
 
 
-def test_the_blueprint_is_registered_with_exactly_the_four_contract_routes(make_app):
-    """Kills: forgetting to register the blueprint (step 6); a URL prefix; a fifth route (a JSON twin of a tab, a
+def test_the_blueprint_is_registered_with_exactly_the_six_contract_routes(make_app):
+    """Kills: forgetting to register the blueprint (step 6); a URL prefix; a seventh route (a JSON twin of a tab, a
     catch-all); a tab rule that is not `<tab>` or a candidate id that is not an int converter (``/candidates/abc/risk``
-    must not reach the view)."""
+    must not reach the view). The two ``network/rows.json`` routes are plan inkind-rows-and-readable-ego D2."""
     app = make_app()
     rules = [rule for rule in app.url_map.iter_rules() if rule.endpoint.startswith("entity_analytics.")]
     shapes = {re.sub(r"<(\w+):\w+>", r"<\1>", re.sub(r"<\w+>", "<str>", rule.rule)) for rule in rules}
 
-    assert len(rules) == 4, sorted(rule.rule for rule in rules)
+    assert len(rules) == 6, sorted(rule.rule for rule in rules)
     assert shapes == {
         "/candidates/<int>/<str>",
         "/candidates/<int>/network.json",
+        "/candidates/<int>/network/rows.json",
         "/analytics/state-races/<str>/<str>",
         "/analytics/state-races/<str>/network.json",
+        "/analytics/state-races/<str>/network/rows.json",
     }
     for rule in rules:
         assert rule.methods - {"GET", "HEAD", "OPTIONS"} == set(), f"{rule.rule} accepts {rule.methods}"
@@ -1909,3 +1911,166 @@ def test_race_detail_page_carries_the_subnav_with_overview_active(race_parent_cl
     # N17 (Devin, 2026-10-28): race pages show only the entity tab bar; the global analytics tabs are gone
     # (the scope bar, which that partial used to include, stays).
     assert 'aria-label="Analytics section navigation"' not in page.markup, "the global analytics tab bar must not render on race pages (N17)"
+
+
+# ---------------------------------------------------------------------------
+# network/rows.json: the rows behind an edge (.claude/plans/inkind-rows-and-readable-ego.md, D2)
+# ---------------------------------------------------------------------------
+
+PAT = f"donor:{PAT_KEY}"
+
+
+class RowsFake:
+    """Recording stand-in for ``edge_rows``: None for a node the payload does not hold, else one row whose
+    counterparty carries the call's serial (so a cached answer is observable)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(self, conn, payload, *, source, target=None, edge_type, date_from=None, date_to=None, limit=200):
+        self.calls.append({"payload": payload, "source": source, "target": target, "edge_type": edge_type,
+                           "date_from": date_from, "date_to": date_to, "limit": limit})
+        ids = {node["id"] for node in payload["nodes"]}
+        if source not in ids or (target is not None and target not in ids):
+            return None
+        return {"rows": [{"date": "2026-02-03", "amount": 25000.0, "d2_part": "1A", "description": None,
+                          "counterparty": f"Pat Largegiver #{len(self.calls)}", "committee_id": 901,
+                          "committee_name": GROUP_A, "filed_doc_id": 77, "filing_href": "/committees/filing/77"}],
+                "total_amount": 25000.0, "total_count": 2, "truncated": False}
+
+
+@pytest.fixture
+def rows_fake(monkeypatch):
+    fake = RowsFake()
+    monkeypatch.setattr(entity_routes, "edge_rows", fake, raising=False)
+    return fake
+
+
+def rows_url(kind: str, query: str = "", **params) -> str:
+    from urllib.parse import urlencode
+    args = {"source": PAT, "target": "committee:901", "edge_type": "donor_committee", **params}
+    args = {name: value for name, value in args.items() if value is not None}
+    return url_of(kind, "network/rows.json", "&".join(part for part in (urlencode(args), query) if part))
+
+
+@pytest.mark.parametrize("kind, query, start, end", [
+    pytest.param("candidate", "", None, None, id="candidate-all-time"),
+    pytest.param("candidate", "period=cycle:2024", date(2023, 1, 1), date(2024, 12, 31), id="candidate-cycle"),
+    pytest.param("race", "", date(2025, 1, 1), date(2026, 12, 31), id="race-default-cycle"),
+    pytest.param("race", "election_cycle=2024", date(2023, 1, 1), date(2024, 12, 31), id="race-election-cycle"),
+])
+def test_rows_json_serves_edge_rows_of_the_ego_payload_over_the_page_window(client, fakes, rows_fake, kind, query,
+                                                                            start, end):
+    """D2: the rows route resolves the entity and window exactly as network.json does, hands ``edge_rows`` the ego
+    payload (the builder's), the three parameters and the 200-row limit, and serves its dict as JSON. Kills: a window
+    other than the page's; a payload other than the ego one (a projection); parameters dropped or renamed."""
+    response = client.get(rows_url(kind, query))
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    assert response.get_json() == rows_fake(None, network_payload(None, 1), source=PAT, target="committee:901",
+                                            edge_type="donor_committee") | {"rows": response.get_json()["rows"]}
+    assert response.get_json()["rows"][0]["counterparty"] == "Pat Largegiver #1"
+    call = rows_fake.calls[0]
+    assert [node["id"] for node in call["payload"]["nodes"]] == [node["id"] for node in network_payload(None, 1)["nodes"]]
+    assert (call["source"], call["target"], call["edge_type"]) == (PAT, "committee:901", "donor_committee")
+    assert (call["date_from"], call["date_to"], call["limit"]) == (start, end, 200)
+    assert len(fakes.calls["get_entity_network"]) == 1
+
+
+def test_rows_json_without_a_target_passes_none(client, fakes, rows_fake):
+    assert client.get(rows_url("candidate", target=None)).status_code == 200
+    assert rows_fake.calls[0]["target"] is None
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("params, builds", [
+    pytest.param({"source": "donor:nobody"}, 1, id="unknown-node"),
+    pytest.param({"target": "committee:4040"}, 1, id="unknown-target"),
+    pytest.param({"edge_type": "donor_committee'--"}, 0, id="bad-edge-type"),
+    pytest.param({"edge_type": None}, 0, id="no-edge-type"),
+    pytest.param({"source": None}, 0, id="no-source"),
+])
+def test_rows_json_404s_on_an_edge_the_graph_does_not_hold(client, fakes, rows_fake, kind, params, builds):
+    """Kills: a 200 (or 500) for a node outside the graph; an unknown edge type reaching the builder or SQL."""
+    response = client.get(rows_url(kind, **params))
+    assert response.status_code == 404
+    assert fakes.total_builds() == builds
+    if not builds:
+        assert rows_fake.calls == []
+
+
+@pytest.mark.parametrize("bad", ["/candidates/999", "/analytics/state-races/no-such-race"])
+def test_rows_json_of_an_unknown_entity_is_404_without_a_build(client, fakes, rows_fake, bad):
+    response = client.get(rows_url("candidate").replace("/candidates/1", bad))
+    assert response.status_code == 404
+    assert fakes.total_builds() == 0 and rows_fake.calls == []
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_rows_json_is_cached_per_edge_and_window_and_reads_the_ego_entry(cached_client, fakes, cache_calls, rows_fake,
+                                                                         kind):
+    """D2: rows are cached in the network cache under tab ``network:rows``, keyed by the window and the three parameters,
+    and read the ego payload through the ``network:ego`` entry (one graph build for the JSON, the page and every row
+    request). Kills: rows rebuilt on every click; one entry for two edges; a rows request that rebuilds the graph."""
+    assert cached_client.get(url_of(kind, "network.json", "view=ego")).status_code == 200
+    first = cached_client.get(rows_url(kind)).get_json()
+    again = cached_client.get(rows_url(kind)).get_json()
+    assert first == again and first["rows"][0]["counterparty"] == "Pat Largegiver #1"
+    assert len(rows_fake.calls) == 1
+    assert len(fakes.calls["get_entity_network"]) == 1
+
+    for other in (rows_url(kind, target=None), rows_url(kind, edge_type="in_kind_donor_committee"),
+                  rows_url(kind, source=VENDOR_ID), rows_url(kind, "period=cycle:2024")):
+        assert cached_client.get(other).status_code == 200
+    assert len(rows_fake.calls) == 5, "each edge and each window is its own entry"
+    assert len(fakes.calls["get_entity_network"]) == 2, "only the new window builds a second graph"
+
+    rows_keys = [call["key"] for call in cache_calls if call["key"][3] == "network:rows"]
+    assert rows_keys and {call["cache"] for call in cache_calls if call["key"][3] == "network:rows"} == {"entity_network"}
+    assert all(key[0] == entity_routes.ENTITY_CACHE_REV for key in rows_keys)
+    assert PAT in rows_keys[0][-1] and "committee:901" in rows_keys[0][-1] and "donor_committee" in rows_keys[0][-1]
+    assert len({key for key in rows_keys}) == 5
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_rows_json_headers_match_network_json(client, fakes, rows_fake, kind):
+    rows = client.get(rows_url(kind))
+    network = client.get(url_of(kind, "network.json"))
+    assert rows.status_code == network.status_code == 200
+    assert _tokens(rows, "Cache-Control") == _tokens(network, "Cache-Control")
+    assert "Set-Cookie" not in rows.headers
+
+
+def test_rows_json_anonymous_refresh_is_redirected_and_a_signed_in_refresh_rebuilds(cached_app, fakes, cache_calls,
+                                                                                    rows_fake):
+    anonymous = cached_app.test_client()
+    response = anonymous.get(rows_url("candidate", "refresh_cache=1"))
+    assert response.status_code == 302
+    assert "refresh_cache" not in response.headers["Location"]
+    assert fakes.total_builds() == 0 and rows_fake.calls == []
+
+    client = cached_app.test_client()
+    _login(client)
+    assert client.get(rows_url("candidate")).get_json()["rows"][0]["counterparty"] == "Pat Largegiver #1"
+    assert client.get(rows_url("candidate")).get_json()["rows"][0]["counterparty"] == "Pat Largegiver #1"
+    refreshed = client.get(rows_url("candidate", "refresh_cache=1")).get_json()
+    assert refreshed["rows"][0]["counterparty"] == "Pat Largegiver #2"
+    assert client.get(rows_url("candidate")).get_json()["rows"][0]["counterparty"] == "Pat Largegiver #2"
+    assert len(rows_fake.calls) == 2
+
+
+@pytest.mark.parametrize("kind, query", [
+    pytest.param("candidate", "period=cycle:2024", id="candidate"),
+    pytest.param("race", "period=cycle:2024&election_cycle=2024", id="race"),
+])
+def test_network_tab_meta_carries_the_rows_url_with_the_page_scope(client, fakes, kind, query):
+    """D3: the panel's Rows buttons fetch ``rows_url`` (+ source, target, edge_type); it carries the page's scope and,
+    for races, the election cycle, so the rows are the graph's window."""
+    meta = _network_meta(get(client, url_of(kind, "network", query)).markup)
+    parts = urlsplit(meta["rows_url"])
+    assert unquote(parts.path) == f"{parent_path(kind)}/network/rows.json"
+    args, request_args = dict(parse_qsl(parts.query)), dict(parse_qsl(query))
+    assert window_of(args) == window_of(request_args, default=page_default(kind, request_args))
+    if "election_cycle" in request_args:
+        assert args.get("election_cycle") == request_args["election_cycle"]
+    assert not {"source", "target", "edge_type"} & set(args)

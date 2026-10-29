@@ -19,6 +19,8 @@ class FakeNode {
     set textContent(value) { this.children.forEach((c) => { c.parentNode = null; }); this.children = []; this.own = String(value); }
     set innerHTML(value) { this.textContent = value; }
     appendChild(child) { if (child.parentNode) { child.parentNode.removeChild(child); } child.parentNode = this; this.children.push(child); return child; }
+    insertBefore(child, ref) { if (!ref) { return this.appendChild(child); } if (child.parentNode) { child.parentNode.removeChild(child); } child.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, child); return child; }
+    get nextSibling() { const siblings = this.parentNode ? this.parentNode.children : []; return siblings[siblings.indexOf(this) + 1] || null; }
     removeChild(child) { this.children = this.children.filter((c) => c !== child); child.parentNode = null; return child; }
     addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
     removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn); }
