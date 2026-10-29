@@ -326,8 +326,8 @@ CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_source_name
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_city_state
     ON analytics_donor_summary(donor_state, donor_city);
 
--- The search donors section filters donor_name with a leading-wildcard LIKE (sent as ILIKE by
--- the compat layer); a btree cannot serve that, a trigram GIN index serves both. pg_trgm is a
+-- The search donors section's substring fallback filters donor_name with a leading-wildcard LIKE (sent as
+-- ILIKE by the compat layer); a btree cannot serve that, a trigram GIN index serves both. pg_trgm is a
 -- trusted extension (PostgreSQL 13+) and is already used by cross-matching.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_analytics_donor_summary_name_trgm
