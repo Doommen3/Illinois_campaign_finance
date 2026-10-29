@@ -630,7 +630,7 @@ a fail.
 - **Pass:** Step 2: the panel lists its members with Amount and Rows; the Democratic Party of Illinois members show
   their amounts as plain text, not links. Step 3: the linked member's donor page lists a Frerichs committee under
   "Who They Donated To". Step 4: Democratic Party of Illinois is plain text in that row. Step 5: the page reads
-  "Itemized monetary contributions (Schedule A, part 1). In-kind contributions and transfers are not included."
+  "Itemized monetary contributions (D-2 part 1). In-kind contributions and transfers are not included."
 - **Fail:** A Democratic Party of Illinois member or edge-table source that links to a donor page; a linked member
   whose donor page does not list a Frerichs committee, or answers 404; the sentence missing in step 5.
 

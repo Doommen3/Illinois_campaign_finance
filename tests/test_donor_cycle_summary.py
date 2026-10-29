@@ -592,7 +592,7 @@ def test_donor_page_says_its_totals_exclude_in_kind_and_transfers(prod_env):
     Kills: a page whose totals silently differ from the in-kind / transfer amounts a network panel links from."""
     html = prod_env.get(f"/donors/key/{quote(ALICE.key, safe='')}?source={SOURCE}")
 
-    assert ("Itemized monetary contributions (Schedule A, part 1). In-kind contributions and transfers are not"
+    assert ("Itemized monetary contributions (D-2 part 1). In-kind contributions and transfers are not"
             " included.") in " ".join(html.split())
 
 
