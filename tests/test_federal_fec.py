@@ -35,6 +35,7 @@ from database.federal_fec import (
     sync_fec_transfer_committee_receipts,
     sync_il_federal_fec,
 )
+from webapp.app import create_app
 
 
 class _CaptureExecuteConn:
@@ -2955,6 +2956,58 @@ def test_get_federal_race_outside_spending_respects_date_window(tmp_path: Path):
     assert windowed["rows"][0]["expenditure_date"] == "2026-05-01"
 
     conn.close()
+
+
+def _race_outside_spending_page(tmp_path: Path, monkeypatch, query: str) -> str:
+    """The race outside-spending page (H / 01) over the date-window fixture plus a 2022-race row that the backfill tagged
+    cycle 2026 -- local fec_schedule_e_independent_expenditures holds one `cycle` value (2026) for expenditures dated
+    2000..2026, so `cycle` is the fetch cycle, not the expenditure's two-year period (MT-015)."""
+    db_path = str(tmp_path / "fec_race_outside_page.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_e_independent_expenditures (
+            sub_id, cycle, candidate_id, candidate_name, committee_id, committee_name,
+            payee_name, payee_city, payee_state, payee_zip, support_oppose_indicator,
+            expenditure_amount, expenditure_date, report_type, line_number, api_source_identifier
+        ) VALUES ('se-2022-1', 2026, 'H2IL00001', 'ALPHA', 'C00IE2', 'BYGONE PAC', 'OLD RACE MEDIA', 'Chicago', 'IL',
+                  '60601', 'O', 900.0, '2022-11-05', '24H', '24A', 'src-se-2022')
+        """
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr("webapp.routes.federal_finance.current_cycle", lambda today=None: 2026)
+    app = create_app({"TESTING": True, "DATABASE_PATH": db_path, "DASHBOARD_PREWARM_ENABLED": False,
+                      "ROUTE_PERF_CACHE_ENABLED": False})
+    response = app.test_client().get(f"/federal-finance/races/H/01/outside-spending?{query}")
+    assert response.status_code == 200
+    return response.get_data(as_text=True)
+
+
+def test_race_outside_spending_page_cycle_scope_shows_only_that_cycles_expenditures(tmp_path: Path, monkeypatch):
+    """MT-015: under cycle=2026 the page reads "2026 Cycle", so its Schedule E rows and figures are the expenditures dated
+    2025-01-01..2026-12-31: PRE (2025-09-25), IN (2026-05-01) and POST (2026-12-01) MEDIA, 1,100 over 3 rows, latest
+    2026-12-01 -- never the 2022-11-05 row (BYGONE PAC / OLD RACE MEDIA, 900). Kills the `se.cycle = ?` filter alone."""
+    for query in ("cycle=2026", "period=cycle:2026"):
+        text = _race_outside_spending_page(tmp_path / query.replace(":", "_").replace("=", "_"), monkeypatch, query)
+        assert "OLD RACE MEDIA" not in text and "BYGONE PAC" not in text and "2022-11-05" not in text, query
+        assert "IN MEDIA" in text and "PRE MEDIA" in text and "POST MEDIA" in text, query
+        assert "Latest Expenditure Date:</strong> 2026-12-01" in text, query
+        assert "Transaction Count:</strong> 3" in text, query
+        assert "$1,100.00" in text, query
+
+
+def test_race_outside_spending_page_other_scopes_stay_inside_the_race_cycle(tmp_path: Path, monkeypatch):
+    """The page says it "shows the 2026 cycle, narrowed to <window>" for any other scope, so the race cycle's dates bound
+    every scope: all time drops the 2022 row too; the custom window 2026-01-01..2026-06-30 keeps only IN MEDIA (guard)."""
+    text = _race_outside_spending_page(tmp_path / "all", monkeypatch, "period=all")
+    assert "OLD RACE MEDIA" not in text and "2022-11-05" not in text
+    assert "Transaction Count:</strong> 3" in text
+    text = _race_outside_spending_page(tmp_path / "custom", monkeypatch, "date_from=2026-01-01&date_to=2026-06-30")
+    assert "IN MEDIA" in text and "PRE MEDIA" not in text and "POST MEDIA" not in text and "OLD RACE MEDIA" not in text
+    assert "Latest Expenditure Date:</strong> 2026-05-01" in text
 
 
 def test_get_federal_race_analytics_respects_date_window(tmp_path: Path):
