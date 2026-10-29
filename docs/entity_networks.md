@@ -63,7 +63,9 @@ amount descending, then label, then id, then side.
 
 Clicking a node fills the panel under the graph (`#entity-network-focus`). The clicked node's bands or lines get
 class `focused`; the rest get class `dimmed` at opacity 0.15. Names link through the page's node links
-(`ctx.hrefs`): committees, candidates and non-redacted donors have pages, vendors and `transfer:` payers do not.
+(`ctx.hrefs`): committees, candidates and non-redacted donors with itemized (1A) rows into the entity have pages;
+vendors, `transfer:` payers and in-kind-only (5A) donors do not, because a donor page lists part-1 contributions
+only and the Donors tab lists no in-kind rows (fix-8b F2a).
 Flow names come from the graph key's labels (`js/graph_legend.js`), for example "Contribution", "Payment to vendor",
 "Independent expenditure, for".
 

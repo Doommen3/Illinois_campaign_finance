@@ -77,6 +77,7 @@ a fail.
 | MT-023 | Freshness | Data Status box: same dates on every page, agrees with the window's "latest data" | 2026-10-29 | ⭐ |
 | MT-024 | Network tab | Network tab click drill-down panel (money flow and vendor network) | 2026-10-29 | ⭐ |
 | MT-025 | Search | Name search Phase 2: apostrophe surnames precise, possessives unchanged, nicknames on list pages, race total not doubled | 2026-10-29 | ⭐ |
+| MT-026 | Donors | In-kind panel members link only where a donor page lists them; donor page says its totals are itemized only | 2026-10-29 |  |
 
 ## Tests
 
@@ -607,6 +608,31 @@ a fail.
 - **Fail:** Any plain "Neil" in step 1; an empty "Committees" section or names without "Women" in step 2; the
   two spellings in step 3 listing different committees; an error page in step 4; a doubled total (e.g.
   $16,466.60) or the same person listed twice under two spellings in step 5.
+
+### MT-026 — In-kind donors: no dead donor-page links; the donor page names what its totals count
+
+- **Area:** Donors
+- **Created:** 2026-10-29
+- **Source commit:** 606faf1
+- **Precondition:** JavaScript enabled; the candidate has in-kind contributions (13505 does: the "In-kind
+  contributions" node, with Democratic Party of Illinois among its members).
+- **Why:** A donor page (`/donors/key/<key>`) counts itemized monetary contributions (D-2 part 1) only, and the
+  Donors tab shows in-kind only as one total per group. A donor whose only money to the candidate is in-kind used to
+  link to a donor page that never lists the candidate (to-do 8b, finding I1). It guards against that dead end coming
+  back and against a donor page whose totals do not say what they count.
+- **Steps:**
+  1. Open `/candidates/13505/network`. The "Money flow" view is drawn by default.
+  2. Click the left-hand node "In-kind contributions" and read the panel under the graph.
+  3. Click one member name that is a link (if any is), then go back.
+  4. In the edge table below the graph, find an "In-kind contributions" row whose source is Democratic Party of
+     Illinois.
+  5. Open `/committees/6239/donors`, click any donor's name, and read the lines under "Committees Supported".
+- **Pass:** Step 2: the panel lists its members with Amount and Rows; the Democratic Party of Illinois members show
+  their amounts as plain text, not links. Step 3: the linked member's donor page lists a Frerichs committee under
+  "Who They Donated To". Step 4: Democratic Party of Illinois is plain text in that row. Step 5: the page reads
+  "Itemized monetary contributions (Schedule A, part 1). In-kind contributions and transfers are not included."
+- **Fail:** A Democratic Party of Illinois member or edge-table source that links to a donor page; a linked member
+  whose donor page does not list a Frerichs committee, or answers 404; the sentence missing in step 5.
 
 ## Run log
 
