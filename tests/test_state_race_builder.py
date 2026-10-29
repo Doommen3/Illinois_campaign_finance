@@ -1824,3 +1824,34 @@ def test_two_candidates_with_the_same_name_in_one_race_count_once_and_the_first_
     assert list(outside_s) == ["Pat Quinn"]
     _assert_outside_row(outside_s["Pat Quinn"], candidate_id="203", support=100.0, oppose=50.0, count=2)
     assert race_s["outside_spending_total"] == 150.0
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_two_candidates_whose_first_names_are_direct_aliases_count_once_in_one_race(race_conn, path):
+    """Search Phase 2, B1: since P2-17 a filing "Jim Example" reaches both "Jim Example" and "James Example" (JIM is a
+    direct alias of JAMES), so D4's one-person-two-ids rule must fold alias twins as it folds exact-key twins (real case:
+    "Jim Moustis" / "James Moustis", Frankfort Township Supervisor 2018, total doubled to 16,466.60).  Race R lists Jim
+    Example (601) before James Example (602); race S lists Jim Example (603) and Jane Example (604), whose first names
+    are not aliases.  Part-9 rows in the window: "Jim Example" 100 supporting, "Jane Example" 50 supporting.  R: the
+    first record carries the row (100 over 1 row), the twin gets none, total 100.0 -- not 200.0; "Jane Example" names
+    nobody in R.  S (control): two candidates, Jim 100 and Jane 50, total 150.0.
+    Kills: folding only exact keys (R doubles), folding any shared last name (S loses Jane), letting the twin carry it."""
+    _add_candidacy(race_conn, 9601, 601, "Jim Example", RACE_R, 761)
+    _add_candidacy(race_conn, 9602, 602, "James Example", RACE_R, 762)
+    _add_candidacy(race_conn, 9603, 603, "Jim Example", RACE_S, 763)
+    _add_candidacy(race_conn, 9604, 604, "Jane Example", RACE_S, 764)
+    _add_part9(race_conn, "Jim Example", 100.0, "2025-06-01")
+    _add_part9(race_conn, "Jane Example", 50.0, "2025-06-02")
+
+    race = _race(race_conn, path)
+    race_s = _race(race_conn, path, RACE_S_KEY)
+
+    outside = _outside_by_name(race)
+    assert list(outside) == ["Jim Example"]
+    _assert_outside_row(outside["Jim Example"], candidate_id="601", support=100.0, oppose=0.0, count=1)
+    assert race["outside_spending_total"] == 100.0
+    outside_s = _outside_by_name(race_s)
+    assert sorted(outside_s) == ["Jane Example", "Jim Example"]
+    _assert_outside_row(outside_s["Jim Example"], candidate_id="603", support=100.0, oppose=0.0, count=1)
+    _assert_outside_row(outside_s["Jane Example"], candidate_id="604", support=50.0, oppose=0.0, count=1)
+    assert race_s["outside_spending_total"] == 150.0

@@ -997,6 +997,34 @@ def test_part9_cycle_gate_uses_candidacy_cycles(world):
     assert not [edge for edge in candidate["edges"] if edge["edge_type"] == IE]
 
 
+def test_alias_twin_candidates_take_a_part9_row_once(reference):
+    """Search Phase 2, B1: since P2-17 a filing "Jim Example" reaches both "Jim Example" and "James Example" (direct
+    aliases), so the one-person-two-ids rule (one candidate per name key) must fold alias twins too, or the entity
+    graph carries the row twice.  Entity candidates 7 Jim Example, 8 James Example (listed in that order) and the
+    control 9 Jane Example (JANE is no alias of JIM); Part-9 rows in WIN: "Jim Example" 800 supporting, "Jane
+    Example" 200 supporting.  Expected: one edge to candidate 7 (800, 1 row), none to 8, one to 9 (200, 1 row)."""
+    _insert(reference, "isbe_candidates", [
+        {"id": cid, "last_name": "Example", "first_name": first, "office": "State Representative",
+         "district_type": "Representative District", "district": "45", "party": "Independent",
+         "city": "Springfield", "state": "IL", "zipcode": "62701", "residence_county": "Sangamon",
+         "redaction_requested": False}
+        for cid, first in [(7, "Jim"), (8, "James"), (9, "Jane")]
+    ])
+    _insert(reference, "isbe_candidacies", [
+        {"candidate_id": cid, "election_type": "General Election", "election_year": 2026, "race_type": "challenger",
+         "outcome": None}
+        for cid in (7, 8, 9)
+    ], first_id=101)
+    _insert(reference, "isbe_condensed_expenditures", [
+        _ie(900, "2026-03-15", 800.0, "Jim Example", "S"), _ie(900, "2026-03-16", 200.0, "Jane Example", "S"),
+    ], first_id=1)
+    reference.commit()
+    entity = {**RACE_ENTITY, "committee_ids": [100], "candidate_ids": [7, 8, 9], "groups": []}
+    payload = _call(reference, entity, date_from=WIN[0], date_to=WIN[1])
+    ie = {key: value for key, value in _edge_map(payload).items() if key[0] == IE}
+    assert not _edge_problems(ie, {(IE, C900, "candidate:7", "S"): (800.0, 1), (IE, C900, "candidate:9", "S"): (200.0, 1)})
+
+
 def test_committee_vendor_excludes_part9_even_for_an_entity_committee(world):
     """Committee 200 paid 'Lakeshore Mailers' 400 on a Part-9 row (naming an outsider): no vendor, no IE edge."""
     when = date(2026, 5, 1)
