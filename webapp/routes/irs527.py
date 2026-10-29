@@ -244,6 +244,17 @@ def _get_dark_money_contribution_stats(
     return contribution_stats
 
 
+def _iso_text_date_sql(column: str) -> str:
+    """A TEXT date column as ISO YYYY-MM-DD: an ISO (YYYY-MM-DD...) or compact (YYYYMMDD) value, the two shapes
+    text_date_window_clause reads; NULL for anything else, so a malformed value ("1000", "995") cannot win a MIN / MAX
+    over the text (MT-017, data dictionary A18)."""
+    return (
+        f"CASE WHEN {column} ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' THEN SUBSTR({column}, 1, 10) "
+        f"WHEN {column} ~ '^[0-9]{{8}}$' "
+        f"THEN SUBSTR({column}, 1, 4) || '-' || SUBSTR({column}, 5, 2) || '-' || SUBSTR({column}, 7, 2) END"
+    )
+
+
 @irs527_bp.route('/')
 def list_orgs():
     """List 527 organizations with totals and committee match status."""
@@ -446,8 +457,8 @@ def org_detail(ein):
             COUNT(*) AS report_count,
             COALESCE(SUM(total_contributions), 0) AS total_contributions,
             COALESCE(SUM(total_expenditures), 0) AS total_expenditures,
-            MIN(period_start) AS earliest_period,
-            MAX(period_end) AS latest_period
+            MIN({_iso_text_date_sql("period_start")}) AS earliest_period,
+            MAX({_iso_text_date_sql("period_end")}) AS latest_period
         FROM irs527_reports
         WHERE ein = ?{report_window_clause}
         """,

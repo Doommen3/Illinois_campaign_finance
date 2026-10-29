@@ -8,7 +8,7 @@ from typing import Optional, List, ClassVar
 import sqlite3
 
 from .identifiers import make_source_identifier, normalize_source_url
-from .name_normalize import name_match_sql, substring_fallback_sql
+from .name_normalize import name_match_sql, substring_fallback_sql, substring_pattern
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -3415,17 +3415,24 @@ class CandidateCommitteeFinanceAgg:
         search_term = (search or "").strip()
         if search_term:
             # Candidate and committee names by token (or, with ``substring``, the one fallback the caller asks for when
-            # the token count is zero; database/name_normalize.py); office_sought stays a plain substring.
+            # the token count is zero; database/name_normalize.py); office_sought stays a substring (substring_pattern).
             rule = substring_fallback_sql if substring else name_match_sql
             names = [rule(column, search_term) for column in ("candidate_full_name", "committee_name")]
-            alternatives = [sql for sql, _ in filter(None, names)] + ["COALESCE(office_sought, '') LIKE ?"]
-            clauses.append("(" + " OR ".join(alternatives) + ")")
-            params.extend([param for name in filter(None, names) for param in name[1]] + [f"%{search_term}%"])
+            office_pattern = substring_pattern(search_term)
+            alternatives = [sql for sql, _ in filter(None, names)]
+            params.extend(param for name in filter(None, names) for param in name[1])
+            if office_pattern:
+                alternatives.append("COALESCE(office_sought, '') LIKE ?")
+                params.append(office_pattern)
+            clauses.append("(" + " OR ".join(alternatives) + ")" if alternatives else "FALSE")
 
         office_term = (office or "").strip()
         if office_term:
-            clauses.append("COALESCE(office_sought, '') LIKE ?")
-            params.append(f"%{office_term}%")
+            # A typed '%' or '_' is text, not a wildcard; nothing alphanumeric lists nothing (as a name query, P2-15).
+            office_pattern = substring_pattern(office_term)
+            clauses.append("COALESCE(office_sought, '') LIKE ?" if office_pattern else "FALSE")
+            if office_pattern:
+                params.append(office_pattern)
 
         candidate_party_term = (candidate_party or "").strip()
         if candidate_party_term:

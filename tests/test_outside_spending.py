@@ -1119,6 +1119,21 @@ class TestMatcherHyphensAndNicknames:
         assert sorted(item["candidate"]["candidate_id"] for item in attributions) == [1, 2]
         assert [(item["share"], item["named_count"]) for item in attributions] == [(1000.0, 1), (1000.0, 1)]
 
+    def test_a_folded_twins_alias_key_reaches_the_kept_record_once(self):
+        # Follow-up FB-M2 (P2-31): the race builder and the entity network fold "Edward Example" into the earlier "Ed
+        # Example" (name_keys_match) and pass the twin's key as the kept record's alias_keys. A filing "Ted Example" meets
+        # EDWARD (TED's direct alias) but not ED, so without the alias key it is dropped; "Edward Example" meets both the
+        # own key and the alias key and still attaches once (``matched``).
+        from database.outside_spending import attribute_part9_rows, candidate_name_key
+        kept = {"key": candidate_name_key("Ed Example"), "alias_keys": [candidate_name_key("Edward Example")],
+                "cycles": {2026}, "candidate_id": 1}
+        rows = [_row(1, "Ted Example"), _row(2, "Ed Example"), _row(3, "Edward Example")]
+        attributions = attribute_part9_rows(rows, [kept])
+        assert [(item["id"], item["candidate"]["candidate_id"]) for item in attributions] == [(1, 1), (2, 1), (3, 1)]
+        assert [item["share"] for item in attributions] == [1000.0, 1000.0, 1000.0]
+        # The cycle gate still applies to a row reached through an alias key.
+        assert attribute_part9_rows([_row(4, "Ted Example", day=date(2024, 3, 1))], [kept]) == []
+
     def test_the_suffix_rule_still_holds_with_a_nickname(self):
         assert _attributes("Michael Farrow, Jr", "Mike Farrow")
         assert _attributes("Mike Farrow Jr", "Michael Farrow")

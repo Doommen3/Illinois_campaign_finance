@@ -148,15 +148,19 @@ def attribute_part9_rows(rows, candidates) -> list[dict]:
     "Last, First" filing reads first-name-first).
 
     ``candidates`` carry ``key`` (candidate_name_key) and ``cycles``: the set of cycles a row's
-    ``expended_date`` must fall in, or None for no gate. Candidates sharing a key all take the row.
+    ``expended_date`` must fall in, or None for no gate; optionally ``alias_keys``, the keys of twin
+    records folded into this one (P2-31), which reach it as its own key does (a candidate still takes
+    a row once). Candidates sharing a key all take the row.
     A filed name meets a key when the last tokens are equal and the key's first token is the filed
     first token or a direct alias of it (M2 / P2-17: "Mike" meets "Michael"; see _first_name_aliases).
     The inputs are not modified.
     """
     by_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
     for position, candidate in enumerate(candidates):
-        if candidate["key"] is not None:  # under its own key only; the filed name's aliases are looked up below
-            by_key.setdefault(candidate["key"], []).append((position, candidate))
+        # Under its own key and its folded twins' keys; the filed name's aliases are looked up below.
+        for key in [candidate["key"], *candidate.get("alias_keys", ())]:
+            if key is not None:
+                by_key.setdefault(key, []).append((position, candidate))
     attributions = []
     for row in rows:
         names = split_candidate_names(row["candidate_name"])

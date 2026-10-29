@@ -1056,6 +1056,33 @@ def test_alias_twin_candidates_take_a_part9_row_once(reference):
     assert not _edge_problems(ie, {(IE, C900, "candidate:7", "S"): (800.0, 1), (IE, C900, "candidate:9", "S"): (200.0, 1)})
 
 
+def test_a_filing_that_only_meets_the_folded_alias_twin_takes_the_kept_candidate_once(reference):
+    """Follow-up FB-M2 (P2-31): entity candidates 7 Ed Example and 8 Edward Example (listed in that order), so 8 folds
+    into 7.  Part-9 rows in WIN: "Ted Example" 800 supporting (meets EDWARD only, the folded twin's key) and "Edward
+    Example" 200 supporting (meets both keys).  Expected: one edge to candidate 7 (1000, 2 rows), none to 8.
+    Kills: keeping only the first record's key (Ted's 800 dropped), un-folding the twin, counting the Edward row twice."""
+    _insert(reference, "isbe_candidates", [
+        {"id": cid, "last_name": "Example", "first_name": first, "office": "State Representative",
+         "district_type": "Representative District", "district": "45", "party": "Independent",
+         "city": "Springfield", "state": "IL", "zipcode": "62701", "residence_county": "Sangamon",
+         "redaction_requested": False}
+        for cid, first in [(7, "Ed"), (8, "Edward")]
+    ])
+    _insert(reference, "isbe_candidacies", [
+        {"candidate_id": cid, "election_type": "General Election", "election_year": 2026, "race_type": "challenger",
+         "outcome": None}
+        for cid in (7, 8)
+    ], first_id=101)
+    _insert(reference, "isbe_condensed_expenditures", [
+        _ie(900, "2026-03-15", 800.0, "Ted Example", "S"), _ie(900, "2026-03-16", 200.0, "Edward Example", "S"),
+    ], first_id=1)
+    reference.commit()
+    entity = {**RACE_ENTITY, "committee_ids": [100], "candidate_ids": [7, 8], "groups": []}
+    payload = _call(reference, entity, date_from=WIN[0], date_to=WIN[1])
+    ie = {key: value for key, value in _edge_map(payload).items() if key[0] == IE}
+    assert not _edge_problems(ie, {(IE, C900, "candidate:7", "S"): (1000.0, 2)})
+
+
 def test_committee_vendor_excludes_part9_even_for_an_entity_committee(world):
     """Committee 200 paid 'Lakeshore Mailers' 400 on a Part-9 row (naming an outsider): no vendor, no IE edge."""
     when = date(2026, 5, 1)

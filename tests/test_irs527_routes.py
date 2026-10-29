@@ -122,6 +122,35 @@ def test_527_detail(client):
     assert b'Contributions To This Organization' in response.data
 
 
+def test_527_detail_period_spans_the_real_dates_and_skips_a_malformed_one(client):
+    """FB-M4 (MT-017: prod /527/813554739 read "Period: 1000 to 995"). The TEXT period columns hold ISO (YYYY-MM-DD) or
+    compact (YYYYMMDD) dates; a malformed value ("1000" / "995") won the lexicographic MIN / MAX. One malformed report and
+    two real ones (compact 2019-01-01..2019-06-30, ISO 2020-01-01..2020-06-30): the Period is 2019-01-01 to 2020-06-30,
+    shown as ISO dates. Kills the bare MIN/MAX over text, an ISO-only filter (the compact report is the earliest; every
+    local value is compact), and a compact value shown raw."""
+    conn = get_db(client.application.config["DATABASE_PATH"])
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, city, state, zip)
+        VALUES ('987654321', 300, 0, 'Prairie Ledger Fund', 'Peoria', 'IL', '61602')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO irs527_reports (form_id, ein, period_start, period_end, org_name, total_contributions, total_expenditures)
+        VALUES (301, '987654321', '1000', '995', 'Prairie Ledger Fund', 10, 1),
+               (302, '987654321', '20190101', '20190630', 'Prairie Ledger Fund', 20, 2),
+               (303, '987654321', '2020-01-01', '2020-06-30', 'Prairie Ledger Fund', 30, 3)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    text = client.get("/527/987654321?period=all").get_data(as_text=True)
+    assert "<strong>Period:</strong> 2019-01-01 to 2020-06-30" in text
+    assert "1000" not in text.split("<strong>Period:</strong>", 1)[1].split("</p>", 1)[0]
+
+
 def test_527_detail_uses_highest_form_id_seq_row(client):
     conn = get_db(client.application.config["DATABASE_PATH"])
     conn.execute(

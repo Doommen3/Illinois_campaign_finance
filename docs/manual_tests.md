@@ -391,9 +391,10 @@ a fail.
 - **Source commit:** baseline
 - **Precondition:** Schedule E has been backfilled (`backfill-fec-schedule-e`).
 - **Why:** Guards the race outside-spending page against showing expenditures from outside the selected window.
-  Known failing on local data 2026-10-29: the page reads "2026 Cycle" but shows "Latest Expenditure Date:
-  2022-11-05" with 18 transactions against the 2022 race (reported to terminal 1, untriaged).
 - **Revised:** 2026-10-29 — known-failing note added.
+- **Revised:** 2026-10-29 — fixed by `c0b7011` (Lane B FB-M3: the race cycle's dates bound the Schedule E rows, since
+  Schedule E's `cycle` is the backfill's fetch cycle; the other Schedule E readers followed in FB-M5); known-failing
+  status removed (it read "2026 Cycle" with "Latest Expenditure Date: 2022-11-05" and 18 rows of the 2022 race).
 - **Steps:**
   1. Open `/federal-finance/races/H/01/outside-spending?cycle=2026`.
   2. Read the window and the summary ("Race", "Candidates", "Total Schedule E Amount", "Transaction Count",
