@@ -77,9 +77,9 @@ def receipts_filter_sql(alias: str, parts: str = "contributions") -> str:
       money in). The committee Receipts Summary and its cycle subtotal use it (J-S20); the state-race
       receipt totals in ``database/analytics.py`` state the same ``all`` clauses inline.
 
-    Exception, not built from this helper: the analytics donor constants
-    ``_BULK_DONOR_RECEIPT_FILTER_SQL`` / ``_ISBE_DONOR_RECEIPT_FILTER_SQL`` (``database/analytics.py``)
-    keep their extra ``EXISTS`` on a non-archived D-2 report (and require part ``1%``, blank excluded).
+    The analytics donor constants (``database/analytics.py``) use the same predicate:
+    ``_BULK_DONOR_RECEIPT_FILTER_SQL`` is ``receipts_filter_sql("r")`` and ``_ISBE_DONOR_RECEIPT_FILTER_SQL``
+    states the same clauses on ``isbe_condensed_receipts``' native columns (fix-8b F1, no D-2 requirement).
     """
     if parts not in ("contributions", "all"):
         raise ValueError(f"parts must be 'contributions' or 'all', not {parts!r}")

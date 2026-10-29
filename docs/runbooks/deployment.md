@@ -101,6 +101,13 @@ The chain runs:
 5. `sync-fec-il-federal`
 6. `run-cross-matching --only all` (longest step, ~6–60 min depending on data volume)
 7. `refresh-analytics --with-snapshot`
+   - 7a. Its last step (fix-8b F6) rebuilds the merged donor entities behind the all-time `/donors/` directory
+     (`donor_entity_local` / `donor_entity_local_member`) from the new `analytics_donor_summary`, with the
+     `rebuild-local-donor-entities` defaults (source `bulk_receipts`, thresholds 0.70 / 0.82 / 0.90, max group 400).
+     It runs after the aggregates are committed and before the route-cache flush; the output line
+     `local_donor_entities:` reports rows written and elapsed seconds. A dry run took 43.7 s locally (1,120,844 summary
+     rows; 245,399 entities and 496,604 members would be written). If it fails, the error is logged and the command
+     exits non-zero, but the aggregates stay committed; rerun `rebuild-local-donor-entities` on its own.
    - 7b. `scripts/warm_caches.py` (markers `STEP7B_START` / `STEP7B_END`; a failure logs `STEP7B_WARN` and does not fail the chain)
 8. Restart `ilcf-web.service` + smoke-test HTTP 200 on `/`
 

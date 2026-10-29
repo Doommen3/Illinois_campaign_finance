@@ -26,7 +26,7 @@ from database.entity_analytics import (
     get_entity_risk,
     resolve_entity,
 )
-from database.entity_network import DEFAULT_CAPS, get_entity_network, money_flow, vendor_network
+from database.entity_network import DEFAULT_CAPS, DONOR_COMMITTEE, get_entity_network, money_flow, vendor_network
 from webapp.cache_backend import RouteCache
 from webapp.routes.analytics import ANALYTICS_CACHE_TTL_FALLBACK_SECONDS, _cached_build, _state_race_cycle
 from webapp.utils.data_through import latest_data_date
@@ -165,14 +165,18 @@ def _build(ctx: dict, kind: str, key, tab: str, view: str | None = None):
     return _cached_build(_caches[tab], cache_key, builder, ttl, cache_enabled=enabled, refresh=refresh)
 
 
-def _node_href(node: dict) -> str | None:
-    """The page a network node links to: committees, candidates and non-redacted donors have one."""
+def _node_href(node: dict, itemized_donors: set) -> str | None:
+    """The page a network node links to: committees, candidates and non-redacted donors have one.
+
+    A donor links to /donors/key/<key> only when it gave the entity itemized (1A) contributions (``itemized_donors``):
+    that page lists part-1 contributions only, and the Donors tab lists no in-kind rows, so an in-kind-only (5A) donor
+    has no link (fix-8b F2a). The money-flow panel reads its member links from this same map."""
     prefix, _, rest = node["id"].partition(":")
     if prefix == "committee":
         return url_for("committees.committee_detail", committee_id=int(rest))
     if prefix == "candidate":
         return url_for("candidates.candidate_detail", candidate_id=int(rest))
-    if prefix == "donor" and not node.get("redacted"):
+    if prefix == "donor" and not node.get("redacted") and node["id"] in itemized_donors:
         return url_for("donors.donor_detail_by_key", donor_key=rest)
     return None
 
@@ -211,7 +215,8 @@ def _tab_page(kind: str, key, tab: str):
     if tab == "network":
         nodes = {node["id"]: node for node in payload["nodes"]}
         context["nodes_by_id"] = nodes
-        context["node_href"] = {node_id: _node_href(node) for node_id, node in nodes.items()}
+        itemized = {edge["source"] for edge in payload["edges"] if edge["edge_type"] == DONOR_COMMITTEE}
+        context["node_href"] = {node_id: _node_href(node, itemized) for node_id, node in nodes.items()}
         context["network_sources"] = {view: _json_url(kind, key, ctx, view) for view in NETWORK_VIEWS}
         context["donors_tab_url"] = _donors_tab_url(kind, key, ctx)
     return render_template(f"entity/{tab}.html", **context)
