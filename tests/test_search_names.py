@@ -182,6 +182,7 @@ NORMALIZE_QUERY_CASES = [
     # (query, normalize_query(query)): normalize_name, except a word-internal apostrophe survives as "'" (R7)
     ("O'Neil-Smythe", "O'NEIL SMYTHE"),
     ("Smith O’Neil", "SMITH O'NEIL"),                         # the curly apostrophe becomes the straight one
+    ("Women's", "WOMEN S"),                                    # a possessive: one letter after the apostrophe, no compound
     (None, ""),
     ("   ", ""),
     ("Mike Exampleton-Ruiz, Jr.", "MIKE EXAMPLETON RUIZ JR"),  # no apostrophe: exactly normalize_name
@@ -216,6 +217,41 @@ def test_apostrophe_tsquery_semantics_in_postgresql():
         assert row["hit"] is expected, f"{stored!r} vs {tsquery!r}"
 
     _each([("SEAN O NEIL SMYTHE", True), ("SEAN ONEIL SMYTHE", True), ("NEIL SMYTHE", False)], check)
+
+
+APOSTROPHE_PHRASE_CASES = [
+    # (query, stored name, match?) -- read by PostgreSQL and by name_matches
+    ("O'Neil", "LAW OFFICE OF NEIL ADAMS", False),     # o is an exact lexeme: OFFICE / OF are not "O"
+    ("O'Neil", "NEIL O SMITH", False),                 # the halves are adjacent AND in order
+    ("O'Neil", "SEAN O NEIL SMYTHE", True),
+    ("O'Neil", "SEAN ONEIL SMYTHE", True),
+    ("O'Neil", "NEIL SMYTHE", False),
+    ("D'Angelo", "DBA ANGELO S PIZZA", False),         # d is exact: DBA is not "D"
+    ("Women's", "WOMEN S CAUCUS", True),               # a possessive keeps the sn1 recall (decision P2-M7) ...
+    ("Women's", "WOMENS CAUCUS", True),
+    ("Women's", "WOMEN OF ILLINOIS", True),
+    ("McDonald's", "MCDONALD, JOHN", True),
+    ("Harrah's", "HARRAHS CASINO", True),
+]
+
+
+def test_apostrophe_phrase_halves_and_possessive_semantics_in_postgresql():
+    """R7 as amended at P2-M7: a compound's halves are adjacent and in order (`o <-> neil:*`), a one-letter half is an exact
+    lexeme, and a possessive (one letter after the apostrophe) is no compound at all. Kills the M6 reading -- unordered prefix
+    halves (`o:* & neil:*` matches LAW OFFICE OF NEIL ADAMS) and possessives as compounds (Women's lost WOMEN OF ILLINOIS).
+    name_matches must agree on every case."""
+    conn = get_db()
+
+    def check(case):
+        query, stored, expected = case
+        tsquery = nn.search_tsquery(query)
+        row = conn.execute(
+            f"SELECT ({CONTRACT_TSVECTOR.format(expr='CAST(? AS TEXT)')}) @@ to_tsquery('simple', ?) AS hit", (stored, tsquery)
+        ).fetchone()
+        assert row["hit"] is expected, f"{stored!r} vs {query!r} ({tsquery})"
+        assert nn.name_matches(query, stored) is expected, f"name_matches({query!r}, {stored!r})"
+
+    _each(APOSTROPHE_PHRASE_CASES, check)
 
 
 # The contract's nickname list, nickname -> the full names it stands for ("X/Y <-> Z" = X and Y both alias Z).
@@ -322,8 +358,11 @@ def test_search_tsquery_groups_one_alternation_per_query_token():
 
 
 TSQUERY_EXACT = [
-    ("O'Neil-Smith", "(oneil:* | (o:* & neil:*)) & smith:*"),   # R7: the joined word or both halves
-    ("D’Angelo", "(dangelo:* | (d:* & angelo:*))"),             # the curly apostrophe reads the same
+    ("O'Neil-Smith", "(oneil:* | (o <-> neil:*)) & smith:*"),   # R7: the joined word, or the halves adjacent and in order
+    ("D’Angelo", "(dangelo:* | (d <-> angelo:*))"),             # the curly apostrophe reads the same; a one-letter half is exact
+    ("Women's", "women:*"),                                      # R7: a possessive (one letter after) is no compound: sn1 reading
+    ("McDonald's", "mcdonald:*"),
+    ("I'm", "i:* & m:*"),                                        # no multi-letter token remains, so R1 keeps both letters
     ("O' Neil", "neil:*"),                                       # not word-internal: a separator, the lone O drops (R1)
     ("'Neil", "neil:*"),
     ("Jr", "jr:*"),
@@ -336,7 +375,8 @@ TSQUERY_EXACT = [
 def test_search_tsquery_exact_strings_for_tokens_without_aliases():
     """The contract's literal strings. Kills: a different joiner ("&&", no spaces), a missing prefix marker, a hyphen kept
     inside a lexeme, upper-case lexemes; for R7, an apostrophe kept inside a lexeme ("o'neil:*", which to_tsquery would split),
-    the joined word or the halves alone, and a leading or spaced apostrophe read as word-internal."""
+    the joined word or the halves alone, halves ANDed in any order or a one-letter half as a prefix ("o:*" matches OFFICE), a
+    possessive read as a compound ("Women's" -> "women:* & s:*"), and a leading or spaced apostrophe read as word-internal."""
 
     def check(case):
         query, expected = case
@@ -446,6 +486,8 @@ MATCH_CASES = [
     ("Sean O'Neil-Smythe", "Neil Smythe", True),
     ("Sean O'Neil-Smythe", "O'Neil", True),                       # R7: both halves
     ("Neil Decoyworth", "O'Neil", False),                         # R7: a plain Neil is not an O'Neil
+    ("Law Office of Neil Adams", "O'Neil", False),                # R7: a one-letter half is exact and adjacent (not OFFICE / OF)
+    ("Women of Illinois PAC", "Women's", True),                   # R7: a possessive keeps the sn1 recall
     ("Local 150 PAC", "Local 15", True),                          # numeric prefix
     ("Edward Ames", "Ted Ames", True),
     ("Ted Ames", "Ed Ames", False),                               # one hop: ED is not TED
