@@ -7,6 +7,7 @@ import pytest
 import webapp.cache_backend as cache_backend
 from database import analytics
 from database.connection import get_db
+from tests.test_donor_cycle_summary import NORA, SOURCE, Who, _build, receipt
 
 REBUILT = {
     "analytics_donor_committee_agg",
@@ -121,24 +122,30 @@ def test_the_rebuild_is_skipped_when_its_tables_are_missing(monkeypatch):
     assert stats["local_donor_entities"]["status"] == "skipped"
 
 
-def test_a_real_refresh_fills_donor_entity_local_from_the_new_summary(tmp_path):
-    """On a real schema (the donor cycle summary world, ISBE-direct branch) the refresh leaves one member row per
-    analytics_donor_summary donor.  Kills: the step wired to a stub or to another source."""
-    from tests.test_donor_cycle_summary import SOURCE, _build
+GAIL_HOME = Who("Gail", "Twin", "1 First St", "Chicago", "IL", "60601", "Nurse", "Rush")
+GAIL_WORK = Who("Gail", "Twin", "2 Second St", "Chicago", "IL", "60601", "Nurse", "Rush")
 
+
+def test_a_real_refresh_fills_donor_entity_local_from_the_new_summary(tmp_path):
+    """On a real schema (the donor cycle summary world, ISBE-direct branch) plus one person filed under two addresses,
+    the refresh writes member rows for both of her keys (the rebuild groups a name held by two or more keys), every
+    member is an analytics_donor_summary donor, and the stats report the rows written.  Kills: the step wired to a
+    stub, to another source, or run before the summary is rebuilt."""
     env = _build(tmp_path, "isbe")
+    env.add([receipt(30301, GAIL_HOME, 100, "2025-05-01", 100.0), receipt(30302, GAIL_WORK, 200, "2025-05-02", 200.0)])
+    stats = env.refresh()
+
     conn = env.conn()
     summary = {r["donor_key"] for r in conn.execute(
         "SELECT donor_key FROM analytics_donor_summary WHERE source = ?", (SOURCE,)).fetchall()}
     members = {r["donor_key"] for r in conn.execute(
         "SELECT donor_key FROM donor_entity_local_member WHERE source = ?", (SOURCE,)).fetchall()}
-    assert summary and members == summary
+    assert {GAIL_HOME.key, GAIL_WORK.key} <= members <= summary
+    assert stats["local_donor_entities"]["member_rows_written"] == len(members)
 
 
 def test_a_real_failing_rebuild_does_not_undo_the_aggregates(tmp_path, monkeypatch):
     """The same world with a rebuild that raises: a fresh connection still sees the rebuilt aggregates."""
-    from tests.test_donor_cycle_summary import NORA, SOURCE, _build
-
     def rebuild(conn, **kwargs):
         raise RuntimeError("entity rebuild failed")
 
