@@ -38,7 +38,7 @@ import pytest
 
 from database import connection as conn_mod
 from database.pg_compat import PostgresCompatConnection
-from tests.conftest import _TEST_DSN, _short_uuid
+from tests.conftest import _TEST_DSN, _short_uuid, ddl_slot
 
 
 def _forbid_commit() -> None:
@@ -86,7 +86,8 @@ class SchemaWorld:
             return
         conn = self.connect(guard=False)
         try:
-            conn_mod.ensure_schema(conn)
+            with ddl_slot():
+                conn_mod.ensure_schema(conn)
             self._initialized = True
         finally:
             conn.close()
@@ -117,7 +118,8 @@ class SchemaWorld:
         self._conns.clear()
         admin = psycopg.connect(_TEST_DSN, autocommit=True)
         try:
-            admin.execute(f"DROP SCHEMA IF EXISTS {self.schema} CASCADE")
+            with ddl_slot():
+                admin.execute(f"DROP SCHEMA IF EXISTS {self.schema} CASCADE")
         finally:
             admin.close()
 
