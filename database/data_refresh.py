@@ -45,7 +45,7 @@ class Dataset:
     tables: tuple[tuple[str, str], ...]
     folder: str | None = None  # local drop folder for hand-downloaded files (mirrored to shared/manual/<key>/)
     nightly: bool = False  # refreshed by the nightly chain: an ok run counts as its last load
-    notes: str | None = None
+    notes: str | None = None  # public: shown on /data-status, so no internal paths or commands
 
     @property
     def table(self) -> str:
@@ -102,8 +102,8 @@ DATASETS: tuple[Dataset, ...] = (
         "import-irs527 --file <FullDataFile.txt> --illinois-only",
         (("irs527_reports", _clean_text_date("period_end")), ("irs527_expenditures", _clean_text_date("date"))),
         folder="data/manual/irs527",
-        notes=("Download scriptable weekly; import blocked on loader idempotency "
-               "(docs/runbooks/irs527_data.md P-3: a re-run doubles five tables)."),
+        # Import blocked on loader idempotency: docs/runbooks/irs527_data.md P-3 (a re-run doubles five tables).
+        notes="Loaded by hand. The IRS file can be fetched weekly; automatic import waits on a loader fix.",
     ),
     Dataset(
         "openbook", "IL Comptroller OpenBook contracts", "manual", "as needed",
