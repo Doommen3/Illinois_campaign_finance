@@ -187,14 +187,16 @@
             var item = { label: spec.label || base.label || humanize(spec.type), color: spec.color || base.color || FALLBACK_COLOR,
                          shape: spec.shape || base.shape || "circle", order: rank(NODE_ORDER, spec.type) * 1000 + index };
             var id = [item.label, item.color, item.shape].join("|");
-            if (!seen[id]) { seen[id] = true; items.push(item); }
+            if (!seen[id]) { seen[id] = item; item.types = []; items.push(item); }
+            if (seen[id].types.indexOf(spec.type) < 0) { seen[id].types.push(spec.type); }
         });
         return items.sort(function (a, b) { return a.order - b.order; });
     }
 
     // renderGraphKey(container, {edgeTypes, definitions, nodeTypes}): edgeTypes are GRAPH_STYLES keys present in the
     // graph (GraphKey.styleKeys(edges)), definitions the payload's edge_type_definitions, nodeTypes node specs.
-    // An empty graph empties the container.
+    // With onToggle(nodeType, visible) each node item is a chip (button.graph-key-chip, aria-pressed) that hides or
+    // shows its node types on click (the ego graph's legend filter). An empty graph empties the container.
     function renderGraphKey(container, options) {
         if (!container) { return; }
         var opts = options || {};
@@ -220,9 +222,21 @@
             container.appendChild(htmlEl("p", "graph-key-heading", "Nodes"));
             var list = htmlEl("ul", "graph-key-nodes");
             nodes.forEach(function (item) {
-                var row = htmlEl("li", "graph-key-item");
-                row.appendChild(nodeSwatch(item));
-                row.appendChild(htmlEl("span", "graph-key-label", item.label));
+                var row = htmlEl("li", "graph-key-item"), holder = row;
+                if (opts.onToggle) {
+                    holder = htmlEl("button", "graph-key-chip");
+                    holder.setAttribute("type", "button");
+                    holder.setAttribute("aria-pressed", "true");
+                    holder.setAttribute("title", "Hide or show " + item.label.toLowerCase() + " nodes");
+                    holder.addEventListener("click", function () {
+                        var visible = holder.getAttribute("aria-pressed") !== "true";
+                        holder.setAttribute("aria-pressed", visible ? "true" : "false");
+                        item.types.forEach(function (type) { opts.onToggle(type, visible); });
+                    });
+                    row.appendChild(holder);
+                }
+                holder.appendChild(nodeSwatch(item));
+                holder.appendChild(htmlEl("span", "graph-key-label", item.label));
                 list.appendChild(row);
             });
             container.appendChild(list);

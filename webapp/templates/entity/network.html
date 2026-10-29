@@ -33,13 +33,13 @@
 <div class="status-section">
     <h2>Network edges {{ scope_tag() }}</h2>
     {% if payload.edges %}
-    <table class="data-table">
+    <table class="data-table" id="entity-network-edges">
         <thead><tr><th>From</th><th>Edge</th><th>To</th><th>Amount</th><th>Rows</th></tr></thead>
         <tbody>
         {% for edge in payload.edges %}
             {% set source = nodes_by_id.get(edge.source) %}
             {% set target = nodes_by_id.get(edge.target) %}
-            <tr>
+            <tr data-source="{{ edge.source }}" data-target="{{ edge.target }}">
                 <td>{% if node_href.get(edge.source) %}<a href="{{ node_href[edge.source] }}">{{ source.label if source else edge.source }}</a>{% else %}{{ source.label if source else edge.source }}{% endif %}</td>
                 <td>{{ edge.edge_label }}{% if edge.support_oppose is defined %} ({{ 'supporting' if edge.support_oppose == 'S' else 'opposing' }}){% endif %}</td>
                 <td>{% if node_href.get(edge.target) %}<a href="{{ node_href[edge.target] }}">{{ target.label if target else edge.target }}</a>{% else %}{{ target.label if target else edge.target }}{% endif %}</td>
@@ -69,11 +69,13 @@
 {% block extra_js %}
 {% set graph_meta = {"definitions": payload.summary.edge_type_definitions or {}, "hrefs": node_href, "donors_tab_url": donors_tab_url, "rows_url": rows_url} %}
 <script id="entity-network-meta" type="application/json">{{ graph_meta|tojson }}</script>
-<script src="{{ url_for('static', filename='js/graph_legend.js', v='20261028-2') }}"></script>
+<script src="{{ url_for('static', filename='js/vendor/d3.v7.min.js', v='7.9.0') }}"></script>
+<script src="{{ url_for('static', filename='js/network_graph.js', v='20261029-1') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_legend.js', v='20261029-1') }}"></script>
 <script src="{{ url_for('static', filename='js/entity_views/focus_panel.js', v='20261029-2') }}"></script>
 <script src="{{ url_for('static', filename='js/entity_views/money_flow.js', v='20261029-2') }}"></script>
 <script src="{{ url_for('static', filename='js/entity_views/vendor_network.js', v='20261029-2') }}"></script>
-<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261029-2') }}"></script>
+<script src="{{ url_for('static', filename='js/entity_views/ego_force.js', v='20261029-3') }}"></script>
 <script>
 (function () {
     var box = document.getElementById("entity-network-graph");
@@ -98,11 +100,13 @@
         }
         box.textContent = "Loading\u2026";
         [ctx.keyBox, ctx.focusBox].forEach(function (area) { if (area) { area.textContent = ""; } });
+        Array.prototype.forEach.call(document.querySelectorAll(".ng-row-focused"), function (row) { row.classList.remove("ng-row-focused"); });
         loaded[view].then(function (data) { if (box.dataset.view === view) { render(box, data, ctx); } })
             .catch(function () { delete loaded[view]; box.textContent = "The network could not be loaded; the edge table below lists every edge."; });
     }
     buttons.forEach(function (button) { button.addEventListener("click", function () { show(button.dataset.view); }); });
-    show(box.dataset.view || "money_flow");
+    var asked = new URLSearchParams(window.location.search).get("view");
+    show(sources[asked] ? asked : (box.dataset.view || "money_flow"));
 })();
 </script>
 {% endblock %}

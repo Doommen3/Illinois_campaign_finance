@@ -108,7 +108,7 @@ def test_a_click_on_another_node_replaces_the_focus_and_the_list_and_the_tooltip
 
 
 @pytest.mark.parametrize("script", ["graph_legend.js", "analytics_networks.js", "relationship_graphs.js", "entity_views/money_flow.js",
-                                    "entity_views/vendor_network.js", "entity_views/ego_force.js"])
+                                    "entity_views/vendor_network.js", "entity_views/ego_force.js", "network_graph.js"])
 def test_every_graph_script_the_key_touches_parses(script):
     """``node --check``.  analytics_networks.js and relationship_graphs.js run only in a browser (no harness executes
     them), so a syntax slip in either would blank every graph on /analytics/networks or /analytics/relationships."""

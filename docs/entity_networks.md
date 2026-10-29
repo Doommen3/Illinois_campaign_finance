@@ -26,7 +26,8 @@ each class lost. The entity's own committees and candidates are never capped.
 `network.json?view=` serves one of three views. Each view is built from the one cached ego payload; none reads the
 database itself.
 
-- **`ego`**: the ego payload as is, plus `view: "ego"`. `ego_force.js` draws it on a radial layout.
+- **`ego`**: the ego payload as is, plus `view: "ego"`. `ego_force.js` draws it with the readable force renderer
+  (see "The ego renderer" below), or on a radial layout when d3 is not loaded.
   (`ego_force(payload)` in the module returns copies of the nodes and edges.)
 - **`money_flow`** (`money_flow(payload)`): a three-column sankey. Column 0 holds the sources: donor classes
   (`class:individual`, `class:organization`, read from whether the donor filed a first name), `class:in_kind`,
@@ -160,6 +161,52 @@ Each of three cases shows one line instead of, or above, the table:
 - a failed request: "The rows could not be loaded."
 `tests/test_network_drilldown_js.py` and `tests/test_ego_focus_js.py` run the scripts under node with it loaded.
 
+## The ego renderer
+
+`webapp/static/js/network_graph.js` draws the ego view with d3 v7, which is vendored as one file
+(`webapp/static/js/vendor/d3.v7.min.js`; version, checksum and license in `webapp/static/js/vendor/README.md`).
+`NetworkGraph.render(container, {nodes, edges}, options)` returns the node and edge elements and a
+`setTypeVisible(type, visible)` function. `ego_force.js` passes the colours, sizes, titles and click handlers, and keeps
+the focus, the panel and Escape itself. Without `window.d3` it falls back to the radial layout, which the node tests
+exercise.
+
+- **Layout.** A force simulation (link distance by weight rank, many-body repulsion, collision at radius plus 6 px)
+  starts from a radial seed by role and uses a fixed random seed. It runs 300 ticks before drawing, and a separation
+  pass then leaves no two circles overlapping. The same data gives the same picture. The svg gets `data-settled="1"`
+  when it is drawn.
+- **Zoom and labels.** The graph opens fitted to the container. Scroll zooms and drag pans. Labels stay 12 px on screen
+  at any zoom. About 24 of the largest nodes are labelled at the fitted zoom, the entity's committees and candidates
+  first, and more as you zoom in. A label goes right, left, above or below its node, wherever it overlaps no other
+  label and no other node and stays inside the graph. Otherwise it stays hidden. Hovering a node shows its label, and
+  every node and edge keeps its tooltip.
+- **Legend chips.** With an `onToggle(nodeType, visible)` option, `renderGraphKey` draws each node item as a chip
+  (`button.graph-key-chip`, `aria-pressed`). A click hides or shows that node type and its edges. Other graphs pass no
+  `onToggle` and keep the plain key.
+- **Linked edge table.** The Network edges table (`#entity-network-edges`) carries `data-source` and `data-target` on
+  each row. In the ego view, clicking a row focuses its node: the end that is not one of the entity's committees.
+  Focusing a node highlights its rows (class `ng-row-focused`). Switching views clears the highlight.
+- **Opening a view by URL.** `?view=ego`, `?view=vendor_network` or `?view=money_flow` on the Network tab opens that
+  view first.
+
+**Readability probe (N8).** `tests/integration/test_network_graph_readability.py` opens the ego view at 1200 x 700 on
+candidate 13505 and the Evanston alderperson race. It counts label intersections, circle overlaps, elements outside
+the container, labels under 11 px and unlabelled nodes whose label does not show on hover. Every count must be zero.
+It needs a running server and is marked `integration`:
+
+```bash
+DASHBOARD_PREWARM_ENABLED=false python3 run.py runserver --port 5053
+python3 -m pytest -q -m integration tests/integration/test_network_graph_readability.py
+```
+
+On the radial renderer (2026-10-29, local data) it measured the following.
+
+| Page | Label intersections | Circle overlaps | Outside | Labels under 11 px | Hover failures |
+|---|---|---|---|---|---|
+| Candidate 13505 | 8 | 0 | 0 | 14 | 5 of 5 |
+| Evanston race | 1 | 0 | 0 | 14 | 5 of 5 |
+
+The force renderer measures zero on all five.
+
 ## Cache and static-file rules
 
 - **Cache revision.** Every entity-tab cache key starts with `ENTITY_CACHE_REV` (`database/entity_analytics.py`).
@@ -167,9 +214,10 @@ Each of three cases shows one line instead of, or above, the table:
   `ea2` since the `members` field was added. The network entries are `network:ego`, `network:money_flow` and
   `network:vendor_network` plus the HTML tab's own entry. The projections and the HTML tab read the `network:ego`
   entry, so the page and its three views build the graph once.
-- **Script stamps.** `entity/network.html` loads each script with a `?v=YYYYMMDD-N` stamp. Bump the stamp of every
-  script you change, so browsers fetch the new file. The four `entity_views` scripts are at `20261029-2`, and
-  `graph_legend.js` is at `20261028-2`.
+- **Script stamps.** `entity/network.html` loads each script with a `?v=YYYYMMDD-N` stamp, and d3 with its version.
+  Bump the stamp of every script you change, so browsers fetch the new file. `focus_panel.js`, `money_flow.js` and
+  `vendor_network.js` are at `20261029-2`, `ego_force.js` is at `20261029-3`, and `graph_legend.js` and
+  `network_graph.js` are at `20261029-1`. `css/style.css` is stamped in `base.html`.
 
 ## Not covered
 

@@ -2104,6 +2104,71 @@ h2 {
     fill: #2d3748;
 }
 
+/* The readable ego renderer (js/network_graph.js): labels with a white halo that never catch the pointer */
+.entity-network-graph .ng-svg {
+    display: block;
+    cursor: grab;
+    touch-action: none;
+}
+
+.entity-network-graph .ng-node {
+    cursor: pointer;
+}
+
+.entity-network-graph .ng-label {
+    paint-order: stroke;
+    stroke: #fff;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+
+#entity-network-edges tr[data-source] {
+    cursor: pointer;
+}
+
+#entity-network-edges tr.ng-row-focused td {
+    background: #fefcbf;
+}
+
+/* Legend chips that hide a node type (graph_legend.js with onToggle) */
+.graph-key-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.1rem 0.5rem;
+    border: 1px solid #cbd5e0;
+    border-radius: 999px;
+    background: #fff;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.graph-key-chip[aria-pressed="false"] {
+    opacity: 0.45;
+    text-decoration: line-through;
+}
+
+/* Rows buttons of the drill-down panel (entity_views/focus_panel.js) */
+.edge-rows-toggle {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #2b6cb0;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.edge-rows-detail > td {
+    background: #f7fafc;
+}
+
+.edge-rows-table {
+    margin: 0.25rem 0;
+    font-size: 0.9em;
+}
+
 /* Graph key (plan race-sort-and-entity-networks, N18): one key under every graph, built by js/graph_legend.js */
 .graph-key {
     margin: 0 0 0.75rem;
