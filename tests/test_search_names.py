@@ -15,8 +15,9 @@ Contract pinned, literally:
       fallback per section when the token path finds nothing and the query has >= 4 characters; the local candidate section also
       lists candidates WITHOUT a committee link (totals 0); committees reached through a matched candidate
       (isbe_candidate_committees + accepted committee_family members) are listed AFTER the name matches, once per committee id,
-      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn2"
-      (search Phase 2, P2-23: the apostrophe rule R7 changed the matching, so "sn1" entries must not be served).
+      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn3"
+      (search Phase 2, P2-23: the apostrophe rule R7 changed the matching, so "sn1" entries must not be served; follow-up
+      FB-M1 changed the substring fallback's pattern, so "sn2" entries must not be served either).
 
 The seed world (all names fictional; every expected value below is derived from it in a comment next to the fixture):
 
@@ -252,6 +253,50 @@ def test_apostrophe_phrase_halves_and_possessive_semantics_in_postgresql():
         assert nn.name_matches(query, stored) is expected, f"name_matches({query!r}, {stored!r})"
 
     _each(APOSTROPHE_PHRASE_CASES, check)
+
+
+SUBSTRING_PATTERN_CASES = [
+    # (query, substring_pattern(query)) -- follow-up FB-M1 (P2-26 / P2-30 / P2-32): the query's name_tokens joined by '%',
+    # a compound's apostrophe as '_' (one character: O'NEIL, O NEIL, O-NEIL), None when no token remains
+    ("O'Neil", "%O_NEIL%"),
+    ("O'Neil Smythe", "%O_NEIL%SMYTHE%"),
+    ("Mike W. Exampleton", "%MIKE%EXAMPLETON%"),         # the single-letter initial is dropped, as name_tokens does
+    ("xamplet", "%XAMPLET%"),
+    ("Women's", "%WOMEN%"),                              # a possessive is no compound; the lone S is dropped
+    ("!!!", None),
+]
+
+
+def test_substring_pattern_cases():
+    """FB-M1: one LIKE pattern for every substring branch. Kills the P2-2a join of normalize_name's tokens ("O'Neil" ->
+    %O%NEIL%, which matches "KHOT, NEIL") and the whole normalized string ("%O NEIL SMYTHE%", which a stored "O'Neil" never
+    contains)."""
+
+    def check(case):
+        query, expected = case
+        assert nn.substring_pattern(query) == expected
+
+    _each(SUBSTRING_PATTERN_CASES, check)
+
+
+def test_substring_pattern_like_semantics_in_postgresql():
+    """FB-M1 read by PostgreSQL: the '_' of a compound stands for the stored apostrophe, a space or a hyphen, and the plain
+    Neil is not reached. Kills a pattern that keeps '%' between the halves of a compound."""
+    conn = get_db()
+
+    def check(case):
+        stored, pattern, expected = case
+        row = conn.execute("SELECT UPPER(CAST(? AS TEXT)) LIKE ? AS hit", (stored, pattern)).fetchone()
+        assert row["hit"] is expected, f"{stored!r} LIKE {pattern!r}"
+
+    _each(
+        [
+            ("KHOT, NEIL", nn.substring_pattern("O'Neil"), False),
+            ("O'NEIL, SEAN", nn.substring_pattern("O'Neil"), True),
+            ("O NEIL SMYTHE", nn.substring_pattern("O'Neil Smythe"), True),
+        ],
+        check,
+    )
 
 
 # The contract's nickname list, nickname -> the full names it stands for ("X/Y <-> Z" = X and Y both alias Z).
@@ -1354,7 +1399,7 @@ def _key(query: str, scope: str = "cycle:2026", search_type: str = "all") -> str
     return main_routes._search_results_cache_key(scope, query, search_type)
 
 
-def test_the_search_cache_key_starts_with_the_revision_sn2():
+def test_the_search_cache_key_starts_with_the_revision_sn3():
     """S4: the revision prefix makes every entry stored before the fix unreachable (the old key had no prefix). The revision is
     pinned by value; it must also survive a query with no token ('!!!!') without raising. Kills: no prefix; a different
     revision string; the prefix put in the middle."""
@@ -1363,12 +1408,24 @@ def test_the_search_cache_key_starts_with_the_revision_sn2():
         query, search_type = case
         key = _key(query, search_type=search_type)
         assert isinstance(key, str)
-        assert key.startswith("sn2"), key
+        assert key.startswith("sn3"), key
 
     _each(
         [(query, search_type) for query in ("Mike Exampleton", "Exampleton, Michael W.", "!!!!", "103") for search_type in ("all", "donors")],
         check,
     )
+
+
+def test_the_search_substring_fallback_binds_substring_pattern():
+    """FB-M1: /search's one substring fallback binds the shared substring_pattern, still only for a normalized query of 4+
+    characters. Kills the whole normalized string ("%O NEIL SM%"), which a stored "O'Neil" never contains."""
+
+    def check(case):
+        query, expected = case
+        assert main_routes._substring_fallback_pattern(query) == expected
+
+    _each([("o'Neil-Sm", "%O_NEIL%SM%"), ("xamplet", "%XAMPLET%"), ("Mike W. Exampleton", "%MIKE%EXAMPLETON%"),
+           ("mple", "%MPLE%"), ("mpl", None), ("!!!!", None)], check)
 
 
 def test_apostrophe_spellings_get_their_own_cache_keys():

@@ -8,8 +8,10 @@ behaviour the change must not break.
 Contract pinned (database/name_normalize.py; names chosen by the builder, P2-1):
 
   name_match_sql(col, q)          -> (NAME_TSVECTOR_SQL(col) + " @@ to_tsquery('simple', ?)", [search_tsquery(q)]) | None
-  substring_fallback_sql(col, q)  -> (col + " LIKE ?", ["%" + normalize_name(q) + "%"]) for a normalized query of 4+ chars | None
-  normalized_substring_sql(col, q)-> ("UPPER(" + col + ") LIKE ?", ["%" + the normalized tokens joined by "%" + "%"]) | None
+  substring_fallback_sql(col, q)  -> (col + " LIKE ?", [substring_pattern(q)]) for a normalized query of 4+ chars | None
+  normalized_substring_sql(col, q)-> ("UPPER(" + col + ") LIKE ?", [substring_pattern(q)]) | None
+  substring_pattern(q)            -> name_tokens(q), a compound's apostrophe as "_", joined by "%", wrapped "%...%" | None
+                                     (follow-up FB-M1, P2-26 / P2-30 / P2-32)
 
   Entity tables take the token predicate and, only when it finds nothing, the one substring fallback (as /search). Transactional
   tables (FEC Schedule A contributor / Schedule B recipient, IRS 527 contributor, the expenditure payee) take the normalized
@@ -111,7 +113,7 @@ def test_substring_fallback_sql_is_the_phase_1_rule():
     assert sql == "donor_name LIKE ?"
     assert list(params) == ["%ARROW%"]
     sql, params = nn.substring_fallback_sql("donor_name", "o'Neil-Sm")
-    assert list(params) == ["%O NEIL SM%"]
+    assert list(params) == ["%O_NEIL%SM%"]  # FB-M1: substring_pattern, so a stored "O'Neil" is reachable
     assert nn.substring_fallback_sql("donor_name", "arr") is None
     assert nn.substring_fallback_sql("donor_name", "") is None
 
@@ -122,7 +124,7 @@ def test_normalized_substring_sql_joins_the_query_tokens_with_wildcards():
     sql, params = nn.normalized_substring_sql("contributor_name", "Farrow, Michael")
     assert sql == "UPPER(contributor_name) LIKE ?"
     assert list(params) == ["%FARROW%MICHAEL%"]
-    assert list(nn.normalized_substring_sql("contributor_name", "  o'brien ")[1]) == ["%O%BRIEN%"]
+    assert list(nn.normalized_substring_sql("contributor_name", "  o'brien ")[1]) == ["%O_BRIEN%"]  # FB-M1: not %O%BRIEN%
     assert nn.normalized_substring_sql("contributor_name", "%_") is None
 
 
@@ -139,8 +141,9 @@ def test_no_helper_puts_the_query_text_into_the_sql():
     f-string predicate, a tsquery built from the raw text (operators survive), a LIKE pattern with the user's % and _."""
     helpers = [
         (nn.name_match_sql, re.compile(r"[a-z0-9:*&|() ]+")),
-        (nn.substring_fallback_sql, re.compile(r"%[A-Z0-9 ]+%")),
-        (nn.normalized_substring_sql, re.compile(r"%[A-Z0-9%]+%")),
+        # FB-M1: alphanumeric tokens joined by '%'; a '_' only between two alphanumeric runs (a compound's apostrophe)
+        (nn.substring_fallback_sql, re.compile(r"%(?:[A-Z0-9]+(?:_[A-Z0-9]+)*%)+")),
+        (nn.normalized_substring_sql, re.compile(r"%(?:[A-Z0-9]+(?:_[A-Z0-9]+)*%)+")),
     ]
 
     def check(query):
@@ -563,6 +566,67 @@ def test_a_query_without_a_letter_or_digit_renders_an_empty_list(shared_client, 
     Kills a caller that drops the name filter when name_predicates returns no variant."""
     text = _text(shared_client, url, "***")
     assert "farrow" not in text, "a query with no token listed rows"
+
+
+def _oneil_client(tmp_path: Path):
+    """FB-M1's world: an O'Neil and a plain Neil in the transactional FEC donors and in the donor-committee aggregate (no
+    analytics_donor_summary rows, so /investigate's flow tab takes its donor_key fallback)."""
+    db_path = str(tmp_path / "callers_oneil.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO fec_schedule_a_contributions (sub_id, cycle, contributor_name, contributor_city, contributor_state,
+                                                  contribution_receipt_amount, donor_entity_key) VALUES
+            ('sa-o1', 2026, 'O''NEIL, SEAN', 'CHICAGO', 'IL', 250.0, 'fe-oneil-sean'),
+            ('sa-o2', 2026, 'KHOT, NEIL', 'PEORIA', 'IL', 200.0, 'fe-khot-neil')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO analytics_donor_committee_agg (source, donor_key, donor_name, committee_id, committee_name, total_amount,
+                                                   contribution_count) VALUES
+            ('bulk_receipts', 'sean|o''neil|1 fir st', 'Sean O''Neil', '501', 'Friends of Quentin Vale', 1500.0, 3),
+            ('bulk_receipts', 'neil|khot|2 ash st', 'Neil Khot', '502', 'Friends of Ursula Brine', 1200.0, 2)
+        """
+    )
+    conn.commit()
+    conn.close()
+    return create_app(_app_config(db_path)).test_client()
+
+
+def test_investigate_oneil_reaches_the_oneils_and_not_the_plain_neil(tmp_path):
+    """FB-M1 (P2-32, P2-26): "O'Neil" binds %O_NEIL% on the transactional FEC donor section (the P2-2a pattern %O%NEIL%
+    listed "KHOT, NEIL"); the donor_key fallback binds substring_pattern, not the raw text, so "Sean O'Neil" reaches the key
+    sean|o'neil|... (the raw %Sean O'Neil% never matches a |-joined key). The plain Neil is on neither tab."""
+    import html
+
+    client = _oneil_client(tmp_path)
+
+    def check(case):
+        url, query, marker = case
+        text = html.unescape(_text(client, url, query))
+        assert marker in text, f"{url} {query!r} does not list {marker!r}"
+        assert "khot" not in text and "ursula brine" not in text, f"{url} {query!r} lists the plain Neil"
+
+    _each(
+        [
+            ("/investigate?q={q}", "O'Neil", "o'neil, sean"),        # the transactional section
+            # the donor_key fallback, marked by the donor's committee (the page echoes the query, so not by the name)
+            ("/investigate?tab=flow&q={q}", "O'Neil", "friends of quentin vale"),  # guard: the raw text reaches the key
+            ("/investigate?tab=flow&q={q}", "Sean O'Neil", "friends of quentin vale"),
+        ],
+        check,
+    )
+
+
+def test_candidate_finance_office_filter_treats_typed_wildcards_as_text(shared_client):
+    """FB-M1: office_sought binds substring_pattern, so a typed '%' is no wildcard -- "%" has no token and lists nothing (as
+    P2-15 for names), and "Comptroll" still reaches the Comptroller. Kills the raw f"%{office}%"."""
+    text = _text(shared_client, "/candidate-finance/?period=all&office={q}", "%")
+    assert "farrow" not in text, "a bare '%' office filter listed every candidate"
+    text = _text(shared_client, "/candidate-finance/?period=all&office={q}", "Comptroll")
+    assert "michael j farrow" in text and "brad" not in text
 
 
 # ---------------------------------------------------------------------------
