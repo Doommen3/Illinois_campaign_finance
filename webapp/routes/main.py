@@ -2567,7 +2567,7 @@ def investigate_workspace():
                 WHERE source = 'bulk_receipts' AND {where}
             )
             SELECT * FROM matched
-            ORDER BY total_amount DESC
+            ORDER BY total_amount DESC, donor_key
             LIMIT 8
             """,
             "donor_name",
@@ -2698,10 +2698,10 @@ def investigate_workspace():
                     SELECT donor_key, donor_name, committee_id, committee_name, total_amount, contribution_count
                     FROM analytics_donor_committee_agg x
                     WHERE x.source = 'bulk_receipts' AND x.donor_key = m.donor_key
-                    ORDER BY x.total_amount DESC
+                    ORDER BY x.total_amount DESC, x.committee_id
                     LIMIT 15
                 ) a
-                ORDER BY a.total_amount DESC
+                ORDER BY a.total_amount DESC, a.donor_key, a.committee_id
                 LIMIT 15
                 """,
                 "s.donor_name",
@@ -3331,7 +3331,7 @@ def person_intelligence():
                     WHERE source = 'bulk_receipts' AND {where}
                 )
                 SELECT * FROM matched
-                ORDER BY total_amount DESC
+                ORDER BY total_amount DESC, donor_key
                 LIMIT 100
                 """,
                 "donor_name",

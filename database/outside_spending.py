@@ -130,6 +130,13 @@ def _first_name_aliases(first: str) -> set[str]:
     return {first, *_FIRST_WORD_ALIASES.get(first, ())}
 
 
+def name_keys_match(key: tuple[str, str], other: tuple[str, str]) -> bool:
+    """Whether two name keys name one person under the matcher: equal last tokens, and first tokens
+    equal or direct aliases (P2-17). The twin rule of the race builder and the entity network (plan
+    D4): a record whose key matches an earlier record's is the same person registered twice."""
+    return key[1] == other[1] and other[0] in _first_name_aliases(key[0])
+
+
 def part9_cycle(day: date) -> int:
     """Election cycle of a date: an even year is its own cycle, an odd year belongs to the next one."""
     return day.year + day.year % 2

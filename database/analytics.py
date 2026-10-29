@@ -11,7 +11,13 @@ import sqlite3
 from typing import Optional
 
 from database.models import Donor, _normalized_date_sql, receipts_filter_sql
-from database.outside_spending import STRIPPED_NAME_SQL, attribute_part9_rows, candidate_name_key, summarize
+from database.outside_spending import (
+    STRIPPED_NAME_SQL,
+    attribute_part9_rows,
+    candidate_name_key,
+    name_keys_match,
+    summarize,
+)
 from database.race_keys import race_key as build_race_key
 
 try:
@@ -2939,8 +2945,10 @@ def _build_state_race_analytics_rows(
     # committee), keyed on the candidacy feed's spelling.  Within a race one name key is one
     # candidate: the first record in feed order carries the rows and a twin record (one person
     # under two candidate ids, e.g. "Margaret Croke" / "Margaret Noble Croke") gets none, so no
-    # row counts twice in the race total (plan D4, reversed 2026-10-28).  No cycle gate: the
-    # date window above is the race's cycle.
+    # row counts twice in the race total (plan D4, reversed 2026-10-28).  Keys match as the
+    # matcher matches names: first names that are direct nickname aliases ("Jim Moustis" /
+    # "James Moustis") are one person too (name_keys_match; search Phase 2, B1).  No cycle gate:
+    # the date window above is the race's cycle.
     outside_candidates: list[dict] = []
     for race_key_value, race in races.items():
         tokens_seen: set[str] = set()
@@ -2952,7 +2960,7 @@ def _build_state_race_analytics_rows(
             tokens_seen.add(candidate_token)
             name_key = candidate_name_key(candidate_name)
             if name_key is not None:
-                if name_key in keys_seen:
+                if any(name_keys_match(name_key, seen) for seen in keys_seen):
                     continue
                 keys_seen.add(name_key)
             outside_candidates.append(
