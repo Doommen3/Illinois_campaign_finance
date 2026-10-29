@@ -486,7 +486,8 @@ CREATE MATERIALIZED VIEW isbe_most_recent_filings AS (
                              'Letter/Correspondence', 'B-1', 'Nonparticipation')
       ORDER BY committee_id, reporting_period_end DESC, received_datetime DESC NULLS LAST
     ) AS f
-    ORDER BY f.committee_id, f.reporting_period_end DESC
+    -- NULLS LAST (D4): DESC sorts NULL first, so an undated filing (Raffle Report, Final, Self Funding) won and the condensed views kept every raw row.
+    ORDER BY f.committee_id, f.reporting_period_end DESC NULLS LAST
   ) AS fd ON fd.committee_id = cm.id
   LEFT JOIN isbe_d2_reports AS d2 ON fd.id = d2.filed_doc_id
 );
