@@ -2958,14 +2958,8 @@ def test_get_federal_race_outside_spending_respects_date_window(tmp_path: Path):
     conn.close()
 
 
-def _race_outside_spending_client(tmp_path: Path, monkeypatch):
-    """A client for the race outside-spending page (H / 01) over the date-window fixture plus a 2022-race row that the backfill tagged
-    cycle 2026 -- local fec_schedule_e_independent_expenditures holds one `cycle` value (2026) for expenditures dated
-    2000..2026, so `cycle` is the fetch cycle, not the expenditure's two-year period (MT-015)."""
-    db_path = str(tmp_path / "fec_race_outside_page.db")
-    init_db(db_path)
-    conn = get_db(db_path)
-    _seed_date_window_fixture(conn)
+def _insert_2022_race_schedule_e_row(conn) -> None:
+    """A 2022-race Schedule E row (BYGONE PAC -> OLD RACE MEDIA, 900, 2022-11-05) that the backfill tagged cycle 2026."""
     conn.execute(
         """
         INSERT INTO fec_schedule_e_independent_expenditures (
@@ -2976,6 +2970,17 @@ def _race_outside_spending_client(tmp_path: Path, monkeypatch):
                   '60601', 'O', 900.0, '2022-11-05', '24H', '24A', 'src-se-2022')
         """
     )
+
+
+def _race_outside_spending_client(tmp_path: Path, monkeypatch):
+    """A client for the race outside-spending page (H / 01) over the date-window fixture plus a 2022-race row that the backfill tagged
+    cycle 2026 -- local fec_schedule_e_independent_expenditures holds one `cycle` value (2026) for expenditures dated
+    2000..2026, so `cycle` is the fetch cycle, not the expenditure's two-year period (MT-015)."""
+    db_path = str(tmp_path / "fec_race_outside_page.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+    _insert_2022_race_schedule_e_row(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr("webapp.routes.federal_finance.current_cycle", lambda today=None: 2026)
@@ -3014,6 +3019,49 @@ def test_race_outside_spending_page_other_scopes_stay_inside_the_race_cycle(tmp_
     text = _race_outside_spending_page(client, "date_from=2026-01-01&date_to=2026-06-30")
     assert "IN MEDIA" in text and "PRE MEDIA" not in text and "POST MEDIA" not in text and "OLD RACE MEDIA" not in text
     assert "Latest Expenditure Date:</strong> 2026-05-01" in text
+
+
+def test_every_schedule_e_reader_bounds_a_cycle_by_its_dates(tmp_path: Path):
+    """FB-M5 (MT-015's rule on the other Schedule E readers): Schedule E's `cycle` is the backfill's fetch cycle, so under
+    cycle 2026 with no dates the 2022-11-05 row tagged 2026 (BYGONE PAC / OLD RACE MEDIA, 900) counts nowhere; the
+    fixture's three 2025-2026 rows (400 + 100 + 600 = 1,100; 2025-09-25 .. 2026-12-01) still do. Kills `se.cycle = N`
+    alone in the races list, the candidate detail (rows and summary), the cross-role payees and the multilayer IE layer."""
+    db_path = str(tmp_path / "fec_schedule_e_cycle_dates.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_date_window_fixture(conn)
+    _insert_2022_race_schedule_e_row(conn)
+    conn.commit()
+    problems = []
+
+    def expect(label, actual, expected):
+        if actual != expected:
+            problems.append(f"{label}: {actual!r} != {expected!r}")
+
+    race = get_federal_race_analytics(conn, cycle=2026, office_code="H", district_code="01")[0]
+    expect("races list outside_spending_total", race["outside_spending_total"], 1100.0)
+    expect("races list outside_expenditure_count", race["outside_expenditure_count"], 3)
+
+    detail = get_federal_candidate_detail(conn, candidate_id="H2IL00001", cycle=2026)
+    expect("candidate rows", sorted(row["expenditure_date"] for row in detail["schedule_e_independent_expenditures"]),
+           ["2025-09-25", "2026-05-01", "2026-12-01"])
+    expect("candidate row count", detail["total_schedule_e_expenditures"], 3)
+    summary = detail["summary"]
+    expect("candidate summary total", summary["schedule_e_total_amount"], 1100.0)
+    expect("candidate summary count", summary["schedule_e_expenditure_count"], 3)
+    expect("candidate summary earliest", summary["earliest_expenditure_date"], "2025-09-25")
+    expect("candidate summary latest", summary["latest_expenditure_date"], "2026-12-01")
+    expect("candidate outside_spending_total", summary["outside_spending_total"], 1100.0)
+
+    cross_role = get_federal_cross_role_organizations(conn, cycle=2026, limit=50, min_total_amount=0.0)
+    # payees: PRE / IN / POST VENDOR (Schedule B) + PRE / IN / POST MEDIA (Schedule E); OLD RACE MEDIA is out
+    expect("cross-role payee organizations", cross_role["summary"]["payee_organization_count"], 6)
+
+    multi = get_federal_multilayer_network_graph(conn, cycle=2026, min_edge_amount=0.0, limit=200)
+    expect("multilayer BYGONE PAC edges", [edge for edge in multi["edges"] if edge.get("source") == "ie_committee:C00IE2"], [])
+    expect("multilayer IE total", multi["summary"]["ie_committee_candidate_total_amount"], 1100.0)
+    conn.close()
+    assert not problems, "\n".join(problems)
 
 
 def test_get_federal_race_analytics_respects_date_window(tmp_path: Path):
