@@ -1629,7 +1629,8 @@ CREATE INDEX IF NOT EXISTS idx_committee_family_member_committee
 -- One row per refresh run: the nightly timer (scripts/nightly_refresh.sh) or a hand-started run.
 -- snapshot_before / snapshot_after: {table: {"rows": n, "max_date": "YYYY-MM-DD"}}; diff: per table
 -- rows_before/rows_after/rows_added (negative after a drop-and-reload)/max_date_before/max_date_after/new_max_date.
--- check_status is set by the 05:00 check (scripts/nightly_check.py).
+-- check_status is set by the 05:00 check (scripts/nightly_check.py) and again by nightly_refresh.sh
+-- after the run finishes; 'running' = the run was still going when checked.
 CREATE TABLE IF NOT EXISTS data_refresh_runs (
     id              BIGSERIAL PRIMARY KEY,
     kind            TEXT NOT NULL DEFAULT 'nightly' CHECK (kind IN ('nightly','manual')),
@@ -1641,7 +1642,7 @@ CREATE TABLE IF NOT EXISTS data_refresh_runs (
     snapshot_before JSONB,
     snapshot_after  JSONB,
     diff            JSONB,
-    check_status    TEXT CHECK (check_status IN ('ok','missing','failed')),
+    check_status    TEXT CHECK (check_status IN ('ok','running','missing','failed')),
     checked_at      TIMESTAMPTZ,
     notes           TEXT
 );

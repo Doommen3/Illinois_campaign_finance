@@ -232,7 +232,8 @@ def test_earlier_run_never_finished_is_noted(tmp_path):
 
 def test_nightly_refresh_runs_the_check_after_finish():
     wrapper = (REPO / "scripts" / "nightly_refresh.sh").read_text()
-    assert wrapper.index("scripts/nightly_check.py") > wrapper.index("data_refresh_cli.py finish")
+    # The invocations, not the header comment that names the check.
+    assert wrapper.index('"$PYTHON" scripts/nightly_check.py') > wrapper.index('"$PYTHON" scripts/data_refresh_cli.py finish')
 
 
 @pytest.mark.parametrize("script", ["nightly_refresh.sh", "manual_load.sh", "refresh_prod_chain.sh"])

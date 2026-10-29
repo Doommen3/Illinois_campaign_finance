@@ -8,8 +8,10 @@ table, the freshness gate and the status of every dataset (manual ones included)
 
 The check is ok only when the run finished ok AND the sources the nightly chain refreshes (ISBE
 filings, FEC Schedule A) pass their data_freshness thresholds: a chain that exits 0 without
-advancing data (the FEC silent no-op) fails here. It sets check_status ok / failed on the run and
-exits 1 when the run is missing, failed, unfinished or stale, so `systemctl --failed` shows it.
+advancing data (the FEC silent no-op) fails here. A run still going is check_status 'running', not
+failed; scripts/nightly_refresh.sh runs this check again when the run finishes, overwriting the
+report and check_status. Earlier runs that never finished (a killed wrapper) are noted in the
+report. Exits 1 unless the check is ok, so `systemctl --failed` shows it.
 
 Usage:
   python3 scripts/nightly_check.py [--report-dir DIR] [--date YYYY-MM-DD]
@@ -95,6 +97,15 @@ def find_run(conn, day: date):
     ).fetchone()
 
 
+def _stuck_runs(conn, day: date):
+    """Nightly runs from before ``day`` still marked running: their wrapper died."""
+    return conn.execute(
+        "SELECT id, started_at FROM data_refresh_runs WHERE status = 'running' "
+        "AND CAST(started_at AT TIME ZONE 'America/Chicago' AS DATE) < ? ORDER BY started_at",
+        (day,),
+    ).fetchall()
+
+
 def _fmt(value) -> str:
     if value is None:
         return "n/a"
@@ -107,10 +118,12 @@ def _fmt(value) -> str:
     return str(value)
 
 
-def render_report(day, check, problems, run, steps, diff, freshness, statuses) -> str:
+def render_report(day, check, problems, run, steps, diff, freshness, statuses, notes=()) -> str:
     lines = [f"# Nightly refresh check, {day.isoformat()} (America/Chicago)", "", f"**Check: {check.upper()}**", ""]
     if problems:
         lines += [f"- {p}" for p in problems] + [""]
+    if notes:
+        lines += ["Notes:", ""] + [f"- {n}" for n in notes] + [""]
     if run is not None:
         minutes = None
         if run["finished_at"]:
@@ -176,20 +189,25 @@ def main(argv: list[str] | None = None) -> int:
                 diff = diff_snapshots(run["snapshot_before"] or {}, snapshot_counts(conn))
                 conn.execute("UPDATE data_refresh_runs SET diff = CAST(? AS JSONB) WHERE id = ?", (json.dumps(diff), run["id"]))
                 conn.commit()
-            if run["status"] == "running":
-                problems.append("the run is still running or was killed (no finish recorded)")
-            elif run["status"] != "ok":
-                problems.append(f"the run failed (exit code {run['exit_code']})")
             if run["log_path"] and Path(run["log_path"]).is_file():
                 steps = parse_chain_log(Path(run["log_path"]).read_text(errors="replace"))
                 problems += [f"step {s['step']} {s['name']} failed" for s in steps if s["status"] == "failed"]
+            if run["status"] == "running":
+                open_steps = [s for s in steps if s["status"] == "open"]
+                at_step = f", step {open_steps[-1]['step']} {open_steps[-1]['name']}" if open_steps else ""
+                problems.insert(0, f"still running at {datetime.now(CHICAGO).strftime('%H:%M')} "
+                                   f"(started {_fmt(run['started_at'])}{at_step}); the final report follows when it ends")
+            elif run["status"] != "ok":
+                problems.append(f"the run failed (exit code {run['exit_code']})")
         freshness = check_freshness(conn, as_of=day)
         problems += [
             f"{r.spec.label} is {r.status.upper()} (latest {_fmt(r.max_date)}, limit {r.spec.max_age_days} days)"
             for r in freshness if r.spec.table in _GATE_TABLES and not r.ok
         ]
+        notes = [f"run {r['id']} started {_fmt(r['started_at'])} never finished (its wrapper was killed?)"
+                 for r in _stuck_runs(conn, day)]
         if run is not None:
-            check = "failed" if problems else "ok"
+            check = "running" if run["status"] == "running" else ("failed" if problems else "ok")
             record_check(conn, run["id"], check, notes="; ".join(problems) or None)
             run = find_run(conn, day)
         statuses = dataset_status(conn, as_of=day)
@@ -199,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"{day.isoformat()}.md"
-    report_path.write_text(render_report(day, check, problems, run, steps, diff, freshness, statuses))
+    report_path.write_text(render_report(day, check, problems, run, steps, diff, freshness, statuses, notes))
     print(f"nightly check {day.isoformat()}: {check.upper()} ({'; '.join(problems) or 'no problems'}) report={report_path}")
     return 0 if check == "ok" else 1
 

@@ -10,7 +10,8 @@
 #     shared/sync-fec.lock exists (that script uses a PID file, not flock);
 #   - a run record in data_refresh_runs (snapshot before/after + diff) via scripts/data_refresh_cli.py;
 #   - one log per run: shared/logs/nightly-<stamp>.log (the chain's STEP<N>_START/END lines included).
-# The 05:00 check (scripts/nightly_check.py) reads the run record and the log.
+# The 05:00 check (scripts/nightly_check.py) reads the run record and the log; this script runs the
+# check again when a nightly run finishes, so a run that was still going at 05:00 gets its final report.
 #
 # Usage: bash /srv/illinois_campaign_finance/app/scripts/nightly_refresh.sh
 # Env:   REFRESH_KIND=manual for a hand-started run; SKIP_RESTART=1 passes through to the chain.
@@ -24,6 +25,7 @@ FEC_LOCK="${SHARED_DIR}/sync-fec.lock"
 FEC_LOCK_WAIT_MINUTES="${FEC_LOCK_WAIT_MINUTES:-60}"
 mkdir -p "${SHARED_DIR}/logs"
 LOG="${SHARED_DIR}/logs/nightly-$(date '+%Y%m%d-%H%M%S').log"
+RUN_DAY="$(TZ=America/Chicago date '+%Y-%m-%d')"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -64,6 +66,10 @@ fi
 
 if [ -n "$RUN_ID" ]; then
     "$PYTHON" scripts/data_refresh_cli.py finish "$RUN_ID" "$rc" >> "$LOG" 2>&1 || log "NIGHTLY_WARN could not close run $RUN_ID"
+fi
+if [ -n "$RUN_ID" ] && [ "${REFRESH_KIND:-nightly}" = "nightly" ]; then
+    "$PYTHON" scripts/nightly_check.py --report-dir "${SHARED_DIR}/refresh_runs" --date "$RUN_DAY" >> "$LOG" 2>&1 \
+        || log "NIGHTLY_WARN the check reports a problem (see ${SHARED_DIR}/refresh_runs/${RUN_DAY}.md)"
 fi
 log "NIGHTLY_END run_id=${RUN_ID:-none} exit=$rc"
 exit "$rc"
