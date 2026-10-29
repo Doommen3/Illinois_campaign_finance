@@ -1110,7 +1110,9 @@ def test_vendor_network_supports_bulk_committees_clean_sbe_schema(analytics_conn
     assert vendor_edge["weight_unit"] == "usd"
 
 
-def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
+def test_bulk_materialization_uses_live_part1_rows_only(tmp_path: Path):
+    """fix-8b F1: archived and part-5 receipts are excluded; receipts on a doc with no D-2 (MissingD2, the A-1
+    shape) or only an archived D-2 (ArchivedD2) count. Before F1 this test pinned their exclusion (the 8b bug)."""
     db_path = str(tmp_path / "analytics_bulk_filter.db")
     init_db(db_path)
     conn = get_db(db_path)
@@ -1197,7 +1199,7 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
         stats = refresh_analytics_materialized(conn)
         assert stats["source"] == "bulk_receipts"
         assert stats["materialization_version"] >= 2
-        assert stats["donor_summary_rows"] == 1
+        assert stats["donor_summary_rows"] == 3
 
         donor_rows = conn.execute(
             """
@@ -1207,10 +1209,11 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
             ORDER BY donor_name
             """
         ).fetchall()
-        assert len(donor_rows) == 1
-        assert donor_rows[0]["donor_name"] == "Alice Included"
-        assert donor_rows[0]["total_amount"] == 100.0
-        assert donor_rows[0]["contribution_count"] == 1
+        assert [(r["donor_name"], r["total_amount"], r["contribution_count"]) for r in donor_rows] == [
+            ("Alice Included", 100.0, 1),
+            ("Dina ArchivedD2", 600.0, 1),
+            ("Mia MissingD2", 700.0, 1),
+        ]
 
         meta_row = conn.execute(
             """
@@ -1221,7 +1224,7 @@ def test_bulk_materialization_uses_active_d2_part1_rows_only(tmp_path: Path):
         ).fetchone()
         assert meta_row is not None
         assert int(meta_row["materialization_version"]) >= 2
-        assert "active_non_archived_d2_part1" in (meta_row["materialization_notes"] or "")
+        assert "non_archived_part1_or_blank_contributions" in (meta_row["materialization_notes"] or "")
     finally:
         conn.close()
 
@@ -2168,3 +2171,79 @@ def test_federal_focus_sankey_auto_detect(federal_sankey_client):
     assert "nodes" in data
     assert "edges" in data
     assert data["summary"]["node_count"] > 0
+
+
+# --- fix-8b D2: monthly_spike only evaluates months a filed quarterly covers ---------------------------------------
+# Since F1 the analytics predicate counts A-1 receipts, so the months after a committee's latest quarterly period end
+# (isbe_most_recent_filings.reporting_period_end, the cutoff isbe_condensed_receipts itself splits on) hold only the
+# A-1 large contributions filed so far: partial months.  They are neither evaluated nor used as a baseline.
+SPIKE_WORLD = {
+    # committee id: (name, latest quarterly period end, [(month, amount), ...])
+    501: ("Fictional Spike Committee", "2025-06-30",
+          [("2025-01", 1000.0), ("2025-02", 1000.0), ("2025-03", 1000.0), ("2025-04", 10000.0)]),
+    502: ("Fictional Late Committee", "2025-03-31",
+          [("2025-01", 1000.0), ("2025-02", 1000.0), ("2025-03", 1000.0), ("2025-04", 10000.0)]),
+    503: ("Fictional Partial Baseline Committee", "2025-03-31",
+          [("2025-01", 1000.0), ("2025-02", 1000.0), ("2025-03", 1000.0), ("2025-04", 100.0), ("2025-05", 100.0),
+           ("2025-06", 10000.0)]),
+    504: ("Fictional Unfiled Committee", None,
+          [("2025-01", 1000.0), ("2025-02", 1000.0), ("2025-03", 1000.0), ("2025-04", 10000.0)]),
+}
+
+
+def _seed_spike_world(conn) -> None:
+    conn.execute("CREATE TABLE isbe_committees (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE isbe_d2_reports (id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER, "
+                 "archived BOOLEAN DEFAULT FALSE)")
+    conn.execute("CREATE TABLE isbe_most_recent_filings (committee_id INTEGER PRIMARY KEY, committee_name TEXT, "
+                 "reporting_period_end DATE)")
+    conn.execute(
+        """
+        CREATE TABLE isbe_condensed_receipts (
+            id INTEGER PRIMARY KEY, committee_id INTEGER, filed_doc_id INTEGER,
+            last_name TEXT, first_name TEXT, received_date DATE, amount DOUBLE PRECISION,
+            occupation TEXT, employer TEXT, address1 TEXT, address2 TEXT,
+            city TEXT, state TEXT, zipcode TEXT, d2_part TEXT, archived BOOLEAN DEFAULT FALSE
+        )
+        """
+    )
+    receipt_id = 70000
+    for committee_id, (name, covered_through, months) in SPIKE_WORLD.items():
+        conn.execute("INSERT INTO isbe_committees (id, name) VALUES (?, ?)", (committee_id, name))
+        conn.execute("INSERT INTO isbe_d2_reports (id, committee_id, filed_doc_id, archived) VALUES (?, ?, ?, FALSE)",
+                     (committee_id, committee_id, committee_id * 10))
+        conn.execute("INSERT INTO isbe_most_recent_filings (committee_id, committee_name, reporting_period_end) "
+                     "VALUES (?, ?, ?)", (committee_id, name, covered_through))
+        for month, amount in months:
+            receipt_id += 1
+            conn.execute(
+                "INSERT INTO isbe_condensed_receipts (id, committee_id, filed_doc_id, last_name, first_name, received_date,"
+                " amount, address1, city, state, zipcode, d2_part, archived)"
+                " VALUES (?, ?, ?, 'Donor', 'Fictional', ?, ?, '1 Test St', 'Chicago', 'IL', '60601', '1A', FALSE)",
+                (receipt_id, committee_id, committee_id * 10, f"{month}-15", amount),
+            )
+    conn.commit()
+
+
+@pytest.mark.parametrize("materialized", [True, False], ids=["materialized", "isbe_direct"])
+def test_monthly_spike_skips_months_after_the_latest_quarterly(tmp_path: Path, materialized):
+    """fix-8b D2: a month after the committee's latest quarterly period end is never flagged and never a baseline
+    month; a committee that never filed a quarterly has no covered month; a genuine spike inside filed periods still
+    flags, with the rule unchanged (3x the trailing three months, at least $2,000 above).  Both read paths: the
+    materialized monthly totals (prod) and the ISBE-direct query.
+
+    Kills: no cutoff (Late, Partial Baseline and Unfiled flag); the cutoff applied to the flagged month only (Partial
+    Baseline's 2025-06 would still be judged against 2025-04/05); the cutoff dropping covered months (Spike's
+    2025-04 vanishes)."""
+    db_path = str(tmp_path / "spike_world.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+    _seed_spike_world(conn)
+    if materialized:
+        stats = refresh_analytics_materialized(conn)
+        assert stats.get("source_path") == "isbe_direct", stats
+
+    spikes = sorted((row["committee_name"], row["event_date"]) for row in get_anomaly_flags(conn, limit=100)
+                    if row["flag_type"] == "monthly_spike")
+
+    assert spikes == [("Fictional Spike Committee", "2025-04")]

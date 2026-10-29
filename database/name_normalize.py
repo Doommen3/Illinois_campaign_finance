@@ -169,24 +169,32 @@ def name_match_sql(column_expr: str, query: str | None) -> tuple[str, list[str]]
     return f"{NAME_TSVECTOR_SQL(column_expr)} @@ to_tsquery('simple', ?)", [tsquery]
 
 
+def substring_pattern(query: str | None) -> str | None:
+    """The ONE LIKE pattern of every substring branch (follow-up FB-M1): the query's name_tokens joined by '%' and wrapped
+    '%...%', a compound's apostrophe as '_' (LIKE's one-character wildcard: O'NEIL, O NEIL and O-NEIL, not KHOT, NEIL) --
+    "O'Neil Smythe" -> "%O_NEIL%SMYTHE%". The stored side is not normalized, so the tokens are joined by '%', never by a
+    space. Only A-Z, 0-9 and the compound's '_' reach the pattern, so nothing typed acts as a wildcard. None when no token."""
+    tokens = [token.replace("'", "_") for token in name_tokens(query)]
+    return "%" + "%".join(tokens) + "%" if tokens else None
+
+
 def substring_fallback_sql(column_expr: str, query: str | None) -> tuple[str, list[str]] | None:
-    """The ONE fallback a caller runs when the token predicate found nothing (as /search): the bare column LIKE the
-    normalized query, for a normalized query of 4+ characters, else None. No UPPER(): the compat layer runs LIKE as ILIKE,
-    and the trigram index on analytics_donor_summary.donor_name serves only the bare column."""
-    normalized = normalize_name(query)
-    if len(normalized) < _FALLBACK_MIN_LENGTH:
+    """The ONE fallback a caller runs when the token predicate found nothing (as /search): the bare column LIKE
+    substring_pattern(query), for a normalized query of 4+ characters, else None. No UPPER(): the compat layer runs LIKE as
+    ILIKE, and the trigram index on analytics_donor_summary.donor_name serves only the bare column."""
+    if len(normalize_name(query)) < _FALLBACK_MIN_LENGTH:
         return None
-    return f"{column_expr} LIKE ?", [f"%{normalized}%"]
+    return f"{column_expr} LIKE ?", [substring_pattern(query)]
 
 
 def normalized_substring_sql(column_expr: str, query: str | None) -> tuple[str, list[str]] | None:
-    """The predicate on a transactional column (millions of rows, no name index; decision P2-2): UPPER(col) LIKE the
-    normalized query tokens joined by '%' (P2-2a) -- the stored side is not normalized, so "Farrow, Michael" must still reach a
-    stored "FARROW, MICHAEL". None when nothing alphanumeric was typed."""
-    tokens = normalize_name(query).split()
-    if not tokens:
+    """The predicate on a transactional column (millions of rows, no name index; decision P2-2): UPPER(col) LIKE
+    substring_pattern(query) -- the stored side is not normalized, so "Farrow, Michael" must still reach a stored
+    "FARROW, MICHAEL". None when nothing alphanumeric was typed."""
+    pattern = substring_pattern(query)
+    if pattern is None:
         return None
-    return f"UPPER({column_expr}) LIKE ?", ["%" + "%".join(tokens) + "%"]
+    return f"UPPER({column_expr}) LIKE ?", [pattern]
 
 
 def name_predicates(columns: str | tuple[str, ...], query: str | None) -> list[tuple[str, list[str]]]:

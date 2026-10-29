@@ -220,8 +220,9 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   GROUP BY 1 ORDER BY total DESC LIMIT 10;
   ```
 - **Tolerance:** to the cent. A difference that equals the donor's blank-`d2_part` rows, or rows whose filed doc has
-  no non-archived D-2 report, is the analytics donor filter (`_BULK_DONOR_RECEIPT_FILTER_SQL` in
-  `database/analytics.py`): record it as "known semantic", not as a pass.
+  no non-archived D-2 report, is a fail: since fix F1 (commit 64c3b62, batch-1 finding I2 fixed) the analytics donor
+  filter (`_BULK_DONOR_RECEIPT_FILTER_SQL` in `database/analytics.py`) is the live contributions predicate with no D-2
+  check (on a site where `refresh-analytics` has not run since that deploy, record it as "stale aggregates").
 - **Sample rule:** the top 10, then 10 from the middle and 10 from the bottom of the directory's sorted list.
 - **Steps:**
   1. Open `/donors/`; confirm the window reads "2026 Cycle".

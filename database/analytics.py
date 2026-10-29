@@ -6,10 +6,13 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import logging
 import re
 import sqlite3
+import time
 from typing import Optional
 
+from database.local_donor_entities import rebuild_local_donor_entities
 from database.models import Donor, _normalized_date_sql, receipts_filter_sql
 from database.outside_spending import (
     STRIPPED_NAME_SQL,
@@ -24,6 +27,9 @@ try:
     import networkx as nx
 except Exception:  # pragma: no cover - optional dependency fallback
     nx = None
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -599,26 +605,19 @@ BULK_RECEIPTS_MATERIALIZATION_VERSION = 2
 ISBE_RECEIPTS_MATERIALIZATION_VERSION = 3
 CONTRIBUTIONS_MATERIALIZATION_VERSION = 1
 
-_BULK_DONOR_RECEIPT_FILTER_SQL = (
-    "NOT COALESCE(r.is_archived::boolean, FALSE) AND "
-    "COALESCE(r.d2_part_code, '') LIKE '1%' AND "
-    "EXISTS ("
-    "SELECT 1 "
-    "FROM bulk_d2_totals_clean d2 "
-    "WHERE d2.filed_doc_id = r.filed_doc_id "
-    "  AND NOT COALESCE(d2.is_archived::boolean, FALSE)"
-    ")"
-)
+# The analytics donor predicate is the live contributions predicate (fix-8b F1): amount > 0, not archived,
+# D-2 part blank or '1%', and NO requirement that the filed doc have a D-2 report. No D-2 check is needed for
+# de-duplication: isbe_condensed_receipts (scripts/isbe_sunshine_etl.py) already holds each receipt once -- the
+# receipts dated after the committee's latest quarterly's period end (e.g. A-1 large contributions not yet
+# re-listed) UNION the receipts of the one doc picked per (period begin, period end, committee), Pre-election
+# reports excluded. The old EXISTS dropped every not-yet-re-listed A-1 receipt (to-do 8b, finding I2).
+_BULK_DONOR_RECEIPT_FILTER_SQL = receipts_filter_sql("r")
 
+# The same clauses on isbe_condensed_receipts' native columns (bulk_receipts_clean is that view renamed).
 _ISBE_DONOR_RECEIPT_FILTER_SQL = (
+    "COALESCE(r.amount, 0) > 0 AND "
     "r.archived = FALSE AND "
-    "r.d2_part LIKE '1%' AND "
-    "EXISTS ("
-    "SELECT 1 "
-    "FROM isbe_d2_reports d2 "
-    "WHERE d2.filed_doc_id = r.filed_doc_id "
-    "  AND d2.archived = FALSE"
-    ")"
+    "(COALESCE(r.d2_part, '') = '' OR r.d2_part LIKE '1%')"
 )
 
 _MATERIALIZED_SOURCE_TABLES = {
@@ -1608,6 +1607,28 @@ def get_donor_concentration(
     return output[: max(1, int(limit))]
 
 
+
+def _quarterly_covered_through(conn: sqlite3.Connection) -> dict[str, date | None]:
+    """Committee name -> the date through which a filed quarterly covers its receipts (None: no quarterly).
+
+    The cutoff is ``isbe_most_recent_filings.reporting_period_end``, the same date ``isbe_condensed_receipts``
+    splits on: receipts after it are only the A-1s not yet re-listed. Keyed by the ISBE committee-name
+    expression the monthly totals use; same-named committees take the earliest cutoff. Empty (no cutoff
+    anywhere) when the matview is absent.
+    """
+    if not _table_exists(conn, "isbe_most_recent_filings"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT COALESCE(committee_name, 'Committee ' || committee_id) AS committee_name,
+               CAST(MIN(reporting_period_end) AS DATE) AS covered_through
+        FROM isbe_most_recent_filings
+        GROUP BY 1
+        """
+    ).fetchall()
+    return {row["committee_name"]: row["covered_through"] for row in rows}
+
+
 def get_anomaly_flags(
     conn: sqlite3.Connection,
     limit: int = 100,
@@ -1615,7 +1636,12 @@ def get_anomaly_flags(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[dict]:
-    """Generate anomaly/risk flags from contribution and concentration data."""
+    """Generate anomaly/risk flags from contribution and concentration data.
+
+    ``monthly_spike`` (a month at least 3x the trailing three months and $2,000 above them) only considers a
+    committee's months that its latest quarterly covers (``_quarterly_covered_through``): later months hold only
+    the A-1 receipts filed so far, so they are neither flagged nor used as a baseline (fix-8b D2).
+    """
     flags: list[dict] = []
     source = _donor_flow_source(conn)
     amount_markers = _amount_distribution_markers(conn, source)
@@ -1958,8 +1984,14 @@ def get_anomaly_flags(
             committee_name = row["committee_name"] or "Unknown Committee"
             committee_month_totals[committee_name][month_key] += float(row["amount"] or 0.0)
 
+    covered_through = _quarterly_covered_through(conn)
     for committee_name, month_map in committee_month_totals.items():
         months = sorted(month_map.keys())
+        if committee_name in covered_through:
+            # fix-8b D2: months after the committee's latest quarterly period end hold only the A-1
+            # receipts filed so far (partial months); never flag them or use them as a baseline.
+            cutoff = covered_through[committee_name]
+            months = [m for m in months if cutoff and _month_bounds(m)[1] <= cutoff]
         if len(months) < 4:
             continue
         monthly_values = [month_map[m] for m in months if month_map[m] > 0]
@@ -2947,12 +2979,13 @@ def _build_state_race_analytics_rows(
     # under two candidate ids, e.g. "Margaret Croke" / "Margaret Noble Croke") gets none, so no
     # row counts twice in the race total (plan D4, reversed 2026-10-28).  Keys match as the
     # matcher matches names: first names that are direct nickname aliases ("Jim Moustis" /
-    # "James Moustis") are one person too (name_keys_match; search Phase 2, B1).  No cycle gate:
-    # the date window above is the race's cycle.
+    # "James Moustis") are one person too (name_keys_match; search Phase 2, B1); the twin's key
+    # joins the kept record's alias_keys, so a filing that meets only the twin still reaches it
+    # (P2-31).  No cycle gate: the date window above is the race's cycle.
     outside_candidates: list[dict] = []
     for race_key_value, race in races.items():
         tokens_seen: set[str] = set()
-        keys_seen: set[tuple[str, str]] = set()
+        keys_seen: dict[tuple[str, str], dict] = {}
         for candidate_id, candidate_name, committee_id, _committee_name in race["candidate_links"]:
             candidate_token = candidate_id or candidate_name.upper() or committee_id
             if candidate_token in tokens_seen:
@@ -2960,18 +2993,22 @@ def _build_state_race_analytics_rows(
             tokens_seen.add(candidate_token)
             name_key = candidate_name_key(candidate_name)
             if name_key is not None:
-                if any(name_keys_match(name_key, seen) for seen in keys_seen):
+                kept = next((record for seen, record in keys_seen.items() if name_keys_match(name_key, seen)), None)
+                if kept is not None:
+                    if name_key != kept["key"] and name_key not in kept["alias_keys"]:
+                        kept["alias_keys"].append(name_key)
                     continue
-                keys_seen.add(name_key)
-            outside_candidates.append(
-                {
-                    "key": name_key,
-                    "cycles": None,
-                    "race_key": race_key_value,
-                    "candidate_id": candidate_id,
-                    "candidate_name": candidate_name,
-                }
-            )
+            record = {
+                "key": name_key,
+                "alias_keys": [],
+                "cycles": None,
+                "race_key": race_key_value,
+                "candidate_id": candidate_id,
+                "candidate_name": candidate_name,
+            }
+            if name_key is not None:
+                keys_seen[name_key] = record
+            outside_candidates.append(record)
     # The detail lookup scans only rows whose stripped name holds a last name of the
     # race; past 15 last names the pattern list underperforms the full-cycle scan.
     last_name_patterns: list[str] = []
@@ -3634,7 +3671,7 @@ def _refresh_materialized_isbe(conn: sqlite3.Connection) -> dict:
             large_inserted,
             float(large_threshold),
             ISBE_RECEIPTS_MATERIALIZATION_VERSION,
-            "isbe_direct_active_non_archived_d2_part1_with_active_d2_filing",
+            "isbe_direct_non_archived_part1_or_blank_contributions",
         ),
     )
 
@@ -3878,7 +3915,7 @@ def _refresh_materialized_bulk(conn: sqlite3.Connection) -> dict:
             large_inserted,
             float(large_threshold),
             BULK_RECEIPTS_MATERIALIZATION_VERSION,
-            "active_non_archived_d2_part1_with_active_d2_filing",
+            "non_archived_part1_or_blank_contributions",
         ),
     )
 
@@ -4146,8 +4183,37 @@ def refresh_analytics_materialized(conn: sqlite3.Connection) -> dict:
     # import: database/ takes no import-time dependency on webapp/.
     from webapp.cache_backend import flush_all_route_caches
 
-    flush_all_route_caches()
+    try:
+        # Last, after the aggregates are committed (fix-8b F6): the all-time /donors/ directory
+        # reads donor_entity_local, which is built from analytics_donor_summary. A failure is
+        # logged and re-raised; the committed aggregates stay. The flush follows the rebuild.
+        stats["local_donor_entities"] = _rebuild_local_donor_entities_step(conn)
+    finally:
+        flush_all_route_caches()
     return stats
+
+
+def _rebuild_local_donor_entities_step(conn: sqlite3.Connection) -> dict:
+    """Rebuild donor_entity_local with `run.py rebuild-local-donor-entities`'s default arguments."""
+    if not all(_table_exists(conn, name) for name in
+               ("analytics_donor_summary", "donor_entity_local", "donor_entity_local_member")):
+        return {"status": "skipped", "reason": "donor entity tables not found"}
+    started = time.monotonic()
+    try:
+        result = rebuild_local_donor_entities(
+            conn, source="bulk_receipts", medium_threshold=0.70, high_threshold=0.82, auto_threshold=0.90,
+            max_group_size=400, dry_run=False, preview_limit=25,
+        )
+    except Exception:
+        _LOGGER.exception("refresh-analytics: rebuilding the local donor entities failed; the aggregates are committed")
+        raise
+    step = {
+        "entity_rows_written": int(result.get("entity_rows_written", 0)),
+        "member_rows_written": int(result.get("member_rows_written", 0)),
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+    }
+    _LOGGER.info("refresh-analytics: local donor entities rebuilt: %s", step)
+    return step
 
 
 def _full_dashboard_snapshot_key(params: dict) -> str:

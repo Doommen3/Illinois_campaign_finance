@@ -4750,6 +4750,16 @@ def list_federal_candidates(
     return output
 
 
+def _schedule_e_date_bounds(cycle: int | None, date_from: str | None, date_to: str | None) -> tuple[str | None, str | None]:
+    """Schedule E's date bounds for a reader. Its `cycle` is the cycle the backfill fetched under, not the expenditure's
+    two-year period (data dictionary, FEC; MT-015), so a cycle N bounds the rows by (N-1)-01-01 .. N-12-31, narrowed by
+    the window's dates; without a cycle the window's dates alone."""
+    if cycle is None:
+        return date_from or None, date_to or None
+    cycle_from, cycle_to = f"{int(cycle) - 1}-01-01", f"{int(cycle)}-12-31"
+    return (max(date_from, cycle_from) if date_from else cycle_from), (min(date_to, cycle_to) if date_to else cycle_to)
+
+
 def get_federal_candidate_detail(
     conn: sqlite3.Connection,
     candidate_id: str,
@@ -4810,6 +4820,7 @@ def get_federal_candidate_detail(
     schedule_b_latest_expr = "sb.latest_disbursement_date" if has_schedule_b else "NULL"
     schedule_b_earliest_expr = "sb.earliest_disbursement_date" if has_schedule_b else "NULL"
 
+    # Each cycle's Schedule E summary is bounded by that cycle's dates (`cycle` is the fetch cycle; _schedule_e_date_bounds).
     schedule_e_join_sql = (
         """
         LEFT JOIN (
@@ -4821,6 +4832,8 @@ def get_federal_candidate_detail(
                 MAX(expenditure_date) AS latest_expenditure_date,
                 MIN(expenditure_date) AS earliest_expenditure_date
             FROM fec_schedule_e_independent_expenditures
+            WHERE expenditure_date >= CAST(cycle - 1 AS TEXT) || '-01-01'
+              AND expenditure_date <= CAST(cycle AS TEXT) || '-12-31'
             GROUP BY candidate_id, cycle
         ) se
           ON se.candidate_id = m.fec_candidate_id
@@ -5082,12 +5095,13 @@ def get_federal_candidate_detail(
         if cycle is not None:
             schedule_e_where += " AND cycle = ?"
             schedule_e_params.append(int(cycle))
-        if date_from:
+        se_from, se_to = _schedule_e_date_bounds(cycle, date_from, date_to)
+        if se_from:
             schedule_e_where += " AND expenditure_date >= ?"
-            schedule_e_params.append(date_from)
-        if date_to:
+            schedule_e_params.append(se_from)
+        if se_to:
             schedule_e_where += " AND expenditure_date <= ?"
-            schedule_e_params.append(date_to)
+            schedule_e_params.append(se_to)
 
         schedule_e_rows = conn.execute(
             f"""
@@ -5730,12 +5744,13 @@ def get_federal_race_analytics(
             "(? IS NULL OR cycle = ?)",
         ]
         outside_params: list[Any] = [cycle, cycle]
-        if date_from:
+        se_from, se_to = _schedule_e_date_bounds(cycle, date_from, date_to)
+        if se_from:
             outside_where.append("expenditure_date >= ?")
-            outside_params.append(date_from)
-        if date_to:
+            outside_params.append(se_from)
+        if se_to:
             outside_where.append("expenditure_date <= ?")
-            outside_params.append(date_to)
+            outside_params.append(se_to)
         outside_rows = conn.execute(
             f"""
             SELECT
@@ -6546,12 +6561,13 @@ def get_federal_cross_role_organizations(
             "(? IS NULL OR cycle = ?)",
         ]
         se_params: list[Any] = [cycle, cycle]
-        if date_from:
+        se_from, se_to = _schedule_e_date_bounds(cycle, date_from, date_to)
+        if se_from:
             se_where.append("expenditure_date >= ?")
-            se_params.append(date_from)
-        if date_to:
+            se_params.append(se_from)
+        if se_to:
             se_where.append("expenditure_date <= ?")
-            se_params.append(date_to)
+            se_params.append(se_to)
         schedule_e_rows = conn.execute(
             f"""
             SELECT
@@ -7024,12 +7040,13 @@ def get_federal_multilayer_network_graph(
             "(? IS NULL OR se.cycle = ?)",
         ]
         se_params: list[Any] = [cycle, cycle]
-        if date_from:
+        se_from, se_to = _schedule_e_date_bounds(cycle, date_from, date_to)
+        if se_from:
             se_where.append("se.expenditure_date >= ?")
-            se_params.append(date_from)
-        if date_to:
+            se_params.append(se_from)
+        if se_to:
             se_where.append("se.expenditure_date <= ?")
-            se_params.append(date_to)
+            se_params.append(se_to)
         se_params.extend([min_edge, query_limit])
         schedule_e_rows = conn.execute(
             f"""

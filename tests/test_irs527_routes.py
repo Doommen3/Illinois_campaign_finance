@@ -122,6 +122,84 @@ def test_527_detail(client):
     assert b'Contributions To This Organization' in response.data
 
 
+def test_527_detail_period_spans_the_real_dates_and_skips_a_malformed_one(client):
+    """FB-M4 (MT-017: prod /527/813554739 read "Period: 1000 to 995"). The TEXT period columns hold ISO (YYYY-MM-DD) or
+    compact (YYYYMMDD) dates; a malformed value ("1000" / "995") won the lexicographic MIN / MAX. One malformed report and
+    two real ones (compact 2019-01-01..2019-06-30, ISO 2020-01-01..2020-06-30): the Period is 2019-01-01 to 2020-06-30,
+    shown as ISO dates. Kills the bare MIN/MAX over text, an ISO-only filter (the compact report is the earliest; every
+    local value is compact), and a compact value shown raw."""
+    conn = get_db(client.application.config["DATABASE_PATH"])
+    conn.execute(
+        """
+        INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, city, state, zip)
+        VALUES ('987654321', 300, 0, 'Prairie Ledger Fund', 'Peoria', 'IL', '61602')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO irs527_reports (form_id, ein, period_start, period_end, org_name, total_contributions, total_expenditures)
+        VALUES (301, '987654321', '1000', '995', 'Prairie Ledger Fund', 10, 1),
+               (302, '987654321', '20190101', '20190630', 'Prairie Ledger Fund', 20, 2),
+               (303, '987654321', '2020-01-01', '2020-06-30', 'Prairie Ledger Fund', 30, 3)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    text = client.get("/527/987654321?period=all").get_data(as_text=True)
+    assert "<strong>Period:</strong> 2019-01-01 to 2020-06-30" in text
+    assert "1000" not in text.split("<strong>Period:</strong>", 1)[1].split("</p>", 1)[0]
+
+
+def test_527_detail_period_override_skips_malformed_transaction_dates(client):
+    """FB-M4b (prod /527/813554739 still read "Period: 1000 to 995" after FB-M4): the page overrides the reports' period
+    with the first / last transaction dates, and irs527_contributions.date mostly holds amounts (data dictionary A11).
+    Org 987654322: reports 2019-01-01..2020-06-30, a contribution dated "1000" and an expenditure dated "995" -> the
+    report dates. FB-M4c: the period is the union of the reports' span and the transaction dates -- 987654323, the same
+    reports plus an expenditure dated 20180315 (compact, outside) -> 2018-03-15 to 2020-06-30 (widened); 987654324, an
+    expenditure dated 2019-05-01 (inside) -> 2019-01-01 to 2020-06-30 (unchanged); 987654325, no reports and one
+    expenditure dated 20210704 -> 2021-07-04 to 2021-07-04 (the transactions alone). Kills a bare MIN/MAX over the
+    transaction text, a compact date shown raw, and an override that replaces the reports' span."""
+    conn = get_db(client.application.config["DATABASE_PATH"])
+    orgs = (("987654322", "Lakeshore Ledger Fund", 400), ("987654323", "Bluff Ledger Fund", 500),
+            ("987654324", "Marsh Ledger Fund", 600), ("987654325", "Dune Ledger Fund", 700))
+    for ein, name, form in orgs:
+        conn.execute(
+            "INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, city, state, zip) "
+            "VALUES (?, ?, 0, ?, 'Peoria', 'IL', '61602')",
+            (ein, form, name),
+        )
+        if ein == "987654325":
+            continue  # no reports
+        conn.execute(
+            "INSERT INTO irs527_reports (form_id, ein, period_start, period_end, org_name, total_contributions, "
+            "total_expenditures) VALUES (?, ?, '20190101', '20190630', ?, 20, 2), (?, ?, '2020-01-01', '2020-06-30', ?, 30, 3)",
+            (form + 1, ein, name, form + 2, ein, name),
+        )
+    conn.execute(
+        "INSERT INTO irs527_contributions (form_id, ein, org_name, contributor_name, city, state, amount, date) "
+        "VALUES (401, '987654322', 'Lakeshore Ledger Fund', 'Quill Donor', 'Peoria', 'IL', 1000, '1000')"
+    )
+    conn.execute(
+        "INSERT INTO irs527_expenditures (form_id, ein, org_name, recipient_name, city, state, amount, purpose, date) "
+        "VALUES (401, '987654322', 'Lakeshore Ledger Fund', 'Vale Print', 'Peoria', 'IL', 995, 'Mailers', '995'), "
+        "(501, '987654323', 'Bluff Ledger Fund', 'Vale Print', 'Peoria', 'IL', 250, 'Mailers', '20180315'), "
+        "(601, '987654324', 'Marsh Ledger Fund', 'Vale Print', 'Peoria', 'IL', 250, 'Mailers', '2019-05-01'), "
+        "(701, '987654325', 'Dune Ledger Fund', 'Vale Print', 'Peoria', 'IL', 250, 'Mailers', '20210704')"
+    )
+    conn.commit()
+    conn.close()
+
+    def period(ein):
+        text = client.get(f"/527/{ein}?period=all").get_data(as_text=True)
+        return text.split("<strong>Period:</strong>", 1)[1].split("</p>", 1)[0].strip()
+
+    problems = [f"{ein}: {period(ein)!r} != {want!r}" for ein, want in (
+        ("987654322", "2019-01-01 to 2020-06-30"), ("987654323", "2018-03-15 to 2020-06-30"),
+        ("987654324", "2019-01-01 to 2020-06-30"), ("987654325", "2021-07-04 to 2021-07-04")) if period(ein) != want]
+    assert not problems, problems
+
+
 def test_527_detail_uses_highest_form_id_seq_row(client):
     conn = get_db(client.application.config["DATABASE_PATH"])
     conn.execute(

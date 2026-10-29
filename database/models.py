@@ -8,7 +8,7 @@ from typing import Optional, List, ClassVar
 import sqlite3
 
 from .identifiers import make_source_identifier, normalize_source_url
-from .name_normalize import name_match_sql, substring_fallback_sql
+from .name_normalize import name_match_sql, substring_fallback_sql, substring_pattern
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -77,9 +77,9 @@ def receipts_filter_sql(alias: str, parts: str = "contributions") -> str:
       money in). The committee Receipts Summary and its cycle subtotal use it (J-S20); the state-race
       receipt totals in ``database/analytics.py`` state the same ``all`` clauses inline.
 
-    Exception, not built from this helper: the analytics donor constants
-    ``_BULK_DONOR_RECEIPT_FILTER_SQL`` / ``_ISBE_DONOR_RECEIPT_FILTER_SQL`` (``database/analytics.py``)
-    keep their extra ``EXISTS`` on a non-archived D-2 report (and require part ``1%``, blank excluded).
+    The analytics donor constants (``database/analytics.py``) use the same predicate:
+    ``_BULK_DONOR_RECEIPT_FILTER_SQL`` is ``receipts_filter_sql("r")`` and ``_ISBE_DONOR_RECEIPT_FILTER_SQL``
+    states the same clauses on ``isbe_condensed_receipts``' native columns (fix-8b F1, no D-2 requirement).
     """
     if parts not in ("contributions", "all"):
         raise ValueError(f"parts must be 'contributions' or 'all', not {parts!r}")
@@ -3415,17 +3415,24 @@ class CandidateCommitteeFinanceAgg:
         search_term = (search or "").strip()
         if search_term:
             # Candidate and committee names by token (or, with ``substring``, the one fallback the caller asks for when
-            # the token count is zero; database/name_normalize.py); office_sought stays a plain substring.
+            # the token count is zero; database/name_normalize.py); office_sought stays a substring (substring_pattern).
             rule = substring_fallback_sql if substring else name_match_sql
             names = [rule(column, search_term) for column in ("candidate_full_name", "committee_name")]
-            alternatives = [sql for sql, _ in filter(None, names)] + ["COALESCE(office_sought, '') LIKE ?"]
-            clauses.append("(" + " OR ".join(alternatives) + ")")
-            params.extend([param for name in filter(None, names) for param in name[1]] + [f"%{search_term}%"])
+            office_pattern = substring_pattern(search_term)
+            alternatives = [sql for sql, _ in filter(None, names)]
+            params.extend(param for name in filter(None, names) for param in name[1])
+            if office_pattern:
+                alternatives.append("COALESCE(office_sought, '') LIKE ?")
+                params.append(office_pattern)
+            clauses.append("(" + " OR ".join(alternatives) + ")" if alternatives else "FALSE")
 
         office_term = (office or "").strip()
         if office_term:
-            clauses.append("COALESCE(office_sought, '') LIKE ?")
-            params.append(f"%{office_term}%")
+            # A typed '%' or '_' is text, not a wildcard; nothing alphanumeric lists nothing (as a name query, P2-15).
+            office_pattern = substring_pattern(office_term)
+            clauses.append("COALESCE(office_sought, '') LIKE ?" if office_pattern else "FALSE")
+            if office_pattern:
+                params.append(office_pattern)
 
         candidate_party_term = (candidate_party or "").strip()
         if candidate_party_term:

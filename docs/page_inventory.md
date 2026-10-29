@@ -41,8 +41,8 @@ Structural only: no cell values, no private individuals, no addresses or donor k
 - **Templates:** donors/list.html, donors/detail.html, donors/detail_by_key.html (key and entity pages),
   committees/donors.html.
 - **Data path:** directory: `Donor.get_all_with_totals`; all time it lists merged local donor entities from
-  `donor_entity_local` (rows link to the entity page, /donors/entity/<id>), a table rebuilt only by
-  `rebuild-local-donor-entities`, which the refresh chain (`sunshine-import`, `refresh-analytics`) does not call;
+  `donor_entity_local` (rows link to the entity page, /donors/entity/<id>), a table rebuilt by
+  `rebuild-local-donor-entities`, which `refresh-analytics` runs as its last step since fix F6 (commit 1ce22f9);
   a window of exactly one cycle reads `analytics_donor_cycle_summary`; other windows run a live GROUP BY on
   `bulk_receipts_clean`; key page: `Donor.get_summary_by_key` / `get_committee_breakdown_by_key` over
   `analytics_donor_committee_agg` (TEXT `committee_id`) and `bulk_receipts_clean`; entity page: the same over
@@ -59,7 +59,8 @@ Structural only: no cell values, no private individuals, no addresses or donor k
   ledger subtitle), DI-003 (directory top rows, default cycle), DI-035 (donor page All time vs This cycle, the I2
   detector), DI-036 (all-time directory freshness, the E check), DI-037 (network in-kind links, the I1 check),
   DI-038 (network 1A links). Known semantics to confirm, not assume: in-kind (`5A`) rows are outside the
-  contributions predicate; the analytics donor tables add an EXISTS on a non-archived D-2 and drop blank `d2_part`.
+  contributions predicate; since fix F1 (commit 64c3b62, batch-1 finding I2 fixed) the analytics donor tables use the
+  same contributions predicate (no D-2 check, blank `d2_part` included).
 - **Sample n and why:** n = 60 donors (20 top by total, 20 middle, 20 small), plus every donor that is itself a
   committee among the top 20; most-read class and the subject of the known 8b defect, so it gets the < 5 %
   bound. Redacted donors (`redaction_requested = TRUE`) are excluded from the sample.

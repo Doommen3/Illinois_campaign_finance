@@ -77,6 +77,8 @@ a fail.
 | MT-023 | Freshness | Data Status box: same dates on every page, agrees with the window's "latest data" | 2026-10-29 | ⭐ |
 | MT-024 | Network tab | Network tab click drill-down panel (money flow and vendor network) | 2026-10-29 | ⭐ |
 | MT-025 | Search | Name search Phase 2: apostrophe surnames precise, possessives unchanged, nicknames on list pages, race total not doubled | 2026-10-29 | ⭐ |
+| MT-026 | Donors | In-kind panel members link only where a donor page lists them; donor page says its totals are itemized only | 2026-10-29 |  |
+| MT-027 | Search | Investigate and search substring branches: apostrophes and typed wildcards | 2026-10-29 | ⭐ |
 
 ## Tests
 
@@ -391,9 +393,10 @@ a fail.
 - **Source commit:** baseline
 - **Precondition:** Schedule E has been backfilled (`backfill-fec-schedule-e`).
 - **Why:** Guards the race outside-spending page against showing expenditures from outside the selected window.
-  Known failing on local data 2026-10-29: the page reads "2026 Cycle" but shows "Latest Expenditure Date:
-  2022-11-05" with 18 transactions against the 2022 race (reported to terminal 1, untriaged).
 - **Revised:** 2026-10-29 — known-failing note added.
+- **Revised:** 2026-10-29 — fixed by `c0b7011` (Lane B FB-M3: the race cycle's dates bound the Schedule E rows, since
+  Schedule E's `cycle` is the backfill's fetch cycle; the other Schedule E readers followed in FB-M5); known-failing
+  status removed (it read "2026 Cycle" with "Latest Expenditure Date: 2022-11-05" and 18 rows of the 2022 race).
 - **Steps:**
   1. Open `/federal-finance/races/H/01/outside-spending?cycle=2026`.
   2. Read the window and the summary ("Race", "Candidates", "Total Schedule E Amount", "Transaction Count",
@@ -430,9 +433,7 @@ a fail.
 - **Created:** 2026-10-29
 - **Source commit:** baseline
 - **Precondition:** IRS 527 data has been imported (`import-irs527`).
-- **Why:** Guards the 527 organization page's summary against its own detail sections. Known failing on local data
-  2026-10-29: the organization page shows "Period: 1000 to 995" instead of two dates (an IRS 527 period-parsing
-  defect; reported, untriaged). The totals do reconcile.
+- **Why:** Guards the 527 organization page's summary against its own detail sections. The totals do reconcile.
 - **Revised:** 2026-10-29 — known-failing note added (step 3, "Period").
 - **Steps:**
   1. Open `/527/`. Read the window and "N organizations with Illinois connections".
@@ -447,6 +448,7 @@ a fail.
   present.
 - **Fail:** Error page; totals that differ from the section headings; a "Period" that is not two dates; a
   missing section.
+- **Revised:** 2026-10-29 — fixed at `e1c753d` (FB-M4: the report period aggregates only ISO or 8-digit date values), `443807b` and `cf480ab` (FB-M4b/c: the transaction dates that widen the period go through the same filter and widen rather than replace the span); the known-failing note is withdrawn. Pass now requires two ISO dates, earliest ≤ latest.
 
 ### MT-018 — Dark money tracker
 
@@ -607,6 +609,49 @@ a fail.
 - **Fail:** Any plain "Neil" in step 1; an empty "Committees" section or names without "Women" in step 2; the
   two spellings in step 3 listing different committees; an error page in step 4; a doubled total (e.g.
   $16,466.60) or the same person listed twice under two spellings in step 5.
+
+### MT-026 — In-kind donors: no dead donor-page links; the donor page names what its totals count
+
+- **Area:** Donors
+- **Created:** 2026-10-29
+- **Source commit:** 606faf1
+- **Precondition:** JavaScript enabled; the candidate has in-kind contributions (13505 does: the "In-kind
+  contributions" node, with Democratic Party of Illinois among its members).
+- **Why:** A donor page (`/donors/key/<key>`) counts itemized monetary contributions (D-2 part 1) only, and the
+  Donors tab shows in-kind only as one total per group. A donor whose only money to the candidate is in-kind used to
+  link to a donor page that never lists the candidate (to-do 8b, finding I1). It guards against that dead end coming
+  back and against a donor page whose totals do not say what they count.
+- **Steps:**
+  1. Open `/candidates/13505/network`. The "Money flow" view is drawn by default.
+  2. Click the left-hand node "In-kind contributions" and read the panel under the graph.
+  3. Click one member name that is a link (if any is), then go back.
+  4. In the edge table below the graph, find an "In-kind contributions" row whose source is Democratic Party of
+     Illinois.
+  5. Open `/committees/6239/donors`, click any donor's name, and read the lines under "Committees Supported".
+- **Pass:** Step 2: the panel lists its members with Amount and Rows; the Democratic Party of Illinois members show
+  their amounts as plain text, not links. Step 3: the linked member's donor page lists a Frerichs committee under
+  "Who They Donated To". Step 4: Democratic Party of Illinois is plain text in that row. Step 5: the page reads
+  "Itemized monetary contributions (D-2 part 1). In-kind contributions and transfers are not included."
+- **Fail:** A Democratic Party of Illinois member or edge-table source that links to a donor page; a linked member
+  whose donor page does not list a Frerichs committee, or answers 404; the sentence missing in step 5.
+
+### MT-027 — Investigate and search substring branches: apostrophes and typed wildcards
+
+- **Area:** Search
+- **Created:** 2026-10-29
+- **Source commit:** 393a3e2
+- **Precondition:** none
+- **Why:** The investigate workspace's transactional and donor-key sections, the /search fallback and the office filter
+  used to bind the typed text or a wildcard-joined pattern, so "O'Neil" reached every name with an O before NEIL and a
+  typed "%" matched everyone. One shared pattern now drives every substring branch.
+- **Steps:**
+  1. Open `/investigate?q=O%27Neil` and read every donor and contributor name listed.
+  2. Open `/candidate-finance/?q=%25` (a lone percent sign in the search box).
+  3. Open `/search?q=xamplet` and `/search?q=Nonexampleton` (a fragment and a word that exists only as a longer name).
+- **Pass:** Step 1: every name shown is an O'Neil (O'Neil, O Neil or ONeil); no plain "Neil" surname such as
+  "KHOT, NEIL". Step 2: the list is empty or shows an honest empty state, not every candidate. Step 3: the fragment
+  finds the names that contain it; neither page errors.
+- **Fail:** A plain "Neil" surname in step 1; every candidate listed in step 2; an error page in step 3.
 
 ## Run log
 

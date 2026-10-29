@@ -18,6 +18,7 @@ from database.name_normalize import (
     normalize_query,
     normalized_substring_sql,
     search_tsquery,
+    substring_pattern,
 )
 from database.pg_compat import statement_timeout_scope
 from webapp.cache_backend import RouteCache
@@ -208,7 +209,7 @@ def _is_donor_key_query(query: str) -> bool:
 
 # Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, so the six-hour cache cannot
 # serve results computed under the old rules.
-SEARCH_CACHE_REVISION = "sn2"
+SEARCH_CACHE_REVISION = "sn3"
 
 
 def _search_results_cache_key(scope_token: str, query: str, search_type: str) -> str:
@@ -880,9 +881,9 @@ def _bulk_donor_name_sql(alias: str = "r") -> str:
 def _substring_fallback_pattern(query: str) -> str | None:
     """The LIKE pattern of the one substring fallback a name section may run (decision S2): only when the token query found
     nothing, and only for a normalized query of 4+ characters, so a short fragment never scans a table. None otherwise.
-    (The compat layer runs LIKE as ILIKE, so the match is case-insensitive; the pattern holds only A-Z, 0-9 and spaces.)"""
-    normalized = normalize_name(query)
-    return f"%{normalized}%" if len(normalized) >= 4 else None
+    The pattern is substring_pattern's (database/name_normalize.py). (The compat layer runs LIKE as ILIKE, so the match is
+    case-insensitive.)"""
+    return substring_pattern(query) if len(normalize_name(query)) >= 4 else None
 
 
 def _search_local_candidates(conn, query: str, limit: int = 30) -> list[dict]:
@@ -2541,7 +2542,7 @@ def investigate_workspace():
     show_advanced = request.args.get('advanced', '').strip() == '1'
     export_format = request.args.get('format', '').strip().lower()
 
-    like_param = f"%{query}%" if query else ""
+    like_param = substring_pattern(query) or ""
 
     def matching(sql_template: str, columns, *extra_params) -> list:
         """Rows by name token, else the one substring fallback ({where} in the template; database/name_normalize.py)."""
