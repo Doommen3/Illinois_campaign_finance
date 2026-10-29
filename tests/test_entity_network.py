@@ -74,8 +74,8 @@ from datetime import date
 
 import pytest
 
-from database.connection import get_db, init_db
 from database.entity_network import DEFAULT_CAPS, get_entity_network
+from tests.pg_worlds import module_world, private_world
 
 DC = "donor_committee"
 IK = "in_kind_donor_committee"
@@ -589,24 +589,55 @@ def _seed_activity(conn) -> None:
     _insert(conn, "isbe_condensed_expenditures", _expenditure_rows(), first_id=1)
 
 
-@pytest.fixture()
-def reference(tmp_path):
-    """Tables plus candidates / candidacies / committees, no money rows."""
-    db_path = str(tmp_path / "entity_network.db")
-    init_db(db_path)
-    conn = get_db(db_path)
-    for statement in _DDL:
-        conn.execute(statement)
-    _seed_reference(conn)
-    conn.commit()
-    return conn
+@pytest.fixture(scope="module")
+def shared_world():
+    """Tables, the reference rows AND the activity rows, built once for the module (test-speed program T1;
+    tests/pg_worlds.py). ``world`` reads it, so none of its tests may commit (its connections refuse to); the tests that
+    insert rows and commit use ``reference``, which builds a world of its own."""
+    with module_world() as shared:
+        shared.init_schema()
+        seed = shared.connect(guard=False)
+        try:
+            for statement in _DDL:
+                seed.execute(statement)
+            _seed_reference(seed)
+            _seed_activity(seed)
+            seed.commit()
+        finally:
+            seed.close()
+        yield shared
+
+
+@pytest.fixture(autouse=True)
+def pg_test_schema(shared_world):
+    """Shadows tests/conftest.py's per-test schema: this module reads ``shared_world`` (or builds its own, see
+    ``reference``)."""
+    with shared_world.per_test():
+        yield shared_world.schema
 
 
 @pytest.fixture()
-def world(reference):
-    _seed_activity(reference)
-    reference.commit()
-    return reference
+def reference(monkeypatch):
+    """Tables plus candidates / candidacies / committees, no money rows -- in a schema of its own, because the tests
+    that use it insert more rows and commit."""
+    with private_world(monkeypatch) as private:
+        private.init_schema()
+        conn = private.connect(guard=False)
+        for statement in _DDL:
+            conn.execute(statement)
+        _seed_reference(conn)
+        conn.commit()
+        yield conn
+
+
+@pytest.fixture()
+def world(shared_world):
+    """The reference rows plus the activity rows, read-only."""
+    connection = shared_world.connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def _call(conn, entity, **kwargs):

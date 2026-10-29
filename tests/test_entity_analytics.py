@@ -52,7 +52,6 @@ from datetime import date
 import pytest
 
 from database.analytics import _gini, _state_race_slug, get_donor_concentration
-from database.connection import get_db, init_db
 from database.entity_analytics import (
     ENTITY_CACHE_REV,
     ENTITY_KINDS,
@@ -64,6 +63,7 @@ from database.entity_analytics import (
     resolve_entity,
 )
 from database.race_keys import race_key
+from tests.pg_worlds import module_world
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -553,25 +553,46 @@ def _family_id(conn):
     return conn.execute("SELECT id FROM committee_family WHERE label = 'Aldous Committees'").fetchone()["id"]
 
 
+@pytest.fixture(scope="module")
+def shared_world():
+    """schema.sql and ``_seed_world`` run ONCE for the whole module (test-speed program T1; tests/pg_worlds.py).
+
+    Every test reads this one world, so none may commit to it: the connections below refuse ``commit()``, and the two
+    tests that change the world (the 5,000 floor UPDATE, the missing recon table) do it inside their own transaction,
+    which closing the connection rolls back."""
+    with module_world() as shared:
+        shared.init_schema()
+        seed = shared.connect(guard=False)
+        try:
+            _seed_world(seed, recon=True)
+        finally:
+            seed.close()
+        yield shared
+
+
+@pytest.fixture(autouse=True)
+def pg_test_schema(shared_world):
+    """Shadows tests/conftest.py's per-test schema: this module reads ``shared_world`` instead."""
+    with shared_world.per_test():
+        yield shared_world.schema
+
+
 @pytest.fixture
-def conn(tmp_path):
-    db_path = str(tmp_path / "entity_analytics.db")
-    init_db(db_path)
-    connection = get_db(db_path)
+def conn(shared_world):
+    connection = shared_world.connect()
     try:
-        _seed_world(connection, recon=True)
         yield connection
     finally:
         connection.close()
 
 
 @pytest.fixture
-def conn_no_recon(tmp_path):
-    db_path = str(tmp_path / "entity_analytics_no_recon.db")
-    init_db(db_path)
-    connection = get_db(db_path)
+def conn_no_recon(shared_world):
+    """The world without ``bulk_d2_receipts_recon``: the table is dropped inside this connection's transaction (DDL is
+    transactional in PostgreSQL), which closing the connection rolls back -- the shared table is back for the next test."""
+    connection = shared_world.connect()
     try:
-        _seed_world(connection, recon=False)
+        connection.execute("DROP TABLE bulk_d2_receipts_recon")
         yield connection
     finally:
         connection.close()

@@ -99,9 +99,12 @@ import config as app_config
 import webapp.cache_backend as cache_backend
 import webapp.routes.analytics  # noqa: F401  (imported at collection time, as tests/test_analytics_tab_caches.py does)
 import webapp.routes.entity_analytics as entity_routes
-from database.connection import get_db, init_db
+from database.connection import get_db
 from database.models import AppUser
-from tests.test_candidate_profile import candidate_app  # noqa: F401  (fixture: candidate 900 and its committees)
+from tests.pg_worlds import module_world, private_world
+from tests.test_candidate_profile import (  # noqa: F401  (fixture: candidate 900 and its committees)
+    candidate_app as _candidate_app_over_own_schema,
+)
 from tests.test_request_hygiene import ADMIN_PASS, ADMIN_USER, _login
 from tests.test_state_race_builder import _create_race_tables
 from tests.test_state_races_index import _seed_races
@@ -483,23 +486,69 @@ def cache_calls(monkeypatch):
 # Apps and clients
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def shared_world():
+    """schema.sql and the admin user run ONCE for the whole module (test-speed program T1; tests/pg_worlds.py).
+
+    Nearly every case routes through fake builders and reads no table of its own; the pages only need a schema for the
+    chrome (data-status strip, login). The tests that create tables or seed real rows use ``own_schema`` instead, so
+    the connections here refuse ``commit()``."""
+    with module_world() as shared:
+        shared.init_schema()
+        seed = shared.connect(guard=False)
+        try:
+            AppUser.create_or_update_password(seed, ADMIN_USER, ADMIN_PASS)
+        finally:
+            seed.close()
+        yield shared
+
+
+@pytest.fixture(autouse=True)
+def pg_test_schema(shared_world):
+    """Shadows tests/conftest.py's per-test schema: this module runs on ``shared_world`` (or ``own_schema``)."""
+    with shared_world.per_test():
+        yield shared_world.schema
+
+
 @pytest.fixture
-def make_app(tmp_path):
+def own_schema(monkeypatch):
+    """A schema of its own (schema.sql applied) for a test that creates tables or seeds rows: ``get_db`` points at it
+    until the test ends, then back at the shared one."""
+    with private_world(monkeypatch) as private:
+        private.init_schema()
+        yield private
+
+
+@pytest.fixture
+def candidate_app(own_schema, _candidate_app_over_own_schema):
+    """tests/test_candidate_profile.py's real seed (candidate 900), in a schema of its own."""
+    return _candidate_app_over_own_schema
+
+
+@pytest.fixture(scope="module")
+def _apps():
+    """The module's Flask apps by config overrides. An app holds no state a test can see: connections come from the
+    ``get_db`` hooks per request, the route caches are module-level (``route_caches`` empties them around each test),
+    the clients are new per test, and TTL 0 keeps the data-status snapshot out of ``app.extensions``. Creating one per
+    case would also recompile every template (a new Jinja environment per app)."""
+    return {}
+
+
+@pytest.fixture
+def make_app(_apps):
     def factory(**overrides):
-        db_path = str(tmp_path / "entity_routes.db")
-        init_db(db_path)
-        conn = get_db(db_path)
-        AppUser.create_or_update_password(conn, ADMIN_USER, ADMIN_PASS)
-        conn.close()
-        config = {
-            "TESTING": True,
-            "DATABASE_PATH": db_path,
-            "DASHBOARD_PREWARM_ENABLED": False,
-            "ROUTE_PERF_CACHE_ENABLED": False,
-            "GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS": 0,
-        }
-        config.update(overrides)
-        return create_app(config)
+        key = tuple(sorted(overrides.items()))
+        if key not in _apps:
+            config = {
+                "TESTING": True,
+                "DATABASE_PATH": "entity_routes.db",  # the get_db hooks ignore it; kept so config["DATABASE_PATH"] reads
+                "DASHBOARD_PREWARM_ENABLED": False,
+                "ROUTE_PERF_CACHE_ENABLED": False,
+                "GLOBAL_DATA_STATUS_CACHE_TTL_SECONDS": 0,
+            }
+            config.update(overrides)
+            _apps[key] = create_app(config)
+        return _apps[key]
 
     return factory
 
@@ -1542,6 +1591,7 @@ def test_signed_in_refresh_forces_a_rebuild_and_stores_it(cached_app, fakes, kin
     assert _marker(tab, 2) in after.text
 
 
+@pytest.mark.usefixtures("own_schema")  # the test creates a table
 def test_the_site_wide_risk_threshold_is_computed_once_and_passed_to_every_risk_build(cached_app, cached_client, fakes,
                                                                                       monkeypatch):
     """Plan N15: the Risk tab of every entity and every window gets the same ``site_threshold``, and the 2.8M-row
@@ -1684,7 +1734,7 @@ def test_network_json_sets_no_cookie(client, fakes, kind):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def race_parent_client(make_app):
+def race_parent_client(own_schema, make_app):
     """The race detail page over the seeds of tests/test_state_races_index.py (race office-1-district-1, cycle 2026;
     race 0, state-senator-senate-district-7, cycle 2024)."""
     app = make_app()
