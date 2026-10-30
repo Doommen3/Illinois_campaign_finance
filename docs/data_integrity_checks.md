@@ -15,7 +15,7 @@ why). A batch flips the **Status** of each check it runs, in its section and in 
 `pass (2026-11-02)`. A failed check stays `fail` until the fix is deployed and the check passes again; it is never
 deleted.
 
-**Progress:** Checks: 38 total — 29 proposed, 0 in progress, 4 pass, 5 fail, 0 blocked (2026-10-29, after batch 1). Each batch
+**Progress:** Checks: 39 total — 26 proposed, 0 in progress, 8 pass, 5 fail, 0 blocked (2026-10-30, after batch 2). Each batch
 updates this line.
 
 ## How a batch runs
@@ -63,7 +63,7 @@ how many members it touches (a measured count, not an estimate), and the check s
 | Batch | Classes (C-NN) | Why this order | Status | Report |
 |---|---|---|---|---|
 | 1 | C-01 | Most-read entity pages; the known 8b defect (donor page omits a committee) lives here | done (2026-10-29): live paths pass; all-time precomputed paths fail: I1, I2, E — fixes F1/F2a/F4/F6 proposed to terminal 1 | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
-| 2 | C-02, C-03 | Candidate profiles and their tabs are the next most-read entity pages | proposed | — |
+| 2 | C-02, C-03 | Candidate profiles and their tabs are the next most-read entity pages | done (2026-10-30): DI-004 (amended), DI-005, DI-006, DI-007 pass 30 / 30 each; new DI-039 pass (residual 0); no page defect | `docs/audits/data_integrity_batch2_candidates_2026-10-30.md` |
 | 3 | C-04, C-05, S-02 | Committee profiles, filings and the committee directory; the D-2 is the sworn ground truth later batches lean on | proposed | — |
 | 4 | S-01, S-03, C-06 | Home and candidate directory cards restate classes 1–3; candidate-finance shares their D-2 source | proposed | — |
 | 5 | C-07, C-08 | State races and analytics dashboards (cached builders over the same receipts) | proposed | — |
@@ -82,10 +82,10 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 | DI-001 | C-01 | Donor profile total, count and "Who They Donated To" | fail (2026-10-29, I2 + I1; batch 1 report) |
 | DI-002 | C-01 | Committee donor ledger: donor count and total in the window | pass (2026-10-29, 10 / 10; batch 1 report) |
 | DI-003 | C-01 | Donor directory top rows for the default cycle | pass (2026-10-29, 10 / 10; batch 1 report) |
-| DI-004 | C-02 | Candidate "Money raised" per cycle | proposed |
-| DI-005 | C-02 | Candidate outside spending (D-2 Part 9) supporting / opposing | proposed |
-| DI-006 | C-03 | Entity Donors tab: totals (itemized, in-kind) and top donors | pass (2026-10-29, 5 / 5; batch 1 report) |
-| DI-007 | C-03 | Network tab edge amount and its drill-down rows | proposed |
+| DI-004 | C-02 | Candidate "Money raised" per cycle | pass (2026-10-30, 30 / 30, amended recomputation; batch 2 report) |
+| DI-005 | C-02 | Candidate outside spending (D-2 Part 9) supporting / opposing | pass (2026-10-30, 30 / 30; batch 2 report) |
+| DI-006 | C-03 | Entity Donors tab: totals (itemized, in-kind) and top donors | pass (2026-10-30, 30 / 30: 15 candidates + 15 races; batch 2 report) |
+| DI-007 | C-03 | Network tab edge amount and its drill-down rows | pass (2026-10-30, 30 / 30; batch 2 report) |
 | DI-008 | C-04 | Committee Receipts Summary (window and This cycle) | proposed |
 | DI-009 | C-04 | Committee Expenditures Summary and payee ledger total | proposed |
 | DI-010 | C-05 | Filing detail line items and D-2 summary | proposed |
@@ -117,6 +117,7 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 | DI-036 | C-01 | All-time donor directory freshness (`donor_entity_local`) | fail (2026-10-29, E, local; prod unknown; batch 1 report) |
 | DI-037 | C-01 | Network in-kind links land on a page showing the in-kind money | fail (2026-10-29, I1, 52.5 % of rendered links; batch 1 report) |
 | DI-038 | C-01 | Network 1A donor links land on a page listing the committee | pass (2026-10-29, 917 / 917; batch 1 report) |
+| DI-039 | C-02 / C-04 | Live receipts outside the condensed view are explained (the D4 detector) | pass (2026-10-30, residual 0 of 34,188 rows; batch 2 report) |
 
 ## Conventions
 
@@ -131,6 +132,32 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   - **Contributions** (`receipts_filter_sql`, parts `contributions`):
     `r.archived = FALSE AND r.amount > 0 AND (COALESCE(r.d2_part,'') = '' OR r.d2_part LIKE '1%')`
   - **All receipts** (parts `all`): `r.archived = FALSE AND r.amount > 0`
+- **Picked receipts** (the documented amendment picker of `MATVIEW_DDL` in `scripts/isbe_sunshine_etl.py`, applied
+  to the source tables so a picker defect in the matview cannot pass unseen; added 2026-10-30, batch 2). A receipt
+  counts when it is dated after the committee's last periodic `reporting_period_end` (periodic = `doc_name` not
+  A-1, Statement of Organization, Letter/Correspondence, B-1 or Nonparticipation; none → 1900-01-01) **or** it is
+  on the one filing kept per (committee, period): `doc_name <> 'Pre-election'`, a live D-2 first, then the latest
+  `received_datetime` (NULLS LAST), then the highest id. `<ids>` is the committee id array:
+  ```sql
+  WITH cm AS (SELECT unnest(ARRAY[<ids>]::int[]) AS committee_id),
+  last_end AS (
+    SELECT c.committee_id, COALESCE((SELECT MAX(f.reporting_period_end) FROM isbe_filed_docs f
+           WHERE f.committee_id = c.committee_id
+             AND f.doc_name NOT IN ('A-1', 'Statement of Organization', 'Letter/Correspondence', 'B-1', 'Nonparticipation')),
+           DATE '1900-01-01') AS pe
+    FROM cm c),
+  kept AS (
+    SELECT DISTINCT ON (f.committee_id, f.reporting_period_begin, f.reporting_period_end) f.id
+    FROM isbe_filed_docs f
+    WHERE f.committee_id IN (SELECT committee_id FROM cm) AND f.doc_name <> 'Pre-election'
+    ORDER BY f.committee_id, f.reporting_period_begin, f.reporting_period_end,
+             EXISTS (SELECT 1 FROM isbe_d2_reports d WHERE d.filed_doc_id = f.id AND d.archived = FALSE) DESC,
+             f.received_datetime DESC NULLS LAST, f.id DESC)
+  SELECT ... FROM isbe_receipts r JOIN last_end le ON le.committee_id = r.committee_id
+  WHERE r.archived = FALSE AND r.amount > 0
+    AND (r.received_date > le.pe OR r.filed_doc_id IN (SELECT id FROM kept)) ...;
+  ```
+  Picked expenditures: the same over `isbe_expenditures e` with `e.expended_date`.
 - A donor key copied from a `/donors/key/<donor_key>` URL is URL-encoded: decode `%7C` to `|` and `%20` to a space
   before pasting it into a query.
 
@@ -241,18 +268,22 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 ### DI-004 — Candidate money raised per cycle
 
 - **Class:** C-02
-- **Created:** 2026-10-29
-- **Status:** proposed
+- **Created:** 2026-10-29; recomputation amended 2026-10-30 (batch 2)
+- **Status:** pass (2026-10-30, 30 / 30 candidates, every cycle to the cent, local; see batch 2 report). As first
+  written, the query summed every live `isbe_receipts` row and matched only 23 / 30. All 7 differences were
+  superseded rows ISBE left live, and the page was right in each case (worked examples under DI-039).
 - **Figure:** `/candidates/<id>`: the "Money raised" table (cycle, raised).
-- **Independent recomputation:**
+- **Independent recomputation:** the **picked receipts** fragment (Conventions) with
+  `<ids>` = `SELECT committee_id FROM isbe_candidate_committees WHERE candidate_id = <candidate_id>`, then:
   ```sql
   SELECT EXTRACT(YEAR FROM r.received_date)::int + EXTRACT(YEAR FROM r.received_date)::int % 2 AS cycle,
-         SUM(r.amount) AS raised
-  FROM isbe_receipts r
-  WHERE r.committee_id IN (SELECT committee_id FROM isbe_candidate_committees WHERE candidate_id = <candidate_id>)
-    AND r.archived = FALSE AND r.amount > 0 AND r.received_date IS NOT NULL
+         ROUND(SUM(r.amount)::numeric, 2) AS raised
+  FROM isbe_receipts r JOIN last_end le ON le.committee_id = r.committee_id
+  WHERE r.archived = FALSE AND r.amount > 0 AND r.received_date IS NOT NULL
+    AND (r.received_date > le.pe OR r.filed_doc_id IN (SELECT id FROM kept))
   GROUP BY 1 ORDER BY 1 DESC;
   ```
+  Never read `isbe_condensed_receipts` here: comparing the page with its own matview cannot see a picker defect.
 - **Tolerance:** to the cent per cycle.
 - **Sample rule:** n = 30 candidates, 10 statewide or top-raised / 10 middle / 10 small.
 - **Steps:**
@@ -260,14 +291,18 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   2. Read every row of "Money raised".
   3. Run the query.
 - **Pass:** every cycle's amount matches.
-- **Fail:** any cycle off by more than a cent; check the same query on `isbe_condensed_receipts` to tell a picker
-  difference from a page defect.
+- **Fail:** any cycle off by more than a cent. Then run the same query on `isbe_condensed_receipts`. If the page
+  equals the matview but not this query, the picker (the matview DDL) is at fault; if it equals neither, the page
+  is. A plain sum of all live raw rows is higher by the DI-039 categories and is not a failure.
 
 ### DI-005 — Candidate outside spending
 
 - **Class:** C-02
 - **Created:** 2026-10-29
-- **Status:** proposed
+- **Status:** pass (2026-10-30, 30 / 30 candidates, local; see batch 2 report). Supporting, Opposing, row count
+  and the profile card's "All N line items" equal an independent attribution written from
+  `docs/outside_spending.md`. The 94 surname-matching rows the page leaves out are all explained by the rule:
+  65 another first name, 14 single-token, 7 substring surname, 8 cycle gate.
 - **Figure:** `/candidates/<id>/outside-spending`: supporting and opposing totals and the line-item count; the
   "Outside spending (D-2 Part 9)" card on `/candidates/<id>`.
 - **Independent recomputation:**
@@ -294,12 +329,15 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-03
 - **Created:** 2026-10-29
-- **Status:** pass (2026-10-29, 5 / 5 candidates, itemized Total and In-kind exact; see batch 1 report). Batch 2
-  extends the sample to n = 30 and adds the Top donors rows.
+- **Status:** pass (2026-10-30, 30 / 30 entities = 15 candidates + 15 cycle-2026 races, local: Total, In-kind and
+  every Top donors row exact; see batch 2 report). Earlier: pass (2026-10-29, 5 / 5 candidates; batch 1 report).
+  Blank-`d2_part` gap: 0 of 30 sampled entities; 3 condensed rows / $11,400 site-wide.
 - **Figure:** `/candidates/<id>/donors` (and `/analytics/state-races/<race_key>/donors`): "Concentration by group",
   **Total** and **In-kind** on the "All committees" row (or the single group row); the "Top donors" table (top 10
   amounts).
-- **Independent recomputation:** totals (batch 1's query, adopted):
+- **Independent recomputation** (batch 2 ran both queries over the **picked receipts** fragment of the Conventions,
+  `<ids>` = the entity's committees, not over `isbe_condensed_receipts`; the statements below are batch 1's form):
+  totals (batch 1's query, adopted):
   ```sql
   SELECT ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.d2_part LIKE '1%'),0)::numeric,2) AS itemized,
          ROUND(COALESCE(SUM(r.amount) FILTER (WHERE r.d2_part = '5A'),0)::numeric,2) AS in_kind
@@ -319,7 +357,8 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   ```
   The tab uses `d2_part LIKE '1%'` (blank excluded); rerun with the contributions clause to measure the gap with
   the committee ledger and record it.
-- **Tolerance:** ± $0.01 per figure and per row; same order.
+- **Tolerance:** ± $0.01 per figure and per row; same order. Compare each shown donor with its own key's total.
+  Donors tied at the 10th amount may be a different key of equal amount, which is not a failure.
 - **Sample rule:** manual run: 2 candidates, 13505 and one random candidate with a committee. Batch: n = 30
   entities, 15 candidates and 15 races, top / middle / small by raised (batch 1 measured 5 candidates).
 - **Steps:**
@@ -334,7 +373,9 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-03
 - **Created:** 2026-10-29
-- **Status:** proposed
+- **Status:** pass (2026-10-30, 30 / 30 edges, one per DI-006 entity, local: 14 money-in, 6 in-kind, 10 money-out;
+  edge weight = `network/rows.json` total = recomputation, and the counts are equal; every money-in donor link opens a
+  200 page that lists the committee; in-kind-only donors have no link by design (F2a); see batch 2 report).
 - **Figure:** `/candidates/<id>/network.json`: one donor → committee edge amount, and the rows of the drill-down
   panel that opens when you click it on `/candidates/<id>/network`.
 - **Independent recomputation:** for an edge `donor:<donor_key>` → `committee:<committee_id>` in the money-in
@@ -347,7 +388,12 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
     AND LOWER(TRIM(COALESCE(r.first_name,'') || '|' || COALESCE(r.last_name,'') || '|' || COALESCE(r.address1,'') || '|' || COALESCE(r.address2,'') || '|' || COALESCE(r.city,'') || '|' || COALESCE(r.state,'') || '|' || COALESCE(r.zipcode,''))) = '<donor_key>'
     AND r.received_date BETWEEN '<start>' AND '<end>';
   ```
-  For an in-kind panel edge use `r.d2_part = '5A'`.
+  For an in-kind panel edge use `r.d2_part = '5A'`. Batch 2 ran it over the **picked receipts** fragment
+  (Conventions), not the raw table. For a money-out edge (`committee_vendor`, target `vendor:<sha1[:16] of the lowered
+  payee name>`), use picked expenditures with `(e.d2_part IS NULL OR NOT (e.d2_part like '9%'))` and
+  `LOWER(TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))) = '<payee name, lower case>'`. The
+  drill-down rows are `/candidates/<id>/network/rows.json?source=<source>&target=<target>&edge_type=<type>`
+  (`total_amount`, `total_count`).
 - **Tolerance:** to the cent; the drill-down row count equals `n`.
 - **Sample rule:** one edge per sampled entity of DI-006 (n = 30), mixing money-in, in-kind and money-out panels.
 - **Steps:**
@@ -355,7 +401,9 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   2. Find the same edge in `/candidates/13505/network.json` (its `source`, `target`, amount).
   3. Run the query.
 - **Pass:** edge amount, panel total and query total agree; row counts agree; the donor node's link opens a donor
-  page whose committee list contains this committee (cross-check with DI-001).
+  page whose committee list contains this committee (cross-check with DI-001). "Who They Donated To" lists committee
+  names without links: find the committee by name, and its amount must be at least the edge amount. An in-kind-only
+  donor has no link (fix F2a).
 - **Fail:** any disagreement, or a donor link that lands on a page without this committee.
 
 ### DI-008 — Committee Receipts Summary
@@ -1052,8 +1100,60 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 - **Fail:** a 404 or a missing committee. Check the row's filing with the DI-035 query (I2 if it is on a no-D-2
   filing).
 
+### DI-039 — Live receipts outside the condensed view are explained (the D4 detector)
+
+- **Class:** C-02 / C-04 (shared: every page that reads `isbe_condensed_receipts`)
+- **Created:** 2026-10-30 (batch 2)
+- **Status:** pass (2026-10-30, local: 34,188 live raw rows / $34,906,534.41 absent from the view, 0.53 % of live raw
+  dollars, all diagnosed; residual 0 rows; see batch 2 report)
+- **Figure:** none on a page. This is the detector for the D4 class of defect (a picker that drops live receipts:
+  the D4 bug dropped $38.7M and every "page = matview" comparison passed it).
+- **Independent recomputation:** every live raw row the view lacks, diagnosed by the documented picker (the
+  **picked receipts** rule of the Conventions, over all committees); first matching category wins:
+  ```sql
+  WITH last_end AS (
+    SELECT committee_id, MAX(reporting_period_end) AS period_end FROM isbe_filed_docs
+    WHERE doc_name NOT IN ('A-1', 'Statement of Organization', 'Letter/Correspondence', 'B-1', 'Nonparticipation')
+    GROUP BY committee_id
+  ), kept AS (
+    SELECT DISTINCT ON (f.committee_id, f.reporting_period_begin, f.reporting_period_end) f.id
+    FROM isbe_filed_docs f WHERE f.doc_name <> 'Pre-election'
+    ORDER BY f.committee_id, f.reporting_period_begin, f.reporting_period_end,
+             EXISTS (SELECT 1 FROM isbe_d2_reports d WHERE d.filed_doc_id = f.id AND d.archived = FALSE) DESC,
+             f.received_datetime DESC NULLS LAST, f.id DESC
+  ), gap AS (
+    SELECT r.committee_id, r.amount, f.doc_name, f.archived AS filing_archived,
+           (r.filed_doc_id IN (SELECT id FROM kept)) AS filing_kept
+    FROM isbe_receipts r JOIN isbe_filed_docs f ON f.id = r.filed_doc_id
+    WHERE r.archived = FALSE AND r.amount > 0 AND r.received_date IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM isbe_condensed_receipts c WHERE c.id = r.id)
+  )
+  SELECT CASE WHEN doc_name = 'Pre-election' THEN 'c. Pre-election report (excluded by design)'
+              WHEN doc_name IS NULL THEN 'c2. filing with NULL doc_name'
+              WHEN filing_archived THEN 'a. filing archived'
+              WHEN NOT filing_kept THEN 'b. superseded: picker kept another filing for the period'
+              ELSE 'residual: undiagnosed' END AS category,
+         COUNT(*) AS rows, COUNT(DISTINCT committee_id) AS committees, ROUND(SUM(amount)::numeric, 2) AS dollars
+  FROM gap GROUP BY 1 ORDER BY 1;
+  ```
+  (runs in about 5 s locally). Measured 2026-10-30: (a) 23,556 rows / $25,074,895.00 / 104 committees; (b) 7,768 /
+  $7,309,905.11 / 140; (c) 2,864 / $2,521,734.30 / 132; residual none.
+- **Tolerance:** 0 residual rows.
+- **Sample rule:** all committees (the query is the census).
+- **Steps:** run the query after every ISBE import or matview DDL change. For a residual row, look at its filing and
+  the filings of the same committee and period (the batch 2 report's `di004_docs.sql`).
+- **Pass:** no `residual` row in the output.
+- **Fail:** any residual: record its row count and dollars, and what it looks like (doc types, committees, date
+  range). A residual means the matview keeps something other than what its DDL comment documents, or drops rows
+  no documented category covers.
+- **Worked examples** (source data, from batch 2's DI-004 sample): committee 665 (an archived A-1 whose rows are
+  live; the same contributions are on the kept Semiannual), committee 16283 (two live amendments of 2010-01..06,
+  both with live D-2s), committee 10552 (a 1996 Semiannual carrying 1998 receipts, superseded by an empty
+  amendment).
+
 ## Batch log
 
 | Date | Batch | Agent | Classes | Sample | Result | Report |
 |---|---|---|---|---|---|---|
 | 2026-10-29 | 1 | opus-engineer 10-B | C-01 | n = 30 directory rows, 10 committee ledgers, 5 Donors tabs, 1,075 rendered network links, 10 home rows | live paths pass; all-time precomputed paths fail: I1, I2, E — fixes F1/F2a/F4/F6 proposed to terminal 1 | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
+| 2026-10-30 | 2 | opus-builder (opus-engineer) | C-02, C-03 | DI-004 / DI-005: 30 candidates each; DI-006 / DI-007: 30 entities (15 candidates, 15 cycle-2026 races) and 30 edges; DI-039: census | all pass, no page defect; DI-004's recomputation amended to the source-table picker; new DI-039 (D4 detector) pass, residual 0 | `docs/audits/data_integrity_batch2_candidates_2026-10-30.md` |
