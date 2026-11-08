@@ -58,7 +58,7 @@ Follow The Money IL aggregates, normalizes, and analyzes Illinois campaign-finan
 3. **Store** — Normalized records and precomputed analytics rollups are written to PostgreSQL.
 4. **Serve** — A Flask application exposes search, drilldowns, network visualizations, and a JSON/CSV API, with Redis caching for compute-heavy aggregate routes.
 
-Scheduled jobs keep the data fresh: a recurring sync refreshes federal (FEC) contributions, rebuilds donor identities, and rebuilds analytics rollups.
+Scheduled jobs keep the data fresh: a nightly run reloads the Illinois (ISBE) bulk files, syncs federal (FEC) contributions, re-runs cross-matching and rebuilds the analytics rollups; `/data-status` shows how old each dataset is and the recent runs.
 
 ## Getting started
 

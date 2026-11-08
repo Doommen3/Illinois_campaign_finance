@@ -258,6 +258,8 @@ Before starting any non-trivial process, evaluate whether the user can run it di
 
 ## Documentation Sync Policy (Required)
 
+**Prod refreshes itself nightly** (since 2026-11-08): `ilcf-nightly-refresh.timer` (03:00 Chicago) runs `scripts/nightly_refresh.sh` → `scripts/refresh_prod_chain.sh` (ISBE download + import, FEC sync, cross-matching, analytics, restart, `validate-freshness`); `/data-status` lists the runs. Runbook: `docs/runbooks/scheduled_refresh.md`. The steps below are the by-hand fallback.
+
 After changes that introduce useful project knowledge, update both `README.md` and `CLAUDE.md` in the same task. "Useful project knowledge" includes new commands/flags, workflow updates, config/env changes, performance findings, operational caveats, troubleshooting. Do not mark implementation complete until docs are updated, or explicitly state why no doc change is needed.
 
 ## Workflow Conventions
@@ -270,6 +272,7 @@ For any new data source (or major new columns), evaluate integration across the 
 
 1. **Schema + loader + QA**: tables/indexes in `database/schema.sql`, idempotent upserts, post-import QA metrics (null/malformed counts, min/max valid dates, freshness).
 2. **Cross-matching expansion (mandatory review)**: decide if the new data should be matched against donors, committees, candidates, lobbying entities/clients, vendors, 527 entities. If yes, add match jobs in `database/cross_matching.py` with thresholds + tests, persist output in dedicated tables.
+- `backfill-fec-schedule-{a,b,e}` skip every candidate/committee whose backfill-state row is `completed` unless `--include-completed` is passed; a run that reports `candidates_processed: 0` / `api_calls_made: 0` fetched nothing. The prod catch-up scripts (`scripts/fec-schedule-{b,e}-catchup.sh`) pass the flag since 2026-11-08 (the hourly Schedule E job had been a no-op since Feb 2026).
 3. **Analytics + visualization integration**: identify where it belongs in dashboards (`/analytics`, `/federal-finance`, `/lobbying`, `/527`, homepage). Add new visualizations where useful. Document metric semantics.
 4. **Full-system validation**: targeted tests first → full suite (`pytest -q`) → validate routes render at realistic data volumes → update `README.md` + `CLAUDE.md` + runbooks → check performance impact + add caching/materialization changes as needed.
 
@@ -355,8 +358,10 @@ Tests: `tests/test_data_freshness.py` (includes the no-op regression).
 # IL SOS lobbying (daily extract — persists lobbyist profile + entity/client addresses + client_status)
 python run.py import-lobbying --file Bulk_download/Lobbyist_Entity_Client_Data_Daily_<YYYYMMDD>.csv
 
-# IRS 527 (Illinois-only fast path)
-python run.py import-irs527 --file Bulk_download/IRS_data/.../FullDataFile.txt --illinois-only
+# IRS 527 (Illinois-only fast path). Not idempotent: it appends five tables on every run, so TRUNCATE the 527
+# data tables first (docs/runbooks/irs527_data.md §3; one-off wrapper used 2026-11-08 in the runbook's status block).
+# Dated folder: Bulk_download/IRS_data/<YYYYMMDD>/ keeps the zip beside the extraction.
+python run.py import-irs527 --file Bulk_download/IRS_data/<YYYYMMDD>/var/IRS/data/scripts/pofd/download/FullDataFile.txt --illinois-only
 
 # Chicago Phase 1 Socrata (datasets: rsxa-ify5, s4vu-giwb, p9p7-vfqc, pahz-egmi)
 python run.py import-chicago-phase1 --app-token "$SOCRATA_APP_TOKEN" --upsert

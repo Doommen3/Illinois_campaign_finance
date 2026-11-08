@@ -7,6 +7,35 @@ federal analytics. Evidence for every claim is in the Appendix (probes and queri
 Written 2026-10-29: sections 1–6 (M1, 06:49–06:56Z), sections 7–8 (M2, 07:00Z on). Read-only research; nothing
 in §8 is implemented.
 
+**Status (2026-11-08).** P-1, P-2 and P-4 are done; P-3 is replaced by a one-off wrapper; the rest of §8 is open.
+
+- **Loader fixes** (`fa3158e`, `80ebc3b`, tests in `tests/test_irs527_loader.py`): the contribution date is read from
+  field 16 (A11), the registration purpose / material change date / insert datetime / bypass flags from fields 39–43
+  (D2), and `--illinois-only` means **IL-addressed orgs** (all their records) plus contributions for any org with an
+  IL contributor. The last point reverses `b50c4dd` (2026-02-16, never run until this night), which let an IL payee
+  or an IL contributor qualify a whole org: on the 2026-11-07 build that loaded 4,784 org rows / 26,607 reports /
+  8,292,689 expenditures (IL contributor + IL payee rule) and 4,115 / 21,241 / 8,226,669 (IL payee rule alone),
+  because ActBlue Non-Federal (EIN 202517748, 6.96M disbursement rows, 572,927 of them to IL payees) qualifies either
+  way. The February data on the site matches the IL-address rule (1,896 EINs / 35,914 expenditures then; 1,959 /
+  37,693 in this build), so that is the rule kept. `repair-irs527-reports` still uses the IL-address-or-IL-payee set.
+- **Decision left for Devin:** whether 527s that *pay* Illinois recipients (ActBlue Non-Federal, the governors'
+  associations, the police and firefighter funds) should appear with only their IL-payee rows — 655,946 expenditure
+  rows under that rule, against 37,693 today. It would feed the dark-money tracker real out-of-state 527 spending
+  into Illinois, but ActBlue's rows are earmarked pass-through contributions, not independent spending, and would
+  dominate every 527 expenditure figure unless labelled.
+- **Reload procedure actually used** (replaces §3 steps 1–4; no code path is idempotent yet): a one-off script
+  TRUNCATEs all nine 527 data tables (orgs, reports, directors, related orgs, expenditures, election authorities,
+  contributions, both rollups), runs `import-irs527 --illinois-only`, rebuilds the two rollups with the loader's
+  own SQL and ANALYZEs; a prod wrapper around it takes `shared/refresh.lock`, downloads and verifies the zip
+  (`Bulk_download/IRS_data/<YYYYMMDD>/`, header `H|<date>|`), runs the seven 527 cross-matching jobs,
+  `refresh-analytics --with-snapshot`, restarts `ilcf-web` and records the load with `data_refresh_cli.py
+  record-manual`. Copies: prod `shared/irs527_reload_20261107.sh` + `shared/irs527_prod_20261107.sh`, log
+  `shared/logs/irs527-reload-20261107.log`. The file is the IRS build `H|20261107|1645` (2,987,107,998 bytes;
+  Devin's copy in `527_data_update/`, prod's downloaded 05:27Z). Local wide-rule run: 21.3 min on the M3 Pro
+  (import 20.8), 0 contribution rows without a `YYYYMMDD` date, 0 orgs with a `0`/`1` purpose, newest report period
+  2026-10-31, newest contribution 2026-10-21, newest expenditure 2026-10-20. Final local and prod results: see the
+  deploy block in `docs/runbooks/deployment.md` (2026-11-08).
+
 ## 1. Status today — is it automated?
 
 **No.** The 527 tables change only when someone runs `import-irs527` (and the two `repair-irs527-*` commands) by

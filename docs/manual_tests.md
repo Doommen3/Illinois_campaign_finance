@@ -84,6 +84,7 @@ a fail.
 | MT-030 | Network tab | The ego graph is readable (N8 probe criteria) | 2026-10-29 |  |
 | MT-031 | Data status | Data status page and the nightly runs | 2026-10-29 | ⭐ |
 | MT-032 | 527 | A 527 organization page never prints a donor key (SEC-301) | 2026-11-08 |  |
+| MT-033 | 527 | A 527 organization page shows the registration purpose and dated contributions (A11, D2) | 2026-11-08 |  |
 
 ## Tests
 
@@ -676,6 +677,25 @@ a fail.
   string in the Directors table.
 - **Fail:** A pipe-delimited key, a street address or a zip code in any Matched Donor cell or in the page source
   of the Directors table.
+
+### MT-033 — A 527 organization page shows the registration purpose and dated contributions (A11, D2)
+
+- **Area:** 527
+- **Created:** 2026-11-08
+- **Source commit:** fa3158e, 80ebc3b (loader fixes) + the 2026-11-07 IRS build reload on prod 2026-11-08
+- **Precondition:** a 527 organization with Form 8872 contributions in the current cycle (for example `/527/813554739`).
+- **Why:** the loader read the contribution date from the aggregate-year-to-date field, so no contribution had a real
+  date and every windowed 527 contribution figure was empty; it also read the registration purpose from an exempt
+  indicator field, so the page printed "Purpose: 0" (docs/runbooks/irs527_data.md §6, A11 and D2).
+- **Steps:**
+  1. Open the 527 organization page.
+  2. Read the "Purpose:" line under Organization Details.
+  3. Scroll to "Contributions To This Organization" and read the Date column; read "This cycle" in the Financial Summary.
+- **Pass:** The purpose is a sentence (for example a campaign or committee description), not `0` or `1`; every
+  contribution row shows a date (YYYYMMDD) and no amount-like value; "This cycle" is non-zero for an organization with
+  2025–2026 contributions; the period line ends in 2026.
+- **Fail:** "Purpose: 0" / "Purpose: 1", blank or numeric non-date values in the Date column, a "This cycle" of $0.00
+  on an organization whose contributions table lists 2025–2026 dates.
 
 ## Run log
 
