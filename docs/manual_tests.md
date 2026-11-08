@@ -83,6 +83,7 @@ a fail.
 | MT-029 | Network tab | Rows behind a drill-down member (rows.json) | 2026-10-29 |  |
 | MT-030 | Network tab | The ego graph is readable (N8 probe criteria) | 2026-10-29 |  |
 | MT-031 | Data status | Data status page and the nightly runs | 2026-10-29 | ⭐ |
+| MT-032 | 527 | A 527 organization page never prints a donor key (SEC-301) | 2026-11-08 |  |
 
 ## Tests
 
@@ -656,6 +657,25 @@ a fail.
   "KHOT, NEIL". Step 2: the list is empty or shows an honest empty state, not every candidate. Step 3: the fragment
   finds the names that contain it; neither page errors.
 - **Fail:** A plain "Neil" surname in step 1; every candidate listed in step 2; an error page in step 3.
+
+### MT-032 — A 527 organization page never prints a donor key (SEC-301)
+
+- **Area:** 527
+- **Created:** 2026-11-08
+- **Source commit:** a9657ee
+- **Precondition:** a 527 organization whose Directors / Officers table has at least one Matched Donor (for example `/527/813554739`).
+- **Why:** the Matched Donor cell used to print the full ISBE donor key (first|last|street|city|state|zip) as text, and
+  the director→donor match is name-only, so a same-name stranger's street address could be published (security
+  analysis 2026-10-30, SEC-301 high).
+- **Steps:**
+  1. Open the 527 organization page and scroll to "Directors / Officers".
+  2. Read every Matched Donor cell.
+  3. View the page source (Ctrl/Cmd-U) and search for a pipe character between two words (`|`).
+- **Pass:** Each Matched Donor cell shows a donor name followed by a confidence label (High / Medium / Low) and
+  nothing in parentheses; no street address anywhere in the table; the source search finds no `name|name|street`
+  string in the Directors table.
+- **Fail:** A pipe-delimited key, a street address or a zip code in any Matched Donor cell or in the page source
+  of the Directors table.
 
 ## Run log
 
