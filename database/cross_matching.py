@@ -1042,10 +1042,14 @@ def match_527_to_committees(conn: sqlite3.Connection, threshold: float = 0.80) -
         threshold,
         job_label="527-committees",
     )
-    batch = [
-        (ein, org_name, cmte_id, cmte_name, score, "jaccard")
-        for (ein, org_name), (cmte_id, cmte_name), score in pair_matches
-    ]
+    # One row per (ein, committee): an EIN registered under two name spellings can match the same committee twice,
+    # and the table's primary key is (ein, committee_id_sbe). Keep the best-scoring spelling.
+    best: dict[tuple, tuple] = {}
+    for (ein, org_name), (cmte_id, cmte_name), score in pair_matches:
+        key = (ein, cmte_id)
+        if key not in best or score > best[key][4]:
+            best[key] = (ein, org_name, cmte_id, cmte_name, score, "jaccard")
+    batch = list(best.values())
     matches = len(batch)
 
     if batch:

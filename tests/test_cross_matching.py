@@ -189,6 +189,29 @@ def test_match_527_to_committees(tmp_path: Path):
     conn.close()
 
 
+def test_match_527_to_committees_one_row_per_ein_and_committee(tmp_path: Path):
+    """One EIN registered under two spellings must not insert the same (ein, committee) twice (PK violation, prod 2026-11-08)."""
+    conn = _setup_db(tmp_path)
+    _insert_527_org(conn, "273610695", "Laborers Political League Great Lakes Region")
+    conn.execute(
+        "INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, state) VALUES (?, 1, 1, ?, 'IL')",
+        ("273610695", "Great Lakes Region Laborers Political League"),
+    )
+    conn.commit()
+    _insert_committee(conn, 24126, "Laborers Political League Great Lakes Region")
+
+    stats = match_527_to_committees(conn, threshold=0.80)
+
+    assert stats["matches"] == 1
+    rows = conn.execute(
+        "SELECT ein, committee_id_sbe FROM irs527_committee_matches"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["ein"] == "273610695" and rows[0]["committee_id_sbe"] == 24126
+
+    conn.close()
+
+
 def test_match_527_expenditures_to_committees(tmp_path: Path):
     conn = _setup_db(tmp_path)
     _insert_committee(conn, 101, "Citizens for Springfield")
