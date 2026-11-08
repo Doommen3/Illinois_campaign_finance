@@ -186,7 +186,8 @@ Structural only: no cell values, no private individuals, no addresses or donor k
   `period_year`, `election_cycle`); itemized pages: `bulk_receipts_clean` / `bulk_expenditures_clean` joined to
   `bulk_committee_candidate_links`. List cached (keyed on every filter param).
 - **Figures shown:** "N total candidate-committee aggregate rows" table; itemized "Rows: N" tables.
-- **Windowed?** Yes, default current cycle; list on D-2 period dates, itemized pages on `received_date` /
+- **Windowed?** Yes, default current cycle; list by the matview's `period_year` = the year of the latest receipt on
+  the filing (not the D-2 period end; measured 2026-10-30, batch 4), itemized pages on `received_date` /
   `expended_date`.
 - **Proposed integrity checks:** a row's receipts / expenditures / ending funds recomputed from
   `isbe_d2_reports` + `isbe_filed_docs` (DI-012); itemized row count and sum recomputed from `isbe_receipts`
@@ -370,7 +371,7 @@ Structural only: no cell values, no private individuals, no addresses or donor k
   `openbook_contributions_raw`; `lobbying_entities` for the cross-link.
 - **Figures shown:** list stat cards and vendor table; detail "Contracts", "Warrants", "Contributions" sections
   (registry rows for `openbook.vendor_detail`).
-- **Windowed?** Contracts by `fiscal_year`; contributions by `contribution_date`.
+- **Windowed?** Contracts: not windowed (the detail "Contracts" card ignores the window and carries no scope tag; corrected 2026-10-30, batch 8); warrants and contributions by text dates `issue_date` / `contribution_date` in M/D/YY form, which the route compares as ISO strings (DI-057).
 - **Proposed integrity checks:** a vendor's contract count, award total and contribution total recomputed
   (DI-023).
 - **Sample n and why:** n = 30 vendors, or every vendor if fewer (top / middle / small by award total); < 10 %.
@@ -389,7 +390,7 @@ Structural only: no cell values, no private individuals, no addresses or donor k
   `bulk_candidate_committee_finance_agg`, `isbe_committees`, `isbe_candidates`, `isbe_filed_docs`,
   `fec_candidate_match` (cached `search_results`); person intelligence over ISBE candidates / committees, FEC
   Schedule A, `irs527_directors`, lobbying; investigate over `analytics_large_contributions` and match tables;
-  live feed over the latest rows of `bulk_receipts_clean` and FEC Schedules A / B / E.
+  live feed over the latest rows of `bulk_receipts_clean` joined to the committee's candidate links (one row per linked candidate, so a receipt of a multi-candidate committee repeats; batch 8, F-B8g) and FEC Schedules A / B / E.
 - **Figures shown:** search result totals per section; live feed "Local feed latest date", "Federal feed latest
   date" and the recent-row tables; investigate tables.
 - **Windowed?** Search and live feed: yes, default current cycle; person intelligence and investigate: their own
@@ -547,7 +548,7 @@ Structural only: no cell values, no private individuals, no addresses or donor k
 - **Data path:** `bulk_candidate_committee_finance_agg`, `bulk_candidates_clean`, `bulk_committee_candidate_links`,
   `bulk_receipts_clean`, `isbe_candidacies`.
 - **Figures shown:** compare profiles: stat cards, Top Donors, Election History.
-- **Windowed?** Yes, default current cycle.
+- **Windowed?** No: `/compare` is all time with no scope bar or tag (corrected 2026-10-30, batch 8; the inventory previously said default current cycle).
 - **Proposed integrity checks:** each stat card equals the profile figure for the same entity and window
   (DI-033).
 - **Sample n and why:** n = 10 comparisons (pairs from C-02 and C-04 samples).
