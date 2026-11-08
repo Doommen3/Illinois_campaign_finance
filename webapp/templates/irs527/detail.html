@@ -130,7 +130,8 @@
                 {% if director_donor_matches and d.person_name in director_donor_matches %}
                     {% for dm in director_donor_matches[d.person_name][:3] %}
                     {% set label, cls = dm.score|confidence_label %}
-                    <span title="Score: {{ '%.2f'|format(dm.score) }}">{{ dm.donor_name }} ({{ dm.donor_key }}) <span class="{{ cls }}">{{ label }}</span></span>{% if not loop.last %}<br>{% endif %}
+                    {# SEC-301: never print the donor key — it embeds the street, and the match is name-only. #}
+                    <span title="Score: {{ '%.2f'|format(dm.score) }}">{{ dm.donor_name }} <span class="{{ cls }}">{{ label }}</span></span>{% if not loop.last %}<br>{% endif %}
                     {% endfor %}
                 {% else %}
                     -

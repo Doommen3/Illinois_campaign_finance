@@ -583,7 +583,8 @@ class TestIrs527DetailEnhanced:
         )
         conn.execute(
             "INSERT INTO irs527_director_donor_matches (ein, org_name, director_name, donor_key, donor_name, score) "
-            "VALUES ('123456789', 'Test 527 Org', 'Jane Director', 'jane|director', 'Jane Director', 0.95)"
+            "VALUES ('123456789', 'Test 527 Org', 'Jane Director', "
+            "'jane|director|1234 w elm st||chicago|il|60601', 'Jane Director', 0.95)"
         )
         conn.execute(
             "INSERT INTO irs527_director_candidate_matches (ein, org_name, director_name, candidate_id, candidate_name, candidate_source, score) "
@@ -609,7 +610,18 @@ class TestIrs527DetailEnhanced:
         assert response.status_code == 200
         assert b'Jane Director' in response.data
         # Should show matched donor info
-        assert b'jane|director' in response.data or b'Matched Donor' in response.data
+        assert b'Matched Donor' in response.data
+
+    def test_detail_does_not_print_the_donor_key(self, client):
+        """SEC-301: the ISBE donor key embeds the street (first|last|addr1|addr2|city|state|zip) and the director
+        match is name-only, so printing it beside a director exposes a same-name stranger's address."""
+        response = client.get('/527/123456789')
+        assert response.status_code == 200
+        text = response.get_data(as_text=True)
+        assert 'Jane Director' in text
+        assert '1234 w elm st' not in text
+        assert 'jane|director' not in text
+        assert 'jane%7Cdirector' not in text
 
     def test_detail_shows_director_candidate_matches(self, client):
         response = client.get('/527/123456789')
