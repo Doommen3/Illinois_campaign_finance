@@ -14,7 +14,9 @@ LOG_DIR="${SHARED_DIR}/logs"
 LOCK_FILE="${SHARED_DIR}/fec-schedule-e-catchup.lock"
 
 CYCLE="${FEC_CYCLE:-2026}"
-MAX_CALLS="${FEC_SCHEDULE_E_MAX_CALLS:-1000}"
+# 250 calls/run: the backfill revisits the stalest candidates first (ORDER BY completed, updated_at), so a
+# bounded hourly budget rotates through all of them while leaving FEC's 1000 calls/hour for the nightly chain.
+MAX_CALLS="${FEC_SCHEDULE_E_MAX_CALLS:-250}"
 MAX_PAGES_PER_CANDIDATE="${FEC_SCHEDULE_E_MAX_PAGES_PER_CANDIDATE:-25}"
 PYTHON="${VENV_DIR}/bin/python3"
 
@@ -60,10 +62,14 @@ fi
 LOG_FILE="${LOG_DIR}/fec-schedule-e-catchup-$(date '+%Y%m%d-%H%M%S').log"
 log "Starting Schedule E catch-up (cycle=$CYCLE, max_calls=$MAX_CALLS, python=$PYTHON). Log: $LOG_FILE"
 
+# --include-completed: without it the backfill skips every candidate whose state row is completed, so once
+# the first full pass finished the hourly run fetched nothing (0 calls per run, 2026-02 to 2026-11-08) and new
+# independent expenditures never arrived. Completed candidates re-page newest-first and stop at an empty page.
 "$PYTHON" run.py backfill-fec-schedule-e \
     --cycle "$CYCLE" \
     --max-calls "$MAX_CALLS" \
     --max-pages-per-candidate "$MAX_PAGES_PER_CANDIDATE" \
+    --include-completed \
     --refresh-cache \
     >> "$LOG_FILE" 2>&1
 

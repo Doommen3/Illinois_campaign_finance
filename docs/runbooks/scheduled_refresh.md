@@ -7,8 +7,16 @@ snapshots, status), `scripts/nightly_refresh.sh`, `scripts/refresh_prod_chain.sh
 `scripts/data_refresh_cli.py`, `scripts/manual_load.sh`, units in `docs/systemd/ilcf-nightly-*`.
 
 > Status (2026-10-29): merged and deployed 13:30Z (`cbdf4c5`); first prod run started by hand 13:32–14:46Z, ok (73.5 min,
-> exit 0, check OK, run row on `/data-status`; see the deployment runbook's 13:30Z block). Timers not installed on prod:
-> section 1 is Devin's install.
+> exit 0, check OK, run row on `/data-status`; see the deployment runbook's 13:30Z block).
+>
+> Status (2026-11-08): section 1 done on prod at 02:37Z (`systemd-analyze verify` clean, both timers enabled; first
+> timer run 2026-11-08 09:02 UTC = 03:02 Chicago, check 11:00 UTC). A hand run was started the same night as a
+> transient unit (`systemd-run --unit=ilcf-manual-refresh-20261108 … REFRESH_KIND=manual`) that waits for the Sunday
+> `il-campaign-fec-sync` run to finish before calling `nightly_refresh.sh`, because the ISBE reload and that sync's
+> `refresh-analytics` must not overlap. Result: run 2, 03:19–04:35Z, exit 0, 75.8 min (download 29, import 21 with the
+> site down 03:49–04:10Z, FEC 7 with 372 live calls, cross-matching 5, analytics 7, warm 5), freshness 4/4, ISBE +3,931
+> rows, latest ISBE data 2026-11-06 (was 10-28). The wrapper runs `nightly_check.py` only for `REFRESH_KIND=nightly`, so a
+> manual run shows "not checked" on `/data-status` by design.
 
 ---
 

@@ -175,10 +175,13 @@ def _build_global_data_status(conn, *, local_stale_days: int, federal_stale_days
     local_receipt_date = None
     # The matview's native DATE/BOOLEAN columns answer from its received_date index (~1 ms); the same
     # MAX through the bulk_receipts_clean compat view is a parallel seq scan (~1.5 s on prod data).
+    # received_date <= CURRENT_DATE: ISBE publishes receipts as filed, and one future-dated typo (a $6,000 A-1
+    # receipt dated 2026-11-27, loaded 2026-11-08) made the strip read "-19 days old".
     if _table_exists(conn, "isbe_condensed_receipts"):
         local_receipt_date = _scalar(
             conn,
-            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts WHERE archived = FALSE",
+            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts"
+            " WHERE archived = FALSE AND received_date <= CURRENT_DATE",
         )
 
     federal_receipt_date = None

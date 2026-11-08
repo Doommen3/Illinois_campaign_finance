@@ -66,10 +66,14 @@ if [ "${PRINCIPAL_ONLY,,}" = "true" ] || [ "${PRINCIPAL_ONLY}" = "1" ]; then
     PRINCIPAL_ARGS+=(--principal-only)
 fi
 
+# --include-completed: same skip as the Schedule E catch-up — committees marked completed were never revisited,
+# so the weekly run touched only new committees (3 of 134 on 2026-10-29). Completed committees re-page
+# newest-first and stop at an empty page; the call budget bounds the run.
 "$PYTHON" run.py backfill-fec-schedule-b \
     --cycle "$CYCLE" \
     --max-calls "$MAX_CALLS" \
     --max-pages-per-committee "$MAX_PAGES_PER_COMMITTEE" \
+    --include-completed \
     --refresh-cache \
     "${PRINCIPAL_ARGS[@]}" \
     >> "$LOG_FILE" 2>&1

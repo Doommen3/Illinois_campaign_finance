@@ -373,6 +373,40 @@ def test_candidates_landing_freshness_reads_the_matview(make_app, with_trap_view
     assert "latest ISBE data: Mar 15, 2026" in text
 
 
+def _seed_matview_with_a_future_dated_row(conn) -> None:
+    """The D1 rows plus one NON-archived receipt dated 19 days from now: a filer typo that ISBE publishes as filed
+    (prod 2026-11-08: receipt 6722500, received_date 2026-11-27, made the strip read "-19 days old")."""
+    from datetime import date, timedelta
+
+    _seed_matview(conn)
+    future = (date.today() + timedelta(days=19)).isoformat()
+    conn.execute(
+        f"""
+        INSERT INTO isbe_condensed_receipts (id, committee_id, received_date, amount, archived)
+        VALUES (5, 100, '{future}', 6000.0, FALSE)
+        """
+    )
+    conn.commit()
+
+
+def test_banner_ignores_a_future_dated_receipt(make_app):
+    client = make_app(seed=_seed_matview_with_a_future_dated_row).test_client()
+    text = _visible_text(client.get("/about").get_data(as_text=True))
+    match = re.search(r"Local receipts:\s*(\d{4}-\d{2}-\d{2})\s*\((-?\d+) days old\)", text)
+    assert match is not None, "the Data Status strip shows no local receipt date with an age"
+    assert match.group(1) == D1
+    assert int(match.group(2)) >= 0
+
+
+def test_candidates_landing_freshness_ignores_a_future_dated_receipt(make_app):
+    client = make_app(seed=_seed_matview_with_a_future_dated_row).test_client()
+    text = _visible_text(client.get("/candidates").get_data(as_text=True))
+    match = re.search(r"Latest receipt date:\s*(\d{4}-\d{2}-\d{2})", text)
+    assert match is not None, "the landing page shows no latest receipt date"
+    assert match.group(1) == D1
+    assert "latest ISBE data: Mar 15, 2026" in text
+
+
 def test_banner_builder_tolerates_a_database_without_the_matview(make_app):
     """Guard (green today): rewriting the query must keep the table-exists guard, or a fresh DB loses the strip."""
     app = make_app()

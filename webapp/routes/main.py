@@ -708,7 +708,8 @@ def _get_candidate_stats(conn, scope=None):
     if _table_exists(conn, "isbe_condensed_receipts"):
         freshness['local_receipt_date'] = _scalar(
             conn,
-            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts WHERE archived = FALSE",
+            "SELECT MAX(received_date) AS max_date FROM isbe_condensed_receipts"
+            " WHERE archived = FALSE AND received_date <= CURRENT_DATE",
             default=None,
         )
     if _table_exists(conn, "fec_schedule_a_contributions"):
