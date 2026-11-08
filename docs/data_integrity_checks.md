@@ -15,8 +15,9 @@ why). A batch flips the **Status** of each check it runs, in its section and in 
 `pass (2026-11-02)`. A failed check stays `fail` until the fix is deployed and the check passes again; it is never
 deleted.
 
-**Progress:** Checks: 39 total — 26 proposed, 0 in progress, 8 pass, 5 fail, 0 blocked (2026-10-30, after batch 2). Each batch
-updates this line.
+**Progress:** Checks: 42 total — 22 proposed, 0 in progress, 9 pass, 10 fail, 1 blocked (2026-11-08, after batch 9);
+batches 3–8 statuses pending the reconstruction commit (reports lost 2026-11-08; see the plan's RESUME section).
+Each batch updates this line.
 
 ## How a batch runs
 
@@ -70,7 +71,7 @@ how many members it touches (a measured count, not an estimate), and the check s
 | 6 | C-09, C-10 | Federal (FEC) pages, one source family | proposed | — |
 | 7 | C-11, C-12 | Lobbying and IRS 527, the match-table classes | proposed | — |
 | 8 | C-13, C-14, S-04 | OpenBook, cross-source tools and compare (tools restate figures checked earlier) | proposed | — |
-| 9 | C-16, C-15, C-17 + admin audits | JSON endpoints, legacy pages, the local-only Viz Lab and internal audit pages last | proposed | — |
+| 9 | C-16, C-15, C-17 + admin audits | JSON endpoints, legacy pages, the local-only Viz Lab and internal audit pages last | done (2026-11-08): DI-028 pass 10 / 10; DI-026 fail (legacy Donors figure); DI-027 fail 25 / 30; DI-034 blocked (no local credential); new DI-058, DI-059, DI-060 fail — fixes F-B9a–g proposed | `docs/audits/data_integrity_batch9_json_legacy_vizlab_admin_2026-11-08.md` |
 
 S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non-page endpoints in
 `docs/page_inventory.md` carry no figures except the two admin audit pages (DI-034).
@@ -104,20 +105,23 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 | DI-023 | C-13 | OpenBook vendor contracts and contributions | proposed |
 | DI-024 | C-14 | Tool figures equal the profile figures they link to | proposed |
 | DI-025 | C-14 | Live feed latest dates | proposed |
-| DI-026 | C-15 | Legacy pages and v1 API counts | proposed |
-| DI-027 | C-16 | Analytics JSON payload values | proposed |
-| DI-028 | C-17 | Viz Lab race-money prototype value | proposed |
+| DI-026 | C-15 | Legacy pages and v1 API counts | fail (2026-11-08, legacy Donors figure reads the ISBE directory; batch 9 report) |
+| DI-027 | C-16 | Analytics JSON payload values | fail (2026-11-08, 25 / 30; payload = page 14 / 14; batch 9 report) |
+| DI-028 | C-17 | Viz Lab race-money prototype value | pass (2026-11-08, 10 / 10; batch 9 report) |
 | DI-029 | S-01 | Home stat cards | proposed |
 | DI-030 | S-01 | Home Top Donors | fail (2026-10-29, all time 2 / 5, I2; cycle 5 / 5 pass; batch 1 report) |
 | DI-031 | S-02 | Committee directory windowed receipts | proposed |
 | DI-032 | S-03 | Candidate directory stat cards | proposed |
 | DI-033 | S-04 | Compare stat cards | proposed |
-| DI-034 | admin | Federal receipt / disbursement audit pages | proposed |
+| DI-034 | admin | Federal receipt / disbursement audit pages | blocked (2026-11-08, no local credential; batch 9 report) |
 | DI-035 | C-01 | Donor page All time agrees with its own This cycle (I2 detector) | fail (2026-10-29, I2; batch 1 report) |
 | DI-036 | C-01 | All-time donor directory freshness (`donor_entity_local`) | fail (2026-10-29, E, local; prod unknown; batch 1 report) |
 | DI-037 | C-01 | Network in-kind links land on a page showing the in-kind money | fail (2026-10-29, I1, 52.5 % of rendered links; batch 1 report) |
 | DI-038 | C-01 | Network 1A donor links land on a page listing the committee | pass (2026-10-29, 917 / 917; batch 1 report) |
 | DI-039 | C-02 / C-04 | Live receipts outside the condensed view are explained (the D4 detector) | pass (2026-10-30, residual 0 of 34,188 rows; batch 2 report) |
+| DI-058 | C-08 / C-16 | NLP spending categories read the legacy contributions table | fail (2026-11-08, 766 legacy rows; batch 9 report) |
+| DI-059 | C-16 | State focus-sankey donor nodes group by last / business name only | fail (2026-11-08, committee 25185 all time 9 / 20 nodes; batch 9 report) |
+| DI-060 | C-03 / C-16 | Candidate-competition donor pool cut inside a tie | fail (2026-11-08, 185 tied at the cut, 82 inside; batch 9 report) |
 
 ## Conventions
 
@@ -846,21 +850,37 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-15
 - **Created:** 2026-10-29
-- **Status:** proposed
+- **Status:** fail (2026-11-08, batch 9 report). Census of the frozen legacy tables: every count and total on
+  `/legacy`, `/api/stats`, `/reports/`, `/api/committees`, `/api/reports` matches, and 30 / 30
+  `/committees/legacy/<id>` + `/api/committees/<id>`, 10 / 10 `/reports/<id>` + `/api/reports/<id>`, 5 / 5
+  `/api/donors/<id>` match — except the donors figure: the `/legacy` Donors card, `/api/stats` `donors` and the
+  `/api/donors` list total read the ISBE donor directory (251,347 rows, `id` null in the list) instead of the legacy
+  `donors` table (561). Fixes F-B9e (card and stats) and F-B9f (list) proposed.
 - **Figure:** `/legacy` counts, `/api/stats` counts and totals, `/reports/` count, `/committees/legacy/<id>` "Total
-  Contributions".
+  Contributions", `/api/committees/<id>` `total_contributions` / `report_count`, `/api/donors[/<id>]`,
+  `/api/reports[/<id>]`.
 - **Independent recomputation:**
   ```sql
   SELECT (SELECT COUNT(*) FROM committees) AS committees, (SELECT COUNT(*) FROM reports) AS reports,
          (SELECT COUNT(*) FROM contributions) AS contributions, (SELECT COUNT(*) FROM donors) AS donors,
-         (SELECT SUM(amount) FROM contributions) AS total;
-  SELECT COUNT(*), SUM(c.amount) FROM contributions c JOIN reports p ON p.id = c.report_id WHERE p.committee_id = <id>;
+         (SELECT SUM(amount) FROM contributions) AS total,
+         (SELECT COUNT(*) FROM reports WHERE is_paper_filed) AS paper_filed;
+  SELECT scrape_status, COUNT(*) FROM reports GROUP BY 1;
+  -- per committee (page and /api/committees/<id>)
+  SELECT COALESCE(SUM(c.amount), 0), (SELECT COUNT(*) FROM reports WHERE committee_id = <id>)
+  FROM contributions c JOIN reports p ON p.id = c.report_id WHERE p.committee_id = <id>;
+  -- per report / per donor
+  SELECT COUNT(*), SUM(amount) FROM contributions WHERE report_id = <report_id>;
+  SELECT COUNT(*), SUM(amount) FROM contributions WHERE donor_id = <donor_id>;
   ```
-- **Tolerance:** exact.
-- **Sample rule:** census of the counts; 30 legacy committee pages.
+  `reports.filed_date` is text (`M/D/YYYY h:mm:ss PM` plus a note); all 650 fall in 2026-01..02, so `/reports/` shows
+  650 under the default cycle and all time.
+- **Tolerance:** exact (the API's float total `5173230.590000001` counts as equal).
+- **Sample rule:** census of the counts; 30 legacy committee pages drawn 10 / 10 / 10 from the top, middle and small
+  end of the committees with contributions; 10 reports the same way; 5 legacy donors.
 - **Steps:**
-  1. Open `/legacy` and `/api/stats`; note the counts.
-  2. Open `/committees/legacy/1`; note the total.
+  1. Open `/legacy` and `/api/stats`; note the counts. Donors must read 561.
+  2. Open `/committees/legacy/1` and `/api/committees/1`; note the totals.
   3. Run the queries.
 - **Pass:** every figure matches.
 - **Fail:** any mismatch.
@@ -869,32 +889,69 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** C-16
 - **Created:** 2026-10-29
-- **Status:** proposed
-- **Figure:** values in `/api/analytics/time-series`, `/api/analytics/reconciliation`, `/api/analytics/geo` and
-  the other analytics endpoints.
-- **Independent recomputation:** the C-08 / C-05 checks (DI-014, DI-015, DI-011) for the same window; the JSON
-  value must equal both the page widget and the recomputation.
-- **Tolerance:** to the cent.
-- **Sample rule:** n = 30 values across the 14 endpoints, at least one each.
+- **Status:** fail (2026-11-08, 25 / 30 values; batch 9 report). Payload = page widget (template context) on 14 / 14
+  endpoints, with two notes: the reconciliation rows have no sort tiebreak (two tied pairs came back swapped,
+  F-B9c), and the bare `committee-similarity` (3 / $10,000) and `candidate-competition` ($2,500) defaults differ
+  from the relationships page (2 / $5,000 and $5,000; F-B9d) — called with the page's parameters they are equal.
+  Failing values: NLP "uncategorized" and NLP total (DI-058, F-B9a); network committee 32762 → candidate 39266
+  $378,380,000.00 vs $378,380,010.09 (DI-046, F-B5a); candidate-competition state node 39266 $440,055,500.00 vs
+  $440,155,500.00 (DI-060, F-B9b); 527 ecosystem default window empty (DI-049, F-B5b). Passing: time series ×3,
+  geo ×3, anomalies ×2, concentration ×2, reconciliation ×2, network donor edge, co-giving ×2, similarity ×2,
+  federal competition node, lobbying ×2, 527 all-time edge, state focus-sankey ×2, federal focus-sankey ×2.
+- **Figure:** values in the 14 `/api/analytics/*` and `/api/federal/network/focus-sankey` payloads.
+- **Independent recomputation:** first the page widget: request the page and read the same object from its template
+  context (endpoint → widget: `time-series`, `geo` → `/analytics/geography`; `anomalies`, `reconciliation` →
+  `/analytics/risk`; `concentration`, `nlp` → `/analytics/donors`; `network` → `/analytics/networks`;
+  `donor-cogiving`, `committee-similarity`, `candidate-competition`, `lobbying-influence`, `irs527-ecosystem` →
+  `/analytics/relationships`; the focus-sankeys render their JSON as-is). Then the value from source with the
+  Conventions, for example the window's monthly contributions:
+  ```sql
+  -- <picked receipts CTE from the Conventions, all committees>
+  SELECT to_char(pr.received_date, 'YYYY-MM'), SUM(pr.amount), COUNT(*) FROM pr
+  WHERE (COALESCE(pr.d2_part,'') = '' OR pr.d2_part LIKE '1%')
+    AND pr.received_date BETWEEN '<start>' AND '<end>' GROUP BY 1 ORDER BY 1;
+  ```
+  Geo cities: the page's city key lowercases and strips punctuation (`Chicago,` = `Chicago`). Graph node totals
+  (co-giving, similarity) are all time over the site donor key; competition nodes are restricted to the top-2000
+  donor pool (see DI-060); federal values exclude nothing but must be checked for `memo_code = 'X'` in
+  `raw_extractions` (DI-052).
+- **Tolerance:** to the cent; float noise ≤ $0.000001 ignored.
+- **Sample rule:** n = 30 values across the 14 endpoints, at least one each; the batch 9 report lists them (V01–V30).
 - **Steps:**
-  1. Open `/api/analytics/time-series` with the same window parameters as the page.
-  2. Compare its values with the page and with DI-014's query.
-- **Pass:** all three agree.
-- **Fail:** any disagreement.
+  1. Open `/api/analytics/time-series` and `/analytics/geography` with the same window; compare one month.
+  2. Run the query above for that month.
+- **Pass:** payload, widget and recomputation agree.
+- **Fail:** any disagreement with no named cause.
 
 ### DI-028 — Viz Lab race-money value
 
 - **Class:** C-17
 - **Created:** 2026-10-29
-- **Status:** proposed
-- **Figure:** `/experimental/viz-lab` "Race Money vs Outside Pressure": one race's money and outside spending.
-- **Independent recomputation:** DI-013's query for the same race and window; outside spending as in DI-005 over
-  the race's candidates.
+- **Status:** pass (2026-11-08, 10 / 10 races; batch 9 report). The prototype's 80 rows equal their
+  `/analytics/state-races/` rows (total, outside spending, donors, candidates). Ten races (ranks 1–4, 40–42, 78–80)
+  match the source recomputation to the cent; outside spending matches after DI-005's name rule (Representative 7:
+  4 rows name another first name; Representative 29: 3 rows do). Triple-pipeline JSON is a dated artifact
+  (2026-02-16, gitignored, main tree only), not compared; geometry keys pass `scripts/validate_geometry_keys.py`.
+- **Figure:** `/experimental/viz-lab/race_money_pressure` "Race Money vs Outside Pressure" (data endpoint
+  `/experimental/viz-lab/data/race_money_pressure`): a race's total and outside spending.
+- **Independent recomputation:** race committees from the cycle's candidacies, race identity by the site's
+  `_state_race_slug(office, district_type, district)`:
+  ```sql
+  SELECT DISTINCT ca.office, ca.district_type, ca.district, ca.id, ca.last_name, cc.committee_id
+  FROM isbe_candidacies cy JOIN isbe_candidates ca ON ca.id = cy.candidate_id
+  LEFT JOIN isbe_candidate_committees cc ON cc.candidate_id = ca.id
+  WHERE cy.election_year + cy.election_year % 2 = 2026;
+  -- then, over the race's distinct committees, with the Conventions' picked receipts (all parts):
+  SELECT SUM(pr.amount) FROM pr WHERE pr.committee_id = ANY(<race committees>)
+    AND pr.received_date BETWEEN '2025-01-01' AND '2026-12-31';
+  ```
+  Outside spending: DI-005's query per candidate surname over the window, then DI-005's name rule.
 - **Tolerance:** to the cent.
-- **Sample rule:** n = 10 races (local server only; the Viz Lab is not public).
+- **Sample rule:** n = 10 races, top 4 / middle 3 / bottom 3 of the prototype's 80 (local only; smoke-level).
 - **Steps:**
-  1. Start a local server, open `/experimental/viz-lab`.
-  2. Note a race's values; run DI-013's query.
+  1. Start a local server with `EXPERIMENTAL_VIZ_LAB_ENABLED=1` (port 5068), open
+     `/experimental/viz-lab/race_money_pressure`; stop the server afterwards.
+  2. Note a race's values; run the queries.
 - **Pass:** values match.
 - **Fail:** any mismatch.
 
@@ -993,14 +1050,33 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
 
 - **Class:** admin (non-page endpoints)
 - **Created:** 2026-10-29
-- **Status:** proposed
-- **Figure:** `/admin/federal-receipt-audit` and `/admin/federal-disbursement-audit` totals (signed in).
-- **Independent recomputation:** DI-016's Schedule A and B queries for the same cycle and filters.
+- **Status:** blocked (2026-11-08, batch 9 report). Both pages are behind `login_required` (`webapp/auth.py`:
+  `session["manual_entry_user_id"]` plus an active `app_users` row; `/auth/login` checks the password with
+  `AppUser.verify_credentials`). The local `app_users` table has one active user and no credential for it was
+  available to the batch; per decision E31 no password was guessed, no session was forged and prod was not read.
+  Needs Devin to run the steps below.
+- **Figure:** `/admin/federal-receipt-audit` and `/admin/federal-disbursement-audit` (default cycle 2026, status
+  `flagged`, `min_abs_diff` 1000, `tolerance` 0.01): status counts and per-candidate reported vs schedule totals.
+- **Independent recomputation** (the pages' rule in `database/federal_fec.py`, per candidate and cycle):
+  ```sql
+  SELECT t.candidate_id, t.receipts AS reported,
+         (SELECT COALESCE(SUM(a.contribution_receipt_amount), 0) FROM fec_schedule_a_contributions a
+          WHERE a.candidate_id = t.candidate_id AND a.cycle = t.cycle) AS schedule_total
+  FROM fec_candidate_cycle_totals t WHERE t.cycle = 2026 AND t.candidate_id = '<candidate_id>';
+  SELECT t.candidate_id, t.disbursements AS reported,
+         (SELECT COALESCE(SUM(b.disbursement_amount), 0) FROM fec_schedule_b_disbursements b
+          WHERE b.candidate_id = t.candidate_id AND b.cycle = t.cycle) AS schedule_total
+  FROM fec_candidate_cycle_totals t WHERE t.cycle = 2026 AND t.candidate_id = '<candidate_id>';
+  ```
+  The schedule sums include memo and superseded rows (DI-052); record how many of the flagged rows that explains.
 - **Tolerance:** to the cent.
-- **Sample rule:** census of the summary figures; 10 rows each.
-- **Steps:**
-  1. Sign in, open both audit pages.
-  2. Run DI-016's queries.
+- **Sample rule:** census of the status counts; 10 rows each.
+- **Steps (local only):**
+  1. `python run.py create-user` (or use the existing local account), then `python run.py runserver --port 5068`.
+  2. Sign in at `http://127.0.0.1:5068/auth/login`.
+  3. Open `/admin/federal-receipt-audit?cycle=2026&status=all` and `/admin/federal-disbursement-audit?cycle=2026&status=all`;
+     note the status counts and the first 10 rows' reported and schedule totals.
+  4. Run the queries for those candidates; stop the server.
 - **Pass:** every figure matches.
 - **Fail:** any mismatch.
 
@@ -1151,9 +1227,87 @@ S-05 (`/about`) and S-06 (`/privacy`) show no figures and need no check; the non
   both with live D-2s), committee 10552 (a 1996 Semiannual carrying 1998 receipts, superseded by an empty
   amendment).
 
+### DI-058 — NLP spending categories read the legacy contributions table
+
+- **Class:** C-08 / C-16
+- **Created:** 2026-11-08 (batch 9)
+- **Status:** fail (2026-11-08, batch 9 report). `get_nlp_spending_summary` (`database/analytics.py:4431`) takes the
+  first table that exists, and the frozen legacy `contributions` table (766 rows, $5,173,230.59) comes first; the
+  ISBE expenditure branches never run and `d2_itemized_entries` is empty. Every category on `/analytics/donors`,
+  `/analytics/` and `/api/analytics/nlp` describes legacy contributions, not spending. Fix F-B9a proposed.
+- **Figure:** "Spending categories" (`nlp_summary`) on `/analytics/donors` and `/analytics/`; `/api/analytics/nlp`.
+- **Independent recomputation:**
+  ```sql
+  SELECT COUNT(*), SUM(amount) FROM contributions WHERE amount > 0;                         -- what the widget sums today
+  SELECT COUNT(*), SUM(amount) FROM isbe_expenditures WHERE archived = FALSE AND amount > 0;  -- the spending it should describe
+  ```
+- **Tolerance:** the widget's total must equal the expenditure source's total (all time) to the cent.
+- **Sample rule:** census.
+- **Steps:**
+  1. Open `/api/analytics/nlp`; add the category totals.
+  2. Run both queries.
+- **Pass:** the categories sum to the expenditure total.
+- **Fail:** they sum to the legacy contributions total.
+
+### DI-059 — State focus-sankey donor nodes group by last / business name only
+
+- **Class:** C-16
+- **Created:** 2026-11-08 (batch 9)
+- **Status:** fail (2026-11-08, batch 9 report). The committee, candidate and vendor focus branches of
+  `/api/analytics/network/focus-sankey` group receipts by `last_or_business_name` (all parts, transfers in
+  included) and hash that name into the node id. Committee 25185 all time: 9 / 20 donor nodes merge more than one
+  first name; committee 6239: 0 / 20 (cycle and all time), but its all-time view shows one node with two parallel
+  edges from two spellings of one name. Every edge equals its own name group, so the defect is identity, not
+  arithmetic. Fix F-B9g proposed.
+- **Figure:** donor nodes and their edges in the Custom Sankey on `/analytics/networks` (committee focus).
+- **Independent recomputation:**
+  ```sql
+  SELECT r.last_name, COUNT(DISTINCT COALESCE(r.first_name, '')) AS first_names,
+         COUNT(DISTINCT LOWER(TRIM(COALESCE(r.first_name,'') || '|' || COALESCE(r.last_name,'') || '|' || COALESCE(r.address1,'') || '|' || COALESCE(r.address2,'') || '|' || COALESCE(r.city,'') || '|' || COALESCE(r.state,'') || '|' || COALESCE(r.zipcode,'')))) AS site_keys,
+         SUM(r.amount), COUNT(*)
+  FROM isbe_condensed_receipts r
+  WHERE r.committee_id = <id> AND r.archived = FALSE AND r.amount > 0
+  GROUP BY r.last_name ORDER BY 4 DESC LIMIT 20;
+  ```
+- **Tolerance:** a node must be one donor key.
+- **Sample rule:** the top 20 donor nodes of 3 focus views (one large candidate committee all time, one party
+  committee cycle and all time).
+- **Steps:**
+  1. Request `/api/analytics/network/focus-sankey?focus_node_id=committee:25185&period=all`.
+  2. Run the query for 25185; count rows with `site_keys > 1`.
+- **Pass:** every donor node is one site donor key.
+- **Fail:** any node merges keys, or two nodes share an id.
+
+### DI-060 — Candidate-competition donor pool cut inside a tie
+
+- **Class:** C-03 / C-16
+- **Created:** 2026-11-08 (batch 9)
+- **Status:** fail (2026-11-08, batch 9 report). `get_candidate_competition_networks` keeps the top 2,000 state
+  donors by `analytics_donor_summary.total_amount` with no tiebreak. The cut sits at $100,000.00, where 185 donors
+  tie and 82 get in, so candidate 39266's node read $440,055,500.00 / 16 donors on the page and $440,155,500.00 / 17
+  in the recomputation (three of its donors are in the tie). The federal pool has the same shape (13 donors tied at
+  its $6,250 cut). Fix F-B9b proposed.
+- **Figure:** candidate node totals and edges on `/analytics/relationships` "Candidate competition";
+  `/api/analytics/candidate-competition`.
+- **Independent recomputation:**
+  ```sql
+  WITH p AS (SELECT donor_key, total_amount, ROW_NUMBER() OVER (ORDER BY total_amount DESC) rn
+             FROM analytics_donor_summary WHERE source = 'bulk_receipts')
+  SELECT (SELECT total_amount FROM p WHERE rn = 2000) AS cut,
+         (SELECT COUNT(*) FROM p WHERE total_amount = (SELECT total_amount FROM p WHERE rn = 2000)) AS tied,
+         (SELECT COUNT(*) FROM p WHERE rn <= 2000 AND total_amount = (SELECT total_amount FROM p WHERE rn = 2000)) AS tied_inside;
+  ```
+- **Tolerance:** `tied = tied_inside` (or a documented deterministic tiebreak).
+- **Sample rule:** census of both pools' cuts.
+- **Steps:**
+  1. Run the query (and its federal twin over `fec_schedule_a_contributions` by donor entity key).
+- **Pass:** no donor tied at the cut is left out, or the order is deterministic.
+- **Fail:** the cut splits a tie with no tiebreak.
+
 ## Batch log
 
 | Date | Batch | Agent | Classes | Sample | Result | Report |
 |---|---|---|---|---|---|---|
 | 2026-10-29 | 1 | opus-engineer 10-B | C-01 | n = 30 directory rows, 10 committee ledgers, 5 Donors tabs, 1,075 rendered network links, 10 home rows | live paths pass; all-time precomputed paths fail: I1, I2, E — fixes F1/F2a/F4/F6 proposed to terminal 1 | `docs/audits/data_integrity_batch1_donors_2026-10-29.md` |
 | 2026-10-30 | 2 | opus-builder (opus-engineer) | C-02, C-03 | DI-004 / DI-005: 30 candidates each; DI-006 / DI-007: 30 entities (15 candidates, 15 cycle-2026 races) and 30 edges; DI-039: census | all pass, no page defect; DI-004's recomputation amended to the source-table picker; new DI-039 (D4 detector) pass, residual 0 | `docs/audits/data_integrity_batch2_candidates_2026-10-30.md` |
+| 2026-11-08 | 9 | opus-builder-9b (opus-engineer) | C-16, C-15, C-17 + admin | DI-027: 30 values over 14 endpoints; DI-026: census + 30 legacy committees, 10 reports, 5 donors; DI-028: 10 races; DI-034: not run | DI-028 pass 10 / 10; DI-026 fail (legacy Donors figure); DI-027 fail 25 / 30; DI-034 blocked (no local credential); new DI-058, DI-059, DI-060 fail; fixes F-B9a–g proposed | `docs/audits/data_integrity_batch9_json_legacy_vizlab_admin_2026-11-08.md` |
