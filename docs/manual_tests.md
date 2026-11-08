@@ -85,6 +85,7 @@ a fail.
 | MT-031 | Data status | Data status page and the nightly runs | 2026-10-29 | ⭐ |
 | MT-032 | 527 | A 527 organization page never prints a donor key (SEC-301) | 2026-11-08 |  |
 | MT-033 | 527 | A 527 organization page shows the registration purpose and dated contributions (A11, D2) | 2026-11-08 |  |
+| MT-034 | Analytics | The overview trend charts put the newest month on the left | 2026-11-08 |  |
 
 ## Tests
 
@@ -696,6 +697,27 @@ a fail.
   2025–2026 contributions; the period line ends in 2026.
 - **Fail:** "Purpose: 0" / "Purpose: 1", blank or numeric non-date values in the Date column, a "This cycle" of $0.00
   on an organization whose contributions table lists 2025–2026 dates.
+
+### MT-034 — The overview trend charts put the newest month on the left
+
+- **Area:** Analytics
+- **Created:** 2026-11-08
+- **Source commit:** bf10065 (charts), 07f0de6 (test); branch `item6-chart-order`, review document `docs/audits/chart_date_order_2026-11-08.md`
+- **Precondition:** the analytics overview has at least three months of data in its default window.
+- **Why:** Devin asked (to-do item 6) for the Time-Series Line Chart and the MoM Change Distribution to show the
+  most recent month first; this guards against the charts drifting back to oldest-first and against the chart and
+  its preview table disagreeing about which month is newest.
+- **Steps:**
+  1. Open `/analytics/` and scroll to "Trend Visuals".
+  2. In "Time-Series Line Chart", read the month labels under the axis from left to right.
+  3. Scroll to "Time-Series Preview" and find the newest month (the last row) and its "MoM Change %".
+  4. In "MoM Change Distribution", look at the leftmost bar.
+  5. Reload with `?refresh_cache=1` and repeat steps 2 and 4.
+- **Pass:** The leftmost month label is the newest month in the preview table and the labels run backwards in time
+  to the right; the leftmost MoM bar is green when the newest month's MoM % is positive and red when it is negative;
+  the "Peak" and "Range" captions still show; the result is the same after the reload.
+- **Fail:** The leftmost label is the oldest month; labels out of order; the leftmost bar's colour disagrees with
+  the newest month's MoM %; either chart is blank or shows "No ... available" while the preview table has rows.
 
 ## Run log
 
