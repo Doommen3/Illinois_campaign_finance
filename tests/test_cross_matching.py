@@ -245,6 +245,25 @@ def test_match_lobbying_to_527(tmp_path: Path):
     assert match is not None
     assert match["score"] >= 0.80
 
+
+def test_match_lobbying_to_527_one_row_per_client_and_ein(tmp_path: Path):
+    """One EIN registered under two spellings must not insert the same (client, ein) twice (PK violation, 2026-11-08)."""
+    conn = _setup_db(tmp_path)
+    _insert_lobbying_client(conn, 767, "Environmental Law Center")
+    _insert_527_org(conn, "030465813", "Environmental Law Center")
+    conn.execute(
+        "INSERT INTO irs527_organizations (ein, form_id, form_id_seq, org_name, state) VALUES (?, 1, 1, ?, 'IL')",
+        ("030465813", "Law Center Environmental"),
+    )
+    conn.commit()
+
+    stats = match_lobbying_to_527(conn, threshold=0.80)
+
+    assert stats["matches"] == 1
+    rows = conn.execute("SELECT client_id, ein FROM lobbying_527_matches").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["client_id"] == 767 and rows[0]["ein"] == "030465813"
+
     conn.close()
 
 

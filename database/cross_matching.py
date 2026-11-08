@@ -2213,10 +2213,14 @@ def match_lobbying_to_527(conn: sqlite3.Connection, threshold: float = 0.80) -> 
         threshold,
         job_label="lobbying-527",
     )
-    batch = [
-        (client_id, client_name, ein, org_name, score)
-        for (client_id, client_name), (ein, org_name), score in pair_matches
-    ]
+    # One row per (client, ein): an EIN registered under two spellings can match the same client twice, and the
+    # primary key is (client_id, ein). Keep the best-scoring spelling.
+    best: dict[tuple, tuple] = {}
+    for (client_id, client_name), (ein, org_name), score in pair_matches:
+        key = (client_id, ein)
+        if key not in best or score > best[key][4]:
+            best[key] = (client_id, client_name, ein, org_name, score)
+    batch = list(best.values())
     matches = len(batch)
 
     if batch:
