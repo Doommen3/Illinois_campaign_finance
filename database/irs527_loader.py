@@ -113,11 +113,12 @@ def _parse_org(fields: list[str]) -> Optional[tuple]:
         _clean_text(_safe_get(fields, 33)),         # business_state
         _clean_text(_safe_get(fields, 34)),         # business_zip
         _clean_text(_safe_get(fields, 35)),         # business_zip_ext
-        _clean_text(_safe_get(fields, 36)),         # purpose (may span multiple fields)
-        _clean_text(_safe_get(fields, 37)),         # material_change_date
-        _clean_text(_safe_get(fields, 38)),         # insert_datetime
-        _to_int(_safe_get(fields, 39)),             # related_entity_bypass
-        _to_int(_safe_get(fields, 40)),             # eain_bypass
+        # Fields 36-38 are the exempt 8872 / exempt state / exempt 990 indicators (D2, docs/runbooks/irs527_data.md).
+        _clean_text(_safe_get(fields, 39)),         # purpose
+        _clean_text(_safe_get(fields, 40)),         # material_change_date
+        _clean_text(_safe_get(fields, 41)),         # insert_datetime
+        _to_int(_safe_get(fields, 42)),             # related_entity_bypass
+        _to_int(_safe_get(fields, 43)),             # eain_bypass
         _clean_text(_safe_get(fields, 15)),         # formation_date
     )
 
@@ -252,7 +253,8 @@ def _parse_contribution(fields: list[str]) -> Optional[tuple]:
         _clean_text(_safe_get(fields, 12)),         # contributor_employer
         _to_float(_safe_get(fields, 13)),           # amount
         _clean_text(_safe_get(fields, 14)),         # contributor_occupation
-        _clean_text(_safe_get(fields, 15)),         # date
+        # Field 15 is AGG CONTRIBUTION YTD; the contribution date is field 16 (A11, docs/runbooks/irs527_data.md).
+        _clean_text(_safe_get(fields, 16)),         # date
     )
 
 

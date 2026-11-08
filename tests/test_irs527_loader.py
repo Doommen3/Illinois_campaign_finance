@@ -8,6 +8,7 @@ from database.irs527_loader import (
     _parse_report,
     _parse_director,
     _parse_related_org,
+    _parse_contribution,
     _parse_expenditure,
     _parse_election_authority,
     load_irs527_full_file,
@@ -32,12 +33,19 @@ def test_parse_org_valid():
               "John Doe", "456 Oak", "", "Chicago", "IL", "60601", "",
               "Jane Smith", "789 Pine", "", "Chicago", "IL", "60601", "",
               "123 Business", "", "Springfield", "IL", "62701", "",
+              "", "", "",  # exempt 8872 indicator, exempt state, exempt 990 indicator (fields 36-38)
               "Campaign purpose", "", "2001-05-13 21:20:54", "0", "1"]
     result = _parse_org(fields)
     assert result is not None
     assert result[0] == "912121950"  # ein
     assert result[3] == "Test Organization"  # org_name
     assert result[7] == "IL"  # state
+    # D2: purpose / material_change_date / insert_datetime / bypass flags are fields 39-43, not 36-40.
+    assert result[31] == "Campaign purpose"
+    assert result[32] is None
+    assert result[33] == "2001-05-13 21:20:54"
+    assert result[34] == 0
+    assert result[35] == 1
 
 
 def test_parse_org_malformed():
@@ -65,6 +73,16 @@ def test_parse_related_org():
     assert result[0] == 10  # form_id
     assert result[3] == "Related Org Name"
     assert result[4] == "Connected"  # relationship_type
+
+
+def test_parse_contribution_date_is_field_16():
+    # Real Schedule A shape: field 15 is AGG CONTRIBUTION YTD, field 16 is the contribution date (A11).
+    fields = ["A", "9770094", "1", "Test Org", "364367949", "Test Donor", "1 Main St", "",
+              "Chicago", "IL", "60601", "", "Employer", "4791", "Occupation", "37910", "20260120", ""]
+    result = _parse_contribution(fields)
+    assert result is not None
+    assert result[11] == 4791.0      # amount
+    assert result[13] == "20260120"  # date, not the YTD aggregate "37910"
 
 
 def test_parse_expenditure():
@@ -310,7 +328,7 @@ def test_load_irs527_contribution_malformed_row_counts(tmp_path: Path):
     """Malformed type-A contribution row should increment malformed_rows and not load."""
     content = (
         "H|20260208|0641|F|\n"
-        "A|BAD_FORM_ID|38295|Test Org|364367949|Contributor|123 Main||Chicago|IL|60601||Emp|500||20030430\n"
+        "A|BAD_FORM_ID|38295|Test Org|364367949|Contributor|123 Main||Chicago|IL|60601||Emp|500||500|20030430|\n"
     )
     data_path = tmp_path / "test_bad_contribution.txt"
     data_path.write_text(content, encoding="utf-8")
@@ -340,8 +358,8 @@ def test_reload_irs527_contributions_illinois_only(tmp_path: Path):
         "1|8871|9|0|0|0|222222222|CA ORG|456 Main||LA|CA|90001||email@test.com||"
         "John|456||LA|CA|90001||Jane|456||LA|CA|90001||"
         "456||LA|CA|90001|||||Purpose||2001-01-01|0|1\n"
-        "A|100|38295|IL ORG|111111111|IL Donor|123 Main||Chicago|IL|60601||Employer|1500|Occupation|20260201\n"
-        "A|101|38296|CA ORG|222222222|CA Donor|456 Main||LA|CA|90001||Employer|2500|Occupation|20260202\n"
+        "A|100|38295|IL ORG|111111111|IL Donor|123 Main||Chicago|IL|60601||Employer|1500|Occupation|1500|20260201|\n"
+        "A|101|38296|CA ORG|222222222|CA Donor|456 Main||LA|CA|90001||Employer|2500|Occupation|2500|20260202|\n"
     )
     data_path = tmp_path / "test_reload_contributions.txt"
     data_path.write_text(content, encoding="utf-8")
@@ -371,12 +389,13 @@ def test_reload_irs527_contributions_illinois_only(tmp_path: Path):
     assert stats["contributions_skipped"] == 1
 
     rows = conn.execute(
-        "SELECT ein, contributor_name, amount FROM irs527_contributions ORDER BY form_id"
+        "SELECT ein, contributor_name, amount, date FROM irs527_contributions ORDER BY form_id"
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["ein"] == "111111111"
     assert rows[0]["contributor_name"] == "IL Donor"
     assert rows[0]["amount"] == 1500.0
+    assert rows[0]["date"] == "20260201"  # A11: the date column holds the date, not the YTD aggregate
 
     rollup = conn.execute(
         """
