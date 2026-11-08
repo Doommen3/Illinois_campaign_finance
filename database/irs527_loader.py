@@ -316,8 +316,14 @@ def _is_illinois_state(value: str | None) -> bool:
     return (value or "").strip().upper() == "IL"
 
 
-def _collect_illinois_eins(file_path: Path, *, include_contributions: bool) -> set[str]:
-    """Fast first-pass EIN collector for Illinois-only filtering."""
+def _collect_illinois_eins(
+    file_path: Path, *, include_contributions: bool, include_expenditures: bool = True
+) -> set[str]:
+    """Fast first-pass EIN collector for Illinois-only filtering.
+
+    IL-addressed orgs always count; ``include_expenditures`` adds orgs with an IL expenditure recipient and
+    ``include_contributions`` adds orgs with an IL contributor.
+    """
     il_eins: set[str] = set()
     with file_path.open("r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -335,7 +341,7 @@ def _collect_illinois_eins(file_path: Path, *, include_contributions: bool) -> s
                 org_state = _clean_text(_safe_get(fields, 11))
                 if ein and _is_illinois_state(org_state):
                     il_eins.add(ein)
-            elif record_type == "B":
+            elif include_expenditures and record_type == "B":
                 ein = _clean_text(_safe_get(fields, 4))
                 recipient_state = _clean_text(_safe_get(fields, 9))
                 if ein and _is_illinois_state(recipient_state):
@@ -359,8 +365,8 @@ def load_irs527_full_file(
     Args:
         conn: SQLite connection.
         file_path: Path to FullDataFile.txt.
-        illinois_only: If True, only keep orgs with IL addresses or
-            expenditures to IL addresses.
+        illinois_only: If True, only keep IL-addressed orgs (and all their
+            records); contributions also load for any org with an IL contributor.
 
     Returns stats per record type.
     """
@@ -385,11 +391,18 @@ def load_irs527_full_file(
     }
 
     # If illinois_only, first pass to collect IL EINs
+    # Two EIN sets, as the Feb 2026 load had them: orgs, reports, directors, related orgs and expenditures load for
+    # IL-addressed orgs only; contributions also load for any org with an IL contributor (what
+    # repair-irs527-contributions produced). Letting an IL expenditure recipient or an IL contributor qualify the
+    # whole org (b50c4dd) loads national ledgers: on the 2026-11-07 build ActBlue Non-Federal alone brought
+    # 6.96M expenditure rows (docs/runbooks/irs527_data.md, status 2026-11-08).
     il_eins: set[str] | None = None
+    contribution_eins: set[str] | None = None
     if illinois_only:
         logger.info("First pass: collecting Illinois EINs...")
-        il_eins = _collect_illinois_eins(file_path, include_contributions=True)
-        logger.info("Found %d Illinois-related EINs", len(il_eins))
+        il_eins = _collect_illinois_eins(file_path, include_contributions=False, include_expenditures=False)
+        contribution_eins = _collect_illinois_eins(file_path, include_contributions=True)
+        logger.info("Found %d Illinois-related EINs (%d with contributions)", len(il_eins), len(contribution_eins))
 
     # Buffers for batch inserts
     org_rows: list[tuple] = []
@@ -619,7 +632,7 @@ def load_irs527_full_file(
                     if parsed is None:
                         stats["malformed_rows"] += 1
                         continue
-                    if il_eins is not None and parsed[1] not in il_eins:
+                    if contribution_eins is not None and parsed[1] not in contribution_eins:
                         stats["contributions_skipped"] += 1
                         continue
                     contribution_rows.append(parsed)

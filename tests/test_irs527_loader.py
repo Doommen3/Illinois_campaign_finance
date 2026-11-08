@@ -214,6 +214,39 @@ def test_load_irs527_illinois_only(tmp_path: Path):
     conn.close()
 
 
+def test_load_irs527_illinois_only_contributor_tie_loads_only_contributions(tmp_path: Path):
+    """An out-of-state org whose only Illinois tie is an IL contributor keeps its contributions, nothing else."""
+    content = (
+        "H|20260208|0641|F|\n"
+        "1|8871|9|0|0|0|222222222|CA ORG|456 Oak||LA|CA|90001||email@test.com||"
+        "John|456||LA|CA|90001||Jane|456||LA|CA|90001||"
+        "456||LA|CA|90001|||||Purpose||2001-01-01|0|1\n"
+        "D|9|2|CA ORG|222222222|Director B|VP|456||LA|CA|90001||\n"
+        "A|9|1|CA ORG|222222222|IL Donor|123 Main||Chicago|IL|60601||Employer|1500|Occupation|1500|20260201|\n"
+        "B|9|1|CA ORG|222222222|CA Vendor|1 Market St||San Francisco|CA|94105||NA|500|NA|20260111|Consulting\n"
+        "B|9|2|CA ORG|222222222|IL Vendor|1 State St||Chicago|IL|60602||NA|700|NA|20260112|Printing\n"
+    )
+    data_path = tmp_path / "test_data.txt"
+    data_path.write_text(content, encoding="utf-8")
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    conn = get_db(db_path)
+
+    stats = load_irs527_full_file(conn, data_path, illinois_only=True)
+
+    # An IL contributor or an IL payee does not make the org Illinois-related; only an IL address does.
+    assert stats["orgs"] == 0 and stats["orgs_skipped"] == 1
+    assert stats["directors"] == 0
+    assert stats["expenditures"] == 0 and stats["expenditures_skipped"] == 2
+    assert stats["contributions"] == 1 and stats["contributions_skipped"] == 0
+    row = conn.execute("SELECT ein, date FROM irs527_contributions").fetchone()
+    assert row["ein"] == "222222222"
+    assert row["date"] == "20260201"
+
+    conn.close()
+
+
 def test_reload_irs527_reports_illinois_only(tmp_path: Path):
     content = (
         "H|20260208|0641|F|\n"

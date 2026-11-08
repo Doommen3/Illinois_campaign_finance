@@ -1763,7 +1763,7 @@ def import_chicago_phase1_command(app_token, row_limit, page_limit, full_refresh
 @click.option('--file', 'file_path', required=True,
               help='Path to IRS 527 FullDataFile.txt')
 @click.option('--illinois-only/--all-states', default=True, show_default=True,
-              help='Only load orgs with IL addresses or IL expenditures')
+              help='Only load IL-addressed orgs (contributions also for orgs with an IL contributor)')
 def import_irs527_command(file_path, illinois_only):
     """Import IRS 527 political organization filings from pipe-delimited file."""
     conn = get_db(_db_target())
