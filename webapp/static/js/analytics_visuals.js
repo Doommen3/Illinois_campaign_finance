@@ -100,7 +100,7 @@
         const pointCount = rows.length;
         const stepX = pointCount > 1 ? (bounds.right - bounds.left) / (pointCount - 1) : 0;
 
-        const points = rows.map((row, idx) => {
+        const points = [...rows].reverse().map((row, idx) => {
             const x = bounds.left + (idx * stepX);
             const y = bounds.bottom - ((Number(row.total_amount || 0) / maxVal) * (bounds.bottom - bounds.top));
             return {x, y, row};
@@ -119,6 +119,7 @@
                 cx: point.x,
                 cy: point.y,
                 r: 3.2,
+                "data-month": point.row.month,
                 fill: "#1d4ed8",
             }));
         }
@@ -136,7 +137,7 @@
         const rows = parseJson("analytics-overview-time-series");
         if (!svg) return;
         const momRows = Array.isArray(rows)
-            ? rows.filter((row) => row.mom_change_pct !== null && row.mom_change_pct !== undefined)
+            ? rows.filter((row) => row.mom_change_pct !== null && row.mom_change_pct !== undefined).reverse()
             : [];
         if (momRows.length === 0) {
             drawEmpty(svg, "No MoM change values available.");
@@ -172,6 +173,7 @@
                 height: Math.max(1, yScale),
                 fill: value >= 0 ? "#16a34a" : "#dc2626",
                 rx: 2,
+                "data-month": row.month,
             }));
         });
         text(svg, bounds.left, bounds.top - 6, `Range: -${maxAbs.toFixed(1)}% to +${maxAbs.toFixed(1)}%`, {size: "10px", weight: "600"});
