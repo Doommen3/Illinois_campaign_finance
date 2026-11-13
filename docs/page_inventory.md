@@ -388,7 +388,8 @@ Structural only: no cell values, no private individuals, no addresses or donor k
 - **Templates:** search.html, person_intelligence.html, investigate.html, live_feed.html.
 - **Data path:** restate figures owned by other classes: search over `analytics_donor_summary`,
   `bulk_candidate_committee_finance_agg`, `isbe_committees`, `isbe_candidates`, `isbe_filed_docs`,
-  `fec_candidate_match` (cached `search_results`); person intelligence over ISBE candidates / committees, FEC
+  `fec_candidate_match`, the recipient directory `isbe_recipient_summary` / `isbe_recipient_committees` (all-time
+  Recipients section) (cached `search_results`); person intelligence over ISBE candidates / committees, FEC
   Schedule A, `irs527_directors`, lobbying; investigate over `analytics_large_contributions` and match tables;
   live feed over the latest rows of `bulk_receipts_clean` joined to the committee's candidate links (one row per linked candidate, so a receipt of a multi-candidate committee repeats; batch 8, F-B8g) and FEC Schedules A / B / E.
 - **Figures shown:** search result totals per section; live feed "Local feed latest date", "Federal feed latest

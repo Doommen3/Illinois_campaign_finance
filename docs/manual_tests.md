@@ -86,6 +86,7 @@ a fail.
 | MT-032 | 527 | A 527 organization page never prints a donor key (SEC-301) | 2026-11-08 |  |
 | MT-033 | 527 | A 527 organization page shows the registration purpose and dated contributions (A11, D2) | 2026-11-08 |  |
 | MT-034 | Analytics | The overview trend charts put the newest month on the left | 2026-11-08 |  |
+| MT-035 | Search | Search finds a recipient (a payee of committee spending) and its paying committees reconcile | 2026-11-13 | ⭐ |
 
 ## Tests
 
@@ -718,6 +719,30 @@ a fail.
   the "Peak" and "Range" captions still show; the result is the same after the reload.
 - **Fail:** The leftmost label is the oldest month; labels out of order; the leftmost bar's colour disagrees with
   the newest month's MoM %; either chart is blank or shows "No ... available" while the preview table has rows.
+
+### MT-035 — Search finds a recipient (a payee of committee spending) and its paying committees reconcile
+
+- **Area:** Search
+- **Created:** 2026-11-13
+- **Source commit:** 6f0b905 (feature), branch `recipient-search`; plan `.claude/plans/recipient-search.md`
+- **Precondition:** the recipient directory exists (built by `sunshine-import`, or once by
+  `python3 scripts/build_recipient_directory.py`); without it the Recipients section is simply absent.
+- **Why:** `/search` did not find anyone a committee paid (vendors, consultants, staff); the new Recipients section
+  lists them with all-time totals and the committees that paid them, and each committee link must open that
+  committee's payee page showing the same amount.
+- **Steps:**
+  1. Open `/search?q=amazon` and find the "Recipients" section (after Donors).
+  2. Read the first row: Total received, Payments, Committees, Last paid and the "Paid by" list.
+  3. Click the first committee in "Paid by".
+  4. On the committee's payee page, read the row with the same name.
+  5. Open `/search?q=amazon&type=recipients`, then `/search?q=amazon&cycle=2022`.
+- **Pass:** Step 1: a "Recipients (N)" heading tagged "All time" with Amazon near the top; step 2: up to five
+  committees with amounts in descending order, then "+ N more" when Committees is larger than five; step 4: the
+  payee page lists that name with exactly the amount shown beside the committee in step 2; step 5: the type filter
+  shows only Recipients and offers "Recipients" in the dropdown, and the cycle window leaves the Recipients totals
+  unchanged (all time).
+- **Fail:** No Recipients section; "No results found" printed beside it; amounts out of order; a payee page amount
+  that differs from the search row; a windowed tag or total on the section.
 
 ## Run log
 
