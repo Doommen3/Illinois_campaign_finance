@@ -483,6 +483,19 @@ def test_the_type_dropdown_offers_recipients_after_donors_and_keeps_it_selected(
     assert [value for value, attrs, _label in options if "selected" in attrs] == ["recipients"]
 
 
+def test_the_section_explains_whose_report_it_is_and_that_rows_are_grouped_by_filed_name(tmp_path):
+    """The explainer under the heading says the money is as reported by the paying committee (about 30% of the directory's
+    dollars are committee-to-committee transfers) and that rows are grouped by the name as filed (spellings split one payee;
+    a shared name joins different payees). Kills an explainer that undersells either."""
+    client = _client(tmp_path)
+    html = _search_html(client, "Zorbleck", type="recipients")
+    section = re.search(r"<h2>\s*Recipients \(\d+\).*?</section>", html, re.S)
+    assert section, "no Recipients section"
+    text = " ".join(re.sub(r"<[^>]+>", " ", section.group(0)).split())
+    assert "as reported by the paying committee" in text, text[:400]
+    assert "grouped by the name as filed" in text, text[:400]
+
+
 def test_a_query_that_matches_only_a_recipient_does_not_say_no_results(tmp_path):
     """"Plimsoll" matches only the recipient Plimsoll Grafting LLC: the page lists the Recipients section and does NOT also say
     "No results found". Kills a no-results condition that ignores the recipients section."""
