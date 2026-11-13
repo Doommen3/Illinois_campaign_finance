@@ -222,6 +222,16 @@ Nothing on the box records which route or client was slow: no Caddy access log, 
 5. **Web connections are now labelled** (`application_name = ilcf-web`, load-time plan L2) so `pg_stat_activity` separates web load from CLI chains.
 
 
+## Deployed 2026-11-13 10:42Z — `575d505` (Recipients section in `/search`; plan `.claude/plans/recipient-search.md`)
+
+Devin: "merge push and deploy". Branch `recipient-search` (8 commits) fast-forwarded onto `main` (`5262ec3` → `575d505`) at 10:02Z and pushed; no CI (retired).
+
+- **Gate:** full local suite on `575d505` in the supervising session's verify checkout, 09:57Z: 3,161 passed / 6 skipped / 63 xfailed. The merging session re-ran only `tests/test_search_recipients.py`, `tests/test_search_names.py` and `tests/test_scope_widgets.py` on the merged tree: 128 passed / 3 skipped / 63 xfailed. The scope-bar sweep was not run.
+- **Held for the nightly refresh:** run 8 was in flight (09:05–10:16Z, exit 0, freshness 4/4), so nothing was pulled or built until it ended.
+- **10:42Z prod:** `git pull --ff-only` (`4bade24` → `575d505`); `python3 scripts/build_recipient_directory.py` 17.5 s → `isbe_recipient_summary` 365,398 rows, `isbe_recipient_committees` 821,000 rows; `ilcf-web` restarted 10:42:24Z. No `requirements.txt` or `schema.sql` change, so no pip install and no `init-db`. The nightly import rebuilds both views from now on.
+- **Checks:** on the server `/` 200 and `/search?q=amazon&type=recipients` 200 in 0.08 s with "Recipients (30)" and committee payee links; public site 10:42:50Z the same page 200 with "Recipients (30)", `/` 200, `/search?q=Chicago` 200.
+- **Open:** MT-035 has not been run by hand. The README line and the two data-dictionary entries from the plan's §7 are applied in the main tree but uncommitted (both files carry another session's uncommitted edits); the two `CLAUDE.md` lines wait for Devin.
+
 ## Deployed 2026-11-08 05:05–06:41Z — data night: nightly timers, FEC catch-ups, future-dated receipt, SEC-301, IRS 527 reload (`bd0adb1` → `9079655`)
 
 Devin: "Make sure ISBE and FEC data is up to date" → "Run it for me" → "This folder has new 527. use it to make updates" → "make the prod changes". All commits on `main`, fast-forward pulls on prod, no CI (retired).
