@@ -736,12 +736,15 @@ a fail.
   3. Click the first committee in "Paid by".
   4. On the committee's payee page, read the row with the same name.
   5. Open `/search?q=amazon&type=recipients`, then `/search?q=amazon&cycle=2022`.
-- **Pass:** Step 1: a "Recipients (N)" heading tagged "All time" with Amazon near the top; step 2: up to five
+- **Pass:** Step 1: a "Recipients (N)" heading tagged "All time" with Amazon near the top, and an explainer under it
+  saying the amounts are as reported by the paying committee and that rows are grouped by the name as filed (so
+  spellings such as "Amazon" and "Amazon.com" can be separate rows — expected, not a fail); step 2: up to five
   committees with amounts in descending order, then "+ N more" when Committees is larger than five; step 4: the
   payee page lists that name with exactly the amount shown beside the committee in step 2; step 5: the type filter
   shows only Recipients and offers "Recipients" in the dropdown, and the cycle window leaves the Recipients totals
   unchanged (all time).
-- **Fail:** No Recipients section; "No results found" printed beside it; amounts out of order; a payee page amount
+- **Fail:** No Recipients section; no explainer, or one that omits whose report it is or the grouping by filed name;
+  "No results found" printed beside it; amounts out of order; a payee page amount
   that differs from the search row; a windowed tag or total on the section.
 
 ## Run log
