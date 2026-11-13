@@ -208,8 +208,8 @@ def _is_donor_key_query(query: str) -> bool:
     return digit_count >= 3
 
 
-# Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, so the six-hour cache cannot
-# serve results computed under the old rules.
+# Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, or the cached payload gains or
+# loses a section, so the six-hour cache cannot serve results computed under the old rules or without the new section.
 SEARCH_CACHE_REVISION = "sn4"
 
 
