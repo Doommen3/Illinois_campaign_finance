@@ -15,9 +15,10 @@ Contract pinned, literally:
       fallback per section when the token path finds nothing and the query has >= 4 characters; the local candidate section also
       lists candidates WITHOUT a committee link (totals 0); committees reached through a matched candidate
       (isbe_candidate_committees + accepted committee_family members) are listed AFTER the name matches, once per committee id,
-      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn3"
+      marked "via candidate <name>"; numeric / key-like queries keep their id paths; the search_results cache key starts with "sn4"
       (search Phase 2, P2-23: the apostrophe rule R7 changed the matching, so "sn1" entries must not be served; follow-up
-      FB-M1 changed the substring fallback's pattern, so "sn2" entries must not be served either).
+      FB-M1 changed the substring fallback's pattern, so "sn2" entries must not be served either; the Recipients section,
+      .claude/plans/recipient-search.md R7, added a section to the payload, so "sn3" entries must not be served).
 
 The seed world (all names fictional; every expected value below is derived from it in a comment next to the fixture):
 
@@ -1399,7 +1400,7 @@ def _key(query: str, scope: str = "cycle:2026", search_type: str = "all") -> str
     return main_routes._search_results_cache_key(scope, query, search_type)
 
 
-def test_the_search_cache_key_starts_with_the_revision_sn3():
+def test_the_search_cache_key_starts_with_the_revision_sn4():
     """S4: the revision prefix makes every entry stored before the fix unreachable (the old key had no prefix). The revision is
     pinned by value; it must also survive a query with no token ('!!!!') without raising. Kills: no prefix; a different
     revision string; the prefix put in the middle."""
@@ -1408,7 +1409,7 @@ def test_the_search_cache_key_starts_with_the_revision_sn3():
         query, search_type = case
         key = _key(query, search_type=search_type)
         assert isinstance(key, str)
-        assert key.startswith("sn3"), key
+        assert key.startswith("sn4"), key
 
     _each(
         [(query, search_type) for query in ("Mike Exampleton", "Exampleton, Michael W.", "!!!!", "103") for search_type in ("all", "donors")],
