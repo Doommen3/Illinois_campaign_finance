@@ -41,7 +41,8 @@ tests/test_webapp.py::TestWebApp, AF tests/test_analytics_features.py, AD
 tests/test_analytics_date_semantics.py, FF tests/test_federal_fec.py, EV
 tests/test_experimental_viz_lab.py, LR tests/test_lobbying_routes.py, CP
 tests/test_candidate_profile.py, AW tests/test_scope_axis_and_windows.py, WB
-tests/test_scope_windows_part_b.py, OS tests/test_outside_spending.py. Markers: [iw] asserts
+tests/test_scope_windows_part_b.py, OS tests/test_outside_spending.py, RS
+tests/test_search_recipients.py. Markers: [iw] asserts
 with only in-window fixture rows, so it cannot catch a dropped window; [at] asserts the
 all-time branch only; [fl] calls the feeder, not the page; no marker = rows inside and
 outside the window, or output compared across scopes.
@@ -334,6 +335,15 @@ WIDGETS: tuple[Widget, ...] = (
             "too; windowed tag + windowed legacy fallback only when analytics_donor_summary is missing"
         ),
     ),  # inv #36
+    Widget(
+        "main.search", "/search", "search.html",
+        "Recipients (N)", "table", "fixed", "none",
+        covered_by="RS::test_the_heading_carries_only_the_fixed_all_time_tag_under_a_non_default_scope",
+        note=(
+            "fixed 'All time' tag (plan recipient-search R5): the isbe_recipient_summary directory, all-time totals by "
+            "recipient name; no windowed variant"
+        ),
+    ),
     Widget(
         "main.search", "/search", "search.html",
         "Candidates (N)", "table", "fixed", "none",

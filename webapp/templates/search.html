@@ -5,7 +5,7 @@
 
 {% block content %}
 <h1>Search</h1>
-<p class="subtitle">Search across committees, donors, candidates, reports, filed doc IDs, and donor keys.</p>
+<p class="subtitle">Search across committees, donors, recipients, candidates, reports, filed doc IDs, and donor keys.</p>
 {% include "_partials/time_scope_bar.html" %}
 
 <form action="{{ url_for('main.search') }}" method="get" class="search-form">
@@ -15,6 +15,7 @@
         <option value="all" {% if type == 'all' %}selected{% endif %}>All</option>
         <option value="committees" {% if type == 'committees' %}selected{% endif %}>Committees</option>
         <option value="donors" {% if type == 'donors' %}selected{% endif %}>Donors</option>
+        <option value="recipients" {% if type == 'recipients' %}selected{% endif %}>Recipients</option>
         <option value="candidates" {% if type == 'candidates' %}selected{% endif %}>Candidates</option>
         <option value="reports" {% if type == 'reports' %}selected{% endif %}>Reports</option>
         <option value="filed_docs" {% if type == 'filed_docs' %}selected{% endif %}>Filed Doc IDs</option>
@@ -127,6 +128,53 @@
                     </td>
                     <td>{{ donor.address|truncate(40) if donor.address else '-' }}</td>
                     <td>{{ format_currency(donor.total_amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+
+    {% if type in ('all', 'recipients') and recipients %}
+    <section>
+        <h2>Recipients ({{ recipients|length }}) {{ scope_tag('All time') }}</h2>
+        <p class="subtitle">People and businesses paid by committees — itemized expenditures, transfers out, loans made and independent expenditures.</p>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Recipient</th>
+                    <th>Total received</th>
+                    <th>Payments</th>
+                    <th>Committees</th>
+                    <th>Last paid</th>
+                    <th>Paid by</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for recipient in recipients %}
+                <tr>
+                    <td>
+                        {{ recipient.name }}
+                        <details class="provenance-panel">
+                            <summary>Provenance</summary>
+                            <p><strong>Source table:</strong> {{ recipient.provenance.source_table }}</p>
+                            <p><strong>Source filing link:</strong> {{ recipient.provenance.source_filing_link if recipient.provenance.source_filing_link else 'not available' }}</p>
+                            <p><strong>Import batch:</strong> {{ recipient.provenance.import_batch }}</p>
+                            <p><strong>Sync timestamp:</strong> {{ recipient.provenance.sync_timestamp }}</p>
+                            <p><strong>Normalization notes:</strong> {{ recipient.provenance.normalization_notes }}</p>
+                        </details>
+                    </td>
+                    <td>{{ format_currency(recipient.total_amount) }}</td>
+                    <td>{{ recipient.payment_count }}</td>
+                    <td>{{ recipient.committee_count }}</td>
+                    <td>{{ recipient.last_date or '-' }}</td>
+                    <td>
+                        {% for committee in recipient.committees %}
+                        <a href="{{ url_for('committees.committee_payees', committee_id=committee.committee_id, q=committee.payee_name) }}">{{ committee.committee_name }}</a>
+                        {{ format_currency(committee.total_amount) }}{% if not loop.last %}<br>{% endif %}
+                        {% endfor %}
+                        {% if recipient.committee_count > recipient.committees|length %}<br>+ {{ recipient.committee_count - recipient.committees|length }} more{% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

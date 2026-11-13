@@ -36,6 +36,7 @@ SEARCH_TYPES = {
     "all",
     "committees",
     "donors",
+    "recipients",
     "candidates",
     "reports",
     "filed_docs",
@@ -209,7 +210,7 @@ def _is_donor_key_query(query: str) -> bool:
 
 # Revision of the cached /search payloads (decision S4): bump it whenever the matching rules change, so the six-hour cache cannot
 # serve results computed under the old rules.
-SEARCH_CACHE_REVISION = "sn3"
+SEARCH_CACHE_REVISION = "sn4"
 
 
 def _search_results_cache_key(scope_token: str, query: str, search_type: str) -> str:
@@ -1366,6 +1367,88 @@ def _search_donors_source_aware(
             })
 
     return output
+
+
+def _search_recipients(conn, query: str, limit: int = 30, committees_per_recipient: int = 5) -> list[dict]:
+    """Recipients (payees of itemized committee expenditures) from the all-time directory isbe_recipient_summary, by name
+    tokens; one substring fallback when that finds nothing. Each row lists its top committees by amount from
+    isbe_recipient_committees (plan .claude/plans/recipient-search.md, section 3.3)."""
+    if not _table_exists(conn, "isbe_recipient_summary"):
+        return []
+    tsquery = search_tsquery(query)
+    fallback_pattern = _substring_fallback_pattern(query)
+
+    def fetch(where_sql, param):
+        return conn.execute(
+            f"""
+            SELECT recipient_key, recipient_name, total_amount, payment_count, committee_count, first_date, last_date
+            FROM isbe_recipient_summary
+            WHERE {where_sql}
+            ORDER BY total_amount DESC, recipient_name ASC
+            LIMIT ?
+            """,
+            (param, limit),
+        ).fetchall()
+
+    rows = fetch(f"{NAME_TSVECTOR_SQL('recipient_name')} @@ to_tsquery('simple', ?)", tsquery) if tsquery else []
+    if not rows and fallback_pattern:
+        rows = fetch("recipient_name LIKE ?", fallback_pattern)
+    if not rows:
+        return []
+
+    keys = [row["recipient_key"] for row in rows]
+    committee_name_sql, committee_join = "NULL", ""
+    if _table_exists(conn, "isbe_committees"):
+        committee_name_sql, committee_join = "c.name", "LEFT JOIN isbe_committees c ON c.id = top.committee_id"
+    # One index probe per recipient on (recipient_key, total_amount DESC): a recipient paid by thousands of committees
+    # still reads only its top rows.
+    committee_rows = conn.execute(
+        f"""
+        SELECT k.recipient_key, top.committee_id, top.recipient_name, top.total_amount, top.payment_count,
+               {committee_name_sql} AS committee_name
+        FROM unnest(CAST(? AS text[])) WITH ORDINALITY AS k(recipient_key, ord)
+        CROSS JOIN LATERAL (
+            SELECT rc.committee_id, rc.recipient_name, rc.total_amount, rc.payment_count
+            FROM isbe_recipient_committees rc
+            WHERE rc.recipient_key = k.recipient_key
+            ORDER BY rc.total_amount DESC, rc.committee_id ASC
+            LIMIT ?
+        ) top
+        {committee_join}
+        ORDER BY k.ord, top.total_amount DESC, top.committee_id ASC
+        """,
+        (keys, committees_per_recipient),
+    ).fetchall()
+    committees_by_key: dict[str, list[dict]] = defaultdict(list)
+    for row in committee_rows:
+        committees_by_key[row["recipient_key"]].append({
+            "committee_id": int(row["committee_id"]),
+            "committee_name": row["committee_name"] or f"Committee {row['committee_id']}",
+            "payee_name": row["recipient_name"] or "",
+            "total_amount": float(row["total_amount"] or 0),
+            "payment_count": int(row["payment_count"] or 0),
+        })
+
+    return [
+        {
+            "recipient_key": row["recipient_key"],
+            "name": row["recipient_name"] or "",
+            "total_amount": float(row["total_amount"] or 0),
+            "payment_count": int(row["payment_count"] or 0),
+            "committee_count": int(row["committee_count"] or 0),
+            "first_date": str(row["first_date"]) if row["first_date"] is not None else None,
+            "last_date": str(row["last_date"]) if row["last_date"] is not None else None,
+            "committees": committees_by_key.get(row["recipient_key"], []),
+            "provenance": {
+                "source_table": "isbe_recipient_summary",
+                "source_filing_link": None,
+                "import_batch": "materialized from isbe_condensed_expenditures",
+                "sync_timestamp": "not available",
+                "normalization_notes": f"Recipient key: {row['recipient_key']}",
+            },
+        }
+        for row in rows
+    ]
 
 
 def _search_reports(
@@ -3098,6 +3181,7 @@ def search():
     results = {
         'committees': [],
         'donors': [],
+        'recipients': [],
         'candidates': [],
         'reports': [],
         'filed_docs': [],
@@ -3117,7 +3201,7 @@ def search():
     if query and not is_short_query:
         cached_payload = _get_cached_search_results(scope_token, query, search_type)
         if cached_payload is not None:
-            for section_name in ("committees", "donors", "candidates", "reports", "filed_docs", "donor_keys"):
+            for section_name in ("committees", "donors", "recipients", "candidates", "reports", "filed_docs", "donor_keys"):
                 results[section_name] = cached_payload.get(section_name, [])
             search_meta["cache_hit"] = True
             search_meta['duration_ms'] = round((time.perf_counter() - search_start) * 1000.0, 2)
@@ -3126,6 +3210,7 @@ def search():
         short_mode = len(query) < 4
         committee_limit = 30 if short_mode else 50
         donor_limit = 30 if short_mode else 50
+        recipient_limit = 20 if short_mode else 30
         candidate_local_limit = 20 if short_mode else 30
         candidate_federal_limit = 15 if short_mode else 20
         report_limit = 20 if short_mode else 30
@@ -3195,6 +3280,12 @@ def search():
                 ),
             )
 
+        if search_type in ('all', 'recipients'):
+            results['recipients'] = _run_section(
+                'recipients',
+                lambda: _search_recipients(conn, query, limit=recipient_limit),
+            )
+
         if search_type in ('all', 'candidates'):
             local_candidates = _run_section(
                 'candidates_local',
@@ -3250,6 +3341,7 @@ def search():
                 {
                     "committees": results["committees"],
                     "donors": results["donors"],
+                    "recipients": results["recipients"],
                     "candidates": results["candidates"],
                     "reports": results["reports"],
                     "filed_docs": results["filed_docs"],

@@ -1566,6 +1566,16 @@ def create_materialized_views(conn):
             "isbe_committee_money, isbe_candidate_money, isbe_receipts, isbe_expenditures, isbe_filed_docs, "
             "isbe_d2_reports, isbe_committees, isbe_candidates"
         )
+    # The /search recipient directory reads isbe_condensed_expenditures, so it is rebuilt right after it
+    # (plan .claude/plans/recipient-search.md R3). The repo root may not be on sys.path when run as a script.
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from database.recipient_directory import build_recipient_directory
+
+    counts = build_recipient_directory(conn)
+    print(f"    Recipient directory: {counts['recipients']:,} recipients, "
+          f"{counts['recipient_committees']:,} recipient x committee rows.")
     conn.commit()
     elapsed = time.time() - t0
     print(f"  Materialized views created in {elapsed:.1f}s")
