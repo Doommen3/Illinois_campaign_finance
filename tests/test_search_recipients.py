@@ -46,7 +46,6 @@ Readings of the contract chosen here (each one line; the orchestrator can overtu
 from __future__ import annotations
 
 import ast
-import json
 import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -593,20 +592,26 @@ def fake_redis(monkeypatch):
     return fake
 
 
-def test_a_second_identical_request_is_a_cache_hit_that_still_lists_the_recipients(tmp_path, fake_redis):
-    """Cache on: the first request stores ONE entry whose key starts with the revision sn4 and whose payload carries the
+def test_a_second_identical_request_is_a_cache_hit_that_still_lists_the_recipients(tmp_path, fake_redis, monkeypatch):
+    """Cache on: the first request stores ONE entry whose route key starts with the revision sn4 and whose payload carries the
     recipients. Then Zorbleck gets another $1,000 and the directory is rebuilt: the second identical request still shows
     $2,100.00 (served from the cache, Recipients included), and after the cache is emptied the page shows $3,100.00 (control:
     the rebuild really changed the answer). Kills: the section left out of the cached payload or of the cache-hit copy loop
     (the second page would have no Recipients); the old revision (entries computed without the section would be served)."""
     client = _client(tmp_path, ROUTE_PERF_CACHE_ENABLED=True)
+    # RouteCache stores under a sha1 of the route's key, so the route's key is read where it is handed to the cache.
+    cache = main_routes._search_results_cache
+    route_keys: list = []
+    original_set = cache.set
+    monkeypatch.setattr(cache, "set", lambda key, *args, **kwargs: (route_keys.append(key), original_set(key, *args, **kwargs))[1])
     assert _totals(_recipients(client, "Zorbleck")) == [2100.0]
     stored = [key for key in fake_redis.values if key.startswith(SEARCH_KEY_PREFIX)]
     assert len(stored) == 1, stored
-    assert stored[0][len(SEARCH_KEY_PREFIX):].startswith("sn4:"), stored[0]
+    assert len(route_keys) == 1 and str(route_keys[0]).startswith("sn4:"), route_keys
+    assert stored[0] == cache._redis_key(route_keys[0])
     payload = fake_redis.values[stored[0]]
-    payload = json.loads(payload) if isinstance(payload, (str, bytes)) else payload
-    assert ZORBLECK in json.dumps(payload.get("recipients", []) if isinstance(payload, dict) else payload), payload
+    payload = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
+    assert '"recipients"' in payload and ZORBLECK in payload, payload
 
     conn = get_db()
     conn.execute(
