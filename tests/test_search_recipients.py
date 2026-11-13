@@ -483,6 +483,24 @@ def test_the_type_dropdown_offers_recipients_after_donors_and_keeps_it_selected(
     assert [value for value, attrs, _label in options if "selected" in attrs] == ["recipients"]
 
 
+def test_a_query_that_matches_only_a_recipient_does_not_say_no_results(tmp_path):
+    """"Plimsoll" matches only the recipient Plimsoll Grafting LLC: the page lists the Recipients section and does NOT also say
+    "No results found". Kills a no-results condition that ignores the recipients section."""
+    client = _client(tmp_path)
+    html = _search_html(client, "Plimsoll")
+    assert list(_sections(html)) == ["Recipients"]
+    assert "No results found" not in html
+
+
+def test_a_query_that_matches_nothing_still_says_no_results(tmp_path):
+    """(guard) Passes on HEAD. "Xylquonder" matches nothing anywhere: no section and the "No results found" message. Kills a fix
+    that drops the message altogether."""
+    client = _client(tmp_path)
+    html = _search_html(client, "Xylquonder")
+    assert _sections(html) == {}
+    assert "No results found" in html
+
+
 # ---------------------------------------------------------------------------
 # (5) A row: figures, its committees and the link to the payee page
 # ---------------------------------------------------------------------------
